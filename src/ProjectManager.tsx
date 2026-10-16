@@ -22,10 +22,10 @@ function ProjectAssetPreview({ asset, unavailable, playing, click }: { asset: As
   </button>;
 }
 
-function ProjectMediaDialog({ asset, close, stopAudio }: { asset: Asset; close: () => void; stopAudio: () => void }) {
+export function ProjectMediaDialog({ asset, close, stopAudio, label = "项目素材预览" }: { asset: Asset; close: () => void; stopAudio: () => void; label?: string }) {
   const [failed, setFailed] = useState(false), root = useRef<HTMLDivElement>(null);
   useEffect(() => { const previous = document.activeElement as HTMLElement; root.current?.querySelector<HTMLButtonElement>("button")?.focus(); return () => previous?.focus(); }, []);
-  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><div className="modal project-media-dialog" role="dialog" aria-modal="true" aria-label="项目素材预览" ref={root} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); close(); } if (e.key === "Tab") { const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>("button,video") || []), first = nodes[0], last = nodes.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } } }}>
+  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><div className="modal project-media-dialog" role="dialog" aria-modal="true" aria-label={label} ref={root} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); close(); } if (e.key === "Tab") { const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>("button,video") || []), first = nodes[0], last = nodes.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } } }}>
     <div className="modal-head"><h2 title={asset.name}>{asset.name}</h2><button className="icon-button" aria-label="关闭项目素材预览" title="关闭预览" onClick={close}><X size={18}/></button></div><div className="project-media-stage">{failed ? <p role="status">此格式暂时无法预览，可在访达中查看原文件。</p> : asset.kind === "photo" ? <img src={thumbnail(asset)} alt={asset.name} onError={() => setFailed(true)}/> : <video src={`/api/media/${asset.id}/original`} poster={thumbnail(asset)} controls preload="metadata" onPlay={stopAudio} onError={() => setFailed(true)}/>}</div>
   </div></div>;
 }

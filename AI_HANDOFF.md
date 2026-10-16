@@ -34,6 +34,8 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 
 ## 3. 工程地图
 
+真实文件夹试用版另读 `FOLDER_VIEW.md`：新旧视图可切换，没有数据库迁移，不能擅自把旧分类清空或把访达路径变化当成已完成身份迁移。
+
 | 路径 | 职责 |
 |---|---|
 | `server/index.mjs` | HTTP/session、媒体预览、根目录登记、文件操作确认、服务启动 |
@@ -49,6 +51,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `src/main.tsx` | 应用状态、搜索/筛选/详情、试听意图和操作流程 |
 | `src/AuditionControls.tsx` | 播放器、波形、选段、连续试听；暂停优先于异步连播 |
 | `src/ProjectManager.tsx` | 项目页面、媒体类型筛选、图片/视频预览与使用历史 |
+| `server/folder-browser.mjs`、`src/FolderBrowser.tsx` | 登记范围内真实目录只读浏览、任意层级、素材路径范围筛选；保留旧分类 |
 | `src/*Dialog.tsx`、`*Manager.tsx` | 独立编辑弹窗、分类/标签/重复管理 |
 | `src/style.css` | 中文工具界面与响应式布局 |
 | `scripts/package.mjs` | 白名单生成干净分享 ZIP，不包含运行数据 |

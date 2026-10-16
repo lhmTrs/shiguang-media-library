@@ -13,6 +13,7 @@ import { MusicAnalysis } from "./music-analysis.mjs";
 import { MissingFiles } from "./missing-files.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
+import { FolderBrowser } from "./folder-browser.mjs";
 import { dataDirectory } from "./runtime.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -53,6 +54,7 @@ const musicCategories = new MusicCategories(lib).init();
 const categories = new AssetCategories(lib).init();
 const tags = new Tags(lib).init();
 const projects = new Projects(lib).init();
+const folderBrowser = new FolderBrowser(lib);
 const musicAnalysis = await new MusicAnalysis(lib).init();
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
@@ -141,6 +143,7 @@ app.post(
   ),
 );
 app.get("/api/roots", (req, res) => res.json(lib.roots()));
+app.get("/api/folder-browser", asyncRoute(async (req, res) => res.json(await folderBrowser.branch(req.query))));
 app.post("/api/roots", asyncRoute(async (req, res) => {
   if (typeof req.body.path !== "string" || !path.isAbsolute(req.body.path)) throw Error("请输入服务器上的绝对文件夹路径");
   const root = await lib.addRoot(req.body.path, req.body.kind);

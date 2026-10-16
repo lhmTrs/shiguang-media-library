@@ -6,6 +6,7 @@ import { constants, createReadStream } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
+import { folderPredicate } from "./folder-browser.mjs";
 export const run = promisify(execFile);
 const PHOTO = new Set([
   "jpg",
@@ -523,6 +524,10 @@ export class Library {
   assetFilter(query = {}, ignoreCategory = false) {
     const where = ["trashed=0"],
       values = [];
+    if (query.directoryRoot) {
+      const scope = folderPredicate(this, query);
+      where.push("(" + scope.sql + ")"); values.push(...scope.values);
+    } else if (query.directory || query.includeChildren !== undefined) throw Error("请先选择登记的素材目录");
     for (const [key, col] of [
       ["kind", "kind"],
       ["category", "category"],

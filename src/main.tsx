@@ -66,6 +66,7 @@ import { MissingCleanupDialog, type CleanupResult } from "./MissingCleanupDialog
 import { ProjectManager, ProjectHistory, type Project } from "./ProjectManager";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
+import { FolderBrowser } from "./FolderBrowser";
 
 export type Asset = {
   id: string;
@@ -345,6 +346,8 @@ function App() {
     [error, setError] = useState("");
   const [tagRules, setTagRules] = useState<TagRules>(emptyTagRules);
   const [advancedFilters, setAdvancedFilters] = useState(false);
+  const [folderView, setFolderView] = useState(() => { try { return localStorage.getItem("shiguang.categoryView") !== "legacy"; } catch { return true; } });
+  useEffect(() => { try { localStorage.setItem("shiguang.categoryView", folderView ? "folders" : "legacy"); } catch {} }, [folderView]);
   const filterMemory = useRef(new Map<string, {
     q: string; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
     duration: string; createdFrom: string; createdTo: string; dateField: "created" | "captured";
@@ -1145,6 +1148,7 @@ function App() {
             }}
           />
         ) : view === "categoryManagement" ? (
+          <><div className="category-view-switch" role="group" aria-label="目录分类视图"><button aria-pressed={folderView} onClick={() => setFolderView(true)}><FolderOpen size={16}/>文件夹视图</button><button aria-pressed={!folderView} onClick={() => setFolderView(false)}><Library size={16}/>旧分类视图</button></div>{folderView ? <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} addToProject={addToProject} stopAudio={pauseAudition}/> :
           <CategoryManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
@@ -1156,6 +1160,7 @@ function App() {
             isPlaying={auditionActive}
             changed={() => void refreshRef.current().catch(fail)}
           />
+          }</>
         ) : (
           <>
             <section className="library-heading">

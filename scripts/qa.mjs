@@ -21,6 +21,7 @@ const source = path.join(base, "音效 测试"),
 await fs.mkdir(source);
 await fs.mkdir(photos);
 await fs.mkdir(destination);
+await fs.mkdir(path.join(source, "转场", "呼啸", "快速"), { recursive: true });
 await run("ffmpeg", [
   "-v",
   "error",
@@ -224,6 +225,40 @@ async function verify(browserType, name, options) {
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     const phaseToken = (await (await context.request.get(url + "/api/session")).json()).token;
+    await navigation.getByRole("button", { name: "分类管理", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "文件夹", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "选择文件夹：音效 测试", exact: true }).click();
+    await expect(page.locator(".folder-asset")).toHaveCount(2);
+    await page.getByRole("region", { name: "真实文件夹浏览", exact: true }).getByRole("button", { name: /^转场/ }).click();
+    await page.getByRole("region", { name: "真实文件夹浏览", exact: true }).getByRole("button", { name: /^呼啸/ }).click();
+    await page.getByRole("region", { name: "真实文件夹浏览", exact: true }).getByRole("button", { name: /^快速/ }).click();
+    await expect(page.getByRole("navigation", { name: "文件夹路径", exact: true })).toContainText("快速");
+    await expect(page.locator(".folder-asset")).toHaveCount(0);
+    await page.getByRole("navigation", { name: "文件夹路径", exact: true }).getByRole("button", { name: "音效 测试", exact: true }).click();
+    await expect(page.locator(".folder-asset")).toHaveCount(2);
+    await page.getByRole("checkbox", { name: "包含子文件夹", exact: true }).uncheck();
+    await expect(page.locator(".folder-asset")).toHaveCount(2);
+    await page.getByRole("textbox", { name: "搜索文件夹素材", exact: true }).fill("第二段");
+    await expect(page.locator(".folder-asset")).toHaveCount(1);
+    await page.getByRole("button", { name: "清空筛选", exact: true }).click();
+    await expect(page.locator(".folder-asset")).toHaveCount(2);
+    for (const width of [1440, 1280, 1024, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Folder browser overflow at " + width);
+      await page.screenshot({ path: path.join(out, `${name}-folder-browser-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole("button", { name: "选择文件夹：摄影素材", exact: true }).click();
+    await page.getByRole("button", { name: "预览素材：测试照片.jpg", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "文件夹素材预览", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "旧分类视图", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "分类管理", exact: true })).toBeVisible();
+    await page.reload();
+    await navigation.getByRole("button", { name: "分类管理", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "分类管理", exact: true })).toBeVisible();
+    await navigation.getByRole("button", { name: "全部素材", exact: true }).click();
+    await expect(page.locator(".asset-row")).toHaveCount(5);
     const phaseHeaders = { "X-Local-Token": phaseToken };
     const phaseFiles = (await (await context.request.get(url + "/api/assets?kind=sfx&sort=revealCount")).json()).items;
     const phaseFirst = phaseFiles[0], phaseSecond = phaseFiles[1];
@@ -1794,6 +1829,7 @@ async function verify(browserType, name, options) {
       browser: name,
       passed: true,
       tests: [
+        "真实文件夹多级/空目录浏览、面包屑、子树范围、搜索、照片预览及旧分类一键回切持久化",
         "分层筛选折叠、条件逐项清除、音乐音效独立记忆、显示和维护菜单",
         "侧栏折叠、导航显隐勾选、刷新保留、恢复全部与手机遮罩",
         "1440/1280/1024导航布局无横向溢出、底部设置入口可见",
