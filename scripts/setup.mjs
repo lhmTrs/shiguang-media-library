@@ -13,12 +13,13 @@ try {
   if (process.versions.node.split(".")[0] !== "22") throw Error("请安装 Node.js 22.x 后重试：https://nodejs.org/en/download/archive/v22");
   let installed = false;
   try {
-    await import("express"); await import("mysql2/promise"); const { default: Database } = await import("better-sqlite3");
+    await import("express"); await import("mysql2/promise"); await import("typescript"); await import("vite"); const { default: Database } = await import("better-sqlite3");
     const db = new Database(":memory:"); db.close(); installed = true;
   } catch {}
   if (!installed || process.argv.includes("--reinstall")) {
     console.log("安装锁定版本的依赖（首次需要联网）…");
-    await command(process.platform === "win32" ? "npm.cmd" : "npm", ["ci"], process.platform === "win32");
+    // Source downloads need the compiler even when the caller exports NODE_ENV=production.
+    await command(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--include=dev"], process.platform === "win32");
   }
   try { await fs.access(path.join(project, "dist/index.html")); }
   catch { await command(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], process.platform === "win32"); }
