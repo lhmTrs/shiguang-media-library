@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import {
   Aperture,
   Library,
+  Pencil,
+  RotateCcw,
+  Power,
   Image,
   Film,
   AudioLines,
@@ -126,6 +129,21 @@ type Root = {
   path: string;
   kind: string;
   online: number;
+  /** 仅注销：不再扫描/监听/参与导航，但记录与素材属性都保留、可恢复 */
+  retired?: number;
+  revision?: number;
+  reconciled_ms?: number | null;
+};
+type RelocateResult = {
+  needsConfirm?: boolean;
+  warnings?: string[];
+  matchRatio?: number;
+  matched?: number;
+  total?: number;
+  newPath?: string;
+  ok?: boolean;
+  rolledBack?: boolean;
+  report?: { moved: number; renamed: number; adopted: number; added: number; missing: number; conflicts: number };
 };
 type Stats = {
   total: number;
@@ -320,6 +338,12 @@ function App() {
       categories: [],
       formats: [],
     });
+  // 「素材目录管理」专用的全量列表（含已注销）；侧栏导航与筛选仍用 roots（只在管的）
+  const [allRoots, setAllRoots] = useState<Root[]>([]);
+  const [rootEdit, setRootEdit] = useState<{ id: string; name: string; kind: string; path: string } | null>(null);
+  const loadAllRoots = useCallback(async () => {
+    setAllRoots(await api<Root[]>("/roots/all"));
+  }, []);
   const [roots, setRoots] = useState<Root[]>([]),
     [assets, setAssets] = useState<Asset[]>([]),
     [filterCategories, setFilterCategories] = useState<Stats["categories"]>([]),
@@ -400,6 +424,9 @@ function App() {
     [ops, setOps] = useState<Operation[]>([]),
     [trashAvailable, setTrashAvailable] = useState(false),
     [cache, setCache] = useState({ bytes: 0, files: 0, active: 0 });
+  useEffect(() => {
+    if (modal === "folders") void loadAllRoots().catch(() => {});
+  }, [modal, loadAllRoots]);
   const [folderPath, setFolderPath] = useState(""), [folderPickerAvailable, setFolderPickerAvailable] = useState(false);
   useEffect(() => {
     if (!mobileNav) return;
@@ -2407,7 +2434,7 @@ function App() {
                         void run(async () => {
                           await api("/folders/choose", { kind: folderKind });
                           await refresh();
-                          setNotice("已登记目录，开始扫描");
+                          setNotice("已登记目录，开始扫描"); await loadAllRoots();
                         })
                       }
                     >
@@ -2415,36 +2442,158 @@ function App() {
                       {busy ? "等待文件夹选择…" : "选择文件夹"}
                     </button>
                   </div>
-                  <div className="folder-path-entry"><input aria-label="素材文件夹绝对路径" placeholder="输入素材文件夹绝对路径" value={folderPath} onChange={e => setFolderPath(e.target.value)}/><button className="plain" disabled={busy || !folderPath.trim()} onClick={() => void run(async () => { await api("/roots", { path: folderPath.trim(), kind: folderKind }); setFolderPath(""); await refresh(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
-                  {roots.map((r) => (
-                    <div className="folder-record" key={r.id}>
+                  <div className="folder-path-entry"><input aria-label="素材文件夹绝对路径" placeholder="输入素材文件夹绝对路径" value={folderPath} onChange={e => setFolderPath(e.target.value)}/><button className="plain" disabled={busy || !folderPath.trim()} onClick={() => void run(async () => { await api("/roots", { path: folderPath.trim(), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
+                  {allRoots.map((r) => (
+                    <div className={"folder-record" + (r.retired ? " is-retired" : "")} key={r.id}>
                       <FolderOpen size={21} />
                       <div>
                         <strong>
                           {r.name}
-                          <small>{kindNames[r.kind]}</small>
+                          {!r.retired && <small>{kindNames[r.kind]}</small>}
                         </strong>
                         <p>{r.path}</p>
-                        <span>{r.online ? "在线" : "离线"}</span>
+                        <span>{r.retired ? "已注销（可恢复）" : r.online ? "在线" : "离线"}</span>
                       </div>
-                      <button
-                        className="plain"
-                        disabled={
-                          busy ||
-                          jobs.some(
-                            (j) => j.rootId === r.id && j.status === "running",
-                          )
-                        }
-                        onClick={() =>
-                          void run(async () => {
-                            await api("/roots/" + r.id + "/scan", {});
-                            await refresh();
-                          })
-                        }
-                      >
-                        <RefreshCw size={15} />
-                        重新扫描
-                      </button>
+                      <div className="folder-actions">
+                        {!r.retired && (
+                          <button
+                            className="plain"
+                            disabled={busy || jobs.some((j) => j.rootId === r.id && j.status === "running")}
+                            onClick={() =>
+                              void run(async () => {
+                                await api("/roots/" + r.id + "/scan", {});
+                                await refresh();
+                              })
+                            }
+                          >
+                            <RefreshCw size={15} />
+                            重新扫描
+                          </button>
+                        )}
+                        <button
+                          className="plain"
+                          disabled={busy}
+                          title="改显示名、改目录类型，或填入新位置完成迁移"
+                          onClick={() => setRootEdit(rootEdit?.id === r.id ? null : { id: r.id, name: r.name, kind: r.kind, path: r.path })}
+                        >
+                          <Pencil size={15} />
+                          {r.retired ? "查看" : "编辑"}
+                        </button>
+                        {r.retired ? (
+                          <>
+                            <button
+                              className="primary"
+                              disabled={busy}
+                              onClick={() =>
+                                void run(async () => {
+                                  await api("/roots/" + r.id + "/restore", {});
+                                  await loadAllRoots();
+                                  await refresh();
+                                  setNotice("已恢复登记，并开始重新扫描");
+                                })
+                              }
+                            >
+                              <RotateCcw size={15} />
+                              恢复
+                            </button>
+                            <button
+                              className="plain"
+                              disabled={busy}
+                              title="仅在该目录名下已无素材索引时可用"
+                              onClick={() =>
+                                void run(async () => {
+                                  if (!window.confirm(`彻底删除「${r.name}」的登记记录？\n\n只删除登记与索引记录，不会删除任何文件；该目录名下必须已无素材索引，否则会被拒绝。`)) return;
+                                  await api("/roots/" + r.id, {}, "DELETE");
+                                  await loadAllRoots();
+                                  setNotice("已彻底删除该目录的登记");
+                                })
+                              }
+                            >
+                              <Trash2 size={15} />
+                              彻底删除
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="plain"
+                            disabled={busy}
+                            title="不再扫描与监听这个目录；文件与素材标签都保留，可随时恢复"
+                            onClick={() =>
+                              void run(async () => {
+                                if (!window.confirm(`仅注销「${r.name}」？\n\n· 不会删除任何文件\n· 不会删除素材的标签、备注与项目关联\n· 该目录将不再被扫描与监听，之后可随时恢复`)) return;
+                                await api("/roots/" + r.id + "/retire", {});
+                                await loadAllRoots();
+                                await refresh();
+                                setNotice("已注销（文件与标签都保留，可恢复）");
+                              })
+                            }
+                          >
+                            <Power size={15} />
+                            注销
+                          </button>
+                        )}
+                      </div>
+                      {!r.retired && !r.online && (
+                        <p className="folder-warn">
+                          ⚠️ 这个目录现在找不到（可能被改名、搬走或磁盘未挂载）。文件与素材标签都没有被改动：
+                          在「编辑」里填入它的新位置即可完成迁移（保持同一批素材与全部属性），或选择「注销」。
+                        </p>
+                      )}
+                      {rootEdit?.id === r.id && (
+                        <div className="folder-edit">
+                          <label>
+                            显示名
+                            <input aria-label="目录显示名" value={rootEdit.name} onChange={(e) => setRootEdit({ ...rootEdit, name: e.target.value })} />
+                          </label>
+                          <label>
+                            目录类型
+                            <select aria-label="目录类型" value={rootEdit.kind} onChange={(e) => setRootEdit({ ...rootEdit, kind: e.target.value })}>
+                              {Object.entries(kindNames).map(([k, n]) => (
+                                <option key={k} value={k}>{n}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            目录绝对路径（改动即为迁移：保持同一批素材与全部标签）
+                            <input aria-label="目录绝对路径" value={rootEdit.path} onChange={(e) => setRootEdit({ ...rootEdit, path: e.target.value })} />
+                          </label>
+                          <div className="folder-edit-actions">
+                            <button
+                              className="primary"
+                              disabled={busy || !rootEdit.name.trim() || !rootEdit.path.trim()}
+                              onClick={() =>
+                                void run(async () => {
+                                  const next = rootEdit.path.trim();
+                                  const moved = next !== r.path;
+                                  const metaChanged = rootEdit.name !== r.name || rootEdit.kind !== r.kind;
+                                  if (metaChanged) await api("/roots/" + r.id, { name: rootEdit.name, kind: rootEdit.kind }, "PATCH");
+                                  if (moved) {
+                                    let answer = await api<RelocateResult>("/roots/" + r.id + "/relocate", { path: next });
+                                    if (answer.needsConfirm) {
+                                      const detail = (answer.warnings || []).map((w) => "· " + w).join("\n");
+                                      const percent = Math.round((answer.matchRatio ?? 0) * 100);
+                                      if (!window.confirm(`迁移前检查发现异常：\n\n${detail}\n\n重合度 ${percent}%（${answer.matched}/${answer.total}）\n目标：${answer.newPath}\n\n仍然迁移？`)) return;
+                                      answer = await api<RelocateResult>("/roots/" + r.id + "/relocate", { path: next, confirm: true });
+                                    }
+                                    const rep = answer.report;
+                                    setNotice(
+                                      answer.ok === false
+                                        ? `迁移完成但需核对：失联 ${rep?.missing ?? 0}、冲突 ${rep?.conflicts ?? 0}${answer.rolledBack ? "（已回滚到原路径）" : ""}`
+                                        : `迁移完成：认领 ${rep?.adopted ?? 0}、新增 ${rep?.added ?? 0}、零冲突`,
+                                    );
+                                  } else if (metaChanged) setNotice("已更新目录信息");
+                                  setRootEdit(null);
+                                  await loadAllRoots();
+                                  await refresh();
+                                })
+                              }
+                            >
+                              保存
+                            </button>
+                            <button className="plain" onClick={() => setRootEdit(null)}>取消</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                   <h3>最近任务</h3>
@@ -2452,7 +2601,8 @@ function App() {
                   {jobs.map((j) => (
                     <div className="job" key={j.id}>
                       <strong>
-                        {roots.find((r) => r.id === j.rootId)?.name ||
+                        {allRoots.find((r) => r.id === j.rootId)?.name ||
+                          roots.find((r) => r.id === j.rootId)?.name ||
                           "素材扫描"}
                       </strong>
                       <span>

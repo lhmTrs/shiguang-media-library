@@ -14,7 +14,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
-import { createManifestSync, reconcileRoot, startWatcher } from "./reconcile.mjs";
+import { createManifestSync, reconcileRoot, relocateRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -160,6 +160,33 @@ app.post("/api/roots", asyncRoute(async (req, res) => {
   void reconcileWatcher?.refresh(); // 立刻开始监听这个新目录，否则外部改动要等下一轮兜底刷新
   res.json({ root, job: lib.scan(root.id) });
 }));
+// 含已注销的根：只给「素材目录管理」界面用（/api/roots 仍只返回在管的根）
+app.get("/api/roots/all", (req, res) => res.json(lib.allRoots()));
+app.patch("/api/roots/:id", asyncRoute(async (req, res) => {
+  const result = lib.updateRoot(req.params.id, req.body);
+  if (Object.hasOwn(req.body, "kind")) void reconcileWatcher?.refresh();
+  res.json(result);
+}));
+// 迁移根路径：保持同一个 root_id，让对账把素材按身份重新认领（标签/项目关联全保留）
+app.post("/api/roots/:id/relocate", asyncRoute(async (req, res) => {
+  const result = await relocateRoot(lib, req.params.id, req.body.path, { confirm: req.body.confirm === true });
+  if (result.needsConfirm) return res.json(result); // 交给界面二次确认
+  void reconcileWatcher?.refresh();
+  res.json(result);
+}));
+// 仅注销：保留记录与全部属性，可恢复
+app.post("/api/roots/:id/retire", asyncRoute(async (req, res) => {
+  const root = lib.retireRoot(req.params.id);
+  void reconcileWatcher?.refresh();
+  res.json({ root });
+}));
+app.post("/api/roots/:id/restore", asyncRoute(async (req, res) => {
+  const root = lib.restoreRoot(req.params.id);
+  void reconcileWatcher?.refresh();
+  res.json({ root, job: lib.scan(root.id) });
+}));
+// 彻底删除：只允许"已注销且名下没有素材"的根
+app.delete("/api/roots/:id", asyncRoute(async (req, res) => res.json(lib.deleteRoot(req.params.id))));
 // 对账：把外部（访达/脚本/GPT）整理过的文件重新认领回原素材 id，而不是当成新素材
 app.get("/api/reconcile", (req, res) =>
   res.json({

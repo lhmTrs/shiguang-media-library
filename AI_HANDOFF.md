@@ -59,6 +59,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/fs-identity.mjs` | 文件身份与路径边界：`within`、`rootIdentity`（dev:ino + /Volumes 判断）、xattr 读写、sha256、可索引扩展名集合（**全项目唯一一份**） |
 | `server/fs-manifest.mjs` | 登记根内的 `.shiguang/manifest.json`：原子写、结构校验、条目 ↔ 数据库字段互转 |
 | `server/reconcile.mjs` | 对账引擎：路径→dev:ino→xattr→sha256→同名同大小 逐级认领；`reconcilePaths` 是监听用的快路径；`startWatcher` 负责监听与兜底刷新 |
+| `scripts/relocate-root.mjs` | 命令行迁移根路径（与界面「重新指定位置」同一套逻辑） |
 | `scripts/export-manifest.mjs` | 一次性迁移：把数据库元数据物化成各根清单并立即对账（`--hash` / `--dry-run` / `--root=`） |
 | `scripts/theme-gen.mjs` | 界面风格的唯一来源：改 `THEMES` / `OVERRIDES` 后运行；`--tokenize` 才把 style.css 里新写的硬编码色值纳入 token（会备份到 `backups/source/`） |
 | `scripts/package.mjs` | 白名单生成干净分享 ZIP，不包含运行数据 |
@@ -69,6 +70,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 
 - `roots` 登记允许访问的素材目录，`assets` 保存原绝对路径、类型、分类、标签、备注、状态、媒体参数及计数。
 - **权威方向：文件系统是存在性与位置的真相，`.shiguang/manifest.json` 是身份与元数据的载体，SQLite 只是可重建投影。** 外部整理（访达/脚本/GPT）后由 `server/reconcile.mjs` 认领回原 id；任何"清理"都必须停在"标离线"，**永远不要自动删除 assets 行或清单条目**（那是用户唯一能找回标签的线索）。新增写文件系统的功能时，要一并考虑"这算不算一次外部变更、对账能不能认出来"。
+- 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。
 - 身份匹配逐级降级：路径 → `dev:ino` → xattr(`com.shiguang.assetid`) → `sha256` → 同名同大小且唯一。扫描时就要写入 `dev/ino`（`library.mjs` 的 scanWork），否则"扫描完立刻改名"这条最常见路径拿不到线索。
 - 界面风格是纯前端、纯 CSS 变量的事：切换只改 `<html data-theme>` 与 `localStorage`，不落库、不发请求。**改样式时不要在 `src/style.css` 里写死颜色**——写死的色块在深色/午夜蓝下不会跟随，改用 `var(--c-xxxxxx)` 或 `var(--green|--line|--muted|--soft)`；新增色值后跑一次 `node scripts/theme-gen.mjs --tokenize`。语义色（素材四类图标、危险/成功/提醒）在 `scripts/theme-gen.mjs` 的 `PROTECTED` 里锁色相，不要随意增删。
 - `music_categories` 名称为历史兼容，覆盖所有媒体；`asset_subcategories.category_id` 是真实父子归属，不允许任意创建分类字符串。

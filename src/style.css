@@ -3359,3 +3359,16 @@ dd {
 .interface-settings-body .navigation-options { padding: 2px 20px 14px; max-height: none; overflow: visible; }
 @media (prefers-reduced-motion: reduce) { .theme-card { transition: none; } }
 @media (max-width: 600px) { .theme-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ============================================================
+   素材目录管理：每个根的操作区、内联编辑表单、失效提醒
+   （颜色一律走 token，自动跟随界面风格）
+   ============================================================ */
+.folder-record { flex-wrap: wrap; }
+.folder-record.is-retired { opacity: 0.75; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; align-items: center; }
+.folder-warn { flex-basis: 100%; margin: 8px 0 0; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.55; background: var(--c-fff3dd); border-left: 3px solid var(--c-a97d32); color: var(--c-94723d); }
+.folder-edit { flex-basis: 100%; display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+.folder-edit label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.folder-edit input, .folder-edit select { width: 100%; }
+.folder-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }

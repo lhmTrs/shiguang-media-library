@@ -139,6 +139,9 @@ export class Library {
     for (const [name, type] of [
       ["revision", this.db.kind === "mysql" ? "BIGINT NOT NULL DEFAULT 0" : "INTEGER NOT NULL DEFAULT 0"],
       ["reconciled_ms", this.db.kind === "mysql" ? "DOUBLE" : "REAL"],
+      // 仅注销：保留记录与全部属性、可恢复；不删除 roots 行（删了会让 checked() 报
+      // "未登记的素材目录"，那批资产的试听/预览会全部坏掉）
+      ["retired", this.db.kind === "mysql" ? "BIGINT NOT NULL DEFAULT 0" : "INTEGER NOT NULL DEFAULT 0"],
     ]) if (!rootColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE roots ADD COLUMN ${name} ${type}`);
   }
   /** 幂等建索引：两种方言都支持（MySQL 没有 CREATE INDEX IF NOT EXISTS）。 */
@@ -178,8 +181,68 @@ export class Library {
       } catch {}
     }
   }
+  /** 正在管理的根：已注销的不参与扫描、监听、导航与重叠校验。 */
   roots() {
-    return this.db.prepare("SELECT * FROM roots ORDER BY name").all();
+    return this.db.prepare("SELECT * FROM roots WHERE COALESCE(retired,0)=0 ORDER BY name").all();
+  }
+  /** 含已注销的根：只给「素材目录管理」界面用。 */
+  allRoots() {
+    return this.db.prepare("SELECT * FROM roots ORDER BY COALESCE(retired,0), name").all();
+  }
+  rootById(rootId) {
+    const r = this.db.prepare("SELECT * FROM roots WHERE id=?").get(rootId);
+    if (!r) throw Error("未登记的素材目录");
+    return r;
+  }
+  /**
+   * 仅注销：不再扫描/监听/参与导航，但**保留 roots 行与全部素材属性**，可随时恢复。
+   * 有意不把素材标离线：文件还在，只是这批目录暂时不由应用维护。
+   */
+  retireRoot(rootId) {
+    const r = this.rootById(rootId);
+    if (r.retired) return this.rootById(rootId);
+    this.db.prepare("UPDATE roots SET retired=1 WHERE id=?").run(rootId);
+    return this.rootById(rootId);
+  }
+  restoreRoot(rootId) {
+    const r = this.rootById(rootId);
+    if (!r.retired) return this.rootById(rootId);
+    this.db.prepare("UPDATE roots SET retired=0 WHERE id=?").run(rootId);
+    return this.rootById(rootId);
+  }
+  /** 彻底删除：只允许"已注销且名下没有素材"的根，避免出现索引不可达的孤儿记录。 */
+  deleteRoot(rootId) {
+    const r = this.rootById(rootId);
+    if (!r.retired) throw Error("请先注销该目录，再彻底删除");
+    const n = this.db.prepare("SELECT COUNT(*) n FROM assets WHERE root_id=?").get(rootId).n;
+    if (n) throw Error(`该目录下仍有 ${n} 条素材索引，请先在「失效素材/目录」里清理索引后再删除`);
+    this.db.prepare("DELETE FROM roots WHERE id=?").run(rootId);
+    return { removed: true, id: rootId };
+  }
+  /** 改显示名 / 改类型；类型变化时把音频按新类型重新判定 music↔sfx。 */
+  updateRoot(rootId, patch = {}) {
+    const r = this.rootById(rootId);
+    let name = r.name, kind = r.kind;
+    if (Object.hasOwn(patch, "name")) {
+      const value = String(patch.name ?? "").trim();
+      if (!value || value.length > 60) throw Error("目录显示名需为 1~60 个字符");
+      name = value;
+    }
+    if (Object.hasOwn(patch, "kind")) {
+      if (!["sfx", "music", "photo", "video", "mixed"].includes(patch.kind)) throw Error("未知目录类型");
+      kind = patch.kind;
+    }
+    this.db.prepare("UPDATE roots SET name=?,kind=? WHERE id=?").run(name, kind, rootId);
+    let changed = 0;
+    if (kind !== r.kind) {
+      const target = kind === "music" ? "music" : "sfx";
+      const exts = [...AUDIO];
+      const info = this.db
+        .prepare(`UPDATE assets SET kind=? WHERE root_id=? AND trashed=0 AND kind<>? AND ext IN (${exts.map(() => "?").join(",")})`)
+        .run(target, rootId, target, ...exts);
+      changed = info.changes ?? 0;
+    }
+    return { root: this.rootById(rootId), changed };
   }
   asset(assetId) {
     const a = this.db.prepare("SELECT * FROM assets WHERE id=?").get(assetId);
@@ -195,10 +258,18 @@ export class Library {
       throw Error("不能登记磁盘根目录");
     if (within(p, this.dataDir) || within(this.dataDir, p))
       throw Error("不能登记应用数据目录或其上级");
-    for (const r of this.roots()) {
-      if (r.path === p) return r;
+    for (const r of this.allRoots()) {
+      // 同一个路径：已在管就直接返回；已注销则视为"恢复登记"（属性与标签原样保留）
+      if (r.path === p) {
+        if (r.retired) this.db.prepare("UPDATE roots SET retired=0 WHERE id=?").run(r.id);
+        return this.rootById(r.id);
+      }
       if (within(p, r.path) || within(r.path, p))
-        throw Error("该目录与已登记目录重叠，请选择互不包含的文件夹");
+        throw Error(
+          r.retired
+            ? `该目录与已注销的目录「${r.name}」重叠：请先恢复它或彻底删除后再登记`
+            : "该目录与已登记目录重叠，请选择互不包含的文件夹",
+        );
     }
     const r = { id: id(), path: p, kind, name: path.basename(p) };
     this.db

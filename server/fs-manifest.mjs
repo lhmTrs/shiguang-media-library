@@ -126,3 +126,26 @@ export function metaFromEntry(entry) {
   if (entry.capturedMs === null || typeof entry.capturedMs === "number") out.captured_ms = entry.capturedMs;
   return out;
 }
+
+/**
+ * 把清单从一个位置搬到另一个位置（根路径迁移时用）。
+ * 目标已有清单时不覆盖：把来源改名留档，避免覆盖别人的清单。
+ */
+export async function moveManifest(fromRootPath, toRootPath) {
+  const source = path.join(fromRootPath, MANIFEST_DIR, MANIFEST_NAME);
+  try {
+    await fs.access(source);
+  } catch {
+    return { moved: false, reason: "source-missing" };
+  }
+  const targetDir = path.join(toRootPath, MANIFEST_DIR);
+  const target = path.join(targetDir, MANIFEST_NAME);
+  await fs.mkdir(targetDir, { recursive: true });
+  const exists = await fs.access(target).then(() => true).catch(() => false);
+  if (exists) {
+    await fs.rename(source, `${source}.superseded-${Date.now()}`);
+    return { moved: false, reason: "target-exists" };
+  }
+  await fs.rename(source, target);
+  return { moved: true };
+}

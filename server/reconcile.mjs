@@ -16,13 +16,14 @@ import fs from "node:fs/promises";
 import { watch as fsWatch } from "node:fs";
 import path from "node:path";
 import { fileCreated, id } from "./library.mjs";
-import { kindForExt, readAssetId, sha256File, walkFiles, writeAssetId } from "./fs-identity.mjs";
+import { kindForExt, readAssetId, sha256File, walkFiles, within, writeAssetId } from "./fs-identity.mjs";
 import {
   emptyManifest,
   entryFromAsset,
   insideManifestDir,
   manifestPath,
   metaFromEntry,
+  moveManifest,
   readManifest,
   writeManifest,
 } from "./fs-manifest.mjs";
@@ -306,7 +307,14 @@ export async function reconcileRoot(lib, root, opts = {}) {
       report.conflicts.push({ entryId, path: file.abs, error: String(e.message || e), code: e.code, errno: e.errno, sql: e.sql });
       continue;
     }
-    if (digest) setDigest.run(digest, entryId);
+    if (digest) {
+      setDigest.run(digest, entryId);
+    } else if (rowNow && (Number(rowNow.size) !== file.size || Math.abs(Number(rowNow.mtime) - file.mtimeMs) >= 1)) {
+      // 文件内容原地变了（size/mtime 变）而本轮没重算哈希：**必须清掉旧哈希**，
+      // 否则将来跨盘移动时会拿过期哈希去匹配，认不回来。
+      lib.db.prepare("UPDATE assets SET sha256=NULL WHERE id=?").run(entryId);
+      delete entry.sha256;
+    }
     entry.relPath = file.relPath;
     entry.size = file.size;
     entry.dev = file.dev;
@@ -447,8 +455,12 @@ export async function reconcileRoot(lib, root, opts = {}) {
     report.manifestWriteError = String(e.code || e.message);
   }
   lib.db.prepare("UPDATE roots SET revision=COALESCE(revision,0)+1,reconciled_ms=? WHERE id=?").run(Date.now(), root.id);
-  // 走盘干净才敢把根标回在线；有错误时保持原状（根在线状态仍以文件状态检查器为准）
-  if (!report.walkErrors.length) lib.db.prepare("UPDATE roots SET online=1 WHERE id=?").run(root.id);
+  // 根本身读不到（被改名/搬走/未挂载）→ 明确标离线，界面据此给出"重新指定位置"的提醒；
+  // 只有个别子目录读不到时不动在线状态（不制造误报）。
+  const rootReachable = await fs.access(root.path).then(() => true).catch(() => false);
+  if (!rootReachable) lib.db.prepare("UPDATE roots SET online=0 WHERE id=?").run(root.id);
+  else if (!report.walkErrors.length) lib.db.prepare("UPDATE roots SET online=1 WHERE id=?").run(root.id);
+  report.rootReachable = rootReachable;
   report.revision = manifest.revision;
   report.elapsedMs = Date.now() - started;
   return report;
@@ -660,10 +672,13 @@ export function startWatcher(lib, options = {}) {
   async function refresh() {
     const roots = lib.roots();
     const ids = new Set(roots.map((r) => r.id));
-    for (const [rootId, watcher] of [...watchers]) {
-      if (ids.has(rootId)) continue;
+    const byId = new Map(roots.map((r) => [r.id, r]));
+    for (const [rootId, entry] of [...watchers]) {
+      const root = byId.get(rootId);
+      // 根被注销/删除，或**路径被迁移**：都要重挂监听，否则会继续盯着旧路径
+      if (root && root.path === entry.path) continue;
       try {
-        watcher.close();
+        entry.watcher.close();
       } catch {}
       watchers.delete(rootId);
     }
@@ -671,7 +686,7 @@ export function startWatcher(lib, options = {}) {
       if (watchers.has(root.id)) continue;
       const watcher = watchRoot(root);
       if (watcher) {
-        watchers.set(root.id, watcher);
+        watchers.set(root.id, { watcher, path: root.path });
         void ensureManifest(root); // 新监听的根立即补一份清单，别等下一次全量对账
       }
     }
@@ -686,9 +701,9 @@ export function startWatcher(lib, options = {}) {
     stop() {
       if (timer) clearTimeout(timer);
       clearInterval(refreshTimer);
-      for (const watcher of watchers.values()) {
+      for (const entry of watchers.values()) {
         try {
-          watcher.close();
+          entry.watcher.close();
         } catch {}
       }
       watchers.clear();
@@ -772,6 +787,95 @@ export function createManifestSync(lib, options = {}) {
     flush,
     stop() {
       if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * 把一个根迁移到新路径（整目录改名 / 搬盘）。
+ *
+ * 关键设计：**保持同一个 root_id**，只改 roots.path，然后让对账把每条素材按身份重新认领，
+ * 因此 assets.id 不变 → 标签、备注、分类、项目关联全部天然保留（不需要迁移任何关联表）。
+ * 有意不做 SQL 前缀替换：那样要处理两种方言的字符串函数，还会撞 path 唯一约束。
+ */
+export async function relocateRoot(lib, rootId, input, opts = {}) {
+  const root = lib.rootById(rootId);
+  if (root.retired) throw Error("该目录已注销，请先恢复登记再迁移路径");
+  if (typeof input !== "string" || !input.trim() || !path.isAbsolute(input)) throw Error("请输入绝对路径");
+  const next = await fs.realpath(input).catch(() => {
+    throw Error("新路径不存在或无法访问");
+  });
+  if (!(await fs.stat(next)).isDirectory()) throw Error("请选择文件夹");
+  if (next === root.path) throw Error("新旧路径相同，无需迁移");
+  if (next === path.parse(next).root) throw Error("不能指向磁盘根目录");
+  if (within(next, lib.dataDir) || within(lib.dataDir, next)) throw Error("不能指向应用数据目录或其上级");
+  for (const other of lib.allRoots()) {
+    if (other.id === rootId) continue;
+    if (within(next, other.path) || within(other.path, next))
+      throw Error(`新路径与${other.retired ? "已注销" : "已登记"}目录「${other.name}」重叠，请选择互不包含的文件夹`);
+  }
+
+  // 预检：新位置与原根的重合度（同盘靠 dev:ino，跨盘退化为"相对位置相同 + 同大小"）
+  const rows = lib.db.prepare("SELECT id,path,size,dev,ino FROM assets WHERE root_id=? AND trashed=0").all(rootId);
+  const files = await walkFiles({ path: next, name: root.name, kind: root.kind });
+  const byIno = new Map(files.map((f) => [`${f.dev}:${f.ino}`, f]));
+  const byRel = new Map(files.map((f) => [f.relPath, f]));
+  let matched = 0;
+  for (const row of rows) {
+    if (row.dev && row.ino && byIno.has(`${row.dev}:${row.ino}`)) {
+      matched++;
+      continue;
+    }
+    const rel = path.relative(next, row.path).split(path.sep).join("/");
+    const candidate = rel && !rel.startsWith("..") ? byRel.get(rel) : null;
+    if (candidate && (!row.size || candidate.size === row.size)) matched++;
+  }
+  const total = rows.length;
+  const ratio = total ? matched / total : 1;
+  const oldExists = await fs.stat(root.path).then(() => true).catch(() => false);
+  const warnings = [];
+  if (total && ratio < (opts.minRatio ?? 0.5))
+    warnings.push(`新位置只匹配到 ${Math.round(ratio * 100)}% 的原有素材（${matched}/${total}）`);
+  if (oldExists) warnings.push("旧路径仍然存在，这可能是一次复制而不是搬家");
+  if (warnings.length && opts.confirm !== true)
+    return { needsConfirm: true, matchRatio: ratio, matched, total, oldPath: root.path, newPath: next, warnings };
+
+  const offlineBefore = lib.db.prepare("SELECT COUNT(*) n FROM assets WHERE root_id=? AND trashed=0 AND online=0").get(rootId).n;
+  lib.db.prepare("UPDATE roots SET path=?,name=?,online=1 WHERE id=?").run(next, path.basename(next), rootId);
+  const manifest = await moveManifest(root.path, next).catch((e) => ({ moved: false, reason: String(e.message || e) }));
+  const report = await reconcileRoot(lib, lib.rootById(rootId), {
+    tagFiles: opts.tagFiles,
+    hashBudgetFiles: opts.hashBudgetFiles ?? 0,
+    hashBudgetBytes: opts.hashBudgetBytes ?? 0,
+  });
+  const offlineAfter = lib.db.prepare("SELECT COUNT(*) n FROM assets WHERE root_id=? AND trashed=0 AND online=0").get(rootId).n;
+  const verified = report.conflicts.length === 0 && offlineAfter <= offlineBefore;
+  const risky = warnings.length > 0; // 已经过人工确认才会走到这里
+  let rolledBack = false;
+  if (!verified && oldExists && !risky) {
+    // 未确认的高风险迁移：只有旧位置还在时才可能回滚（改回去再对账一次，凭 dev:ino/xattr 仍能认回）
+    lib.db.prepare("UPDATE roots SET path=?,name=? WHERE id=?").run(root.path, root.name, rootId);
+    await reconcileRoot(lib, lib.rootById(rootId), { hashBudgetFiles: 0, hashBudgetBytes: 0 }).catch(() => {});
+    rolledBack = true;
+  } else if (!verified) {
+    // 用户已明确确认"这就是搬家"：保留迁移结果（roots.path 指向新位置才是事实），
+    // 但把失联/冲突如实回报，界面据此提示核对。
+    lib.db.prepare("UPDATE roots SET online=0 WHERE id=?").run(rootId);
+  }
+  return {
+    ok: verified,
+    needsAttention: !verified,
+    warnings,
+    rolledBack,
+    manifest,
+    matchRatio: ratio,
+    matched,
+    total,
+    offlineBefore,
+    offlineAfter,
+    report: {
+      moved: report.moved, renamed: report.renamed, adopted: report.adoptedByXattr + report.adoptedByHash,
+      added: report.added, missing: report.missing, conflicts: report.conflicts.length, skipped: report.skipped, elapsedMs: report.elapsedMs,
     },
   };
 }
