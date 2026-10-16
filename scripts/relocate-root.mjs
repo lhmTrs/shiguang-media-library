@@ -23,10 +23,16 @@ import { dataDirectory } from "../server/runtime.mjs";
 import { relocateRoot } from "../server/reconcile.mjs";
 
 const args = process.argv.slice(2);
+/**
+ * 取值同时支持 `--root=X` 与 `--root X` 两种写法。
+ * （只支持等号写法时，按文档写 `--root X` 会静默退化成 --list：什么都不迁，只打印列表。）
+ */
 const value = (flag) => {
   const hit = args.find((a) => a.startsWith(flag + "="));
-  if (!hit) return undefined;
-  return hit.slice(flag.length + 1);
+  if (hit) return hit.slice(flag.length + 1);
+  const i = args.indexOf(flag);
+  if (i < 0 || i + 1 >= args.length || args[i + 1].startsWith("--")) return undefined;
+  return args[i + 1];
 };
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -35,7 +41,9 @@ const storage = await new MysqlStorage(dataDir).init();
 const lib = await new Library(dataDir, { database: storage.database }).init();
 storage.attach?.(lib);
 
-if (args.includes("--list") || (!value("--root") && !value("--to"))) {
+const rootArg = value("--root");
+const toArg = value("--to");
+if (args.includes("--list") || (!rootArg && !toArg)) {
   const roots = lib.allRoots();
   console.log(`数据目录：${dataDir}`);
   for (const r of roots)
@@ -44,8 +52,8 @@ if (args.includes("--list") || (!value("--root") && !value("--to"))) {
   process.exit(0);
 }
 
-const key = value("--root");
-const to = value("--to");
+const key = rootArg;
+const to = toArg;
 const root =
   lib.allRoots().find((r) => r.id === key) ||
   lib.allRoots().find((r) => r.name === key) ||
