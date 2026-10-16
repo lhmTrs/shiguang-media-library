@@ -1,6 +1,7 @@
 # Instructions for AI Maintainers
 
 Read `AI_HANDOFF.md` and `START_HERE.md` before changing or starting the application.
+For a new computer or a repository-link installation request, begin with `AI_QUICK_START.md`; clone `main`, then use `npm run setup` and `npm run portable` for a fresh local SQLite library.
 
 For code-only synchronization read `CODE_SYNC.md`. Do not initialize, commit or push a repository without the owner's approval and a reviewed source-only file list. Updates must not synchronize local libraries, credentials, or original media.
 
