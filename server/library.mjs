@@ -5,50 +5,10 @@ import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { PHOTO, VIDEO, AUDIO } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
 export const run = promisify(execFile);
-const PHOTO = new Set([
-  "jpg",
-  "jpeg",
-  "png",
-  "webp",
-  "gif",
-  "heic",
-  "heif",
-  "tif",
-  "tiff",
-  "arw",
-  "cr2",
-  "cr3",
-  "nef",
-  "dng",
-  "raf",
-  "orf",
-  "rw2",
-]);
-const VIDEO = new Set([
-  "mp4",
-  "mov",
-  "m4v",
-  "mkv",
-  "avi",
-  "mts",
-  "m2ts",
-  "webm",
-]);
-const AUDIO = new Set([
-  "mp3",
-  "wav",
-  "m4a",
-  "aac",
-  "aif",
-  "aiff",
-  "flac",
-  "ogg",
-  "opus",
-  "ncm",
-]);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
 export const fileCreated = (stat) =>
@@ -161,6 +121,38 @@ export class Library {
       ["file_root_identity", "VARCHAR(128)"],
       ["file_check_reason", "VARCHAR(500) NOT NULL DEFAULT ''"],
     ]) if (!columns.some(c => c.name === name)) this.db.exec(`ALTER TABLE assets ADD COLUMN ${name} ${type}`);
+    // 文件身份：外部整理后靠这三列把文件重新认领回原 id（见 server/reconcile.mjs）
+    const bigint = this.db.kind === "mysql" ? "BIGINT" : "INTEGER";
+    for (const [name, type] of [
+      ["dev", bigint],
+      ["ino", bigint],
+      ["sha256", "VARCHAR(64)"],
+    ]) if (!columns.some(c => c.name === name)) this.db.exec(`ALTER TABLE assets ADD COLUMN ${name} ${type}`);
+    // 注意：MySQL 不支持 CREATE INDEX IF NOT EXISTS（这是 SQLite 专有语法），
+    // 必须先查目录再建，否则 MySQL 库会在启动时直接报"查询失败"。
+    this.ensureIndex("assets_dev_ino", "assets", "dev,ino");
+    this.ensureIndex("assets_sha256", "assets", "sha256");
+    // 对账版本：前端据此判断索引是否被外部改动刷新过
+    const rootColumns = this.db.kind === "mysql"
+      ? this.db.prepare("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='roots'").all()
+      : this.db.prepare("PRAGMA table_info(roots)").all();
+    for (const [name, type] of [
+      ["revision", this.db.kind === "mysql" ? "BIGINT NOT NULL DEFAULT 0" : "INTEGER NOT NULL DEFAULT 0"],
+      ["reconciled_ms", this.db.kind === "mysql" ? "DOUBLE" : "REAL"],
+    ]) if (!rootColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE roots ADD COLUMN ${name} ${type}`);
+  }
+  /** 幂等建索引：两种方言都支持（MySQL 没有 CREATE INDEX IF NOT EXISTS）。 */
+  ensureIndex(name, table, columns) {
+    const exists =
+      this.db.kind === "mysql"
+        ? this.db
+            .prepare(
+              `SELECT 1 AS ok FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='${table}' AND INDEX_NAME='${name}' LIMIT 1`,
+            )
+            .get()
+        : this.db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='index' AND name=?").get(name);
+    if (exists) return;
+    this.db.exec(`CREATE INDEX ${name} ON ${table}(${columns})`);
   }
   async reveal(assetId, openFile = p => {
     if (process.env.MEDIA_CONTAINER === "1") throw Error("容器不能打开宿主机文件管理器，请复制素材路径");
@@ -323,7 +315,7 @@ export class Library {
               ["原音乐目录分类", "文件格式"].includes(old.basis);
             this.db
               .prepare(
-                "UPDATE assets SET online=1,size=?,mtime=?,created_ms=?,probe=?,duration=?,width=?,height=?,codec=?,error=? WHERE id=?",
+                "UPDATE assets SET online=1,size=?,mtime=?,created_ms=?,probe=?,duration=?,width=?,height=?,codec=?,error=?,dev=?,ino=? WHERE id=?",
               )
               .run(
                 s.size,
@@ -335,6 +327,9 @@ export class Library {
                 changed ? null : old.height,
                 changed ? null : old.codec,
                 changed ? "" : old.error,
+                // 扫描时就记下 dev:ino：否则"扫描完立刻在访达里改名"拿不到任何认领线索
+                s.dev,
+                s.ino,
                 old.id,
               );
             if (changed && !old.capture_source?.startsWith("手动"))
@@ -364,7 +359,7 @@ export class Library {
             }
             this.db
               .prepare(
-                "INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
               )
               .run(
                 id(),
@@ -380,6 +375,9 @@ export class Library {
                 child,
                 c?.basis || (inferred ? "原音乐目录分类" : "文件格式"),
                 c?.review ? 1 : 0,
+                // 扫描时就记下 dev:ino：外部改名/移动后靠它认领回同一条素材
+                s.dev,
+                s.ino,
               );
           }
           job.count++;
@@ -817,6 +815,9 @@ export class Library {
       this.db
         .prepare("UPDATE assets SET " + columns.join(",") + " WHERE id=?")
         .run(...v, assetId);
+    // 元数据变了：通知清单同步器（index.mjs 注入），让 .shiguang/manifest.json 尽快跟上，
+    // 这样外部（GPT/脚本）读清单时看到的不是上次对账时的旧标签。
+    if (columns.length) this.onMetadataChanged?.(original.root_id);
     return this.asset(assetId);
   }
   async plan(input) {

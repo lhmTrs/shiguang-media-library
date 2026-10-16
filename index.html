@@ -1,1 +1,20 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>拾光 · 本地素材库</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
+<!doctype html>
+<html lang="zh-CN" data-theme="forest">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拾光 · 本地素材库</title>
+    <script>
+      // 首帧之前套用已保存的界面风格：否则深色风格下每次刷新都会先闪一下白底。
+      // 与 src/theme.ts 用同一个 localStorage 键；取值非法时保持 html 上的默认风格。
+      try {
+        var savedTheme = localStorage.getItem("shiguang.theme");
+        if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -33,6 +33,8 @@ export class MysqlDatabase {
     if (packet.error) {
       const e = Error(packet.error.message);
       e.code = packet.error.code;
+      e.errno = packet.error.errno;
+      e.sql = packet.error.sql;
       throw e;
     }
     return packet.value;

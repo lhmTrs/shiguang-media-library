@@ -14,6 +14,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
+import { createManifestSync, reconcileRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -50,6 +51,11 @@ const lib = await new Library(dataDir, {
   database: mysqlStorage.database,
 }).init();
 mysqlStorage.attach(lib);
+// 目录监听句柄：启动对账之后才赋值，路由 /api/reconcile 会读它报告监听状态
+let reconcileWatcher = null;
+// 元数据（标签/备注/分类）改动后防抖刷新清单：让"GPT 直接读 .shiguang/manifest.json"看到最新值
+const manifestSync = createManifestSync(lib, { log: (m) => console.log(m) });
+lib.onMetadataChanged = (rootId) => manifestSync.touch(rootId);
 const musicCategories = new MusicCategories(lib).init();
 const categories = new AssetCategories(lib).init();
 const tags = new Tags(lib).init();
@@ -144,10 +150,42 @@ app.post(
 );
 app.get("/api/roots", (req, res) => res.json(lib.roots()));
 app.get("/api/folder-browser", asyncRoute(async (req, res) => res.json(await folderBrowser.branch(req.query))));
+app.post("/api/folder-browser", asyncRoute(async (req, res) => {
+  if (process.env.MEDIA_READONLY_FILES === "1") return res.status(403).json({ error: "当前为原文件只读模式，不允许新建文件夹" });
+  res.json(await folderBrowser.create(req.body));
+}));
 app.post("/api/roots", asyncRoute(async (req, res) => {
   if (typeof req.body.path !== "string" || !path.isAbsolute(req.body.path)) throw Error("请输入服务器上的绝对文件夹路径");
   const root = await lib.addRoot(req.body.path, req.body.kind);
+  void reconcileWatcher?.refresh(); // 立刻开始监听这个新目录，否则外部改动要等下一轮兜底刷新
   res.json({ root, job: lib.scan(root.id) });
+}));
+// 对账：把外部（访达/脚本/GPT）整理过的文件重新认领回原素材 id，而不是当成新素材
+app.get("/api/reconcile", (req, res) =>
+  res.json({
+    roots: lib.roots().map((r) => ({
+      id: r.id, name: r.name, path: r.path, online: r.online,
+      revision: r.revision ?? 0, reconciledMs: r.reconciled_ms ?? null,
+    })),
+    watching: reconcileWatcher ? reconcileWatcher.activeRoots : 0,
+  }),
+);
+app.post("/api/reconcile", asyncRoute(async (req, res) => {
+  const all = lib.roots();
+  const wanted = typeof req.body.rootId === "string" && req.body.rootId ? all.filter((r) => r.id === req.body.rootId) : all;
+  if (!wanted.length) throw Error("还没有登记任何素材目录");
+  const withHash = req.body.hash === true; // 是否顺便渐进补齐 sha256（默认不读全文件，快）
+  const reports = [];
+  for (const root of wanted)
+    reports.push(
+      await reconcileRoot(lib, root, {
+        importMetadata: req.body.importMetadata === true, // 把清单里的标签/备注并入数据库
+        hashBudgetFiles: withHash ? undefined : 0,
+        hashBudgetBytes: withHash ? undefined : 0,
+        tagFiles: process.env.MEDIA_READONLY_FILES !== "1",
+      }),
+    );
+  res.json({ reports });
 }));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
 app.post("/api/projects", asyncRoute(async (req, res) => res.json(projects.save(null, req.body))));
@@ -339,6 +377,7 @@ app.post(
       { timeout: 120000 },
     );
     const root = await lib.addRoot(stdout.trim(), req.body.kind);
+    void reconcileWatcher?.refresh();
     res.json({ root, job: lib.scan(root.id) });
   }),
 );
@@ -779,6 +818,39 @@ await fs.writeFile(
   path.join(dataDir, "server.json"),
   JSON.stringify({ pid: process.pid, port, url: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }),
 );
+// 启动对账 + 目录监听：用户在访达/终端（或 GPT）直接整理过文件时，把文件重新认领回原素材，
+// 而不是让标签、备注、项目关联随路径一起丢。默认不读全文件（不算 sha256），因此很快。
+// MEDIA_SKIP_RECONCILE=1 关闭对账，MEDIA_NO_WATCH=1 只对账不监听，MEDIA_RECONCILE_HASH=1 顺便补哈希。
+if (process.env.MEDIA_SKIP_RECONCILE !== "1") {
+  void (async () => {
+    for (const root of lib.roots()) {
+      try {
+        const report = await reconcileRoot(lib, root, {
+          tagFiles: process.env.MEDIA_READONLY_FILES !== "1",
+          hashBudgetFiles: process.env.MEDIA_RECONCILE_HASH === "1" ? undefined : 0,
+          hashBudgetBytes: process.env.MEDIA_RECONCILE_HASH === "1" ? undefined : 0,
+        });
+        const adopted = report.adoptedByXattr + report.adoptedByHash;
+        if (report.moved || report.renamed || adopted || report.added || report.missing || report.conflicts.length)
+          console.log(
+            `[reconcile] ${root.name || root.path}：移动 ${report.moved} / 改名 ${report.renamed} / 认领 ${adopted} / 新增 ${report.added} / 失联 ${report.missing} / 冲突 ${report.conflicts.length} / 跳过写库 ${report.skipped} / 打标 ${report.tagged}（${report.elapsedMs}ms）`,
+          );
+        for (const c of report.conflicts.slice(0, 3))
+          console.warn(`[reconcile] 冲突：${c.path || c.entryId || ""} —— ${String(c.error).slice(0, 120)}`);
+      } catch (e) {
+        console.warn(`[reconcile] ${root.path} 启动对账失败：${e.message}`);
+      }
+    }
+  })();
+  if (process.env.MEDIA_NO_WATCH !== "1") {
+    try {
+      reconcileWatcher = startWatcher(lib, { log: (m) => console.log(m) });
+      console.log(`[reconcile] 已监听 ${reconcileWatcher.activeRoots} 个素材目录：外部改名/移动会在 1~2 秒内自动接上`);
+    } catch (e) {
+      console.warn("[reconcile] 无法启动目录监听：" + e.message);
+    }
+  }
+}
 if (!process.env.MEDIA_SKIP_IMPORT) {
   const workspace = path.dirname(project);
   let classification = new Map();

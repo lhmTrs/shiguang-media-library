@@ -78,3 +78,38 @@ test("真实目录：拒绝越界、无效范围及符号链接，不读取未�
   assert(!(await browser.branch({ root: root.id })).children.some(c => c.name === "链接"));
   await assert.rejects(browser.branch({ root: root.id, directory: "链接" }), /超出|符号链接/);
 });
+
+test("新建真实文件夹：只在登记目录内显式创建，不覆盖文件且不改素材数据", async t => {
+  const { lib, browser, root, source, base } = await fixture(t);
+  const before = lib.list({}).items;
+  const result = await browser.create({ root: root.id, directory: "转场", name: " 新建 目录 " });
+  assert.equal(result.directory, "转场/新建 目录");
+  assert((await fs.stat(path.join(source, result.directory))).isDirectory());
+  assert.equal((await browser.branch({ root: root.id, directory: result.directory })).writable, true);
+  assert.equal((await browser.branch({ root: root.id, directory: result.directory })).path, path.join(source, result.directory));
+  for (const name of ["", "..", ".隐藏", "a/b", "a\\b", "a:b", "a\n", "长".repeat(100)])
+    await assert.rejects(browser.create({ root: root.id, name }), /名称/);
+  await assert.rejects(browser.create({ root: root.id, name: "根.wav" }), /同名/);
+  await assert.rejects(browser.create({ root: root.id, directory: "转场", name: "新建 目录" }), /同名/);
+  await assert.rejects(browser.create({ root: "unknown", name: "新目录" }), /未登记/);
+  await assert.rejects(browser.create({ root: root.id, directory: "../", name: "新目录" }), /目录/);
+  await assert.rejects(browser.create({ root: root.id, directory: "不存在/父目录", name: "新目录" }));
+  await fs.symlink(path.join(source, "转场"), path.join(source, "内部链接"));
+  await assert.rejects(browser.create({ root: root.id, directory: "内部链接", name: "禁止创建" }), /符号链接/);
+  await fs.symlink(base, path.join(source, "外部链接"));
+  await assert.rejects(browser.create({ root: root.id, directory: "外部链接", name: "禁止创建" }), /超出/);
+  assert.deepEqual(lib.list({}).items, before);
+});
+
+test("新建真实文件夹：原文件只读模式禁止写入", async t => {
+  const { browser, root, source } = await fixture(t);
+  const previous = process.env.MEDIA_READONLY_FILES;
+  process.env.MEDIA_READONLY_FILES = "1";
+  try {
+    assert.equal((await browser.branch({ root: root.id })).writable, false);
+    await assert.rejects(browser.create({ root: root.id, name: "禁止" }), /只读/);
+    await assert.rejects(fs.stat(path.join(source, "禁止")), { code: "ENOENT" });
+  } finally {
+    if (previous === undefined) delete process.env.MEDIA_READONLY_FILES; else process.env.MEDIA_READONLY_FILES = previous;
+  }
+});

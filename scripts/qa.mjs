@@ -166,8 +166,24 @@ async function verify(browserType, name, options) {
     await page.getByRole("button", { name: "折叠侧栏", exact: true }).click();
     await expect(page.locator(".app")).toHaveClass(/nav-collapsed/);
     assert.equal(await page.locator(".sidebar").evaluate(el => el.getBoundingClientRect().width), 64);
-    await page.getByRole("button", { name: "自定义导航栏目", exact: true }).click();
-    const navSettings = page.getByRole("dialog", { name: "导航栏目" });
+    await page.getByRole("button", { name: "界面设置", exact: true }).click();
+    const navSettings = page.getByRole("dialog", { name: "界面设置" });
+    // 界面风格：切换即时写 <html data-theme>，并确实改变渲染出来的底色与强调色
+    // 注意底色挂在 :root（= <html>）上，body 自身是透明的，断言不能看 body。
+    const readPaint = () => page.evaluate(() => {
+      const root = getComputedStyle(document.documentElement);
+      return { bg: root.backgroundColor, accent: root.getPropertyValue("--green").trim(), scheme: root.colorScheme };
+    });
+    const defaultPaint = await readPaint();
+    await navSettings.getByRole("radio", { name: /深色/ }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    const darkPaint = await readPaint();
+    assert.notEqual(darkPaint.bg, defaultPaint.bg, "深色风格应改变页面底色");
+    assert.notEqual(darkPaint.accent, defaultPaint.accent, "深色风格应改变强调色");
+    assert.equal(darkPaint.scheme, "dark", "深色风格应声明 color-scheme: dark");
+    await navSettings.getByRole("radio", { name: /森林绿/ }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "forest");
+    assert.equal((await readPaint()).bg, defaultPaint.bg, "切回默认风格应还原底色");
     await navSettings.getByRole("checkbox", { name: "离线素材", exact: true }).uncheck();
     await navSettings.getByRole("checkbox", { name: "素材目录", exact: true }).uncheck();
     await expect(navSettings.getByRole("checkbox", { name: /全部素材/ })).toBeDisabled();
@@ -188,7 +204,7 @@ async function verify(browserType, name, options) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "展开导航", exact: true }).click();
     await expect(navigation).toBeVisible();
-    await page.getByRole("button", { name: "自定义导航栏目", exact: true }).click();
+    await page.getByRole("button", { name: "界面设置", exact: true }).click();
     await navSettings.getByRole("button", { name: "恢复全部", exact: true }).click();
     await page.keyboard.press("Escape");
     await expect(navSettings).toHaveCount(0);
@@ -232,8 +248,55 @@ async function verify(browserType, name, options) {
     await expect(page.getByRole("menuitem", { name: /^添加素材分类：/ })).toHaveCount(0);
     await page.screenshot({ path: path.join(out, name + "-folder-mode-actions.png") });
     await page.getByRole("menuitem", { name: "移动素材：" + folderActionAsset.name, exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "移动素材", exact: true })).toBeVisible();
-    await page.getByRole("dialog", { name: "移动素材", exact: true }).getByRole("button", { name: "取消", exact: true }).click();
+    const moveDialog = page.getByRole("dialog", { name: "移动素材", exact: true });
+    await expect(moveDialog).toBeVisible();
+    await moveDialog.getByRole("complementary", { name: "已登记素材目录", exact: true }).getByRole("button", { name: "音效 测试", exact: true }).click();
+    await moveDialog.getByRole("button", { name: "转场", exact: true }).click();
+    await expect(moveDialog.getByRole("button", { name: "检查目标路径", exact: true })).toBeEnabled();
+    await moveDialog.getByRole("navigation", { name: "目标文件夹路径", exact: true }).getByRole("button", { name: "转场", exact: true }).click();
+    await expect(moveDialog.getByRole("button", { name: "检查目标路径", exact: true })).toBeEnabled();
+    await moveDialog.getByRole("textbox", { name: "搜索当前文件夹", exact: true }).fill("不存在");
+    await expect(moveDialog.locator(".destination-folders")).toContainText("没有匹配");
+    await moveDialog.getByRole("textbox", { name: "搜索当前文件夹", exact: true }).fill("");
+    await page.screenshot({ path: path.join(out, `${name}-move-picker-browse.png`) });
+    await moveDialog.getByRole("button", { name: "呼啸", exact: true }).click();
+    await moveDialog.getByRole("button", { name: "上一级", exact: true }).click();
+    await moveDialog.getByRole("button", { name: "后退", exact: true }).click();
+    await expect(moveDialog.locator(".destination-selected")).toContainText("转场/呼啸");
+    await moveDialog.getByRole("button", { name: "前进", exact: true }).click();
+    await expect(moveDialog.locator(".destination-selected")).toContainText("/转场");
+    await moveDialog.getByRole("button", { name: "新建文件夹", exact: true }).click();
+    await moveDialog.getByRole("textbox", { name: "新文件夹名称", exact: true }).fill("呼啸");
+    await moveDialog.getByRole("button", { name: "创建文件夹", exact: true }).click();
+    await expect(moveDialog.getByRole("alert")).toContainText("同名");
+    await moveDialog.getByRole("textbox", { name: "新文件夹名称", exact: true }).fill("测试归档");
+    await moveDialog.getByRole("button", { name: "创建文件夹", exact: true }).click();
+    await expect(moveDialog.locator(".destination-selected")).toContainText("转场/测试归档");
+    await expect(moveDialog.getByRole("button", { name: "检查目标路径", exact: true })).toBeEnabled();
+    for (const width of [1440, 1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert(await moveDialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `Move dialog overflows at ${width}`);
+      await page.screenshot({ path: path.join(out, `${name}-move-picker-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await moveDialog.getByRole("button", { name: "检查目标路径", exact: true }).click();
+    await expect(moveDialog.locator(".plans")).toContainText("测试归档");
+    await moveDialog.getByRole("button", { name: "确认移动", exact: true }).click();
+    await expect(moveDialog).toHaveCount(0);
+    const movedFixture = await (await context.request.get(url + "/api/assets/" + folderActionAsset.id)).json();
+    assert.equal(movedFixture.path, path.join(source, "转场/测试归档", folderActionAsset.name));
+    assert.deepEqual(movedFixture.tags, folderActionAsset.tags);
+    const originalRoot = (await (await context.request.get(url + "/api/roots")).json()).find(r => r.id === folderActionAsset.root_id);
+    const restorePreview = await (await context.request.post(url + "/api/operations/preview", { headers: { "X-Local-Token": phaseToken }, data: {
+      ids: [folderActionAsset.id], action: "move", rootId: originalRoot.id, relative: path.relative(originalRoot.path, path.dirname(folderActionAsset.path)),
+    } })).json();
+    assert(restorePreview.items.every(item => item.ok));
+    const restoreResult = await context.request.post(url + "/api/operations", { headers: { "X-Local-Token": phaseToken }, data: { confirmation: restorePreview.confirmation } });
+    assert(restoreResult.ok());
+    assert((await restoreResult.json()).every(item => item.ok));
+    await fs.rmdir(path.join(source, "转场/测试归档"));
+    await page.reload();
+    await expect(folderActionRow).toBeVisible();
     await folderActionRow.locator(".asset-name-button").click();
     const folderEditor = page.getByRole("dialog", { name: "编辑素材详情", exact: true });
     await expect(folderEditor.getByLabel("编辑主分类", { exact: true })).toHaveCount(0);
@@ -1860,6 +1923,7 @@ async function verify(browserType, name, options) {
       browser: name,
       passed: true,
       tests: [
+        "移动目标文件夹浏览、面包屑同层选择、后退前进、搜索、新建重名拦截、真实移动及元数据保留、窄屏适配",
         "文件夹模式移除旧分类/额外分类入口，新增单文件移动确认，保存标签不提交旧分类字段；旧模式保留",
         "真实文件夹多级/空目录浏览、面包屑、子树范围、搜索、照片预览及旧分类一键回切持久化",
         "分层筛选折叠、条件逐项清除、音乐音效独立记忆、显示和维护菜单",

@@ -51,9 +51,16 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `src/main.tsx` | 应用状态、搜索/筛选/详情、试听意图和操作流程 |
 | `src/AuditionControls.tsx` | 播放器、波形、选段、连续试听；暂停优先于异步连播 |
 | `src/ProjectManager.tsx` | 项目页面、媒体类型筛选、图片/视频预览与使用历史 |
-| `server/folder-browser.mjs`、`src/FolderBrowser.tsx` | 登记范围内真实目录只读浏览、任意层级、素材路径范围筛选；保留旧分类 |
+| `server/folder-browser.mjs`、`src/FolderBrowser.tsx`、`src/MoveDestinationPicker.tsx` | 登记范围内真实目录浏览、任意层级、素材路径范围筛选；移动目标浏览与显式新建文件夹，保留旧分类 |
 | `src/*Dialog.tsx`、`*Manager.tsx` | 独立编辑弹窗、分类/标签/重复管理 |
-| `src/style.css` | 中文工具界面与响应式布局 |
+| `src/style.css` | 中文工具界面与响应式布局；色值一律写成 `var(--c-xxxxxx)` token，不写死颜色 |
+| `src/themes.css`、`src/theme-list.ts` | **生成文件，不要手改**：前者是各界面风格的 token 取值，后者是前端读到的风格清单 |
+| `src/theme.ts`、`src/NavigationSettings.tsx` | 风格的应用与持久化（`localStorage.shiguang.theme` → `<html data-theme>`）；「界面设置」弹窗含风格选择与导航显隐 |
+| `server/fs-identity.mjs` | 文件身份与路径边界：`within`、`rootIdentity`（dev:ino + /Volumes 判断）、xattr 读写、sha256、可索引扩展名集合（**全项目唯一一份**） |
+| `server/fs-manifest.mjs` | 登记根内的 `.shiguang/manifest.json`：原子写、结构校验、条目 ↔ 数据库字段互转 |
+| `server/reconcile.mjs` | 对账引擎：路径→dev:ino→xattr→sha256→同名同大小 逐级认领；`reconcilePaths` 是监听用的快路径；`startWatcher` 负责监听与兜底刷新 |
+| `scripts/export-manifest.mjs` | 一次性迁移：把数据库元数据物化成各根清单并立即对账（`--hash` / `--dry-run` / `--root=`） |
+| `scripts/theme-gen.mjs` | 界面风格的唯一来源：改 `THEMES` / `OVERRIDES` 后运行；`--tokenize` 才把 style.css 里新写的硬编码色值纳入 token（会备份到 `backups/source/`） |
 | `scripts/package.mjs` | 白名单生成干净分享 ZIP，不包含运行数据 |
 | `scripts/verify-package.mjs` | 在临时解压目录安装、校验清单、SQLite 启动和基本功能验收 |
 | `tests/`、`scripts/qa.mjs` | 单元与浏览器验收，使用临时副本 |
@@ -61,6 +68,9 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 ## 4. 数据与重要约定
 
 - `roots` 登记允许访问的素材目录，`assets` 保存原绝对路径、类型、分类、标签、备注、状态、媒体参数及计数。
+- **权威方向：文件系统是存在性与位置的真相，`.shiguang/manifest.json` 是身份与元数据的载体，SQLite 只是可重建投影。** 外部整理（访达/脚本/GPT）后由 `server/reconcile.mjs` 认领回原 id；任何"清理"都必须停在"标离线"，**永远不要自动删除 assets 行或清单条目**（那是用户唯一能找回标签的线索）。新增写文件系统的功能时，要一并考虑"这算不算一次外部变更、对账能不能认出来"。
+- 身份匹配逐级降级：路径 → `dev:ino` → xattr(`com.shiguang.assetid`) → `sha256` → 同名同大小且唯一。扫描时就要写入 `dev/ino`（`library.mjs` 的 scanWork），否则"扫描完立刻改名"这条最常见路径拿不到线索。
+- 界面风格是纯前端、纯 CSS 变量的事：切换只改 `<html data-theme>` 与 `localStorage`，不落库、不发请求。**改样式时不要在 `src/style.css` 里写死颜色**——写死的色块在深色/午夜蓝下不会跟随，改用 `var(--c-xxxxxx)` 或 `var(--green|--line|--muted|--soft)`；新增色值后跑一次 `node scripts/theme-gen.mjs --tokenize`。语义色（素材四类图标、危险/成功/提醒）在 `scripts/theme-gen.mjs` 的 `PROTECTED` 里锁色相，不要随意增删。
 - `music_categories` 名称为历史兼容，覆盖所有媒体；`asset_subcategories.category_id` 是真实父子归属，不允许任意创建分类字符串。
 - `asset_tags` 是注册表，素材实际标签在 `assets.tags`。同一个素材可以有多个普通标签。
 - `media_projects`、`project_assets` 独立于分类；项目内 `(project_id,asset_id)` 唯一。实际使用由人确认，不把收藏、试听、访达、复制当成使用；`used_at` 保留首次确认时间。

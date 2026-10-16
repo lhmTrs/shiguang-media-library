@@ -48,6 +48,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import "./style.css";
+import "./themes.css";
+import { applyTheme, readTheme } from "./theme";
+import type { ThemeId } from "./theme-list";
 import { CategoryManager } from "./CategoryManager";
 import { AuditionControls } from "./AuditionControls";
 import { TagRuleFilter, emptyTagRules, type TagRules } from "./TagRuleFilter";
@@ -67,6 +70,7 @@ import { ProjectManager, ProjectHistory, type Project } from "./ProjectManager";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
 import { FolderBrowser } from "./FolderBrowser";
+import { MoveDestinationPicker } from "./MoveDestinationPicker";
 
 export type Asset = {
   id: string;
@@ -357,6 +361,9 @@ function App() {
   const [hiddenNav, setHiddenNav] = useState<string[]>(() => { try { const value = JSON.parse(localStorage.getItem("shiguang.hiddenNav") || "[]"); return Array.isArray(value) ? value.filter((v: unknown): v is string => typeof v === "string" && v !== "all") : []; } catch { return []; } });
   const [navSettings, setNavSettings] = useState(false);
   const closeNavSettings = useCallback(() => setNavSettings(false), []);
+  // 界面风格：值由 localStorage 驱动、写在 <html data-theme> 上，切换只影响 CSS 变量。
+  const [theme, setTheme] = useState<ThemeId>(() => readTheme());
+  useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { try { localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed]);
   useEffect(() => { try { localStorage.setItem("shiguang.hiddenNav", JSON.stringify(hiddenNav)); } catch {} }, [hiddenNav]);
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
@@ -409,6 +416,7 @@ function App() {
     [confirmation, setConfirmation] = useState(""),
     [operationIds, setOperationIds] = useState<string[]>([]),
     [batchTags, setBatchTags] = useState("");
+  const [destinationReady, setDestinationReady] = useState(false);
   const [tagText, setTagText] = useState(""),
     [note, setNote] = useState(""),
     [editCategory, setEditCategory] = useState(""),
@@ -907,6 +915,8 @@ function App() {
     );
     setPrefix("");
     setRelative("");
+    setDestinationReady(false);
+    setConfirmation("");
     setTargetRoot(roots[0]?.id || "");
     setPlans(null);
     setBatchTags("");
@@ -921,6 +931,7 @@ function App() {
     setModal("trash");
   }
   function moveAsset(asset: Asset) {
+    setDestinationReady(false);
     setOperationIds([asset.id]); setTargetRoot(asset.root_id); setRelative("");
     setPlans(null); setConfirmation(""); setError(""); setModal("move");
   }
@@ -1029,7 +1040,7 @@ function App() {
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
       {navSettings && <NavigationSettings items={[...navs.map(([id, label]): [string, string] => [id, label]), ["roots", "素材目录"]]} hidden={hiddenNav}
         toggle={id => { setHiddenNav(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]); if (view === id) navigate("all"); }}
-        reset={() => setHiddenNav([])} close={closeNavSettings}/>}
+        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} close={closeNavSettings}/>}
       <aside className={"sidebar " + (mobileNav ? "visible" : "")}>
         <div className="brand">
           <span className="brand-icon">
@@ -1043,7 +1054,7 @@ function App() {
         </div>
         <div className="sidebar-controls">
           <button className="icon-button sidebar-collapse" title={navCollapsed ? "展开侧栏" : "折叠侧栏"} aria-label={navCollapsed ? "展开侧栏" : "折叠侧栏"} aria-expanded={!navCollapsed} onClick={() => setNavCollapsed(v => !v)}>{navCollapsed ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}</button>
-          <button className="icon-button" title="自定义导航栏目" aria-label="自定义导航栏目" onClick={() => setNavSettings(true)}><SlidersHorizontal size={17}/></button>
+          <button className="icon-button" title="界面设置" aria-label="界面设置" onClick={() => setNavSettings(true)}><SlidersHorizontal size={17}/></button>
         </div>
         <div className="sidebar-scroll">
         <nav aria-label="主导航">
@@ -2335,7 +2346,7 @@ function App() {
           }}
         >
           <section
-            className={"modal " + (modal === "zoom" ? "zoom-modal" : "")}
+            className={"modal " + (modal === "zoom" ? "zoom-modal" : modal === "move" ? "move-modal" : "")}
             role="dialog"
             aria-modal="true"
             aria-label={
@@ -2823,34 +2834,11 @@ function App() {
                       </label>
                     ))}
                   {modal === "move" && (
-                    <>
-                      <label className="field">
-                        目标素材目录
-                        <select
-                          value={targetRoot}
-                          onChange={(e) => {
-                            setTargetRoot(e.target.value);
-                            setPlans(null);
-                          }}
-                        >
-                          {roots.map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.name} · {r.path}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="field">
-                        现有子目录（可留空）
-                        <input
-                          value={relative}
-                          onChange={(e) => {
-                            setRelative(e.target.value);
-                            setPlans(null);
-                          }}
-                        />
-                      </label>
-                    </>
+                    <MoveDestinationPicker roots={roots} rootId={targetRoot} directory={relative} api={api} disabled={busy}
+                      onReady={setDestinationReady} onCreated={() => setEditRevision(n => n + 1)}
+                      onChange={(root, directory) => {
+                        setTargetRoot(root); setRelative(directory); setPlans(null); setConfirmation(""); setDestinationReady(false);
+                      }} />
                   )}
                   {plans && (
                     <div className="plans">
@@ -2925,7 +2913,7 @@ function App() {
                 ) : !plans || !confirmation ? (
                   <button
                     className="primary"
-                    disabled={busy}
+                    disabled={busy || (modal === "move" && !destinationReady)}
                     onClick={() =>
                       void run(async () => {
                         const result = await api<{
@@ -2942,7 +2930,7 @@ function App() {
                 ) : (
                   <button
                     className={modal === "trash" ? "danger" : "primary"}
-                    disabled={busy || !plans.some((p) => p.ok)}
+                    disabled={busy || !plans.some((p) => p.ok) || (modal === "move" && !destinationReady)}
                     onClick={() =>
                       void run(async () => {
                         pauseAudition();

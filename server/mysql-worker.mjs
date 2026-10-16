@@ -20,7 +20,7 @@ try {
   );
   reply({ value: true });
 } catch (e) {
-  reply({ error: { code: e.code, message: "MySQL 连接失败" } });
+  reply({ error: { code: e.code || "ER_CONN", message: "MySQL 连接失败：" + String(e.sqlMessage || e.message || "").slice(0, 200) } });
   port.close();
 }
 if (connection)
@@ -45,6 +45,15 @@ if (connection)
               : rows,
       });
     } catch (e) {
-      reply({ error: { code: e.code, message: "MySQL 查询失败" } });
+      // 保留真实原因：此前一律回 "MySQL 查询失败"，导致上层无法区分
+      // 是重复键、字段不存在还是超时，排查只能靠猜。
+      reply({
+        error: {
+          code: e.code || "ER_UNKNOWN",
+          errno: e.errno,
+          message: "MySQL 查询失败：" + String(e.sqlMessage || e.message || "").slice(0, 300),
+          sql: String(sql || "").slice(0, 200),
+        },
+      });
     }
   });

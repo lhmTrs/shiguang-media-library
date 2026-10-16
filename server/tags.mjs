@@ -154,6 +154,7 @@ export class Tags {
           .run(JSON.stringify(tags), a.id);
       }
     })();
+    this.lib.onMetadataChanged?.(); // 批量标签改动：让清单尽快跟上（不传 rootId = 全部根）
     return { updated: rows.length };
   }
 }

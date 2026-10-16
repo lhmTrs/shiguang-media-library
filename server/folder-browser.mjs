@@ -22,9 +22,24 @@ export function folderPredicate(lib, query) {
   };
 }
 
-// Read-only projection: no category migration, independent folder table or file writes.
+// Folder browsing and explicit creation do not write legacy categories.
 export class FolderBrowser {
   constructor(lib) { this.lib = lib; }
+  async create(input) {
+    if (process.env.MEDIA_READONLY_FILES === "1") throw Error("当前为原文件只读模式，不允许新建文件夹");
+    const { root, directory, absolute } = folderScope(this.lib, input.root, input.directory || "");
+    const name = typeof input.name === "string" ? input.name.trim() : "";
+    if (!name || name.startsWith(".") || /[/\\:\x00-\x1f]/.test(input.name) || Buffer.byteLength(name) > 255)
+      throw Error("请输入有效文件夹名称，不能包含斜线、冒号或以点开头");
+    const realRoot = await this.lib.checked(root.path, root.id);
+    const parent = await this.lib.checked(absolute, root.id);
+    if (realRoot !== root.path || parent !== absolute) throw Error("不允许在符号链接目录内新建文件夹");
+    if (!(await fs.stat(parent)).isDirectory()) throw Error("目标不是文件夹");
+    await fs.access(parent, fs.constants.W_OK);
+    try { await fs.mkdir(path.join(parent, name)); }
+    catch (e) { if (e.code === "EEXIST") throw Error("同名文件或文件夹已存在，请换一个名称"); throw e; }
+    return { root: root.id, directory: directory ? directory + "/" + name : name };
+  }
   async branch(query) {
     const { root, directory, absolute } = folderScope(this.lib, query.root, query.directory || "");
     const indexed = this.lib.db.prepare("SELECT path FROM assets WHERE root_id=? AND trashed=0").all(root.id);
@@ -58,6 +73,10 @@ export class FolderBrowser {
       const relative = directory ? directory + "/" + name : name;
       return { name, directory: relative, ...(counts.get(relative) || { direct: 0, total: 0 }) };
     });
-    return { root: { id: root.id, name: root.name }, directory, state, ...(counts.get(directory) || { direct: 0, total: 0 }), children };
+    let writable = false;
+    if (state === "online" && process.env.MEDIA_READONLY_FILES !== "1") {
+      try { await fs.access(absolute, fs.constants.W_OK); writable = true; } catch {}
+    }
+    return { root: { id: root.id, name: root.name }, directory, path: absolute, writable, state, ...(counts.get(directory) || { direct: 0, total: 0 }), children };
   }
 }

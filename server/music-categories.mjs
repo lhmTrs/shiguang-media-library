@@ -181,6 +181,7 @@ export class MusicCategories {
         update.run(name, name, id);
       }
     })();
+    this.lib.onMetadataChanged?.(); // 批量分类改动：让清单尽快跟上
     return { updated: ids.length };
   }
   members(assetId) {
