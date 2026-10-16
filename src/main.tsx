@@ -369,6 +369,11 @@ function App() {
   const [selected, setSelected] = useState<Asset | null>(null),
     [checked, setChecked] = useState<Set<string>>(new Set()),
     [busy, setBusy] = useState(false),
+    // 全局"正在处理"指示：run() 会往里压标签，遮罩层据此显示（栈式，嵌套调用也正确）
+    [workLabels, setWorkLabels] = useState<string[]>([]),
+    [showWork, setShowWork] = useState(false),
+    // 素材列表正在重新读取：只做内联提示，不遮挡已显示的内容
+    [refreshing, setRefreshing] = useState(false),
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
@@ -427,6 +432,32 @@ function App() {
   useEffect(() => {
     if (modal === "folders") void loadAllRoots().catch(() => {});
   }, [modal, loadAllRoots]);
+
+  // 太快完成的操作不必闪一下遮罩：延迟 180ms 才显示
+  useEffect(() => {
+    if (!workLabels.length) {
+      setShowWork(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowWork(true), 180);
+    return () => clearTimeout(timer);
+  }, [workLabels.length]);
+
+  // 有扫描/参数读取任务在跑时轮询任务状态，否则"扫描中"的进度不会自己动
+  const jobsActive = jobs.some((j) => j.status === "running") || pending > 0;
+  const rootScanning = (rootId: string) => jobs.some((j) => j.rootId === rootId && j.status === "running");
+  useEffect(() => {
+    if (!ready || !jobsActive) return;
+    const timer = setInterval(() => {
+      void api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs")
+        .then((j) => {
+          setJobs(j.jobs);
+          setPending(j.metadata.pending);
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [ready, jobsActive]);
   const [folderPath, setFolderPath] = useState(""), [folderPickerAvailable, setFolderPickerAvailable] = useState(false);
   useEffect(() => {
     if (!mobileNav) return;
@@ -566,14 +597,20 @@ function App() {
   function fail(e: unknown) {
     setError(e instanceof Error ? e.message : String(e));
   }
-  async function run(fn: () => Promise<void>) {
+  /** 给重操作带上"正在做什么"，全局遮罩会显示这句话 */
+  function runWith(label: string, fn: () => Promise<void>) {
+    return run(fn, label);
+  }
+  async function run(fn: () => Promise<void>, label = "正在处理…") {
     setBusy(true);
     setError("");
+    setWorkLabels((prev) => [...prev, label]);
     try {
       await fn();
     } catch (e) {
       fail(e);
     } finally {
+      setWorkLabels((prev) => prev.slice(0, -1));
       setBusy(false);
     }
   }
@@ -621,6 +658,7 @@ function App() {
   browseKey.current = assetParams().toString();
   async function refresh() {
     const seq = ++requestSeq.current;
+    setRefreshing(true);
     const params = assetParams();
     const [data, s, r, j, tags, categories] = await Promise.all([
       api<{
@@ -681,6 +719,7 @@ function App() {
     setRoots(r);
     setJobs(j.jobs);
     setPending(j.metadata.pending);
+    setRefreshing(false);
   }
   refreshRef.current = refresh;
   async function checkFiles(force = false) {
@@ -1152,7 +1191,7 @@ function App() {
           </div>
         </div>
       </aside>
-      <main>
+      <main aria-busy={refreshing || showWork || undefined}>
         <header className="topbar">
           <IconButton
             icon={Menu}
@@ -1167,6 +1206,12 @@ function App() {
             <HardDrive size={14} />
             LOCAL LIBRARY
           </span>
+          {jobsActive && (
+            <span className="work-pill" role="status" aria-live="polite">
+              <span className="spinner" aria-hidden="true" />
+              {jobs.some((j) => j.status === "running") ? "正在读取文件…" : "正在读取参数…"}
+            </span>
+          )}
           <label className="current-project"><FolderKanban size={16}/><select aria-label="当前项目" value={activeProject} disabled={busy} onChange={e => setActiveProject(e.target.value)}><option value="">选择项目</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
           <button className="primary" onClick={() => void openModal("folders")}>
             <FolderPlus size={17} />
@@ -1607,7 +1652,7 @@ function App() {
                       icon={Star}
                       title="批量收藏"
                       onClick={() =>
-                        void run(async () => {
+                        void runWith("正在处理选中的素材…", async () => {
                           await api("/batch", {
                             ids: [...checked],
                             patch: { favorite: 1 },
@@ -1809,6 +1854,11 @@ function App() {
                 <footer className="pagination">
                   <span>
                     共 {total.toLocaleString()} 项
+                    {refreshing && (
+                      <span className="inline-loading" role="status">
+                        <span className="spinner" aria-hidden="true" />读取中…
+                      </span>
+                    )}
                     {pending > 0 && (
                       <small> · {pending.toLocaleString()} 项参数读取中</small>
                     )}
@@ -2458,16 +2508,25 @@ function App() {
                         {!r.retired && (
                           <button
                             className="plain"
-                            disabled={busy || jobs.some((j) => j.rootId === r.id && j.status === "running")}
+                            disabled={busy || rootScanning(r.id)}
                             onClick={() =>
-                              void run(async () => {
+                              void runWith("正在扫描素材目录…", async () => {
                                 await api("/roots/" + r.id + "/scan", {});
                                 await refresh();
                               })
                             }
                           >
-                            <RefreshCw size={15} />
-                            重新扫描
+                            {rootScanning(r.id) ? (
+                              <>
+                                <span className="spinner" aria-hidden="true" />
+                                扫描中…
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw size={15} />
+                                重新扫描
+                              </>
+                            )}
                           </button>
                         )}
                         <button
@@ -2562,7 +2621,7 @@ function App() {
                               className="primary"
                               disabled={busy || !rootEdit.name.trim() || !rootEdit.path.trim()}
                               onClick={() =>
-                                void run(async () => {
+                                void runWith("正在迁移目录位置…", async () => {
                                   const next = rootEdit.path.trim();
                                   const moved = next !== r.path;
                                   const metaChanged = rootEdit.name !== r.name || rootEdit.kind !== r.kind;
@@ -2600,6 +2659,7 @@ function App() {
                   {!jobs.length && <p className="muted">暂无扫描任务</p>}
                   {jobs.map((j) => (
                     <div className="job" key={j.id}>
+                      {j.status === "running" && <span className="spinner" aria-hidden="true" />}
                       <strong>
                         {allRoots.find((r) => r.id === j.rootId)?.name ||
                           roots.find((r) => r.id === j.rootId)?.name ||
@@ -2920,7 +2980,7 @@ function App() {
                           "仅删除生成的预览缓存，不影响原素材，是否继续？",
                         )
                       )
-                        void run(async () => {
+                        void runWith("正在清理缓存…", async () => {
                           await api("/cache/clear", {});
                           setCache(await api("/cache"));
                           setNotice("已清理预览缓存");
@@ -3082,7 +3142,7 @@ function App() {
                     className={modal === "trash" ? "danger" : "primary"}
                     disabled={busy || !plans.some((p) => p.ok) || (modal === "move" && !destinationReady)}
                     onClick={() =>
-                      void run(async () => {
+                      void runWith("正在清理失效索引…", async () => {
                         pauseAudition();
                         video.current?.pause();
                         const result = await api<Plan[]>("/operations", {
@@ -3124,6 +3184,24 @@ function App() {
               </div>
             )}
           </section>
+        </div>
+      )}
+      {/* 首次读取素材库：全屏转圈，避免看到空壳 */}
+      {!ready && (
+        <div className="work-overlay" role="status" aria-live="polite">
+          <div className="work-card">
+            <span className="spinner spinner-lg" aria-hidden="true" />
+            <p>正在读取素材库…</p>
+          </div>
+        </div>
+      )}
+      {/* 正在处理：遮罩挡住点击（按钮同时被 busy 禁用），并显示在做什么 */}
+      {showWork && (
+        <div className="work-overlay" role="status" aria-live="polite">
+          <div className="work-card">
+            <span className="spinner spinner-lg" aria-hidden="true" />
+            <p>{workLabels[workLabels.length - 1] || "正在处理…"}</p>
+          </div>
         </div>
       )}
     </div>

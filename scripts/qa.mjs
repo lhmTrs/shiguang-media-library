@@ -1918,6 +1918,52 @@ async function verify(browserType, name, options) {
     await context.request.post(url + "/api/maintenance/files", { headers, data: { force: true } });
     const duplicateCleanup = await (await context.request.post(url + "/api/maintenance/files/cleanup/preview", { headers, data: { ids: [duplicateAsset.id] } })).json();
     assert.equal((await (await context.request.post(url + "/api/maintenance/files/cleanup", { headers, data: { confirmation: duplicateCleanup.confirmation } })).json()).removed, 1);
+    // 加载与处理中的反馈：首屏转圈、列表内联"读取中…"、扫描中的提示与轮询
+    {
+      const slow = await context.newPage();
+      slow.on("pageerror", (e) => errors.push(e.message));
+      // 首屏慢：应看到全屏转圈
+      await slow.route("**/api/session", async (route) => {
+        await new Promise((r) => setTimeout(r, 900));
+        await route.continue();
+      });
+      await slow.goto(url);
+      await slow.locator(".work-overlay .spinner").waitFor({ timeout: 15000 });
+      assert.equal((await slow.locator(".work-card p").innerText()).trim(), "正在读取素材库…");
+      await slow.locator(".work-overlay").waitFor({ state: "detached", timeout: 25000 });
+
+      // 列表读取慢：应看到内联"读取中…"且 main 标记 aria-busy
+      await slow.route("**/api/assets?*", async (route) => {
+        await new Promise((r) => setTimeout(r, 700));
+        await route.continue();
+      });
+      await slow.getByRole("button", { name: "管理素材目录", exact: true }).click().catch(() => {});
+      await slow.keyboard.press("Escape");
+      await slow.locator(".sidebar").getByRole("button", { name: /全部素材/ }).first().click();
+      await slow.locator(".inline-loading").waitFor({ timeout: 10000 });
+      assert.equal(await slow.locator("main").getAttribute("aria-busy"), "true");
+      await slow.locator(".inline-loading").waitFor({ state: "detached", timeout: 20000 });
+
+      // 扫描进行中：顶栏提示带转圈，并且会轮询任务状态（否则进度不会自己更新）
+      let jobPolls = 0;
+      await slow.route("**/api/jobs", async (route) => {
+        jobPolls++;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            jobs: [{ id: "qa-job", rootId: null, type: "scan", status: "running", count: 1, errors: [] }],
+            metadata: { pending: 0 },
+          }),
+        });
+      });
+      await slow.locator(".sidebar").getByRole("button", { name: /全部素材/ }).first().click();
+      await slow.locator(".work-pill").waitFor({ timeout: 10000 });
+      assert.equal(await slow.locator(".work-pill .spinner").count(), 1);
+      await new Promise((r) => setTimeout(r, 3500));
+      assert.ok(jobPolls >= 2, `扫描进行中应轮询任务状态，实际 ${jobPolls} 次`);
+      await slow.close();
+    }
     assert.deepEqual(errors, []);
     results.push({
       browser: name,
@@ -1956,6 +2002,7 @@ async function verify(browserType, name, options) {
         "AI 设置与建议采用（模拟模型，无上传）",
         "连接测试入口、诊断日志查看与脱敏导出（无外网调用）",
         "失效记录仅标记、取消清理、文件恢复保护、确认清理和移动端弹窗",
+        "加载与处理中的转圈与禁用：首屏遮罩、列表内联读取提示、扫描中提示与任务轮询",
       ],
     });
   } finally {

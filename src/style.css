@@ -3372,3 +3372,71 @@ dd {
 .folder-edit label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .folder-edit input, .folder-edit select { width: 100%; }
 .folder-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ============================================================
+   加载与"正在处理"的视觉反馈：转圈 + 禁用
+   · 颜色全部走 token，自动跟随界面风格
+   · 尊重系统"减少动态效果"偏好
+   ============================================================ */
+.spinner {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--c-d9e2dd);
+  border-top-color: var(--c-356451);
+  animation: shiguang-spin 0.75s linear infinite;
+  vertical-align: -2px;
+}
+.spinner-lg { width: 26px; height: 26px; border-width: 3px; }
+@keyframes shiguang-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* 不转圈，但仍能看出"正在进行" */
+  .spinner { animation-duration: 2.6s; }
+}
+
+/* 全屏遮罩：盖在内容与弹窗之上（弹窗最高 35），挡住点击 */
+.work-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-20312660);
+  backdrop-filter: blur(2px);
+}
+.work-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 15px 22px;
+  border-radius: 10px;
+  background: var(--c-fff);
+  border: 1px solid var(--line);
+}
+.work-card p { margin: 0; font-size: 13px; color: var(--c-24292c); }
+
+/* 顶栏"正在读取文件/参数"提示 */
+.work-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+/* 列表底部的内联"读取中" */
+.inline-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.job .spinner { margin-right: 2px; }
