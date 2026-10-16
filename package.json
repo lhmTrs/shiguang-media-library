@@ -1,0 +1,34 @@
+{
+  "name": "local-media-library",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node scripts/qa.mjs --webkit",
+    "start": "node scripts/launch.mjs --open",
+    "portable": "node scripts/portable.mjs --open",
+    "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "stop:portable": "node scripts/stop-portable.mjs",
+    "package": "node scripts/package.mjs",
+    "update:check": "node scripts/update-code.mjs --check",
+    "update:code": "node scripts/update-code.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "lucide-react": "^0.468.0",
+    "mysql2": "^3.24.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  }
+}

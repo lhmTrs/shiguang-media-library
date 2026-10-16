@@ -1,0 +1,128 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { Library } from "../server/library.mjs";
+import { MissingFiles } from "../server/missing-files.mjs";
+import { MusicCategories } from "../server/music-categories.mjs";
+import { MusicAnalysis } from "../server/music-analysis.mjs";
+
+async function setup(t) {
+  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sg-missing-")));
+  const source = path.join(base, "素材"); await fs.mkdir(source);
+  const lib = await new Library(path.join(base, "db")).init(); lib.enqueue = () => {};
+  t.after(async () => { lib.db.close(); await fs.rm(base, { recursive: true, force: true }); });
+  const root = await lib.addRoot(source, "music");
+  for (const name of ["仍在.mp3", "缺失.mp3", "废纸篓.mp3"]) await fs.writeFile(path.join(source, name), "fixture");
+  const job = lib.scan(root.id); while (job.status === "running") await new Promise(r => setTimeout(r, 10));
+  const assets = lib.list().items;
+  return { base, source, lib, root, present: assets.find(a => a.name === "仍在.mp3"), gone: assets.find(a => a.name === "缺失.mp3"), trash: assets.find(a => a.name === "废纸篓.mp3") };
+}
+test("失效索引清理：备份先落盘，关联数据及预览清理，公共分类与废纸篓保留", async t => {
+  const { lib, gone, present, trash } = await setup(t);
+  const manager = new MusicCategories(lib).init();
+  const category = manager.create({ name: "保留公共分类" }); manager.add({ assetId: gone.id, categoryId: category.id });
+  lib.patch(gone.id, { tags: ["重要标签"], note: "重要备注" });
+  const ai = await new MusicAnalysis(lib).init();
+  lib.db.prepare("INSERT INTO music_analyses(id,asset_id,cache_key,payload,created_ms) VALUES(?,?,?,?,?)").run("analysis-fixture", gone.id, "cache-fixture", "{}", Date.now());
+  ai.diagnostics.record({ operation: "analysis", outcome: "error", assetId: gone.id });
+  const key = crypto.createHash("sha256").update(`${gone.id}:${gone.size}:${gone.mtime}:jpg`).digest("hex");
+  const cache = path.join(lib.cache, key + ".jpg"); await fs.writeFile(cache, "preview");
+  lib.db.prepare("UPDATE assets SET trashed=1,online=0 WHERE id=?").run(trash.id);
+  await fs.unlink(gone.path); await fs.unlink(trash.path);
+  const cleaner = new MissingFiles(lib);
+  assert.equal((await cleaner.check({ dryRun: true })).missing, 1);
+  assert.equal(lib.asset(gone.id).note, "重要备注");
+  const marked = await cleaner.check(); assert.equal(marked.removed, 0);
+  assert.equal(lib.asset(gone.id).file_status, "missing");
+  const result = await cleaner.clean(cleaner.cleanupPreview([gone.id])); assert.equal(result.removed, 1);
+  assert.throws(() => lib.asset(gone.id), /不存在/);
+  assert.equal(lib.asset(trash.id).trashed, 1); assert.equal(lib.asset(present.id).online, 1);
+  for (const table of ["music_category_links", "music_analyses"])
+    assert.equal(lib.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE asset_id=?`).get(gone.id).n, 0);
+  assert.equal(ai.diagnostics.list().length, 0);
+  assert.ok(manager.list().some(c => c.id === category.id));
+  await assert.rejects(fs.access(cache));
+  const directory = path.join(lib.dataDir, "missing-file-backups");
+  const backupPath = path.join(directory, (await fs.readdir(directory))[0]);
+  const backup = JSON.parse((await fs.readFile(backupPath, "utf8")).trim());
+  assert.equal(backup.asset.id, gone.id); assert.equal(backup.asset.note, "重要备注");
+  assert.equal(backup.related.music_analyses.length, 1);
+  assert.equal((await fs.stat(backupPath)).mode & 0o777, 0o600);
+  assert.equal((await cleaner.check()).cached, 1);
+});
+test("硬盘/根目录离线、目录权限和失效链接不误删，重新连接后恢复在线", async t => {
+  const { lib, root, source, gone, base } = await setup(t);
+  const cleaner = new MissingFiles(lib);
+  const moved = path.join(base, "临时断开"); await fs.rename(source, moved);
+  assert.equal((await cleaner.check()).removed, 0); assert.equal(lib.asset(gone.id).online, 0);
+  await fs.rename(moved, source);
+  await cleaner.check({ force: true }); assert.equal(lib.asset(gone.id).online, 1);
+  await fs.unlink(gone.path);
+  const originalHealth = cleaner.rootHealth.bind(cleaner);
+  cleaner.rootHealth = async () => { throw Object.assign(Error("无权限"), { code: "EACCES" }); };
+  assert.equal((await cleaner.check({ force: true })).removed, 0); assert.ok(lib.asset(gone.id));
+  cleaner.rootHealth = originalHealth;
+  await fs.symlink(path.join(base, "未挂载"), gone.path);
+  assert.equal((await cleaner.check({ force: true })).removed, 0); assert.ok(lib.asset(gone.id));
+  await fs.unlink(gone.path);
+  const nested = path.join(source, "链接目录"); await fs.symlink(path.join(base, "不可用"), nested);
+  lib.db.prepare("UPDATE assets SET path=? WHERE id=?").run(path.join(nested, "音乐.mp3"), gone.id);
+  assert.equal((await cleaner.check({ force: true })).removed, 0); assert.ok(lib.asset(gone.id));
+  assert.equal(lib.roots().find(r => r.id === root.id).online, 1);
+});
+test("扫描/文件操作中暂缓；备份写入失败、根目录身份变化时保留索引", async t => {
+  const { lib, gone } = await setup(t); await fs.unlink(gone.path);
+  assert.equal((await new MissingFiles(lib, () => true).check()).deferred, true);
+  await fs.writeFile(path.join(lib.dataDir, "missing-file-backups"), "阻止创建备份");
+  const protectedCleaner = new MissingFiles(lib);
+  await protectedCleaner.check();
+  assert.equal((await protectedCleaner.clean(protectedCleaner.cleanupPreview([gone.id]))).protected, 1); assert.ok(lib.asset(gone.id));
+  await fs.unlink(path.join(lib.dataDir, "missing-file-backups"));
+  const cleaner = new MissingFiles(lib); let calls = 0;
+  const health = cleaner.rootHealth.bind(cleaner);
+  cleaner.rootHealth = async r => (await health(r)) + (++calls > 1 ? "changed" : "");
+  assert.equal((await cleaner.check({ force: true })).removed, 0); assert.ok(lib.asset(gone.id));
+});
+
+test("状态缓存跨检查器复用；强制检查和实时访问绕过缓存，不自动删除", async t => {
+  const { lib, gone, present } = await setup(t);
+  const cleaner = new MissingFiles(lib);
+  assert.equal((await cleaner.check()).checked, 3);
+  await fs.unlink(gone.path);
+  const restarted = new MissingFiles(lib);
+  assert.equal((await restarted.check()).cached, 3);
+  assert.equal(lib.asset(gone.id).file_status, "online");
+  await restarted.verify(lib.asset(gone.id));
+  assert.equal(lib.asset(gone.id).file_status, "missing");
+  assert.ok(lib.asset(gone.id));
+  assert.equal(lib.list({ view: "missing" }).total, 1);
+  lib.db.prepare("UPDATE assets SET file_checked_ms=0 WHERE id=?").run(present.id);
+  assert.equal((await restarted.check()).checked, 1);
+  assert.equal((await restarted.check({ force: true })).checked, 3);
+  assert.throws(() => restarted.cleanupPreview([present.id]), /状态已变化/);
+});
+
+test("确认后再次检查：文件恢复或目录断开都保留数据；路径变更使缓存失效", async t => {
+  const { lib, gone, source, base, present } = await setup(t);
+  const cleaner = new MissingFiles(lib);
+  await fs.unlink(gone.path); await cleaner.check();
+  const preview = cleaner.cleanupPreview([gone.id]);
+  await fs.writeFile(gone.path, "restored");
+  const restored = await cleaner.clean(preview);
+  assert.equal(restored.removed, 0); assert.equal(restored.skipped.length, 1);
+  assert.equal(lib.asset(gone.id).file_status, "online");
+  await fs.unlink(gone.path); await cleaner.check({ force: true });
+  const second = cleaner.cleanupPreview([gone.id]);
+  await fs.rename(source, path.join(base, "offline"));
+  assert.equal((await cleaner.clean(second)).removed, 0);
+  assert.equal(lib.asset(gone.id).file_status, "offline");
+  assert.throws(() => cleaner.cleanupPreview([gone.id]), /状态已变化/);
+  await fs.rename(path.join(base, "offline"), source);
+  await cleaner.check({ force: true });
+  lib.db.prepare("UPDATE assets SET path=? WHERE id=?").run(path.join(source, "new-path.mp3"), present.id);
+  assert.equal((await cleaner.check()).checked, 1);
+  assert.equal(lib.asset(present.id).file_status, "missing");
+});

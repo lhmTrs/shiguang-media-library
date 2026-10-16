@@ -1,0 +1,21 @@
+name: shiguang-media
+services:
+  app:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - shiguang_data:/data
+      - type: bind
+        source: ${MEDIA_SOURCE_DIR:-./media}
+        target: /media
+        read_only: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4317/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+volumes:
+  shiguang_data:
