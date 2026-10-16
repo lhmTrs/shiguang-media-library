@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
 import { MysqlDatabase } from "./mysql-db.mjs";
+import { observeDatabase } from "./read-cache.mjs";
 const TABLES = ["roots", "assets", "operations"];
 export function validateConfig(input, previous = {}) {
   const port = Number(input.port ?? 3306);
@@ -372,6 +373,7 @@ export class MysqlStorage {
       await fs.rename(temp, this.configPath);
       const old = this.lib.db;
       this.lib.db = newDb;
+      observeDatabase(newDb);
       this.database = newDb;
       newDb = null;
       this.config = c;

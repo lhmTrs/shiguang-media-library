@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { PHOTO, VIDEO, AUDIO } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
+import { observeDatabase } from "./read-cache.mjs";
 export const run = promisify(execFile);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
@@ -51,6 +52,7 @@ export class Library {
     await fs.mkdir(this.cache, { recursive: true });
     if (this.database) {
       this.db = this.database;
+      observeDatabase(this.db);
       this.ensureRevealCount();
       this.db
         .prepare(
@@ -61,6 +63,7 @@ export class Library {
       return this;
     }
     this.db = new Database(path.join(this.dataDir, "library.sqlite"));
+    observeDatabase(this.db);
     this.db.pragma("journal_mode = WAL");
     this.db
       .exec(`CREATE TABLE IF NOT EXISTS roots(id TEXT PRIMARY KEY,path TEXT UNIQUE,kind TEXT,name TEXT,online INTEGER DEFAULT 1);

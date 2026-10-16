@@ -162,6 +162,107 @@ async function verify(browserType, name, options) {
       .waitFor();
     await page.locator(".asset-row").first().waitFor();
     assert.equal(await page.locator(".asset-row").count(), 5);
+    // Slow or failed category statistics must not keep the material list blocked.
+    {
+      const isolated = await browser.newContext();
+      await isolated.addInitScript(() => localStorage.setItem("shiguang.refreshSeconds", "0"));
+      const quick = await isolated.newPage();
+      let release = () => {}, requested = false;
+      const gate = new Promise(resolve => { release = resolve; });
+      await quick.route("**/api/categories", async route => {
+        requested = true;
+        await gate;
+        await route.fulfill({ status: 503, json: { error: "测试分类统计不可用" } });
+      });
+      await quick.goto(url);
+      await expect(quick.locator(".asset-row")).toHaveCount(5);
+      await expect.poll(() => requested).toBe(true);
+      await expect(quick.locator(".table-mask,.work-overlay")).toHaveCount(0);
+      await quick.getByRole("textbox", { name: "搜索素材", exact: true }).fill("风声");
+      await expect(quick.locator(".asset-row")).toHaveCount(1);
+      await expect(quick.locator(".table-mask,.work-overlay")).toHaveCount(0);
+      release();
+      await expect(quick.getByText("分类列表暂未更新，已保留现有分类；可点击刷新重试", { exact: true })).toBeVisible();
+      await expect(quick.locator(".asset-row")).toHaveCount(1);
+      await isolated.close();
+    }
+    // Use an isolated browser clock and localStorage so polling tests do not affect audio timing below.
+    {
+      const pollingContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const polling = await pollingContext.newPage();
+      polling.on("dialog", dialog => dialog.accept());
+      polling.on("pageerror", e => errors.push(e.message));
+      let rootRequests = 0, revision = 0, assetRequests = 0;
+      let holdAssets = false, releaseAssets = () => {};
+      let assetsGate = Promise.resolve();
+      await polling.route("**/api/maintenance/files", route => route.fulfill({ json: { deferred: true } }));
+      await polling.route("**/api/roots", async route => {
+        rootRequests++;
+        const response = await route.fetch();
+        const rows = await response.json();
+        await route.fulfill({ json: rows.map(row => ({ ...row, revision: Number(row.revision || 0) + revision })) });
+      });
+      await polling.route("**/api/assets?*", async route => {
+        assetRequests++;
+        if (holdAssets) await assetsGate;
+        await route.continue();
+      });
+      await polling.clock.install();
+      await polling.goto(url);
+      await expect(polling.locator(".asset-row")).toHaveCount(5);
+      await expect(polling.locator(".table-mask")).toHaveCount(0);
+      await polling.clock.pauseAt(new Date(Date.now() + 1000));
+      const settings = polling.getByRole("dialog", { name: "界面设置", exact: true });
+      const interval = settings.getByLabel("自动刷新间隔", { exact: true });
+      await polling.getByRole("button", { name: "界面设置", exact: true }).click();
+      await expect(interval).toHaveValue("30");
+      await interval.selectOption("15");
+      await polling.screenshot({ path: path.join(out, `${name}-refresh-settings.png`) });
+      await settings.getByRole("button", { name: "完成", exact: true }).click();
+      const checkbox = polling.locator(".asset-row").first().locator('input[type="checkbox"]');
+      await checkbox.check();
+      const rootsBefore = rootRequests, assetsBefore = assetRequests;
+      await polling.clock.runFor(14000);
+      assert.equal(rootRequests, rootsBefore, "15 秒前不能触发自动刷新");
+      holdAssets = true; assetsGate = new Promise(resolve => { releaseAssets = resolve; });
+      revision++;
+      await polling.clock.runFor(1000);
+      await expect.poll(() => assetRequests).toBeGreaterThan(assetsBefore);
+      await expect(polling.locator(".table-mask")).toHaveCount(0);
+      await expect(polling.locator(".inline-loading")).toHaveCount(0);
+      await expect(checkbox).toBeEnabled();
+      await expect(checkbox).toBeChecked();
+      const inFlightRoots = rootRequests;
+      await polling.clock.runFor(30000);
+      assert.equal(rootRequests, inFlightRoots, "慢请求未结束时不能叠加轮询");
+      holdAssets = false; releaseAssets();
+      await expect(polling.locator(".asset-row")).toHaveCount(5);
+      await expect(checkbox).toBeChecked();
+      await polling.locator(".asset-row").first().locator(".asset-name-button").click();
+      const editor = polling.getByRole("dialog", { name: "编辑素材详情", exact: true });
+      await editor.getByLabel("素材备注", { exact: true }).fill("未保存的草稿不能被后台刷新覆盖");
+      const duringEdit = rootRequests;
+      revision++;
+      await polling.clock.runFor(30000);
+      assert.equal(rootRequests, duringEdit, "编辑中暂缓轮询");
+      await expect(editor.getByLabel("素材备注", { exact: true })).toHaveValue("未保存的草稿不能被后台刷新覆盖");
+      await editor.getByRole("button", { name: "关闭编辑", exact: true }).click();
+      await polling.getByRole("button", { name: "界面设置", exact: true }).click();
+      await interval.selectOption("0");
+      await settings.getByRole("button", { name: "完成", exact: true }).click();
+      const disabledRoots = rootRequests;
+      await polling.clock.runFor(300000);
+      assert.equal(rootRequests, disabledRoots, "关闭后不再自动刷新");
+      await polling.reload();
+      await expect(polling.locator(".asset-row")).toHaveCount(5);
+      await polling.getByRole("button", { name: "界面设置", exact: true }).click();
+      await expect(interval).toHaveValue("0");
+      for (const width of [1280, 390, 320]) {
+        await polling.setViewportSize({ width, height: 844 });
+        assert(await settings.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `Refresh settings overflow at ${width}`);
+      }
+      await pollingContext.close();
+    }
     const navigation = page.getByRole("navigation", { name: "主导航" });
     await page.getByRole("button", { name: "折叠侧栏", exact: true }).click();
     await expect(page.locator(".app")).toHaveClass(/nav-collapsed/);
@@ -1940,6 +2041,7 @@ async function verify(browserType, name, options) {
       await slow.getByRole("button", { name: "管理素材目录", exact: true }).click().catch(() => {});
       await slow.keyboard.press("Escape");
       await slow.locator(".sidebar").getByRole("button", { name: /全部素材/ }).first().click();
+      await slow.getByRole("button", { name: "刷新索引显示", exact: true }).click();
       await slow.locator(".inline-loading").waitFor({ timeout: 10000 });
       assert.equal(await slow.locator("main").getAttribute("aria-busy"), "true");
       await slow.locator(".inline-loading").waitFor({ state: "detached", timeout: 20000 });
@@ -1972,7 +2074,7 @@ async function verify(browserType, name, options) {
           }),
         });
       });
-      await slow.locator(".sidebar").getByRole("button", { name: /全部素材/ }).first().click();
+      await slow.getByRole("button", { name: "刷新索引显示", exact: true }).click();
       await slow.locator(".work-pill").waitFor({ timeout: 10000 });
       assert.equal(await slow.locator(".work-pill .spinner").count(), 1);
       await new Promise((r) => setTimeout(r, 3500));

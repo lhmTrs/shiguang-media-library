@@ -1,18 +1,21 @@
 import React, { useEffect, useRef } from "react";
 import { X, RotateCcw, Check } from "lucide-react";
 import { THEME_LIST, type ThemeId } from "./theme-list";
+import { REFRESH_INTERVALS } from "./refresh-preferences";
 
 /**
  * 界面设置：界面风格（主题）+ 导航栏目显隐。
  * 风格切换只写 <html data-theme>，配色由 themes.css 的 token 覆盖完成，因此即时生效、无需刷新。
  */
-export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, close }: {
+export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, refreshSeconds, setRefreshSeconds, close }: {
   items: [string, string][];
   hidden: string[];
   toggle: (id: string) => void;
   reset: () => void;
   theme: ThemeId;
   setTheme: (id: ThemeId) => void;
+  refreshSeconds: number;
+  setRefreshSeconds: (seconds: number) => void;
   close: () => void;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
@@ -23,7 +26,7 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
     function keydown(e: KeyboardEvent) {
       if (e.key === "Escape") { e.preventDefault(); close(); }
       if (e.key !== "Tab") return;
-      const controls = [...element.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')];
+      const controls = [...element.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)')];
       const first = controls[0], last = controls[controls.length - 1];
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
       if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
@@ -53,6 +56,13 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
               </button>;
             })}
           </div>
+        </section>
+        <section className="settings-section">
+          <label className="field settings-refresh" htmlFor="background-refresh-interval">自动刷新间隔
+            <select id="background-refresh-interval" aria-label="自动刷新间隔" value={refreshSeconds} onChange={e => setRefreshSeconds(Number(e.target.value))}>
+              {REFRESH_INTERVALS.map(option => <option key={option.seconds} value={option.seconds}>{option.label}</option>)}
+            </select>
+          </label>
         </section>
         <section className="settings-section">
           <div className="settings-section-head">

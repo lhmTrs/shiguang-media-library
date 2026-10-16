@@ -74,6 +74,7 @@ import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
 import { FolderBrowser } from "./FolderBrowser";
 import { MoveDestinationPicker } from "./MoveDestinationPicker";
+import { readRefreshSeconds, REFRESH_STORAGE_KEY } from "./refresh-preferences";
 
 export type Asset = {
   id: string;
@@ -390,6 +391,8 @@ function App() {
   const [hiddenNav, setHiddenNav] = useState<string[]>(() => { try { const value = JSON.parse(localStorage.getItem("shiguang.hiddenNav") || "[]"); return Array.isArray(value) ? value.filter((v: unknown): v is string => typeof v === "string" && v !== "all") : []; } catch { return []; } });
   const [navSettings, setNavSettings] = useState(false);
   const closeNavSettings = useCallback(() => setNavSettings(false), []);
+  const [refreshSeconds, setRefreshSeconds] = useState(readRefreshSeconds);
+  useEffect(() => { try { localStorage.setItem(REFRESH_STORAGE_KEY, String(refreshSeconds)); } catch {} }, [refreshSeconds]);
   // 界面风格：值由 localStorage 驱动、写在 <html data-theme> 上，切换只影响 CSS 变量。
   const [theme, setTheme] = useState<ThemeId>(() => readTheme());
   useEffect(() => { applyTheme(theme); }, [theme]);
@@ -623,7 +626,26 @@ function App() {
     setLoop(value);
     if (value) setContinuous(false);
   }
-  const refreshRef = useRef<() => Promise<void>>(async () => {});
+  // 后台同步的基线：每次真正读到数据后都用最新修订号覆盖，避免"刚打开就多刷一轮"
+  const lastSync = useRef<{ revisions: Map<string, number>; running: number; pending: number; primed: boolean }>({
+    revisions: new Map(),
+    running: 0,
+    pending: 0,
+    primed: false,
+  });
+  const refreshRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(async () => {});
+  const foregroundRequests = useRef(0), foregroundRevision = useRef(0), backgroundRequest = useRef(false);
+  const pauseBackground = useRef(false);
+  pauseBackground.current = busy || loading || Boolean(selected && (
+    tagText !== selected.tags.join("，") || note !== selected.note || editCategory !== selected.category ||
+    editSub !== selected.sub || editKind !== selected.kind || captureEdit !== (selected.captured_ms === null ? "" :
+      new Date(selected.captured_ms + 8 * 3600000).toISOString().slice(0, 16))
+  ));
+  function backgroundBlocked() {
+    return pauseBackground.current || foregroundRequests.current > 0 || document.visibilityState !== "visible" ||
+      Boolean(document.querySelector('[role="dialog"], .modal-backdrop')) ||
+      Boolean(document.activeElement?.matches('textarea, select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), [contenteditable="true"]'));
+  }
   function fail(e: unknown) {
     setError(e instanceof Error ? e.message : String(e));
   }
@@ -686,11 +708,35 @@ function App() {
   }
   const browseKey = useRef("");
   browseKey.current = assetParams().toString();
-  async function refresh() {
+  const [categoryChoicesRevision, setCategoryChoicesRevision] = useState(0);
+  useEffect(() => {
+    if (!categoryChoicesRevision) return;
+    let live = true;
+    // Schedule after the list has committed; category statistics never hold its loading mask open.
+    const timer = setTimeout(() => {
+      void api<{ id: string; name: string }[]>("/categories").then(categories => {
+        if (live) setAllCategories(categories.filter(c => c.id !== "uncategorized"));
+      }).catch(() => {
+        if (live) setNotice("分类列表暂未更新，已保留现有分类；可点击刷新重试");
+      });
+    }, 0);
+    return () => { live = false; clearTimeout(timer); };
+  }, [categoryChoicesRevision]);
+  /**
+   * 重新读取界面数据。
+   * `silent: true` 用于后台同步：不显示列表蒙层，避免外部变化引起的刷新把界面
+   * 周期性地"变成加载中"（用户会以为一直在读盘）。
+   */
+  async function refresh(opts: { silent?: boolean } = {}) {
+    if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
+    const foreground = !opts.silent;
+    const foregroundId = foreground ? ++foregroundRevision.current : 0;
+    if (foreground) { foregroundRequests.current++; setRefreshing(true); }
+    else backgroundRequest.current = true;
     const seq = ++requestSeq.current;
-    setRefreshing(true);
     const params = assetParams();
-    const [data, s, r, j, tags, categories] = await Promise.all([
+    try {
+    const [data, s, r, j, tags] = await Promise.all([
       api<{
         items: Asset[];
         total: number;
@@ -701,19 +747,28 @@ function App() {
       api<Root[]>("/roots"),
       api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs"),
       api<{ id: string; name: string; n: number }[]>("/tags"),
-      api<{ id: string; name: string }[]>("/categories"),
     ]);
-    if (seq !== requestSeq.current) return;
+    if (seq !== requestSeq.current || params.toString() !== browseKey.current || (opts.silent && backgroundBlocked())) return;
     setFilterCategories(data.categories);
     setFilterTags(tags.filter(t => t.id !== "untagged" && t.n > 0));
-    setAllCategories(categories.filter(c => c.id !== "uncategorized"));
+    setCategoryChoicesRevision(n => n + 1);
     setAssets(data.items);
     const freshSelected = data.items.find((a) => a.id === selected?.id);
     if (freshSelected) {
+      if (opts.silent) {
+        setTagText(freshSelected.tags.join("，"));
+        setNote(freshSelected.note);
+        setEditCategory(freshSelected.category);
+        setEditSub(freshSelected.sub);
+        setEditKind(freshSelected.kind);
+        setCaptureEdit(freshSelected.captured_ms === null ? "" :
+          new Date(freshSelected.captured_ms + 8 * 3600000).toISOString().slice(0, 16));
+      }
       setSelected((prev) =>
         prev?.id === freshSelected.id
           ? {
               ...prev,
+              ...(opts.silent ? freshSelected : {}),
               captured_ms: freshSelected.captured_ms,
               capture_source: freshSelected.capture_source,
               capture_status: freshSelected.capture_status,
@@ -749,17 +804,28 @@ function App() {
     setRoots(r);
     setJobs(j.jobs);
     setPending(j.metadata.pending);
-    setRefreshing(false);
+    lastSync.current = {
+      revisions: new Map(r.map((root) => [root.id, Number(root.revision)])),
+      running: j.jobs.filter((x) => x.status === "running").length,
+      pending: j.metadata.pending,
+      primed: true,
+    };
+    } finally {
+      if (foreground) {
+        foregroundRequests.current--;
+        if (foregroundId === foregroundRevision.current) setRefreshing(false);
+      } else backgroundRequest.current = false;
+    }
   }
   refreshRef.current = refresh;
   async function checkFiles(force = false) {
-    if (fileCheckInFlight.current) return;
+    if (fileCheckInFlight.current || (!force && backgroundBlocked())) return;
     fileCheckInFlight.current = true; setFileChecking(true);
     try {
       const result = await api<{ checked: number; cached: number; missing: number; deferred?: boolean }>("/maintenance/files", { force });
       if (result.deferred) { if (force) setNotice("素材任务进行中，请稍后检查"); return; }
-      setEditRevision(n => n + 1);
-      await refreshRef.current();
+      if (force) setEditRevision(n => n + 1);
+      await refreshRef.current({ silent: !force });
       if (force) setNotice(`已检查 ${result.checked} 条，发现 ${result.missing} 条疑似失效；未删除任何记录`);
     } catch { setError("文件状态检查未完成，素材数据已保留"); }
     finally { fileCheckInFlight.current = false; setFileChecking(false); }
@@ -775,13 +841,16 @@ function App() {
       .catch(fail);
   }, []);
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !refreshSeconds) return;
     const check = () => { if (document.visibilityState === "visible") void checkFiles(); };
-    void check();
-    const timer = setInterval(() => void check(), 60000);
+    // 打开页面时不要立刻检查全部文件状态：它有 7000+ 个文件要 stat，
+    // 与首屏那几个接口抢同一条数据库通道，会把"打开"整体拖慢（实测约 1s）。
+    // 推迟到界面稳定之后，随后跟随刷新设置，文件检查最短间隔 60 秒。
+    const kickoff = setTimeout(check, 5000);
+    const timer = setInterval(() => void check(), Math.max(60000, refreshSeconds * 1000));
     document.addEventListener("visibilitychange", check);
-    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", check); };
-  }, [ready]);
+    return () => { clearTimeout(kickoff); clearInterval(timer); document.removeEventListener("visibilitychange", check); };
+  }, [ready, refreshSeconds]);
   useEffect(() => {
     const t = setTimeout(() => setSearch(q), 220);
     return () => clearTimeout(t);
@@ -809,11 +878,43 @@ function App() {
     onlyFavorites,
     page,
   ]);
+  // Probe revisions first; keep background work out of active edits and foreground requests.
   useEffect(() => {
-    if (!ready) return;
-    const t = setInterval(() => refreshRef.current().catch(() => {}), 5000);
-    return () => clearInterval(t);
-  }, [ready]);
+    if (!ready || !refreshSeconds) return;
+    let live = true, inFlight = false;
+    const tick = async () => {
+      if (!live || inFlight || backgroundBlocked() || backgroundRequest.current) return;
+      inFlight = true;
+      try {
+        const [r, j] = await Promise.all([
+          api<Root[]>("/roots"),
+          api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs"),
+        ]);
+        if (!live || backgroundBlocked()) return;
+        const running = j.jobs.filter((x) => x.status === "running").length;
+        const seen = lastSync.current;
+        const revisionsChanged = r.length !== seen.revisions.size || r.some((root) => seen.revisions.get(root.id) !== Number(root.revision));
+        const justFinished = seen.primed && running < seen.running;
+        const pendingDropped = seen.primed && j.metadata.pending < seen.pending;
+        if (revisionsChanged || justFinished || pendingDropped) {
+          await refreshRef.current({ silent: true });
+        } else {
+          setRoots(r);
+          setJobs(j.jobs);
+          setPending(j.metadata.pending);
+        }
+        if (live && !backgroundBlocked()) lastSync.current = {
+          revisions: new Map(r.map((root) => [root.id, Number(root.revision)])), running, pending: j.metadata.pending, primed: true,
+        };
+      } catch {
+        // 后台同步失败不打扰用户，下一轮再试
+      } finally {
+        inFlight = false;
+      }
+    };
+    const t = setInterval(() => void tick(), refreshSeconds * 1000);
+    return () => { live = false; clearInterval(t); };
+  }, [ready, refreshSeconds]);
   useEffect(() => {
     setPage(1);
     setChecked(new Set());
@@ -1136,7 +1237,7 @@ function App() {
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
       {navSettings && <NavigationSettings items={[...navs.map(([id, label]): [string, string] => [id, label]), ["roots", "素材目录"]]} hidden={hiddenNav}
         toggle={id => { setHiddenNav(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]); if (view === id) navigate("all"); }}
-        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} close={closeNavSettings}/>}
+        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} refreshSeconds={refreshSeconds} setRefreshSeconds={setRefreshSeconds} close={closeNavSettings}/>}
       <aside className={"sidebar " + (mobileNav ? "visible" : "")}>
         <div className="brand">
           <span className="brand-icon">

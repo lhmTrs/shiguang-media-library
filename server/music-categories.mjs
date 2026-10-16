@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { cachedRead } from "./read-cache.mjs";
 export class MusicCategories {
   constructor(lib, allKinds = false) {
     this.lib = lib;
@@ -50,14 +51,37 @@ export class MusicCategories {
     this.register();
     const kind = this.allKinds ? (query.kind || "") : "music";
     if (kind && !["music", "sfx", "photo", "video"].includes(kind)) throw Error("素材类型无效");
+    return cachedRead(this.lib.db, `categories:${this.allKinds}:${kind}`, () => this.counts(kind));
+  }
+  counts(kind) {
     const filter = kind ? " AND a.kind=?" : "";
     const plain = kind ? "kind=? AND " : "";
     const args = kind ? [kind] : [];
+    // 计数改成"先把两个来源 UNION 起来去重，再一次性分组"：
+    // 原写法 (a.category=c.name OR EXISTS(链接表)) 会让每个分类都对整张 assets 跑一次相关子查询，
+    // 在 7000+ 素材的 MySQL 库上要 400ms 以上（每次搜索/筛选/翻页都会调用）。
+    // 语义保持一致：同一素材既按名字又按链接命中同一分类时只算一次（DISTINCT）。
     const items = this.lib.db
       .prepare(
-        `SELECT c.id,c.name,COUNT(a.id) n,SUM(CASE WHEN a.online=0 THEN 1 ELSE 0 END) offline FROM music_categories c LEFT JOIN assets a ON (a.category=c.name OR EXISTS(SELECT 1 FROM music_category_links l WHERE l.asset_id=a.id AND l.category_id=c.id))${filter} AND a.trashed=0 GROUP BY c.id,c.name ORDER BY c.name`,
+        `SELECT c.id,c.name,COUNT(x.asset_id) n,SUM(CASE WHEN x.online=0 THEN 1 ELSE 0 END) offline
+           FROM music_categories c
+           LEFT JOIN (
+             SELECT DISTINCT m.cat AS cat, m.asset_id AS asset_id, m.online AS online
+               FROM (
+                 SELECT a.category AS cat, a.id AS asset_id, a.online AS online
+                   FROM assets a
+                  WHERE a.trashed=0 AND TRIM(a.category)<>''${filter}
+                 UNION ALL
+                 SELECT c2.name AS cat, a.id AS asset_id, a.online AS online
+                   FROM music_category_links l
+                   JOIN assets a ON a.id=l.asset_id
+                   JOIN music_categories c2 ON c2.id=l.category_id
+                  WHERE a.trashed=0${filter}
+               ) m
+           ) x ON x.cat=c.name
+          GROUP BY c.id,c.name ORDER BY c.name`,
       )
-      .all(...args);
+      .all(...args, ...args);
     const unknown = this.lib.db
       .prepare(
         `SELECT COUNT(*) n,SUM(CASE WHEN online=0 THEN 1 ELSE 0 END) offline FROM assets WHERE ${plain}trashed=0 AND TRIM(category)='' AND NOT EXISTS(SELECT 1 FROM music_category_links l JOIN music_categories c ON c.id=l.category_id WHERE l.asset_id=assets.id)`,

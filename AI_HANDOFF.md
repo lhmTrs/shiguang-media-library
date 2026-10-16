@@ -44,6 +44,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/library.mjs` | SQLite/公共索引、扫描、元数据编辑、安全文件操作、访达计数 |
 | `server/mysql*.mjs` | 可选本机 MySQL 连接、同步事务适配与一次性迁移；已配置时断连不降级 |
 | `server/music-categories.mjs` | 主分类、真实二级子类及额外分类 |
+| `server/read-cache.mjs` | 分类计数的 30 秒内存缓存，按数据库实例隔离；统一观察写入与事务结束使缓存失效 |
 | `server/tags.mjs` | 标签注册、统计、批量增删 |
 | `server/projects.mjs` | 项目、候选/已使用、首次使用时间、快照历史、类型统计 |
 | `server/duplicate-audio.mjs` | 文件大小 + SHA-256 重复检测、报告、重复标签与删除后孤立标签清理 |
@@ -72,12 +73,14 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - `roots` 登记允许访问的素材目录，`assets` 保存原绝对路径、类型、分类、标签、备注、状态、媒体参数及计数。
 - **权威方向：文件系统是存在性与位置的真相，`.shiguang/manifest.json` 是身份与元数据的载体，SQLite 只是可重建投影。** 外部整理（访达/脚本/GPT）后由 `server/reconcile.mjs` 认领回原 id；任何"清理"都必须停在"标离线"，**永远不要自动删除 assets 行或清单条目**（那是用户唯一能找回标签的线索）。新增写文件系统的功能时，要一并考虑"这算不算一次外部变更、对账能不能认出来"。
 - 列表容器蒙层：`listLoading = loading || refreshing`，且需 `assets.length > 0`（空列表首次加载已有自己的大转圈，别叠两层）；因为页面整体滚动、列表常高于一屏，蒙层用 `position: fixed` + 实测 `getBoundingClientRect()` 贴合可见区域（`resultsBodyRef`），滚动/缩放时重算——用 `absolute inset:0` 会把转圈甩到屏幕外。
+- 自动刷新使用 `refresh({ silent: true })`，不设置 `refreshing`；先探测 `/roots` 修订号与 `/jobs`，变化时才读取完整数据。`src/refresh-preferences.ts` 定义本浏览器偏好 `shiguang.refreshSeconds`（默认 30 秒，可选 0/15/30/60/120/300），「界面设置」可改；0 同时停用自动文件检查，但手动操作与活动任务进度轮询仍保留。文件检查间隔最短 60 秒。后台请求不重叠，前台请求优先，输入/未保存详情/弹窗/页面隐藏时暂缓，响应提交前再次校验；不能用自动更新覆盖草稿。前台 `refresh` 的加载状态必须在 `finally` 释放。
 - 界面耗时操作一律走 `run(fn, label)` / `runWith(label, fn)`：它同时负责禁用按钮（`busy`）与显示"正在做什么"的全屏遮罩；列表重新读取只用 `refreshing` 做内联提示（不遮内容）；有扫描任务时 `jobsActive` 驱动 1.5 秒轮询。新增重操作请用 `runWith("正在…", fn)`，不要另造一套 loading 状态。
 - 清单写入必须过三道闸：`writeManifest` 里串行化 + 唯一临时名（防并发踩踏）、`prepareManifestDir` 的符号链接/越界校验与"绝不代建登记目录"、（`MEDIA_READONLY_FILES=1` 时直接跳过）。只读模式下对账仍会索引，只是不写登记目录。
 - 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。
 - 身份匹配逐级降级：路径 → `dev:ino` → xattr(`com.shiguang.assetid`) → `sha256`。第 5 级「同名同大小且唯一」**默认只记进 `report.suspectedClaims`，不认领**（自动认领会把另一个内容不同的文件继承上旧 id 与标签，已实测复现）；要自动认领必须显式 `adoptSuspected` / `MEDIA_ADOPT_SUSPECTED=1`，且条目已有 sha256 而候选哈希不同时永不认领。扫描时就要写入 `dev/ino`（`library.mjs` 的 scanWork），否则"扫描完立刻改名"这条最常见路径拿不到线索。
 - 界面风格是纯前端、纯 CSS 变量的事：切换只改 `<html data-theme>` 与 `localStorage`，不落库、不发请求。**改样式时不要在 `src/style.css` 里写死颜色**——写死的色块在深色/午夜蓝下不会跟随，改用 `var(--c-xxxxxx)` 或 `var(--green|--line|--muted|--soft)`；新增色值后跑一次 `node scripts/theme-gen.mjs --tokenize`。语义色（素材四类图标、危险/成功/提醒）在 `scripts/theme-gen.mjs` 的 `PROTECTED` 里锁色相，不要随意增删。
 - `music_categories` 名称为历史兼容，覆盖所有媒体；`asset_subcategories.category_id` 是真实父子归属，不允许任意创建分类字符串。
+- 分类统计使用 UNION 汇总后去重，避免每个分类遍历全部素材的 OR/EXISTS 查询。`MusicCategories.list` 按类型缓存 30 秒；`Library.init` 与 MySQL 切换时必须 `observeDatabase(db)`，在创建长期复用的预编译语句之前安装写入观察。所有 `.run()`、`.exec()` 和事务结束（含回滚）保守清空缓存，事务内不复用/保留统计；其他进程直接写库最多等 TTL。缓存不写磁盘，不扫描素材，也不需要 Redis。前端 `/categories` 在素材列表提交后独立请求，失败保留已有选项并提示重试，不阻塞列表，不接受过期响应。
 - `asset_tags` 是注册表，素材实际标签在 `assets.tags`。同一个素材可以有多个普通标签。
 - `media_projects`、`project_assets` 独立于分类；项目内 `(project_id,asset_id)` 唯一。实际使用由人确认，不把收藏、试听、访达、复制当成使用；`used_at` 保留首次确认时间。
 - 项目快照让离线、废纸篓或已清理索引的历史仍可查看；不要把项目关联当成需要随 assets 删除的垃圾数据。

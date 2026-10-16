@@ -3342,6 +3342,7 @@ dd {
    颜色一律走 token，因此自动跟随当前风格；此处不写真色值。
    ============================================================ */
 .modal-body.interface-settings-body { padding: 0; }
+.settings-section .settings-refresh { margin: 0; padding: 16px 20px; }
 .settings-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 16px 20px 6px; }
 .settings-section-head h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; color: var(--muted); }
 .settings-section-head small { font-size: 10.5px; color: var(--muted); }
