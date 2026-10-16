@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Folder, FolderOpen, RefreshCw, Search, Tag, X, Play, Pause, Image, Film, Music2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Folder, FolderOpen, FolderInput, RefreshCw, Search, Tag, X, Play, Pause, Image, Film, Music2 } from "lucide-react";
 import type { Asset } from "./main";
 import { TagRuleFilter, emptyTagRules } from "./TagRuleFilter";
 import { ProjectMediaDialog } from "./ProjectManager";
@@ -42,9 +42,10 @@ function FolderNode({ root, directory = "", name, active, choose, request, revis
   </div>;
 }
 
-export function FolderBrowser({ roots, request, revision, play, playingId, isPlaying, tags, addToProject, stopAudio }: {
+export function FolderBrowser({ roots, request, revision, play, playingId, isPlaying, tags, move, addToProject, stopAudio }: {
   roots: Root[]; request: Request; revision: number; play: (asset: Asset) => void;
   playingId?: string; isPlaying: boolean; tags: (asset: Asset) => void;
+  move: (asset: Asset) => void;
   addToProject: (ids: string[]) => Promise<void>; stopAudio: () => void;
 }) {
   const [active, setActive] = useState({ root: roots[0]?.id || "", directory: "" });
@@ -113,7 +114,7 @@ export function FolderBrowser({ roots, request, revision, play, playingId, isPla
             return <article className="folder-asset" key={asset.id}>
               <FolderPreview asset={asset} playing={playing} click={() => visual ? setPreview(asset) : play(asset)}/>
               <div className="folder-asset-info"><button className="asset-name-button" title={asset.name} onClick={() => tags(asset)}>{asset.name}</button><small>{asset.ext.toUpperCase()} · {(asset.size / 1024).toFixed(1)} KB{asset.duration != null ? ` · ${asset.duration.toFixed(1)} 秒` : ""}{!asset.online ? " · 离线" : ""}</small><div className="tags">{asset.tags.map(t => <span key={t}>{t}</span>)}</div></div>
-              <div className="folder-asset-actions"><button className="icon-button" title={"编辑标签：" + asset.name} onClick={() => tags(asset)}><Tag size={16}/></button><button className="icon-button" title={"加入项目：" + asset.name} disabled={busy} onClick={() => void perform(() => addToProject([asset.id]))}><FolderOpen size={16}/></button><button className="icon-button" title={"定位素材：" + asset.name} disabled={busy || !asset.online} onClick={() => void perform(async () => { await request(`/assets/${asset.id}/reveal`, {}); })}><ExternalLink size={16}/></button></div>
+              <div className="folder-asset-actions"><button className="icon-button" title={"编辑标签：" + asset.name} onClick={() => tags(asset)}><Tag size={16}/></button><button className="icon-button" title={"移动到文件夹：" + asset.name} disabled={busy || !asset.online} onClick={() => move(asset)}><FolderInput size={16}/></button><button className="icon-button" title={"加入项目：" + asset.name} disabled={busy} onClick={() => void perform(() => addToProject([asset.id]))}><FolderOpen size={16}/></button><button className="icon-button" title={"定位素材：" + asset.name} disabled={busy || !asset.online} onClick={() => void perform(async () => { await request(`/assets/${asset.id}/reveal`, {}); })}><ExternalLink size={16}/></button></div>
             </article>;
           })}</div>
           {result.pages > 1 && <div className="pagination"><button className="icon-button" title="上一页文件夹素材" disabled={page === 1 || loading} onClick={() => setPage(p => p - 1)}><ChevronLeft size={17}/></button><span>{page} / {result.pages}</span><button className="icon-button" title="下一页文件夹素材" disabled={page >= result.pages || loading} onClick={() => setPage(p => p + 1)}><ChevronRight size={17}/></button></div>}

@@ -225,6 +225,37 @@ async function verify(browserType, name, options) {
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     const phaseToken = (await (await context.request.get(url + "/api/session")).json()).token;
+    const folderActionAsset = (await (await context.request.get(url + "/api/assets?sort=revealCount")).json()).items[0];
+    const folderActionRow = page.locator(".asset-row").filter({ hasText: folderActionAsset.name });
+    await folderActionRow.getByRole("button", { name: "更多素材操作：" + folderActionAsset.name, exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: /^修改分类：/ })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: /^添加素材分类：/ })).toHaveCount(0);
+    await page.screenshot({ path: path.join(out, name + "-folder-mode-actions.png") });
+    await page.getByRole("menuitem", { name: "移动素材：" + folderActionAsset.name, exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "移动素材", exact: true })).toBeVisible();
+    await page.getByRole("dialog", { name: "移动素材", exact: true }).getByRole("button", { name: "取消", exact: true }).click();
+    await folderActionRow.locator(".asset-name-button").click();
+    const folderEditor = page.getByRole("dialog", { name: "编辑素材详情", exact: true });
+    await expect(folderEditor.getByLabel("编辑主分类", { exact: true })).toHaveCount(0);
+    await expect(folderEditor.getByLabel("选择额外分类", { exact: true })).toHaveCount(0);
+    const folderSave = page.waitForRequest(r => r.method() === "PATCH" && r.url().endsWith("/api/assets/" + folderActionAsset.id));
+    await folderEditor.getByRole("button", { name: "保存标签与属性", exact: true }).click();
+    const folderPatch = (await folderSave).postDataJSON();
+    assert.equal(Object.hasOwn(folderPatch, "category"), false);
+    assert.equal(Object.hasOwn(folderPatch, "sub"), false);
+    await expect(folderEditor).toContainText("标签与属性已保存");
+    await folderEditor.getByRole("button", { name: "关闭", exact: true }).click();
+    const preserved = await (await context.request.get(url + "/api/assets/" + folderActionAsset.id)).json();
+    assert.equal(preserved.category, folderActionAsset.category); assert.equal(preserved.sub, folderActionAsset.sub);
+    await expect(page.getByRole("button", { name: "给选中素材添加分类", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "显示设置", exact: true }).click();
+    await page.getByLabel("显示完整操作", { exact: true }).check(); await page.keyboard.press("Escape");
+    await expect(page.getByRole("group", { name: "显示设置", exact: true })).toHaveCount(0);
+    await expect(folderActionRow.getByRole("button", { name: "移动素材：" + folderActionAsset.name, exact: true })).toBeVisible();
+    await expect(folderActionRow.getByRole("button", { name: /^修改分类：|^添加素材分类：/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "显示设置", exact: true }).click();
+    await page.getByLabel("显示完整操作", { exact: true }).uncheck(); await page.keyboard.press("Escape");
+    await expect(page.getByRole("group", { name: "显示设置", exact: true })).toHaveCount(0);
     await navigation.getByRole("button", { name: "分类管理", exact: true }).click();
     await expect(page.getByRole("heading", { name: "文件夹", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "选择文件夹：音效 测试", exact: true }).click();
@@ -1829,6 +1860,7 @@ async function verify(browserType, name, options) {
       browser: name,
       passed: true,
       tests: [
+        "文件夹模式移除旧分类/额外分类入口，新增单文件移动确认，保存标签不提交旧分类字段；旧模式保留",
         "真实文件夹多级/空目录浏览、面包屑、子树范围、搜索、照片预览及旧分类一键回切持久化",
         "分层筛选折叠、条件逐项清除、音乐音效独立记忆、显示和维护菜单",
         "侧栏折叠、导航显隐勾选、刷新保留、恢复全部与手机遮罩",

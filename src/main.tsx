@@ -920,6 +920,10 @@ function App() {
     setError("");
     setModal("trash");
   }
+  function moveAsset(asset: Asset) {
+    setOperationIds([asset.id]); setTargetRoot(asset.root_id); setRelative("");
+    setPlans(null); setConfirmation(""); setError(""); setModal("move");
+  }
   async function revealAsset(asset: Asset) {
     const result = await api<{ asset: Asset }>(`/assets/${asset.id}/reveal`, {});
     setAssets(prev => prev.map(a => a.id === asset.id ? result.asset : a));
@@ -928,13 +932,14 @@ function App() {
   }
   function assetActions(asset: Asset, grid = false) {
     if (view === "missing") return <div className={"asset-quick-actions" + (grid ? " asset-card-actions" : "")} onClick={e => e.stopPropagation()}>
-      <IconButton icon={FilePenLine} title={"修改分类：" + asset.name} onClick={() => setCategoryAsset(asset)}/>
+      {!folderView && <IconButton icon={FilePenLine} title={"修改分类：" + asset.name} onClick={() => setCategoryAsset(asset)}/>}
       <IconButton icon={Trash2} title={"清理失效记录：" + asset.name} disabled={busy || fileChecking} onClick={() => setCleanupIds([asset.id])}/>
     </div>;
     return <AssetActions asset={asset} grid={grid} compact={compactActions} busy={busy} canTrash={trashAvailable}
       reveal={() => void run(() => revealAsset(asset))} trash={() => trashAsset(asset)}
-      tags={() => setTagAsset(asset)} category={() => setCategoryAsset(asset)}
-      extraCategory={() => setQuickCategory(asset)}
+      tags={() => setTagAsset(asset)} category={!folderView ? () => setCategoryAsset(asset) : undefined}
+      extraCategory={!folderView ? () => setQuickCategory(asset) : undefined}
+      move={folderView ? () => moveAsset(asset) : undefined}
       project={() => void run(() => addToProject([asset.id]))} inProject={projectMembers.some(m => m.asset_id === asset.id)}
       favorite={() => void run(() => patch(asset, { favorite: !asset.favorite }))}/>;
   }
@@ -1148,7 +1153,7 @@ function App() {
             }}
           />
         ) : view === "categoryManagement" ? (
-          <><div className="category-view-switch" role="group" aria-label="目录分类视图"><button aria-pressed={folderView} onClick={() => setFolderView(true)}><FolderOpen size={16}/>文件夹视图</button><button aria-pressed={!folderView} onClick={() => setFolderView(false)}><Library size={16}/>旧分类视图</button></div>{folderView ? <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} addToProject={addToProject} stopAudio={pauseAudition}/> :
+          <><div className="category-view-switch" role="group" aria-label="目录分类视图"><button aria-pressed={folderView} onClick={() => setFolderView(true)}><FolderOpen size={16}/>文件夹视图</button><button aria-pressed={!folderView} onClick={() => setFolderView(false)}><Library size={16}/>旧分类视图</button></div>{folderView ? <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} move={moveAsset} addToProject={addToProject} stopAudio={pauseAudition}/> :
           <CategoryManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
@@ -1211,7 +1216,7 @@ function App() {
                     onClick={() => setQ("")}
                   />
                 )}
-                {selected && (
+                {selected && !folderView && (
                   <IconButton
                     icon={ListPlus}
                     title="给选中素材添加分类"
@@ -2059,7 +2064,7 @@ function App() {
                           </button>
                         </div>
                       )}
-                      <h3 className="detail-section-title">分类与标记</h3>
+                      <h3 className="detail-section-title">{folderView ? "属性与标记" : "分类与标记"}</h3>
                       <label className="field">
                         素材类型
                         <select
@@ -2075,8 +2080,8 @@ function App() {
                             ))}
                         </select>
                       </label>
-                      <CategoryPairFields key={selected.id + ":" + editRevision} category={editCategory} sub={editSub} categories={allCategories} request={api} disabled={busy}
-                        categoryLabel="详情主分类" subLabel="详情子类" onChange={(parent, child) => { setEditCategory(parent); setEditSub(child); }}/>
+                      {!folderView && <CategoryPairFields key={selected.id + ":" + editRevision} category={editCategory} sub={editSub} categories={allCategories} request={api} disabled={busy}
+                        categoryLabel="详情主分类" subLabel="详情子类" onChange={(parent, child) => { setEditCategory(parent); setEditSub(child); }}/>}
                       <label className="field">
                         标签
                         <input
@@ -2106,8 +2111,7 @@ function App() {
                             void run(async () => {
                               await patch(selected, {
                                 kind: editKind,
-                                category: editCategory,
-                                sub: editSub,
+                                ...(!folderView ? { category: editCategory, sub: editSub } : {}),
                                 tags: tagText.split(/[,，、]/),
                                 note,
                               });
@@ -2242,6 +2246,7 @@ function App() {
       {editingAsset && <AssetEditDialog
         key={editingAsset.id}
         asset={editingAsset}
+        legacyCategories={!folderView}
         request={api}
         close={closeAssetEditor}
         play={play}
