@@ -57,6 +57,27 @@ function checksum(rows, columns) {
     )
     .digest("hex");
 }
+/**
+ * SQLite 列 → MySQL 列类型。
+ *
+ * 关键约束：**会被建索引的列不能落到 LONGTEXT**。以前凡是非 INT/REAL 一律 LONGTEXT，
+ * 于是"从 SQLite 迁移过来的库"里 assets.sha256 成了 LONGTEXT，再对它建索引会被 MySQL 以
+ * ER_BLOB_KEY_WITHOUT_LENGTH (1170) 拒绝，启动直接失败（已在隔离实例上实测复现）。
+ * 所以哈希类列统一 VARCHAR(64)，与 library.mjs 里 ALTER TABLE 的显式类型保持一致。
+ * 独立导出是为了能脱离数据库单测这条映射。
+ */
+export function mysqlColumnType(table, col) {
+  if (col.name === "id") return "VARCHAR(36) PRIMARY KEY";
+  if (/(sha256|sha1|md5|_hash|hash)$/i.test(String(col.name))) return "VARCHAR(64)";
+  if (table === "asset_subcategories" && col.name === "name") return "VARCHAR(120)";
+  if (table === "media_projects" && col.name === "name") return "VARCHAR(120)";
+  if (table === "project_assets" && ["project_id", "asset_id"].includes(col.name)) return "VARCHAR(36)";
+  if (table === "music_category_links" || (table === "asset_subcategories" && col.name === "category_id")) return "VARCHAR(36)";
+  if (/INT/.test(col.type)) return "BIGINT";
+  if (/REAL/.test(col.type)) return "DOUBLE";
+  return "LONGTEXT";
+}
+
 export class MysqlStorage {
   constructor(dataDir) {
     this.dataDir = dataDir;
@@ -278,22 +299,7 @@ export class MysqlStorage {
         throw error("目标数据库属于其他素材库，未覆盖任何数据");
       for (const t of tables) {
         const defs = snapshot[t].columns.map((col) => {
-          const type =
-            col.name === "id"
-              ? "VARCHAR(36) PRIMARY KEY"
-              : t === "asset_subcategories" && col.name === "name"
-                ? "VARCHAR(120)"
-              : t === "media_projects" && col.name === "name"
-                ? "VARCHAR(120)"
-              : t === "project_assets" && ["project_id", "asset_id"].includes(col.name)
-                ? "VARCHAR(36)"
-              : t === "music_category_links" || (t === "asset_subcategories" && col.name === "category_id")
-                ? "VARCHAR(36)"
-                : /INT/.test(col.type)
-                  ? "BIGINT"
-                  : /REAL/.test(col.type)
-                    ? "DOUBLE"
-                    : "LONGTEXT";
+          const type = mysqlColumnType(t, col);
           return `\`${col.name}\` ${type}${col.name === "id" ? "" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
         if (t === "operations")

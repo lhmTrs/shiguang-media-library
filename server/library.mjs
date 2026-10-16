@@ -155,7 +155,27 @@ export class Library {
             .get()
         : this.db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='index' AND name=?").get(name);
     if (exists) return;
-    this.db.exec(`CREATE INDEX ${name} ON ${table}(${columns})`);
+    let target = columns;
+    if (this.db.kind === "mysql") {
+      // TEXT/BLOB 列不能直接进索引（MySQL 1170 ER_BLOB_KEY_WITHOUT_LENGTH）。
+      // 迁移过来的老库可能某列已是 LONGTEXT（例如早期版本把 sha256 映成了 LONGTEXT），
+      // 这时自动降级为前缀索引，保证启动不被打挂、查询仍有索引可用。
+      const types = new Map(
+        this.db
+          .prepare(
+            `SELECT COLUMN_NAME AS name, DATA_TYPE AS type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='${table}'`,
+          )
+          .all()
+          .map((r) => [r.name, String(r.type || "").toLowerCase()]),
+      );
+      target = indexTargetColumns(columns, types);
+    }
+    try {
+      this.db.exec(`CREATE INDEX ${name} ON ${table}(${target})`);
+    } catch (e) {
+      // 索引只是加速手段：建不出来也必须能启动，否则用户直接打不开素材库
+      console.warn(`[index] 创建 ${name} 失败（不影响使用）：${String(e.message || e)}`);
+    }
   }
   async reveal(assetId, openFile = p => {
     if (process.env.MEDIA_CONTAINER === "1") throw Error("容器不能打开宿主机文件管理器，请复制素材路径");
@@ -1163,4 +1183,18 @@ export class Library {
       this.locks.delete(op.asset_id);
     }
   }
+}
+
+/**
+ * 索引列清单：对 TEXT/BLOB 列自动加 32 字符前缀（MySQL 要求）。
+ * 例如 `sha256` 若是 LONGTEXT，就变成 `sha256(32)`；普通列原样返回。
+ */
+export function indexTargetColumns(columns, types) {
+  return String(columns)
+    .split(",")
+    .map((c) => {
+      const col = c.trim();
+      return /text|blob/.test(String(types?.get(col) || "").toLowerCase()) ? `${col}(32)` : col;
+    })
+    .join(",");
 }

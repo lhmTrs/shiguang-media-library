@@ -13,10 +13,55 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { within } from "./fs-identity.mjs";
 
 export const MANIFEST_DIR = ".shiguang";
 export const MANIFEST_NAME = "manifest.json";
 export const MANIFEST_FORMAT = 1;
+
+/** 原文件只读模式：连登记目录里的 .shiguang 也不写（容器只读挂载下必须成立）。 */
+export const filesReadonly = () => process.env.MEDIA_READONLY_FILES === "1";
+
+/**
+ * 同一个清单文件的写入串行化。
+ * 之前 tmp 名字固定为 `<file>.tmp-<pid>`，同进程的启动对账、目录监听回调与元数据同步
+ * 三方并发时必然互相踩：一个 rename 走了另一个正在写的临时文件 → ENOENT（已实测复现）。
+ * 现在既用唯一临时名，也按文件排队，保证"每次写入都是完整的一版"。
+ */
+const writeChains = new Map();
+function serialize(key, task) {
+  const previous = writeChains.get(key) || Promise.resolve();
+  const next = previous.then(task, task);
+  writeChains.set(
+    key,
+    next.then(
+      () => {},
+      () => {},
+    ),
+  );
+  return next;
+}
+let tmpSeq = 0;
+
+/**
+ * 清单目录的安全校验：目录不存在时**绝不代建登记目录本身**（否则"已搬走的根"会被重新
+ * 创建成一个空目录，随后又被判定为可访问，离线判断与提醒全部失效 —— 已实测复现）；
+ * 同时拒绝符号链接与越界，防住"写到登记目录之外"（已实测复现）。
+ */
+async function prepareManifestDir(root) {
+  const rootReal = await fs.realpath(root.path).catch(() => null);
+  if (!rootReal) throw Error("登记目录不存在，拒绝写入清单");
+  if (!(await fs.stat(rootReal)).isDirectory()) throw Error("登记目录不是文件夹，拒绝写入清单");
+  const dir = path.join(rootReal, MANIFEST_DIR);
+  const existing = await fs.lstat(dir).catch(() => null);
+  if (existing?.isSymbolicLink()) throw Error(`清单目录是符号链接，已拒绝写入：${dir}`);
+  if (existing && !existing.isDirectory()) throw Error(`清单目录不是文件夹，已拒绝写入：${dir}`);
+  await fs.mkdir(dir, { recursive: true });
+  const real = await fs.realpath(dir);
+  if (!within(rootReal, real)) throw Error(`清单目录越出登记目录，已拒绝写入：${real}`);
+  return dir;
+}
 
 export function manifestPath(root) {
   return path.join(root.path, MANIFEST_DIR, MANIFEST_NAME);
@@ -72,26 +117,46 @@ export async function readManifest(root) {
   return { manifest: parsed, reason: "ok" };
 }
 
-/** 原子写入：tmp → fsync → rename，并保留一份 .bak。返回写入字节数。 */
+/**
+ * 原子写入：tmp → fsync → rename，并保留一份 .bak。
+ * 返回 { bytes, revision, skipped }；只读模式或越界时不会写出任何东西。
+ */
 export async function writeManifest(root, manifest) {
+  if (filesReadonly()) return { skipped: true, reason: "readonly", bytes: 0, revision: Number(manifest?.revision) || 0 };
   const file = manifestPath(root);
-  const dir = path.dirname(file);
-  await fs.mkdir(dir, { recursive: true });
-  const payload = { ...manifest, format: MANIFEST_FORMAT, updatedAt: new Date().toISOString() };
-  const text = JSON.stringify(payload, null, 2) + "\n";
-  const tmp = `${file}.tmp-${process.pid}`;
-  const handle = await fs.open(tmp, "w", 0o600);
-  try {
-    await handle.writeFile(text, "utf8");
-    await handle.sync();
-  } finally {
+  return serialize(file, async () => {
+    const dir = await prepareManifestDir(root);
+    const target = await fs.lstat(file).catch(() => null);
+    if (target?.isSymbolicLink()) throw Error("清单文件是符号链接，已拒绝写入");
+    // revision 单调递增：多个写入方（对账 / 监听 / 元数据同步）之间不会互相倒退
+    const current = (await readManifest(root)).manifest;
+    const revision = Math.max(Number(manifest.revision) || 0, Number(current?.revision) || 0);
+    const payload = {
+      ...manifest,
+      revision,
+      format: MANIFEST_FORMAT,
+      updatedAt: new Date().toISOString(),
+    };
+    delete payload.skipped;
+    delete payload.reason;
+    const text = JSON.stringify(payload, null, 2) + "\n";
+    const tmp = path.join(dir, `${MANIFEST_NAME}.tmp-${process.pid}-${++tmpSeq}-${randomUUID().slice(0, 8)}`);
+    const handle = await fs.open(tmp, "w", 0o600);
+    try {
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } catch (e) {
+      await handle.close().catch(() => {});
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      throw e;
+    }
     await handle.close();
-  }
-  try {
-    await fs.copyFile(file, `${file}.bak`);
-  } catch {} // 首次写入没有旧文件，属正常
-  await fs.rename(tmp, file);
-  return Buffer.byteLength(text);
+    try {
+      await fs.copyFile(file, `${file}.bak`);
+    } catch {} // 首次写入没有旧文件，属正常
+    await fs.rename(tmp, file);
+    return { bytes: Buffer.byteLength(text), revision, skipped: false };
+  });
 }
 
 /** 数据库的一行 → 清单条目（元数据镜像；relPath 会在对账时被刷新）。 */
@@ -132,6 +197,7 @@ export function metaFromEntry(entry) {
  * 目标已有清单时不覆盖：把来源改名留档，避免覆盖别人的清单。
  */
 export async function moveManifest(fromRootPath, toRootPath) {
+  if (filesReadonly()) return { moved: false, reason: "readonly" };
   const source = path.join(fromRootPath, MANIFEST_DIR, MANIFEST_NAME);
   try {
     await fs.access(source);

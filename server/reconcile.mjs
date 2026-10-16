@@ -122,6 +122,20 @@ export async function reconcileRoot(lib, root, opts = {}) {
     conflicts: [],
     walkErrors: [],
   };
+  // 先判定登记目录本身是否还在：**不可读就立刻退出**。
+  // 否则下面的清单写入会 mkdir -p 把"已搬走的旧目录"重新创建出来，随后又判定它可访问，
+  // 于是离线判断与"重新指定位置"的提醒全部失效（已实测复现）。
+  report.rootReachable = await fs
+    .stat(root.path)
+    .then((st) => st.isDirectory())
+    .catch(() => false);
+  if (!report.rootReachable) {
+    lib.db.prepare("UPDATE roots SET online=0 WHERE id=?").run(root.id);
+    report.walkErrors.push(`${root.path}: 登记目录不存在或不可访问`);
+    report.elapsedMs = Date.now() - started;
+    return report;
+  }
+
   const manifest = await readManifestOrBuild(lib, root, report);
 
   const files = await walkFiles(root, {
@@ -225,8 +239,15 @@ export async function reconcileRoot(lib, root, opts = {}) {
     }
   }
 
-  // ── 第 5 级（保守启发式）：同名 + 同大小，且候选唯一才认领，并记进 suspected 供人工核对
+  // ── 第 5 级：同名 + 同大小且候选唯一。这一级**没有任何身份证据**，只是"看起来像"，
+  // 所以默认**只提示、不认领**：以前它直接认领，等于把另一个内容不同的文件继承上旧素材的
+  // id 与标签（已实测复现：两个内容不同的同名同大小文件，旧标签被错误继承）。
+  // 现在：
+  //   · 条目已有 sha256 而候选哈希不同 → 这是"不是同一个文件"的正面证据，直接排除；
+  //   · 默认只记进 report.suspected（供人工确认），除非显式 opts.adoptSuspected / MEDIA_ADOPT_SUSPECTED=1；
+  //   · 真正可靠的同盘改名/移动由第 2 级 dev:ino 覆盖，所以收紧这里几乎不损失能力。
   if (freeEntries.size && freeFiles.size) {
+    const adoptSuspected = opts.adoptSuspected ?? process.env.MEDIA_ADOPT_SUSPECTED === "1";
     const filesByName = new Map();
     for (const file of freeFiles.values()) {
       const name = path.basename(file.relPath);
@@ -237,10 +258,27 @@ export async function reconcileRoot(lib, root, opts = {}) {
     for (const [entryId, entry] of [...freeEntries]) {
       const name = entry.relPath ? path.basename(entry.relPath) : "";
       if (!name || !rowById.has(entryId)) continue;
-      const candidates = (filesByName.get(name) ?? []).filter((f) => entry.size === undefined || f.size === entry.size);
+      const candidates = (filesByName.get(name) ?? []).filter(
+        (f) => freeFiles.has(f.relPath) && (entry.size === undefined || f.size === entry.size),
+      );
       if (candidates.length !== 1) continue;
-      claim(entryId, candidates[0], "name-size");
+      const candidate = candidates[0];
+      if (entry.sha256) {
+        const digest = await sha256File(candidate.abs).catch(() => null);
+        if (digest && digest !== entry.sha256) {
+          report.hashMismatch = (report.hashMismatch || 0) + 1;
+          continue; // 内容不同：绝不认领
+        }
+      }
       report.suspected++;
+      (report.suspectedClaims ||= []).push({
+        entryId,
+        relPath: candidate.relPath,
+        size: candidate.size,
+        reason: entry.sha256 ? "同名同大小且哈希一致" : "同名同大小且候选唯一（无哈希证据）",
+      });
+      if (!adoptSuspected) continue;
+      claim(entryId, candidate, "name-size");
     }
   }
 
@@ -455,12 +493,8 @@ export async function reconcileRoot(lib, root, opts = {}) {
     report.manifestWriteError = String(e.code || e.message);
   }
   lib.db.prepare("UPDATE roots SET revision=COALESCE(revision,0)+1,reconciled_ms=? WHERE id=?").run(Date.now(), root.id);
-  // 根本身读不到（被改名/搬走/未挂载）→ 明确标离线，界面据此给出"重新指定位置"的提醒；
-  // 只有个别子目录读不到时不动在线状态（不制造误报）。
-  const rootReachable = await fs.access(root.path).then(() => true).catch(() => false);
-  if (!rootReachable) lib.db.prepare("UPDATE roots SET online=0 WHERE id=?").run(root.id);
-  else if (!report.walkErrors.length) lib.db.prepare("UPDATE roots SET online=1 WHERE id=?").run(root.id);
-  report.rootReachable = rootReachable;
+  // 只有个别子目录读不到时不动在线状态（不制造误报）
+  if (!report.walkErrors.length) lib.db.prepare("UPDATE roots SET online=1 WHERE id=?").run(root.id);
   report.revision = manifest.revision;
   report.elapsedMs = Date.now() - started;
   return report;
@@ -498,6 +532,11 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
         justOffline.push(row);
         report.vanished++;
       }
+      // 该路径下还有记录 → 消失的是一个**目录**，其下文件路径全部变了
+      const descendants = lib.db
+        .prepare("SELECT 1 AS ok FROM assets WHERE root_id=? AND trashed=0 AND path LIKE ? LIMIT 1")
+        .get(root.id, abs + "/%");
+      if (descendants) report.needFullReconcile = true;
     }
   }
 
@@ -510,7 +549,12 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     } catch {
       continue;
     }
-    if (!stat.isFile()) continue;
+    if (!stat.isFile()) {
+      // 目录事件（例如整个子目录被改名）：它下面的每个文件路径都变了，
+      // 必须在全量对账里重算，不能当成"没事发生"跳过（已实测复现）。
+      report.needFullReconcile = true;
+      continue;
+    }
     const ext = path.extname(rel).slice(1).toLowerCase();
     const current = byPath.get(abs);
     if (current) {
