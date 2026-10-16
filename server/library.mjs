@@ -9,6 +9,7 @@ import { PHOTO, VIDEO, AUDIO } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
 import { observeDatabase } from "./read-cache.mjs";
+import { DirectoryClassification } from "./directory-classification.mjs";
 export const run = promisify(execFile);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
@@ -36,10 +37,11 @@ const sha = (p) =>
     s.on("end", () => resolve(h.digest("hex")));
   });
 export class Library {
-  constructor(dataDir, { trashBin, database } = {}) {
+  constructor(dataDir, { trashBin, database, directoryClassification = false } = {}) {
     this.dataDir = dataDir;
     this.trashBin = trashBin;
     this.database = database;
+    this.directoryClassification = directoryClassification ? new DirectoryClassification(this) : null;
     this.jobs = new Map();
     this.locks = new Set();
     this.metadataQueue = [];
@@ -60,6 +62,7 @@ export class Library {
         )
         .run();
       await this.backfillCreationDates();
+      await this.prepareDirectoryClassification();
       return this;
     }
     this.db = new Database(path.join(this.dataDir, "library.sqlite"));
@@ -109,7 +112,18 @@ export class Library {
       .run();
     this.ensureRevealCount();
     await this.backfillCreationDates();
+    await this.prepareDirectoryClassification();
     return this;
+  }
+  async prepareDirectoryClassification() {
+    if (!this.directoryClassification) return;
+    const changes = this.directoryClassification.changes();
+    if (changes.length) {
+      const directory = path.join(this.dataDir, "backups");
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(path.join(directory, `before-directory-classification-${Date.now()}.json`), JSON.stringify(changes.map(c => c.row)), { mode: 0o600 });
+    }
+    this.directoryClassification.sync(null, null, changes);
   }
   ensureRevealCount() {
     const columns = this.db.kind === "mysql"
@@ -492,6 +506,7 @@ export class Library {
       })();
     }
     this.db.prepare("UPDATE roots SET online=1 WHERE id=?").run(root.id);
+    this.directoryClassification?.sync(root.id);
     job.status = job.errors.length ? "partial" : "done";
     job.finishedAt = Date.now();
     for (const a of this.db
@@ -626,6 +641,10 @@ export class Library {
       ["ext", "ext"],
     ])
       if (query[key] && !(ignoreCategory && key === "category")) {
+        if (key === "category" && this.directoryClassification) {
+          const scope = this.directoryClassification.filter(query.category);
+          where.push(scope.sql); values.push(...scope.values); continue;
+        }
         if (key === "category" && this.musicLinksAvailable) {
           where.push(
             `(category=? OR (${this.allCategoryKinds ? "" : "kind='music' AND "}EXISTS(SELECT 1 FROM music_category_links l JOIN music_categories c ON c.id=l.category_id WHERE l.asset_id=assets.id AND c.name=?)))`,
@@ -649,12 +668,13 @@ export class Library {
       }
     }
     if (query.subcategoryId) {
+      if (this.directoryClassification) throw Error("请通过目录分类选择子类");
       if (!this.hierarchyAvailable) throw Error("子类功能尚未初始化");
       const child = this.categoryStore.subcategory(query.subcategoryId), parent = this.categoryStore.get(child.category_id);
       where.push("category=? AND sub=?"); values.push(parent.name, child.name);
     }
     if (query.view === "favorites") where.push("favorite=1");
-    if (query.view === "review") where.push("review=1 AND confirmed=0");
+    if (query.view === "review") where.push(this.directoryClassification ? "review=1" : "review=1 AND confirmed=0");
     if (query.view === "offline") where.push("online=0");
     if (query.view === "missing") where.push("file_status='missing'");
     if (query.favorite === "1") where.push("favorite=1");
@@ -694,11 +714,14 @@ export class Library {
           : "json_array_length(tags)=0",
       );
     if (query.uncategorized === "1") {
-      where.push("TRIM(category)=''");
-      if (this.musicLinksAvailable)
-        where.push(
-          "NOT EXISTS(SELECT 1 FROM music_category_links l JOIN music_categories c ON c.id=l.category_id WHERE l.asset_id=assets.id)",
-        );
+      if (this.directoryClassification) where.push("review=1");
+      else {
+        where.push("TRIM(category)=''");
+        if (this.musicLinksAvailable)
+          where.push(
+            "NOT EXISTS(SELECT 1 FROM music_category_links l JOIN music_categories c ON c.id=l.category_id WHERE l.asset_id=assets.id)",
+          );
+      }
     }
     if (query.q) {
       where.push(
@@ -748,6 +771,7 @@ export class Library {
     return { where: w, values };
   }
   categoryOptions(query = {}) {
+    if (this.directoryClassification) return this.directoryClassification.options(query);
     const { where, values } = this.assetFilter(query, true);
     if (this.musicLinksAvailable)
       return this.db
@@ -816,7 +840,7 @@ export class Library {
         .get().n,
       review: this.db
         .prepare(
-          "SELECT COUNT(*) n FROM assets WHERE review=1 AND confirmed=0 AND trashed=0",
+          "SELECT COUNT(*) n FROM assets WHERE review=1 AND " + (this.directoryClassification ? "" : "confirmed=0 AND ") + "trashed=0",
         )
         .get().n,
       offline: this.db
@@ -836,6 +860,8 @@ export class Library {
   }
   patch(assetId, patch) {
     const original = this.asset(assetId);
+    if (this.directoryClassification && ["category", "sub", "review"].some(k => Object.hasOwn(patch, k))) throw Error("分类和待确认状态由文件位置决定，请移动到分类目录");
+    if (this.directoryClassification && original.review && patch.confirmed) throw Error("请先将素材移出根目录或待确认文件夹");
     if (this.categoryStore && Object.hasOwn(patch, "category"))
       patch = { ...patch, category: this.categoryStore.existingName(patch.category) };
     if (this.hierarchyAvailable && (Object.hasOwn(patch, "category") || Object.hasOwn(patch, "sub"))) {
@@ -1099,7 +1125,7 @@ export class Library {
           const s = await fs.stat(p.target);
           this.db
             .prepare(
-              "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=? WHERE id=?",
+              "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=? WHERE id=?",
             )
             .run(
               p.target,
@@ -1108,12 +1134,17 @@ export class Library {
               s.mtimeMs,
               s.size,
               fileCreated(s),
+              s.dev,
+              s.ino,
               p.id,
             );
         }
         this.db
           .prepare("UPDATE operations SET status='done' WHERE id=?")
           .run(operation);
+        this.directoryClassification?.sync(null, p.id);
+        this.onMetadataChanged?.(a.root_id);
+        if (input.action === "move" && input.rootId !== a.root_id) this.onMetadataChanged?.(input.rootId);
         results.push({ ...p, ok: true, operation });
       } catch (e) {
         let uncertain = changed;
@@ -1168,7 +1199,7 @@ export class Library {
       this.db.transaction(() => {
         this.db
           .prepare(
-            "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,trashed=0,online=1 WHERE id=?",
+            "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=?,trashed=0,online=1 WHERE id=?",
           )
           .run(
             op.source,
@@ -1177,10 +1208,15 @@ export class Library {
             s.mtimeMs,
             s.size,
             fileCreated(s),
+            s.dev,
+            s.ino,
             a.id,
           );
         this.db.prepare("UPDATE operations SET undone=1 WHERE id=?").run(op.id);
       })();
+      this.directoryClassification?.sync(null, a.id);
+      this.onMetadataChanged?.(a.root_id);
+      if (root.id !== a.root_id) this.onMetadataChanged?.(root.id);
       return this.asset(a.id);
     } finally {
       this.locks.delete(op.asset_id);

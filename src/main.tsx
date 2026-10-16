@@ -54,7 +54,6 @@ import "./style.css";
 import "./themes.css";
 import { applyTheme, readTheme } from "./theme";
 import type { ThemeId } from "./theme-list";
-import { CategoryManager } from "./CategoryManager";
 import { AuditionControls } from "./AuditionControls";
 import { TagRuleFilter, emptyTagRules, type TagRules } from "./TagRuleFilter";
 import { DuplicateAudioManager } from "./DuplicateAudioManager";
@@ -75,6 +74,7 @@ import { ToolbarPopover } from "./ToolbarPopover";
 import { FolderBrowser } from "./FolderBrowser";
 import { MoveDestinationPicker } from "./MoveDestinationPicker";
 import { readRefreshSeconds, REFRESH_STORAGE_KEY } from "./refresh-preferences";
+import { displayDirectoryOptions, type DirectoryOption } from "./directory-labels";
 
 export type Asset = {
   id: string;
@@ -153,7 +153,7 @@ type Stats = {
   review: number;
   offline: number;
   missing: number;
-  categories: { category: string; n: number }[];
+  categories: DirectoryOption[];
   formats: string[];
 };
 type Job = {
@@ -243,7 +243,6 @@ const time = (n: number | null) =>
         .padStart(2, "0")}:${Math.floor(n % 60)
         .toString()
         .padStart(2, "0")}`;
-const categoryName = (s: string) => s.replace(/^\d+_/, "");
 const audioAsset = (a: Asset) =>
   ["sfx", "music"].includes(a.kind) &&
   !["mp4", "mov", "m4v", "mkv", "avi", "mts", "m2ts", "webm"].includes(a.ext);
@@ -349,7 +348,7 @@ function App() {
     [assets, setAssets] = useState<Asset[]>([]),
     [filterCategories, setFilterCategories] = useState<Stats["categories"]>([]),
     [filterTags, setFilterTags] = useState<{ id: string; name: string; n: number }[]>([]),
-    [allCategories, setAllCategories] = useState<{ id: string; name: string }[]>([]),
+    [allCategories, setAllCategories] = useState<(DirectoryOption & { id: string; name: string })[]>([]),
     [total, setTotal] = useState(0),
     [pages, setPages] = useState(0);
   const [view, setView] = useState("all"),
@@ -380,8 +379,7 @@ function App() {
     [error, setError] = useState("");
   const [tagRules, setTagRules] = useState<TagRules>(emptyTagRules);
   const [advancedFilters, setAdvancedFilters] = useState(false);
-  const [folderView, setFolderView] = useState(() => { try { return localStorage.getItem("shiguang.categoryView") !== "legacy"; } catch { return true; } });
-  useEffect(() => { try { localStorage.setItem("shiguang.categoryView", folderView ? "folders" : "legacy"); } catch {} }, [folderView]);
+  const folderView = true;
   const filterMemory = useRef(new Map<string, {
     q: string; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
     duration: string; createdFrom: string; createdTo: string; dateField: "created" | "captured";
@@ -649,6 +647,10 @@ function App() {
   function fail(e: unknown) {
     setError(e instanceof Error ? e.message : String(e));
   }
+  function categoryLabel(id: string) {
+    const option = allCategories.find(c => c.id === id) || filterCategories.find(c => c.id === id);
+    return option ? displayDirectoryOptions([option], allCategories.length ? allCategories : filterCategories)[0].category : "";
+  }
   /** 给重操作带上"正在做什么"，全局遮罩会显示这句话 */
   function runWith(label: string, fn: () => Promise<void>) {
     return run(fn, label);
@@ -710,11 +712,14 @@ function App() {
   browseKey.current = assetParams().toString();
   const [categoryChoicesRevision, setCategoryChoicesRevision] = useState(0);
   useEffect(() => {
+    if (category && allCategories.length && !allCategories.some(c => c.id === category)) { setCategory(""); setPage(1); }
+  }, [allCategories, category]);
+  useEffect(() => {
     if (!categoryChoicesRevision) return;
     let live = true;
     // Schedule after the list has committed; category statistics never hold its loading mask open.
     const timer = setTimeout(() => {
-      void api<{ id: string; name: string }[]>("/categories").then(categories => {
+      void api<(DirectoryOption & { id: string; name: string })[]>("/categories").then(categories => {
         if (live) setAllCategories(categories.filter(c => c.id !== "uncategorized"));
       }).catch(() => {
         if (live) setNotice("分类列表暂未更新，已保留现有分类；可点击刷新重试");
@@ -1367,19 +1372,7 @@ function App() {
             }}
           />
         ) : view === "categoryManagement" ? (
-          <><div className="category-view-switch" role="group" aria-label="目录分类视图"><button aria-pressed={folderView} onClick={() => setFolderView(true)}><FolderOpen size={16}/>文件夹视图</button><button aria-pressed={!folderView} onClick={() => setFolderView(false)}><Library size={16}/>旧分类视图</button></div>{folderView ? <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} move={moveAsset} addToProject={addToProject} stopAudio={pauseAudition}/> :
-          <CategoryManager
-            trash={trashAsset}
-            canTrash={trashAvailable && !busy}
-            edit={openAssetEditor}
-            revision={editRevision}
-            request={api}
-            play={play}
-            playingId={playing?.id}
-            isPlaying={auditionActive}
-            changed={() => void refreshRef.current().catch(fail)}
-          />
-          }</>
+          <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} move={moveAsset} addToProject={addToProject} stopAudio={pauseAudition} categories={allCategories}/>
         ) : (
           <>
             <section className="library-heading">
@@ -1387,7 +1380,7 @@ function App() {
                 <h1>{title}</h1>
                 <p>
                   <strong>{total.toLocaleString()}</strong> 个素材
-                  {category && <> · {categoryName(category)}</>}
+                  {category && <> · {categoryLabel(category)}</>}
                 </p>
               </div>
               <div className="heading-tools">
@@ -1438,7 +1431,7 @@ function App() {
                   />
                 )}
               </label>
-              <CategoryFilter value={category} categories={filterCategories} onChange={setCategory}/>
+              <CategoryFilter value={category} categories={displayDirectoryOptions(filterCategories, allCategories.length ? allCategories : filterCategories)} onChange={setCategory} formatName={name => name}/>
               <TagRuleFilter value={tagRules} tags={filterTags} change={setTagRules}/>
               <button className="plain advanced-filter-trigger" aria-label="更多筛选" aria-expanded={advancedFilters} aria-controls="advanced-asset-filters" onClick={() => { setAdvancedFilters(v => !v); setRootMenuOpen(false); }}><SlidersHorizontal size={16}/><span>筛选</span>{(rootFilter.length > 0 || ext || duration || createdFrom || createdTo || captureUnknown || onlyFavorites) && <i className="filter-indicator"/>}<ChevronDown size={14}/></button>
             </div>
@@ -1661,7 +1654,7 @@ function App() {
                 )}
                 {category && (
                   <span className="filter-token">
-                    {categoryName(category)}
+                    {categoryLabel(category)}
                     <IconButton
                       icon={X}
                       title="取消分类筛选"
@@ -1924,7 +1917,7 @@ function App() {
                                 <i>·</i>访达 {a.reveal_count || 0} 次
                                 {projectMembers.some(m => m.asset_id === a.id) && <b className="project-member-badge">已加入项目</b>}
                                 {!a.online && <b>离线</b>}
-                                {!!a.review && !a.confirmed && (
+                                {!!a.review && (
                                   <b className="review-text">待确认</b>
                                 )}
                               </span>
@@ -1932,7 +1925,7 @@ function App() {
                             </div>
                           </div>
                           <div className="category-cell">
-                            <span>{categoryName(a.category) || "未分类"}</span>
+                            <span>{displayDirectoryOptions([{ category: a.category, rootId: a.root_id, rootName: roots.find(r => r.id === a.root_id)?.name, n: 1 }], allCategories)[0].category || "待确认"}</span>
                             <small>{a.sub || a.tags.join(" · ") || "—"}</small>
                           </div>
                           <span className="mono">{time(a.duration)}</span>
@@ -2248,14 +2241,10 @@ function App() {
                         )}
                         <dt>分类状态</dt>
                         <dd>
-                          {selected.confirmed
-                            ? "人工确认"
-                            : selected.review
-                              ? "待试听确认"
-                              : "自动初分"}
+                          {selected.review ? "待确认" : "已归类"}
                         </dd>
                         <dt>分类依据</dt>
-                        <dd>{selected.basis}</dd>
+                        <dd>{selected.category}{selected.sub ? " / " + selected.sub : ""}</dd>
                       </dl></details>
                       {selected.error && (
                         <p className="muted-warning">{selected.error}</p>
@@ -2354,18 +2343,7 @@ function App() {
                           <Check size={16} />
                           保存
                         </button>
-                        <button
-                          className="plain"
-                          disabled={busy || !!selected.confirmed}
-                          onClick={() =>
-                            void run(async () => {
-                              await patch(selected, { confirmed: 1 });
-                              setNotice("已标记人工确认");
-                            })
-                          }
-                        >
-                          {selected.confirmed ? "已确认" : "标记已确认"}
-                        </button>
+                        {!!selected.review && <button className="plain" disabled={busy || !selected.online} onClick={() => moveAsset(selected)}><FolderInput size={16}/>移动到分类</button>}
                       </div>
                       {selected.kind === "music" && (
                         <>
@@ -3286,7 +3264,7 @@ function App() {
                     className={modal === "trash" ? "danger" : "primary"}
                     disabled={busy || !plans.some((p) => p.ok) || (modal === "move" && !destinationReady)}
                     onClick={() =>
-                      void runWith("正在清理失效索引…", async () => {
+                      void runWith(modal === "move" ? "正在移动素材…" : modal === "trash" ? "正在移入废纸篓…" : "正在重命名素材…", async () => {
                         pauseAudition();
                         video.current?.pause();
                         const result = await api<Plan[]>("/operations", {

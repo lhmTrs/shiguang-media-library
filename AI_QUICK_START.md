@@ -10,6 +10,7 @@
 - 不需要 MySQL、Redis、OpenAI Key 或原作者账号。AI 分析是可选付费功能，不影响本地管理。
 - 仓库不含素材、私人标签、数据库、缓存或密码。首次打开为空库是正常的。
 - 先读 `AGENTS.md`、`AI_HANDOFF.md`、`START_HERE.md`；改代码和更新前另读 `CODE_SYNC.md`。
+- 分类规则另读 `DIRECTORY_CLASSIFICATION.md`：位置推导、主类/子类两级封顶、待确认随位置变化；跨根重名只在前端显示前缀。
 
 没有终端或文件权限的 AI 只能提供指导，不能声称已下载或启动。不要请求别人把数据库密码、GitHub 令牌或 API Key 发到聊天里。
 

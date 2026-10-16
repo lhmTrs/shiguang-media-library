@@ -7,7 +7,6 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
 import { MysqlStorage } from "./mysql.mjs";
-import { MusicCategories, AssetCategories } from "./music-categories.mjs";
 import { Tags } from "./tags.mjs";
 import { MusicAnalysis } from "./music-analysis.mjs";
 import { MissingFiles } from "./missing-files.mjs";
@@ -49,6 +48,7 @@ const mysqlStorage = await new MysqlStorage(dataDir).init();
 const lib = await new Library(dataDir, {
   trashBin: nativeTrash,
   database: mysqlStorage.database,
+  directoryClassification: true,
 }).init();
 mysqlStorage.attach(lib);
 // 目录监听句柄：启动对账之后才赋值，路由 /api/reconcile 会读它报告监听状态
@@ -56,8 +56,7 @@ let reconcileWatcher = null;
 // 元数据（标签/备注/分类）改动后防抖刷新清单：让"GPT 直接读 .shiguang/manifest.json"看到最新值
 const manifestSync = createManifestSync(lib, { log: (m) => console.log(m) });
 lib.onMetadataChanged = (rootId) => manifestSync.touch(rootId);
-const musicCategories = new MusicCategories(lib).init();
-const categories = new AssetCategories(lib).init();
+const categories = lib.directoryClassification;
 const tags = new Tags(lib).init();
 const projects = new Projects(lib).init();
 const folderBrowser = new FolderBrowser(lib);
@@ -306,45 +305,15 @@ app.post(
   asyncRoute(async (req, res) => res.json(tags.apply(req.body))),
 );
 app.get("/api/music-categories", (req, res) =>
-  res.json(musicCategories.list()),
+  res.json(categories.list({ kind: "music" })),
 );
+app.use(["/api/categories", "/api/music-categories", "/api/subcategories"], (req, res, next) => {
+  if (req.method !== "GET") return res.status(410).json({ error: "旧分类编辑已停用；分类由真实目录决定，请新建文件夹或移动素材" });
+  next();
+});
 app.get("/api/categories", (req, res) => res.json(categories.list(req.query)));
 app.get("/api/subcategories", asyncRoute(async (req, res) => res.json(categories.subcategories(req.query.categoryId))));
-app.post("/api/subcategories", asyncRoute(async (req, res) => res.json(categories.createSubcategory(req.body))));
-app.patch("/api/subcategories/:id", asyncRoute(async (req, res) => res.json(categories.renameSubcategory(req.params.id, req.body))));
-app.delete("/api/subcategories/:id", asyncRoute(async (req, res) => res.json(categories.removeSubcategory(req.params.id))));
-app.post("/api/categories", asyncRoute(async (req, res) => res.json(categories.create(req.body))));
-app.patch("/api/categories/:id", asyncRoute(async (req, res) => res.json(categories.rename(req.params.id, req.body))));
-app.delete("/api/categories/:id", asyncRoute(async (req, res) => res.json(categories.remove(req.params.id))));
-app.post("/api/categories/assign", asyncRoute(async (req, res) => res.json(categories.assign(req.body))));
-app.post("/api/categories/add", asyncRoute(async (req, res) => res.json(categories.add(req.body))));
-app.post("/api/categories/detach", asyncRoute(async (req, res) => res.json(categories.detach(req.body))));
-app.post("/api/categories/save", asyncRoute(async (req, res) => res.json(categories.save(req.body))));
 app.get("/api/assets/:id/categories", (req, res) => res.json(categories.members(req.params.id)));
-app.post(
-  "/api/music-categories",
-  asyncRoute(async (req, res) => res.json(categories.create(req.body))),
-);
-app.patch(
-  "/api/music-categories/:id",
-  asyncRoute(async (req, res) =>
-    res.json(categories.rename(req.params.id, req.body)),
-  ),
-);
-app.delete(
-  "/api/music-categories/:id",
-  asyncRoute(async (req, res) =>
-    res.json(categories.remove(req.params.id)),
-  ),
-);
-app.post(
-  "/api/music-categories/assign",
-  asyncRoute(async (req, res) => res.json(categories.assign(req.body))),
-);
-app.post(
-  "/api/music-categories/add",
-  asyncRoute(async (req, res) => res.json(categories.add(req.body))),
-);
 app.get("/api/assets/:id/music-categories", (req, res, next) => {
   try {
     res.json(categories.members(req.params.id));
@@ -527,7 +496,7 @@ app.get("/api/export", (req, res) => {
           }),
       a.capture_source,
       a.path,
-      a.confirmed ? "人工确认" : a.review ? "待试听确认" : "自动初分",
+      a.review ? "待确认" : "已归类",
     ]),
   ]
     .map((r) => r.map(cell).join(","))
@@ -878,7 +847,7 @@ if (process.env.MEDIA_SKIP_RECONCILE !== "1") {
     }
   }
 }
-if (!process.env.MEDIA_SKIP_IMPORT) {
+if (!process.env.MEDIA_SKIP_IMPORT && !lib.directoryClassification) {
   const workspace = path.dirname(project);
   let classification = new Map();
   try {

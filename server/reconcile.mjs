@@ -167,7 +167,9 @@ export async function reconcileRoot(lib, root, opts = {}) {
 
   // ── 第 1 级：路径未变（绝大多数）
   for (const [entryId, entry] of [...freeEntries]) {
-    const file = entry.relPath ? freeFiles.get(entry.relPath) : null;
+    // An application move commits the new database path before the debounced manifest is written.
+    const recorded = relIfInside(root, rowById.get(entryId)?.path);
+    const file = (entry.relPath ? freeFiles.get(entry.relPath) : null) || (recorded ? freeFiles.get(recorded) : null);
     if (file) {
       claim(entryId, file, "path");
       report.matchedByPath++;
@@ -436,6 +438,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
   }
 
   // ── 元数据：先按需"清单 → 数据库"并入，再"数据库 → 清单"镜像（默认方向只有一个，不会互相覆盖）
+  lib.directoryClassification?.sync(root.id);
   const freshRows = new Map(assetsOfRoot(lib, root.id).map((r) => [r.id, r]));
   for (const [entryId, entry] of Object.entries(manifest.entries)) {
     let row = freshRows.get(entryId);
@@ -445,8 +448,8 @@ export async function reconcileRoot(lib, root, opts = {}) {
       const next = {
         tags: meta.tags ?? row.tags,
         note: meta.note ?? row.note,
-        category: meta.category ?? row.category,
-        sub: meta.sub ?? row.sub,
+        category: lib.directoryClassification ? row.category : meta.category ?? row.category,
+        sub: lib.directoryClassification ? row.sub : meta.sub ?? row.sub,
         favorite: meta.favorite ?? row.favorite,
       };
       try {
@@ -602,7 +605,12 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     report.needFullReconcile = true;
   }
 
-  if (report.adopted || report.vanished || createdManifest) {
+  if (lib.directoryClassification) {
+    lib.directoryClassification.sync(root.id);
+    const built = await materializeManifest(lib, root);
+    for (const [id, entry] of Object.entries(built.entries)) manifest.entries[id] = { ...manifest.entries[id], ...entry };
+  }
+  if (report.adopted || report.vanished || createdManifest || lib.directoryClassification && report.touched) {
     report.manifestCreated = createdManifest;
     manifest.revision = Number(manifest.revision || 0) + 1;
     try {
@@ -651,6 +659,11 @@ export function startWatcher(lib, options = {}) {
     needFull = false;
     if (!batch.size && !full) return;
     running = true;
+    // File-operation previews/execution already defer to running jobs. Include reconciliation
+    // so a walk begun between batches cannot later overwrite a freshly committed move.
+    const job = { id: "reconcile-watcher", rootId: null, type: "reconcile", status: "running", count: 0, errors: [] };
+    lib.jobs.delete(job.id);
+    lib.jobs.set(job.id, job);
     try {
       if (full) {
         await runFull();
@@ -667,8 +680,10 @@ export function startWatcher(lib, options = {}) {
         }
       }
     } catch (e) {
+      job.errors.push(e.message);
       log(`[reconcile] 对账失败：${e.message}`);
     } finally {
+      job.status = job.errors.length ? "failed" : "done";
       running = false;
       if (pending.size) schedule();
     }

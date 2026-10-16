@@ -6,7 +6,7 @@
     "dev": "node server/index.mjs",
     "build": "tsc --noEmit && vite build",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "node scripts/qa.mjs --webkit",
+    "test:browser": "node scripts/qa-directory-classification.mjs --webkit",
     "start": "node scripts/launch.mjs --open",
     "portable": "node scripts/portable.mjs --open",
     "setup": "node scripts/setup.mjs",

@@ -17,7 +17,7 @@ import path from "node:path";
 import { Library } from "../server/library.mjs";
 import { manifestPath, readManifest, writeManifest } from "../server/fs-manifest.mjs";
 import { readAssetId } from "../server/fs-identity.mjs";
-import { reconcilePaths, reconcileRoot } from "../server/reconcile.mjs";
+import { reconcilePaths, reconcileRoot, startWatcher } from "../server/reconcile.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const noHash = { hashBudgetFiles: 0, hashBudgetBytes: 0 };
@@ -42,6 +42,53 @@ async function scan(lib, root) {
   assert.equal(job.status, "done", JSON.stringify(job));
   return job;
 }
+
+test("应用移动和撤销后清单尚未同步：按已提交路径保留身份，不重复入库", async t => {
+  const { source, lib, root } = await setup(t);
+  await fs.writeFile(path.join(source, "归位.wav"), "move-fixture");
+  await scan(lib, root);
+  const original = lib.list().items[0];
+  lib.patch(original.id, { tags: ["保留标签"], note: "保留备注" });
+  const opts = { ...noHash, tagFiles: false };
+  await reconcileRoot(lib, root, opts);
+  const input = { action: "move", rootId: root.id, relative: "子目录", ids: [original.id] };
+  const plan = await lib.plan(input);
+  const moved = await lib.execute(input, plan);
+  assert.equal(moved[0].ok, true, JSON.stringify(moved));
+  assert.equal(lib.asset(original.id).ino, (await fs.stat(plan[0].target)).ino);
+  const report = await reconcileRoot(lib, root, opts);
+  assert.equal(report.added, 0); assert.equal(report.missing, 0);
+  assert.equal(lib.list().total, 1);
+  assert.deepEqual(lib.asset(original.id).tags, ["保留标签"]);
+  assert.equal(lib.asset(original.id).note, "保留备注");
+  await lib.undo(moved[0].operation);
+  const restored = await reconcileRoot(lib, root, opts);
+  assert.equal(restored.added, 0); assert.equal(restored.missing, 0);
+  assert.equal(lib.asset(original.id).path, original.path);
+  assert.equal(lib.list().total, 1);
+});
+
+test("后台对账登记为运行任务，使文件移动遵守同一忙碌边界", async t => {
+  const { source, lib, root } = await setup(t);
+  await fs.writeFile(path.join(source, "监听.wav"), "watch-fixture");
+  await scan(lib, root);
+  await reconcileRoot(lib, root, { ...noHash, tagFiles: false });
+  const prepare = lib.db.prepare.bind(lib.db);
+  let callback, observed = false;
+  lib.db.prepare = sql => {
+    if (sql === "SELECT * FROM assets WHERE path=?") observed ||= [...lib.jobs.values()].some(j => j.type === "reconcile" && j.status === "running");
+    return prepare(sql);
+  };
+  const watcher = startWatcher(lib, { debounceMs: 5, tagFiles: false, watchFn: (_path, _options, cb) => {
+    callback = cb; return { on() {}, close() {} };
+  } });
+  t.after(() => watcher.stop());
+  for (let i = 0; i < 200 && !callback; i++) await sleep(10);
+  assert.ok(callback); callback("change", "监听.wav");
+  for (let i = 0; i < 200 && (!observed || lib.jobs.get("reconcile-watcher")?.status === "running"); i++) await sleep(10);
+  assert.equal(observed, true);
+  assert.equal(lib.jobs.get("reconcile-watcher")?.status, "done");
+});
 
 test("外部改名与整目录移动：素材 id 与标签、备注、收藏全部保留", async (t) => {
   const { source, lib, root } = await setup(t);

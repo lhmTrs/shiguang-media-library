@@ -7,7 +7,7 @@ import { ProjectHistory } from "./ProjectManager";
 type Request = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
 type Category = { id: string; name: string };
 type RenamePlan = { items: { ok: boolean; target?: string; error?: string }[]; confirmation: string };
-export function AssetEditDialog({ asset, request, close, changed, play, legacyCategories = true }: {
+export function AssetEditDialog({ asset, request, close, changed, play, legacyCategories = false }: {
   asset: Asset; request: Request; close: () => void;
   changed: (asset: Asset) => Promise<void>; play: (asset: Asset) => void;
   legacyCategories?: boolean;
@@ -66,7 +66,7 @@ export function AssetEditDialog({ asset, request, close, changed, play, legacyCa
   function combinedTags() { return [...new Set([...tags, ...tagInput.split(/[,，、\n]/).map(t => t.trim()).filter(Boolean)])]; }
   function addTags() { setTags(combinedTags()); setTagInput(""); }
   async function save() {
-    const next = await request<Asset>(`/assets/${asset.id}`, { tags: combinedTags(), note, ... (legacyCategories ? { category, sub } : {}), kind, favorite, confirmed }, "PATCH");
+    const next = await request<Asset>(`/assets/${asset.id}`, { tags: combinedTags(), note, ... (legacyCategories ? { category, sub, confirmed } : {}), kind, favorite }, "PATCH");
     setCurrent(next); setTags(next.tags); setTagInput("");
     setCategory(next.category); setSub(next.sub); setNote(next.note);
     if (legacyCategories) setMembers(await request<Category[]>(`/assets/${asset.id}/categories`));
@@ -89,7 +89,8 @@ export function AssetEditDialog({ asset, request, close, changed, play, legacyCa
             <label className="field">素材类型<select aria-label="编辑素材类型" value={kind} onChange={e => setKind(e.target.value)}><option value="music">音乐</option><option value="sfx">音效</option><option value="photo">摄影照片</option><option value="video">视频</option></select></label>
             {legacyCategories && <CategoryPairFields category={category} sub={sub} categories={categories} request={request} disabled={busy}
               categoryLabel="编辑主分类" subLabel="编辑子类" onChange={(parent, child) => { setCategory(parent); setSub(child); }}/>}
-            <div className="asset-editor-checks"><label><input type="checkbox" checked={favorite} onChange={e => setFavorite(e.target.checked)}/>收藏</label><label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)}/>人工确认</label></div>
+            <div className="asset-editor-checks"><label><input type="checkbox" checked={favorite} onChange={e => setFavorite(e.target.checked)}/>收藏</label>{legacyCategories && <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)}/>人工确认</label>}</div>
+            {!legacyCategories && <p className="muted">{current.review ? "待确认" : current.category + (current.sub ? " / " + current.sub : "")}</p>}
           </div>
           {legacyCategories && <div className="asset-editor-members"><small>已归属分类：{members.map(c => c.name).join("、") || "未分类"}</small><div className="asset-editor-tag-input"><select aria-label="选择额外分类" value={extra} onChange={e => setExtra(e.target.value)}><option value="">添加到其他分类</option>{categories.filter(c => c.id !== "uncategorized" && !members.some(m => m.id === c.id)).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button className="plain" disabled={!extra} onClick={() => void perform(async () => { await request("/categories/add", { assetId: asset.id, categoryId: extra }); setMembers(await request<Category[]>(`/assets/${asset.id}/categories`)); setExtra(""); await changed(current); setMessage("已添加到额外分类（即时保存）"); })}><Plus size={15}/>添加</button></div></div>}
           <button className="primary asset-editor-save" onClick={() => void perform(save)}><Check size={15}/>保存标签与属性</button>

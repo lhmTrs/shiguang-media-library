@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { PENDING_DIRECTORY, PENDING_NAMES, directoryClass } from "./directory-classification.mjs";
 
 export function folderScope(lib, rootId, directory = "") {
   if (typeof rootId !== "string" || !rootId || typeof directory !== "string" || directory.length > 4096 || /[\\\x00-\x1f]/.test(directory)) throw Error("文件夹参数无效");
@@ -41,8 +42,15 @@ export class FolderBrowser {
     return { root: root.id, directory: directory ? directory + "/" + name : name };
   }
   async branch(query) {
-    const { root, directory, absolute } = folderScope(this.lib, query.root, query.directory || "");
+    const classification = query.classification === "1";
+    const pending = classification && query.directory === PENDING_DIRECTORY;
+    const { root, directory, absolute } = folderScope(this.lib, query.root, pending ? "" : query.directory || "");
+    if (classification && directory.split("/").filter(Boolean).length > 2) throw Error("分类仅支持主类和子类两级");
     const indexed = this.lib.db.prepare("SELECT path FROM assets WHERE root_id=? AND trashed=0").all(root.id);
+    if (pending) {
+      const total = indexed.filter(a => directoryClass(root, a.path)?.review).length;
+      return { root: { id: root.id, name: root.name }, directory: PENDING_DIRECTORY, path: root.path, writable: false, state: root.online ? "online" : "offline", direct: total, total, children: [] };
+    }
     const counts = new Map();
     const add = name => { if (!counts.has(name)) counts.set(name, { direct: 0, total: 0 }); return counts.get(name); };
     add("");
@@ -69,10 +77,18 @@ export class FolderBrowser {
       const prefix = directory ? directory + "/" : "";
       entries = [...new Set([...counts.keys()].filter(p => p.startsWith(prefix) && p !== directory).map(p => p.slice(prefix.length).split("/")[0]))];
     }
-    const children = entries.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true })).map(name => {
+    let children = entries.sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true })).map(name => {
       const relative = directory ? directory + "/" + name : name;
       return { name, directory: relative, ...(counts.get(relative) || { direct: 0, total: 0 }) };
     });
+    if (classification) {
+      if (directory.split("/").filter(Boolean).length >= 2) children = [];
+      if (!directory) {
+        children = children.filter(c => !PENDING_NAMES.has(c.name));
+        const total = indexed.filter(a => directoryClass(root, a.path)?.review).length;
+        if (total || entries.some(name => PENDING_NAMES.has(name))) children.unshift({ name: "待确认", directory: PENDING_DIRECTORY, direct: total, total });
+      }
+    }
     let writable = false;
     if (state === "online" && process.env.MEDIA_READONLY_FILES !== "1") {
       try { await fs.access(absolute, fs.constants.W_OK); writable = true; } catch {}

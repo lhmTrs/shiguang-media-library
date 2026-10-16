@@ -34,7 +34,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 
 ## 3. 工程地图
 
-真实文件夹试用版另读 `FOLDER_VIEW.md`：新旧视图可切换，没有数据库迁移，不能擅自把旧分类清空或把访达路径变化当成已完成身份迁移。
+当前分类先读 `DIRECTORY_CLASSIFICATION.md`。正式服务使用位置推导的主类/子类（两级封顶），根散文件及根下待确认箱按位置进入待确认。旧视图已停用，历史表保留但不参与正式分类检索，不能擅自清库或删表。
 
 | 路径 | 职责 |
 |---|---|
@@ -44,7 +44,8 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/library.mjs` | SQLite/公共索引、扫描、元数据编辑、安全文件操作、访达计数 |
 | `server/mysql*.mjs` | 可选本机 MySQL 连接、同步事务适配与一次性迁移；已配置时断连不降级 |
 | `server/music-categories.mjs` | 主分类、真实二级子类及额外分类 |
-| `server/read-cache.mjs` | 分类计数的 30 秒内存缓存，按数据库实例隔离；统一观察写入与事务结束使缓存失效 |
+| `server/directory-classification.mjs`、`src/directory-labels.ts` | 当前目录投影及仅前端的跨根重名显示；正式服务启用 directoryClassification，历史模块留作兼容 |
+| `server/read-cache.mjs` | 历史分类计数缓存与数据库写入观察，当前目录投影统计不使用旧分类缓存 |
 | `server/tags.mjs` | 标签注册、统计、批量增删 |
 | `server/projects.mjs` | 项目、候选/已使用、首次使用时间、快照历史、类型统计 |
 | `server/duplicate-audio.mjs` | 文件大小 + SHA-256 重复检测、报告、重复标签与删除后孤立标签清理 |
@@ -79,8 +80,8 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。
 - 身份匹配逐级降级：路径 → `dev:ino` → xattr(`com.shiguang.assetid`) → `sha256`。第 5 级「同名同大小且唯一」**默认只记进 `report.suspectedClaims`，不认领**（自动认领会把另一个内容不同的文件继承上旧 id 与标签，已实测复现）；要自动认领必须显式 `adoptSuspected` / `MEDIA_ADOPT_SUSPECTED=1`，且条目已有 sha256 而候选哈希不同时永不认领。扫描时就要写入 `dev/ino`（`library.mjs` 的 scanWork），否则"扫描完立刻改名"这条最常见路径拿不到线索。
 - 界面风格是纯前端、纯 CSS 变量的事：切换只改 `<html data-theme>` 与 `localStorage`，不落库、不发请求。**改样式时不要在 `src/style.css` 里写死颜色**——写死的色块在深色/午夜蓝下不会跟随，改用 `var(--c-xxxxxx)` 或 `var(--green|--line|--muted|--soft)`；新增色值后跑一次 `node scripts/theme-gen.mjs --tokenize`。语义色（素材四类图标、危险/成功/提醒）在 `scripts/theme-gen.mjs` 的 `PROTECTED` 里锁色相，不要随意增删。
-- `music_categories` 名称为历史兼容，覆盖所有媒体；`asset_subcategories.category_id` 是真实父子归属，不允许任意创建分类字符串。
-- 分类统计使用 UNION 汇总后去重，避免每个分类遍历全部素材的 OR/EXISTS 查询。`MusicCategories.list` 按类型缓存 30 秒；`Library.init` 与 MySQL 切换时必须 `observeDatabase(db)`，在创建长期复用的预编译语句之前安装写入观察。所有 `.run()`、`.exec()` 和事务结束（含回滚）保守清空缓存，事务内不复用/保留统计；其他进程直接写库最多等 TTL。缓存不写磁盘，不扫描素材，也不需要 Redis。前端 `/categories` 在素材列表提交后独立请求，失败保留已有选项并提示重试，不阻塞列表，不接受过期响应。
+- 当前分类取相对根路径前两层，`assets.category/sub/review` 是可重建投影。扫描、移动/撤销、完整/路径对账都要同步，清单导入不能覆盖位置派生字段。正式服务不初始化旧分类表、不接受旧分类写操作。跨根重名只改前端显示，数据中绝不保存拼接前缀。历史分类表不是现版分类来源。
+- 当前 `DirectoryClassification.options` 直接对根隔离的目录投影分组计数，不读旧分类表。历史 `MusicCategories.list` 的 UNION/30秒缓存仅为旧模块兼容。`observeDatabase` 仍保留数据库写入观察；不要将其误认为当前目录分类的数据来源。前端 `/categories` 在列表提交后独立请求，失败保留选项，不阻塞列表，不接受过期响应。
 - `asset_tags` 是注册表，素材实际标签在 `assets.tags`。同一个素材可以有多个普通标签。
 - `media_projects`、`project_assets` 独立于分类；项目内 `(project_id,asset_id)` 唯一。实际使用由人确认，不把收藏、试听、访达、复制当成使用；`used_at` 保留首次确认时间。
 - 项目快照让离线、废纸篓或已清理索引的历史仍可查看；不要把项目关联当成需要随 assets 删除的垃圾数据。
@@ -109,7 +110,7 @@ npm test
 node scripts/verify-package.mjs /absolute/path/to/share.zip
 ```
 
-解压包验收需要联网安装依赖；默认只操作临时目录，退出会停止测试服务。浏览器扩展验收 `npm run test:browser` 目前以 Mac 的 Chrome/WebKit 为基准，涉及 sips/exiftool/FFmpeg；不是可直接假定跨操作系统通过的测试。MySQL 专项脚本依赖本机 MySQL 安装路径，只做可选开发验证，不是启动前置条件。
+解压包验收需要联网安装依赖，默认只操作临时目录，退出会停止测试服务。`npm run test:browser` 运行 `scripts/qa-directory-classification.mjs`，基于 Mac 的 Chrome/WebKit 和 FFmpeg；旧 `scripts/qa.mjs` 含退役的人工分类操作，不再作为现版入口。不是跨操作系统完整验收；MySQL 专项脚本仅作可选验证，不是启动前置条件。
 
 Docker 配置仅做静态 Compose 验证，本次没有可用守护进程来执行镜像构建。不得把“提供 Dockerfile”写成“Windows/Docker 已完整实测”。不要自动启动或修改用户 Docker 服务。
 
