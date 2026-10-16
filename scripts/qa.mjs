@@ -1944,6 +1944,21 @@ async function verify(browserType, name, options) {
       assert.equal(await slow.locator("main").getAttribute("aria-busy"), "true");
       await slow.locator(".inline-loading").waitFor({ state: "detached", timeout: 20000 });
 
+      // 列表容器内的蒙层（Element v-loading 效果）：盖住列表内容、居中转圈、拦截点击
+      await slow.getByPlaceholder("搜索名称、标签或备注").fill("音效");
+      await slow.locator(".table-mask").waitFor({ timeout: 12000 });
+      assert.equal(await slow.locator(".table-mask .spinner").count(), 1);
+      const maskCovers = await slow.evaluate(() => {
+        const row = document.querySelector(".asset-row");
+        const mask = document.querySelector(".table-mask");
+        if (!row || !mask) return false;
+        const r = row.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + 24, r.top + 8);
+        return !!(hit && hit.closest(".table-mask"));
+      });
+      assert.ok(maskCovers, "蒙层应盖住列表内容并拦截点击");
+      await slow.locator(".table-mask").waitFor({ state: "detached", timeout: 20000 });
+
       // 扫描进行中：顶栏提示带转圈，并且会轮询任务状态（否则进度不会自己更新）
       let jobPolls = 0;
       await slow.route("**/api/jobs", async (route) => {
@@ -2002,7 +2017,7 @@ async function verify(browserType, name, options) {
         "AI 设置与建议采用（模拟模型，无上传）",
         "连接测试入口、诊断日志查看与脱敏导出（无外网调用）",
         "失效记录仅标记、取消清理、文件恢复保护、确认清理和移动端弹窗",
-        "加载与处理中的转圈与禁用：首屏遮罩、列表内联读取提示、扫描中提示与任务轮询",
+        "加载与处理中的转圈与禁用：首屏遮罩、列表容器蒙层与点击拦截、内联读取提示、扫描中提示与任务轮询",
       ],
     });
   } finally {

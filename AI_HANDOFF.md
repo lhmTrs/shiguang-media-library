@@ -71,6 +71,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 
 - `roots` 登记允许访问的素材目录，`assets` 保存原绝对路径、类型、分类、标签、备注、状态、媒体参数及计数。
 - **权威方向：文件系统是存在性与位置的真相，`.shiguang/manifest.json` 是身份与元数据的载体，SQLite 只是可重建投影。** 外部整理（访达/脚本/GPT）后由 `server/reconcile.mjs` 认领回原 id；任何"清理"都必须停在"标离线"，**永远不要自动删除 assets 行或清单条目**（那是用户唯一能找回标签的线索）。新增写文件系统的功能时，要一并考虑"这算不算一次外部变更、对账能不能认出来"。
+- 列表容器蒙层：`listLoading = loading || refreshing`，且需 `assets.length > 0`（空列表首次加载已有自己的大转圈，别叠两层）；因为页面整体滚动、列表常高于一屏，蒙层用 `position: fixed` + 实测 `getBoundingClientRect()` 贴合可见区域（`resultsBodyRef`），滚动/缩放时重算——用 `absolute inset:0` 会把转圈甩到屏幕外。
 - 界面耗时操作一律走 `run(fn, label)` / `runWith(label, fn)`：它同时负责禁用按钮（`busy`）与显示"正在做什么"的全屏遮罩；列表重新读取只用 `refreshing` 做内联提示（不遮内容）；有扫描任务时 `jobsActive` 驱动 1.5 秒轮询。新增重操作请用 `runWith("正在…", fn)`，不要另造一套 loading 状态。
 - 清单写入必须过三道闸：`writeManifest` 里串行化 + 唯一临时名（防并发踩踏）、`prepareManifestDir` 的符号链接/越界校验与"绝不代建登记目录"、（`MEDIA_READONLY_FILES=1` 时直接跳过）。只读模式下对账仍会索引，只是不写登记目录。
 - 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。

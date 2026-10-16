@@ -3440,3 +3440,35 @@ dd {
   font-size: 12px;
 }
 .job .spinner { margin-right: 2px; }
+
+/* ============================================================
+   列表容器内的加载蒙层（Element Plus v-loading 的效果）：
+   半透明蒙层压住列表内容 + 居中转圈；位置贴合"当前可见区域"
+   ============================================================ */
+.results-body { position: relative; }
+.table-mask {
+  position: fixed;
+  z-index: 13; /* 盖住列表内容，但仍在弹窗（20）与详情抽屉之下 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 6px;
+  overflow: hidden;
+  animation: table-mask-in 0.12s ease-out;
+}
+.table-mask::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--c-fff);
+  opacity: 0.72;
+  backdrop-filter: blur(1px);
+}
+.table-mask > * { position: relative; }
+.table-mask p { margin: 0; font-size: 12px; color: var(--muted); }
+@keyframes table-mask-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .table-mask { animation: none; }
+}

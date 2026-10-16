@@ -446,6 +446,36 @@ function App() {
   // 有扫描/参数读取任务在跑时轮询任务状态，否则"扫描中"的进度不会自己动
   const jobsActive = jobs.some((j) => j.status === "running") || pending > 0;
   const rootScanning = (rootId: string) => jobs.some((j) => j.rootId === rootId && j.status === "running");
+  // 列表正在读取（搜索/筛选/翻页/刷新都会走到这里）
+  const listLoading = loading || refreshing;
+  // 空列表的首次加载已经有自己的大转圈，不再叠一层蒙层
+  const showTableMask = listLoading && assets.length > 0;
+  // 蒙层要贴合"当前可见的那部分列表"：页面整体滚动、列表可能高于一屏，
+  // 直接用 absolute inset:0 会把转圈甩到屏幕外（Element 的 v-loading 在小表格里没这个问题）
+  const resultsBodyRef = useRef<HTMLDivElement | null>(null);
+  const [maskRect, setMaskRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  useEffect(() => {
+    if (!showTableMask) return;
+    const measure = () => {
+      const el = resultsBodyRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const top = Math.max(r.top, 0);
+      const bottom = Math.min(r.bottom, window.innerHeight);
+      if (bottom - top < 40) {
+        setMaskRect(null); // 已完全滚出视口，不必显示
+        return;
+      }
+      setMaskRect({ top, left: Math.max(r.left, 0), width: r.width, height: bottom - top });
+    };
+    measure();
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [showTableMask]);
   useEffect(() => {
     if (!ready || !jobsActive) return;
     const timer = setInterval(() => {
@@ -1686,6 +1716,18 @@ function App() {
                     </button>
                   </div>
                 )}
+                <div className="results-body" ref={resultsBodyRef}>
+                {showTableMask && maskRect && (
+                  <div
+                    className="table-mask"
+                    role="status"
+                    aria-live="polite"
+                    style={{ top: maskRect.top, left: maskRect.left, width: maskRect.width, height: maskRect.height }}
+                  >
+                    <span className="spinner spinner-lg" aria-hidden="true" />
+                    <p>正在读取…</p>
+                  </div>
+                )}
                 {loading && !assets.length ? (
                   <div className="empty">
                     <LoaderCircle className="spin" />
@@ -1851,6 +1893,7 @@ function App() {
                     ))}
                   </div>
                 )}
+                </div>
                 <footer className="pagination">
                   <span>
                     共 {total.toLocaleString()} 项
