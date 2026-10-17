@@ -306,7 +306,9 @@ app.post(
     res.json(await musicAnalysis.analyze(req.params.id, req.body)),
   ),
 );
-app.get("/api/tags", (req, res) => res.json(tags.list()));
+app.get("/api/tags", (req, res) => res.json(tags.list(req.query)));
+app.get("/api/tags/revision", (_req, res) => { res.set("Cache-Control", "no-store"); res.json({ revision: tags.revision() }); });
+app.get("/api/tags/facets", (req, res) => { res.set("Cache-Control", "no-store"); res.json(tags.facets(req.query)); });
 app.get("/api/automation", (req, res) => res.json(metadataCapabilities));
 const metadataConfirmations = new Map();
 app.post("/api/metadata/batches/preview", asyncRoute(async (req, res) => {
@@ -489,7 +491,7 @@ app.get("/api/export", (req, res) => {
   const rows = selected.length
     ? selected.slice(0, 200).map((id) => lib.asset(id)).filter(a => !a.trashed && lib.roots().some(r => r.id === a.root_id))
     : lib.db
-        .prepare("SELECT * FROM assets WHERE trashed=0 AND " + lib.activeAssetScope() + " ORDER BY name")
+        .prepare("SELECT * FROM assets WHERE trashed=0 AND " + lib.activeAssetScope() + " AND " + lib.nonMissingAssetScope() + " ORDER BY name")
         .all()
         .map((a) => ({ ...a, tags: JSON.parse(a.tags) }));
   const cell = (v) => {

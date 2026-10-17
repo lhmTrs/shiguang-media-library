@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { observeDatabase } from "./read-cache.mjs";
 export class Tags {
   constructor(lib) {
     this.lib = lib;
@@ -13,7 +14,7 @@ export class Tags {
   }
   rows() {
     return this.lib.db
-      .prepare(`SELECT id,tags,trashed,CASE WHEN ${this.lib.activeAssetScope()} THEN 1 ELSE 0 END active_root FROM assets`)
+      .prepare(`SELECT id,tags,trashed,file_status,CASE WHEN ${this.lib.activeAssetScope()} THEN 1 ELSE 0 END active_root FROM assets`)
       .all()
       .map((a) => ({ ...a, tags: JSON.parse(a.tags) }));
   }
@@ -34,14 +35,14 @@ export class Tags {
         for (const name of missing) insert.run(crypto.randomUUID(), name);
       })();
   }
-  list() {
+  list(query = {}) {
     const rows = this.rows();
     this.register(rows);
     const counts = new Map();
     let untagged = 0,
       total = 0;
     for (const a of rows) {
-      if (a.trashed || !a.active_root) continue;
+      if (a.trashed || !a.active_root || (query.view === "missing" ? a.file_status !== "missing" : a.file_status === "missing")) continue;
       total++;
       if (!a.tags.length) untagged++;
       for (const tag of new Set(a.tags))
@@ -54,6 +55,29 @@ export class Tags {
         .all()
         .map((t) => ({ ...t, n: counts.get(t.name) || 0 })),
     ];
+  }
+  revision() {
+    return observeDatabase(this.lib.db).revision;
+  }
+  facets(query = {}) {
+    // Use the same predicate as the asset list, including roots, dates and keyword rules.
+    const read = q => {
+      const { where, values } = this.lib.assetFilter(q);
+      const counts = new Map();
+      let total = 0;
+      for (const row of this.lib.db.prepare(`SELECT tags FROM assets WHERE ${where}`).all(...values)) {
+        total++;
+        for (const tag of new Set(JSON.parse(row.tags))) counts.set(tag, (counts.get(tag) || 0) + 1);
+      }
+      return { counts, total };
+    };
+    const base = read({ ...query, tagRules: undefined, tagName: undefined, untagged: undefined });
+    const current = query.tagRules || query.tagName || query.untagged ? read(query) : base;
+    const ids = new Map(this.lib.db.prepare("SELECT id,name FROM asset_tags").all().map(t => [t.name, t.id]));
+    return {
+      revision: this.revision(), total: current.total,
+      items: [...base.counts].map(([name, total]) => ({ id: ids.get(name) || name, name, total, n: current.counts.get(name) || 0 })),
+    };
   }
   get(id) {
     const t = this.lib.db

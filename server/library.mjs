@@ -451,7 +451,7 @@ export class Library {
               ["原音乐目录分类", "文件格式"].includes(old.basis);
             this.db
               .prepare(
-                "UPDATE assets SET online=1,size=?,mtime=?,created_ms=?,probe=?,duration=?,width=?,height=?,codec=?,error=?,dev=?,ino=? WHERE id=?",
+                "UPDATE assets SET online=1,size=?,mtime=?,created_ms=?,probe=?,duration=?,width=?,height=?,codec=?,error=?,dev=?,ino=?,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?",
               )
               .run(
                 s.size,
@@ -659,9 +659,13 @@ export class Library {
   activeAssetScope(alias = "assets") {
     return `EXISTS (SELECT 1 FROM roots managed_root WHERE managed_root.id=${alias}.root_id AND COALESCE(managed_root.retired,0)=0)`;
   }
+  nonMissingAssetScope(alias = "assets") {
+    return `COALESCE(${alias}.file_status,'unknown') <> 'missing'`;
+  }
   assetFilter(query = {}, ignoreCategory = false) {
     const where = ["trashed=0", this.activeAssetScope()],
       values = [];
+    if (query.view !== "missing") where.push(this.nonMissingAssetScope());
     if (query.directoryRoot) {
       const scope = folderPredicate(this, query);
       where.push("(" + scope.sql + ")"); values.push(...scope.values);
@@ -862,7 +866,8 @@ export class Library {
     };
   }
   stats() {
-    const active = "trashed=0 AND " + this.activeAssetScope();
+    const managed = "trashed=0 AND " + this.activeAssetScope();
+    const active = managed + " AND " + this.nonMissingAssetScope();
     return {
       total: this.db
         .prepare(`SELECT COUNT(*) n FROM assets WHERE ${active}`)
@@ -883,7 +888,7 @@ export class Library {
       offline: this.db
         .prepare(`SELECT COUNT(*) n FROM assets WHERE online=0 AND ${active}`)
         .get().n,
-      missing: this.db.prepare(`SELECT COUNT(*) n FROM assets WHERE file_status='missing' AND ${active}`).get().n,
+      missing: this.db.prepare(`SELECT COUNT(*) n FROM assets WHERE file_status='missing' AND ${managed}`).get().n,
       categories: this.db
         .prepare(
           `SELECT category,COUNT(*) n FROM assets WHERE category<>'' AND ${active} GROUP BY category ORDER BY category`,
@@ -1236,7 +1241,7 @@ export class Library {
       this.db.transaction(() => {
         this.db
           .prepare(
-            "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=?,trashed=0,online=1 WHERE id=?",
+            "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=?,trashed=0,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?",
           )
           .run(
             op.source,

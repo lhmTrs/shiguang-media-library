@@ -59,6 +59,7 @@ import { applyTheme, readTheme } from "./theme";
 import type { ThemeId } from "./theme-list";
 import { AuditionControls } from "./AuditionControls";
 import { TagRuleFilter, emptyTagRules, type TagRules } from "./TagRuleFilter";
+import { clearTagFacetCache, loadTagFacets } from "./tag-facet-cache";
 import { DuplicateAudioManager } from "./DuplicateAudioManager";
 import { QuickCategoryDialog } from "./QuickCategoryDialog";
 import { TagManager } from "./TagManager";
@@ -220,6 +221,7 @@ async function api<T = unknown>(
     throw Object.assign(Error(result.error || "请求失败"), {
       diagnostic: result.diagnostic,
     });
+  if ((method || (body ? "POST" : "GET")).toUpperCase() !== "GET") clearTagFacetCache();
   return result;
 }
 const kindNames: Record<string, string> = {
@@ -726,6 +728,18 @@ function App() {
   const browseKey = useRef("");
   browseKey.current = assetParams().toString();
   const [categoryChoicesRevision, setCategoryChoicesRevision] = useState(0);
+  const facetQuery = assetParams(1).toString();
+  useEffect(() => {
+    let live = true;
+    const timer = setTimeout(() => {
+      void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
+        if (live) setFilterTags(result.items);
+      }).catch(() => {
+        if (live) setNotice("标签数量暂未更新，已保留现有选项；可点击刷新重试");
+      });
+    }, 120);
+    return () => { live = false; clearTimeout(timer); };
+  }, [facetQuery, categoryChoicesRevision]);
   useEffect(() => {
     if (category && allCategories.length && !allCategories.some(c => c.id === category)) { setCategory(""); setPage(1); }
   }, [allCategories, category]);
@@ -734,14 +748,14 @@ function App() {
     let live = true;
     // Schedule after the list has committed; category statistics never hold its loading mask open.
     const timer = setTimeout(() => {
-      void api<(DirectoryOption & { id: string; name: string })[]>("/categories").then(categories => {
+      void api<(DirectoryOption & { id: string; name: string })[]>("/categories" + (view === "missing" ? "?view=missing" : "")).then(categories => {
         if (live) setAllCategories(categories.filter(c => c.id !== "uncategorized"));
       }).catch(() => {
         if (live) setNotice("分类列表暂未更新，已保留现有分类；可点击刷新重试");
       });
     }, 0);
     return () => { live = false; clearTimeout(timer); };
-  }, [categoryChoicesRevision]);
+  }, [categoryChoicesRevision, view]);
   /**
    * 重新读取界面数据。
    * `silent: true` 用于后台同步：不显示列表蒙层，避免外部变化引起的刷新把界面
@@ -756,7 +770,7 @@ function App() {
     const seq = ++requestSeq.current;
     const params = assetParams();
     try {
-    const [data, s, r, j, tags] = await Promise.all([
+    const [data, s, r, j] = await Promise.all([
       api<{
         items: Asset[];
         total: number;
@@ -766,11 +780,9 @@ function App() {
       api<Stats>("/stats"),
       api<Root[]>("/roots"),
       api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs"),
-      api<{ id: string; name: string; n: number }[]>("/tags"),
     ]);
     if (seq !== requestSeq.current || params.toString() !== browseKey.current || (opts.silent && backgroundBlocked())) return;
     setFilterCategories(data.categories);
-    setFilterTags(tags.filter(t => t.id !== "untagged" && t.n > 0));
     setCategoryChoicesRevision(n => n + 1);
     setAssets(data.items);
     const freshSelected = data.items.find((a) => a.id === selected?.id);
@@ -846,7 +858,7 @@ function App() {
       if (result.deferred) { if (force) setNotice("素材任务进行中，请稍后检查"); return; }
       if (force) setEditRevision(n => n + 1);
       await refreshRef.current({ silent: !force });
-      if (force) setNotice(`已检查 ${result.checked} 条，发现 ${result.missing} 条疑似失效；未删除任何记录`);
+      if (force) setNotice(`已检查 ${result.checked} 条，发现 ${result.missing} 条疑似失效，已归入失效素材；未删除任何记录`);
     } catch { setError("文件状态检查未完成，素材数据已保留"); }
     finally { fileCheckInFlight.current = false; setFileChecking(false); }
   }

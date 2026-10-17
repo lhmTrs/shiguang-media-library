@@ -8,11 +8,14 @@ import { Library } from "../server/library.mjs";
 import { MissingFiles } from "../server/missing-files.mjs";
 import { MusicCategories } from "../server/music-categories.mjs";
 import { MusicAnalysis } from "../server/music-analysis.mjs";
+import { Tags } from "../server/tags.mjs";
+import { FolderBrowser } from "../server/folder-browser.mjs";
+import { reconcilePaths } from "../server/reconcile.mjs";
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sg-missing-")));
   const source = path.join(base, "素材"); await fs.mkdir(source);
-  const lib = await new Library(path.join(base, "db")).init(); lib.enqueue = () => {};
+  const lib = await new Library(path.join(base, "db"), options).init(); lib.enqueue = () => {};
   t.after(async () => { lib.db.close(); await fs.rm(base, { recursive: true, force: true }); });
   const root = await lib.addRoot(source, "music");
   for (const name of ["仍在.mp3", "缺失.mp3", "废纸篓.mp3"]) await fs.writeFile(path.join(source, name), "fixture");
@@ -20,6 +23,35 @@ async function setup(t) {
   const assets = lib.list().items;
   return { base, source, lib, root, present: assets.find(a => a.name === "仍在.mp3"), gone: assets.find(a => a.name === "缺失.mp3"), trash: assets.find(a => a.name === "废纸篓.mp3") };
 }
+test("失效记录只进入失效视图，普通搜索/收藏/待确认/离线/标签/目录计数排除，但数据保留", async t => {
+  const {lib,root,gone,present}=await setup(t,{directoryClassification:true});
+  lib.patch(gone.id,{tags:["仅失效标签"],note:"不可丢失的备注",favorite:1});
+  lib.db.prepare("UPDATE assets SET file_status='missing',online=0 WHERE id=?").run(gone.id);
+  lib.db.prepare("UPDATE assets SET file_status='offline',online=0 WHERE id=?").run(present.id);
+  assert.equal(lib.list().total,2);
+  for(const query of [{kind:"music"},{view:"all"},{view:"review"},{view:"offline"},{view:"favorites"},{q:"缺失"},{tagName:"仅失效标签"},{directoryRoot:root.id,directory:"",includeChildren:"1"}])
+    assert.ok(!lib.list(query).items.some(a=>a.id===gone.id));
+  assert.equal(lib.list({view:"missing",q:"缺失",tagName:"仅失效标签"}).items[0].id,gone.id);
+  const stats=lib.stats();assert.equal(stats.total,2);assert.equal(stats.missing,1);assert.equal(stats.offline,1);assert.equal(stats.favorites,0);
+  assert.equal(lib.directoryClassification.options().find(c=>c.category==="待确认").n,2);
+  assert.equal(lib.directoryClassification.options({view:"missing"}).find(c=>c.category==="待确认").n,1);
+  const tags=new Tags(lib).init();assert.equal(tags.list().find(t=>t.name==="仅失效标签").n,0);
+  assert.equal(tags.list({view:"missing"}).find(t=>t.name==="仅失效标签").n,1);
+  const branch=await new FolderBrowser(lib).branch({root:root.id});assert.equal(branch.total,2);
+  assert.equal(lib.asset(gone.id).note,"不可丢失的备注");assert.deepEqual(lib.asset(gone.id).tags,["仅失效标签"]);
+});
+
+test("有效文件重新扫描或路径对账后恢复普通可见性，不必等待旧的失效缓存过期", async t=>{
+  const {lib,root,gone,source}=await setup(t);
+  lib.patch(gone.id,{tags:["保留"],note:"原备注"});
+  lib.db.prepare("UPDATE assets SET file_status='missing',file_checked_ms=?,online=0 WHERE id=?").run(Date.now(),gone.id);
+  const job=lib.scan(root.id);while(job.status==="running")await new Promise(r=>setTimeout(r,5));assert.equal(job.status,"done");
+  assert.ok(lib.list().items.some(a=>a.id===gone.id));assert.equal(lib.asset(gone.id).file_checked_ms,0);
+  lib.db.prepare("UPDATE assets SET file_status='missing',file_checked_ms=?,online=0 WHERE id=?").run(Date.now(),gone.id);
+  await reconcilePaths(lib,root,[path.relative(source,gone.path)],{tagFiles:false});
+  assert.ok(lib.list().items.some(a=>a.id===gone.id));assert.equal(lib.list({view:"missing"}).total,0);
+  assert.deepEqual(lib.asset(gone.id).tags,["保留"]);assert.equal(lib.asset(gone.id).note,"原备注");
+});
 test("失效索引清理：备份先落盘，关联数据及预览清理，公共分类与废纸篓保留", async t => {
   const { lib, gone, present, trash } = await setup(t);
   const manager = new MusicCategories(lib).init();

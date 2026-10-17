@@ -286,7 +286,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
 
   // ── 落库 1：认领成功的条目（path 是全局唯一约束，冲突只记录不崩）
   const updateAsset = lib.db.prepare(
-    "UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1 WHERE id=?",
+    "UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?",
   );
   const setDigest = lib.db.prepare("UPDATE assets SET sha256=? WHERE id=?");
   const claimOrder = [...claims.entries()].sort((a, b) => (a[1].how === "path" ? -1 : 0) - (b[1].how === "path" ? -1 : 0));
@@ -325,6 +325,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
     const unchanged =
       rowNow &&
       rowNow.path === file.abs &&
+      rowNow.file_status !== "missing" &&
       Number(rowNow.size) === file.size &&
       Math.abs(Number(rowNow.mtime) - file.mtimeMs) < 1 &&
       Number(rowNow.dev) === file.dev &&
@@ -563,7 +564,7 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     if (current) {
       if (!current.trashed) {
         lib.db
-          .prepare("UPDATE assets SET size=?,mtime=?,dev=?,ino=?,online=1 WHERE id=?")
+          .prepare("UPDATE assets SET size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?")
           .run(stat.size, stat.mtimeMs, stat.dev, stat.ino, current.id);
         report.touched++;
       }
@@ -587,7 +588,7 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
       const target = candidates[0];
       try {
         lib.db
-          .prepare("UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1 WHERE id=?")
+          .prepare("UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?")
           .run(abs, path.basename(rel), ext, stat.size, stat.mtimeMs, stat.dev, stat.ino, target.id);
       } catch {
         report.needFullReconcile = true; // 目标路径被别的记录占着，交给全量对账精确处理

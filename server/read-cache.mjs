@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 const databases = new WeakMap();
 
 // Observe the shared database, not HTTP routes: scans and filesystem reconciliation write here too.
@@ -8,7 +10,9 @@ export class ReadCache {
     this.max = max;
     this.now = now;
     this.depth = 0;
-    const invalidate = () => this.entries.clear();
+    this.instance = randomUUID();
+    this.generation = 0;
+    const invalidate = () => { this.entries.clear(); this.generation++; };
     const prepare = db.prepare.bind(db);
     db.prepare = (...args) => {
       const statement = prepare(...args);
@@ -42,6 +46,7 @@ export class ReadCache {
     };
     this.db = db;
   }
+  get revision() { return `${this.instance}:${this.generation}`; }
   read(key, load) {
     // Never reuse or retain a view of partially committed data.
     if (this.depth || this.db.inTransaction) return load();

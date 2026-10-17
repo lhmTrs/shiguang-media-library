@@ -21,7 +21,7 @@ export class DuplicateAudio {
       const ids = [...new Set(report.groups.flatMap(g => g.files.map(f => f.id)))], current = new Map();
       for (let i = 0; i < ids.length; i += 200) {
         const batch = ids.slice(i, i + 200);
-        const rows = this.lib.db.prepare(`SELECT id,path,name,category,sub,tags,reveal_count,online,kind,ext FROM assets WHERE trashed=0 AND ${this.lib.activeAssetScope()} AND id IN (${batch.map(() => "?").join(",")})`).all(...batch);
+        const rows = this.lib.db.prepare(`SELECT id,path,name,category,sub,tags,reveal_count,online,kind,ext FROM assets WHERE trashed=0 AND ${this.lib.activeAssetScope()} AND ${this.lib.nonMissingAssetScope()} AND id IN (${batch.map(() => "?").join(",")})`).all(...batch);
         for (const row of rows) current.set(row.id, { ...row, tags: JSON.parse(row.tags) });
       }
       report.groups = report.groups.map(group => {
@@ -57,7 +57,7 @@ export class DuplicateAudio {
   async work(job, force) {
     try {
       const old = this.read(job.scope), fingerprints = {}, skipped = [], sizes = new Map(), hashes = new Map();
-      const assets = this.lib.db.prepare("SELECT * FROM assets WHERE trashed=0 AND " + this.lib.activeAssetScope() + " AND " + (job.scope === "all" ? "kind IN ('sfx','music')" : "kind=?")).all(...(job.scope === "all" ? [] : [job.scope]));
+      const assets = this.lib.db.prepare("SELECT * FROM assets WHERE trashed=0 AND " + this.lib.activeAssetScope() + " AND " + this.lib.nonMissingAssetScope() + " AND " + (job.scope === "all" ? "kind IN ('sfx','music')" : "kind=?")).all(...(job.scope === "all" ? [] : [job.scope]));
       job.total = assets.length;
       for (const asset of assets) {
         this.guard(job);

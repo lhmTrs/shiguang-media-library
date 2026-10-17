@@ -47,7 +47,7 @@ export class FolderBrowser {
     const pending = classification && query.directory === PENDING_DIRECTORY;
     const { root, directory, absolute } = folderScope(this.lib, query.root, pending ? "" : query.directory || "");
     if (classification && directory.split("/").filter(Boolean).length > 2) throw Error("分类仅支持主类和子类两级");
-    const indexed = this.lib.db.prepare("SELECT path FROM assets WHERE root_id=? AND trashed=0").all(root.id);
+    const indexed = this.lib.db.prepare("SELECT path FROM assets WHERE root_id=? AND trashed=0 AND " + this.lib.nonMissingAssetScope()).all(root.id);
     if (pending) {
       const total = indexed.filter(a => directoryClass(root, a.path)?.review).length;
       return { root: { id: root.id, name: root.name }, directory: PENDING_DIRECTORY, path: root.path, writable: false, state: root.online ? "online" : "offline", direct: total, total, children: [] };

@@ -2252,7 +2252,7 @@ dd {
 .tag-rule-filter > button { min-height: 40px; width: 100%; justify-content: space-between; }
 .tag-rule-filter > button > span { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag-rule-filter > button > svg { flex-shrink: 0; }
-.tag-rule-panel { position: absolute; top: calc(100% + 6px); left: 0; width: 360px; max-width: calc(100vw - 32px); background: var(--c-white-bg); border: 1px solid var(--c-d9e2dd); border-radius: 6px; padding: 14px; z-index: 35; box-shadow: 0 8px 24px var(--c-20392a22); }
+.tag-rule-panel { position: absolute; top: calc(100% + 6px); left: 0; width: 360px; max-width: calc(100vw - 32px); max-height: min(640px,65vh); overflow-y: auto; overscroll-behavior: contain; background: var(--c-white-bg); border: 1px solid var(--c-d9e2dd); border-radius: 6px; padding: 14px; z-index: 35; box-shadow: 0 8px 24px var(--c-20392a22); }
 .tag-rule-add { display: grid; grid-template-columns: 105px minmax(0,1fr); gap: 8px; }
 .tag-rule-add select { min-width: 0; width: 100%; }
 .tag-rule-group { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 8px; padding-top: 14px; align-items: center; }
@@ -2275,6 +2275,16 @@ dd {
 .tag-rule-option > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .tag-rule-option small { color: var(--c-63756a); flex-shrink: 0; }
 .tag-rule-options > p, .tag-rule-limit { font-size: 12px; color: var(--c-63756a); }
+.tag-rule-heading { font-size: 12px; font-weight: 600; color: var(--c-63756a); }
+.tag-rule-recent { margin-top: 14px; }
+.tag-rule-recent-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; margin-top: 8px; }
+.tag-rule-recent-options > label { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 5px 8px; border: 1px solid var(--c-d9e2dd); border-radius: 4px; cursor: pointer; font-size: 12px; }
+.tag-rule-recent-options > label:hover { background: var(--c-edf5ef); }
+.tag-rule-recent-options input { flex: 0 0 14px; width: 14px; height: 14px; accent-color: var(--c-347353); }
+.tag-rule-recent-options span { min-width: 0; overflow-wrap: anywhere; }
+.tag-rule-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.tag-rule-list-heading small { font-size: 11px; font-weight: 400; }
+.tag-rule-list-heading + .tag-rule-options { margin-top: 6px; }
 .tag-manager .category-entry.selected {
   background: var(--c-e7eef6);
   color: var(--c-3d6384);
