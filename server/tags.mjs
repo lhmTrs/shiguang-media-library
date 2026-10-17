@@ -13,7 +13,7 @@ export class Tags {
   }
   rows() {
     return this.lib.db
-      .prepare("SELECT id,tags,trashed FROM assets")
+      .prepare(`SELECT id,tags,trashed,CASE WHEN ${this.lib.activeAssetScope()} THEN 1 ELSE 0 END active_root FROM assets`)
       .all()
       .map((a) => ({ ...a, tags: JSON.parse(a.tags) }));
   }
@@ -41,7 +41,7 @@ export class Tags {
     let untagged = 0,
       total = 0;
     for (const a of rows) {
-      if (a.trashed) continue;
+      if (a.trashed || !a.active_root) continue;
       total++;
       if (!a.tags.length) untagged++;
       for (const tag of new Set(a.tags))

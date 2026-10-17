@@ -51,6 +51,47 @@ try {
       page.on("pageerror", e => errors.push(e.message));
       await page.goto(url);
       await expect(page.locator(".asset-row")).toHaveCount(11);
+      await page.locator(".asset-row .file-icon").first().click();
+      const inspector = page.locator("#asset-details");
+      await expect(inspector).toBeVisible();
+      await inspector.getByLabel("详情备注", { exact: true }).fill("未保存的详情草稿");
+      await page.getByRole("button", { name: "隐藏素材详情", exact: true }).click();
+      await expect(inspector).toBeHidden();
+      await page.getByRole("button", { name: "显示素材详情", exact: true }).click();
+      await expect(inspector.getByLabel("详情备注", { exact: true })).toHaveValue("未保存的详情草稿");
+      await inspector.getByLabel("详情备注", { exact: true }).fill("");
+      await inspector.evaluate(el => el.scrollTop = 0);
+      const separator = page.getByRole("separator", { name: "调整详情宽度" });
+      const handle = await separator.boundingBox();
+      await page.mouse.move(handle.x + 4, handle.y + 80); await page.mouse.down();
+      await page.mouse.move(handle.x - 76, handle.y + 80); await page.mouse.up();
+      await expect.poll(() => separator.getAttribute("aria-valuenow")).not.toBe("340");
+      await separator.focus(); await separator.press("Home");
+      await expect(separator).toHaveAttribute("aria-valuenow", "280");
+      await separator.press("ArrowLeft"); await expect(separator).toHaveAttribute("aria-valuenow", "300");
+      for (const [width, height] of [[1440, 900], [1366, 768], [1280, 720], [1024, 640], [390, 700], [320, 640]]) {
+        await page.setViewportSize({ width, height });
+        await inspector.evaluate(el => el.scrollTop = 0);
+        await expect.poll(async () => {
+          const bounds = await inspector.boundingBox(), player = await page.locator(".audition-player").boundingBox();
+          return !!bounds && bounds.y >= 59 && bounds.y + bounds.height <= player.y;
+        }).toBe(true);
+        if (width >= 1101) {
+          const filters = await page.locator(".search-toolbar").boundingBox(), details = await inspector.boundingBox();
+          assert.ok(filters.x + filters.width <= details.x, "Inspector must not cover search controls");
+        }
+        const box = await inspector.boundingBox(), scrollBefore = await page.evaluate(() => scrollY);
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.wheel(0, 1800);
+        await expect.poll(() => inspector.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+        assert.equal(await page.evaluate(() => scrollY), scrollBefore, "Inspector wheel must not scroll the library");
+        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+        await page.screenshot({ path: path.join(out, `${name}-inspector-${width}.png`), animations: "disabled" });
+      }
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await inspector.getByRole("button", { name: "关闭详情", exact: true }).click();
+      await expect(inspector).toBeHidden();
+      await page.getByRole("button", { name: "关闭播放器", exact: true }).click();
       const picker = page.getByRole("combobox", { name: "筛选分类", exact: true });
       await picker.fill("B");
       const choose = text => page.locator(".category-filter-menu button").filter({ has: page.locator("span", { hasText: new RegExp("^" + text + "$") }) }).click();

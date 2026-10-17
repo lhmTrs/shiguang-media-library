@@ -10,6 +10,7 @@ import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
 import { observeDatabase } from "./read-cache.mjs";
 import { DirectoryClassification } from "./directory-classification.mjs";
+import { searchTerms } from "./search-query.mjs";
 export const run = promisify(execFile);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
@@ -56,6 +57,7 @@ export class Library {
       this.db = this.database;
       observeDatabase(this.db);
       this.ensureRevealCount();
+      await this.ensureRootManagement();
       this.db
         .prepare(
           "UPDATE operations SET status='interrupted',error='操作中断，请核对源与目标文件；未自动删除任何文件' WHERE status='pending'",
@@ -111,6 +113,7 @@ export class Library {
       )
       .run();
     this.ensureRevealCount();
+    await this.ensureRootManagement();
     await this.backfillCreationDates();
     await this.prepareDirectoryClassification();
     return this;
@@ -161,7 +164,31 @@ export class Library {
       ["retired", this.db.kind === "mysql" ? "BIGINT NOT NULL DEFAULT 0" : "INTEGER NOT NULL DEFAULT 0"],
     ]) if (!rootColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE roots ADD COLUMN ${name} ${type}`);
   }
-  /** 幂等建索引：两种方言都支持（MySQL 没有 CREATE INDEX IF NOT EXISTS）。 */
+  // Unknown legacy dates stay NULL; the fallback order is editable, not a claimed timestamp.
+  async ensureRootManagement() {
+    const mysql = this.db.kind === "mysql";
+    const columns = mysql
+      ? this.db.prepare("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='roots'").all()
+      : this.db.prepare("PRAGMA table_info(roots)").all();
+    if (!columns.some(c => c.name === "managed_added_ms")) this.db.exec(`ALTER TABLE roots ADD COLUMN managed_added_ms ${mysql ? "DOUBLE" : "REAL"}`);
+    if (!columns.some(c => c.name === "management_order")) this.db.exec(`ALTER TABLE roots ADD COLUMN management_order ${mysql ? "BIGINT" : "INTEGER"} NOT NULL DEFAULT 0`);
+    const pending = this.db.prepare("SELECT * FROM roots WHERE management_order=0 ORDER BY " + (mysql ? "path,id" : "rowid")).all();
+    if (!pending.length) return;
+    const dir = path.join(this.dataDir, "backups");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `root-management-order-${Date.now()}-${id()}.json`), JSON.stringify({ basis: mysql ? "legacy-path-order-not-registration-time" : "legacy-sqlite-insertion-order", roots: pending }), { flag: "wx", mode: 0o600 });
+    let order = Number(this.db.prepare("SELECT MAX(management_order) n FROM roots").get().n || 0);
+    this.db.transaction(() => {
+      for (const root of pending) this.db.prepare("UPDATE roots SET management_order=? WHERE id=?").run(++order, root.id);
+    })();
+  }
+  setRootManagementOrder(ids) {
+    if (this.locks.size || [...this.jobs.values()].some(j => j.status === "running")) throw Error("素材任务进行中，暂不能调整保留顺序");
+    const roots = this.allRoots();
+    if (!Array.isArray(ids) || ids.length !== roots.length || new Set(ids).size !== roots.length || ids.some(id => !roots.some(r => r.id === id))) throw Error("素材目录已变化，请刷新后调整顺序");
+    this.db.transaction(() => { ids.forEach((id, i) => this.db.prepare("UPDATE roots SET management_order=? WHERE id=?").run(i + 1, id)); })();
+    return this.allRoots();
+  }
   ensureIndex(name, table, columns) {
     const exists =
       this.db.kind === "mysql"
@@ -308,10 +335,10 @@ export class Library {
             : "该目录与已登记目录重叠，请选择互不包含的文件夹",
         );
     }
-    const r = { id: id(), path: p, kind, name: path.basename(p) };
+    const r = { id: id(), path: p, kind, name: path.basename(p), managed_added_ms: Date.now(), management_order: Number(this.db.prepare("SELECT MAX(management_order) n FROM roots").get().n || 0) + 1 };
     this.db
       .prepare(
-        "INSERT INTO roots(id,path,kind,name) VALUES(@id,@path,@kind,@name)",
+        "INSERT INTO roots(id,path,kind,name,managed_added_ms,management_order) VALUES(@id,@path,@kind,@name,@managed_added_ms,@management_order)",
       )
       .run(r);
     return r;
@@ -333,6 +360,7 @@ export class Library {
     return { a, p: real, stat };
   }
   scan(rootId, classification = new Map()) {
+    if ([...this.jobs.values()].some(j => j.type === "duplicate-cleanup" && j.status === "running")) throw Error("重复音频清理中，请稍后扫描");
     if (this.locks.size) throw Error("文件操作进行中，请完成后再扫描");
     if (
       [...this.jobs.values()].some(
@@ -628,8 +656,11 @@ export class Library {
         );
     }
   }
+  activeAssetScope(alias = "assets") {
+    return `EXISTS (SELECT 1 FROM roots managed_root WHERE managed_root.id=${alias}.root_id AND COALESCE(managed_root.retired,0)=0)`;
+  }
   assetFilter(query = {}, ignoreCategory = false) {
-    const where = ["trashed=0"],
+    const where = ["trashed=0", this.activeAssetScope()],
       values = [];
     if (query.directoryRoot) {
       const scope = folderPredicate(this, query);
@@ -723,12 +754,17 @@ export class Library {
           );
       }
     }
+    if (query.qMode !== undefined && !["all", "any"].includes(query.qMode)) throw Error("关键词匹配方式无效");
     if (query.q) {
-      where.push(
-        "(name LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\' OR sub LIKE ? ESCAPE '\\')",
-      );
-      const term = "%" + String(query.q).replace(/[\\%_]/g, "\\$&") + "%";
-      values.push(...Array(5).fill(term));
+      if (typeof query.q !== "string" || query.q.length > 2000) throw Error("搜索内容最多 2000 字");
+      const terms = searchTerms(query.q);
+      if (terms.length > 32) throw Error("最多组合 32 个关键词");
+      const expressions = terms.map(word => {
+        const term = "%" + word.replace(/[\\%_]/g, "\\$&") + "%";
+        values.push(...Array(5).fill(term));
+        return "(name LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\' OR sub LIKE ? ESCAPE '\\')";
+      });
+      if (expressions.length) where.push("(" + expressions.join(query.qMode === "any" ? " OR " : " AND ") + ")");
     }
     if (query.duration === "short") where.push("duration < 10");
     if (query.duration === "medium")
@@ -826,34 +862,35 @@ export class Library {
     };
   }
   stats() {
+    const active = "trashed=0 AND " + this.activeAssetScope();
     return {
       total: this.db
-        .prepare("SELECT COUNT(*) n FROM assets WHERE trashed=0")
+        .prepare(`SELECT COUNT(*) n FROM assets WHERE ${active}`)
         .get().n,
       kinds: this.db
         .prepare(
-          "SELECT kind,COUNT(*) n FROM assets WHERE trashed=0 GROUP BY kind",
+          `SELECT kind,COUNT(*) n FROM assets WHERE ${active} GROUP BY kind`,
         )
         .all(),
       favorites: this.db
-        .prepare("SELECT COUNT(*) n FROM assets WHERE favorite=1 AND trashed=0")
+        .prepare(`SELECT COUNT(*) n FROM assets WHERE favorite=1 AND ${active}`)
         .get().n,
       review: this.db
         .prepare(
-          "SELECT COUNT(*) n FROM assets WHERE review=1 AND " + (this.directoryClassification ? "" : "confirmed=0 AND ") + "trashed=0",
+          "SELECT COUNT(*) n FROM assets WHERE review=1 AND " + (this.directoryClassification ? "" : "confirmed=0 AND ") + active,
         )
         .get().n,
       offline: this.db
-        .prepare("SELECT COUNT(*) n FROM assets WHERE online=0 AND trashed=0")
+        .prepare(`SELECT COUNT(*) n FROM assets WHERE online=0 AND ${active}`)
         .get().n,
-      missing: this.db.prepare("SELECT COUNT(*) n FROM assets WHERE file_status='missing' AND trashed=0").get().n,
+      missing: this.db.prepare(`SELECT COUNT(*) n FROM assets WHERE file_status='missing' AND ${active}`).get().n,
       categories: this.db
         .prepare(
-          "SELECT category,COUNT(*) n FROM assets WHERE category<>'' AND trashed=0 GROUP BY category ORDER BY category",
+          `SELECT category,COUNT(*) n FROM assets WHERE category<>'' AND ${active} GROUP BY category ORDER BY category`,
         )
         .all(),
       formats: this.db
-        .prepare("SELECT DISTINCT ext FROM assets WHERE trashed=0 ORDER BY ext")
+        .prepare(`SELECT DISTINCT ext FROM assets WHERE ${active} ORDER BY ext`)
         .all()
         .map((r) => r.ext),
     };
@@ -940,7 +977,7 @@ export class Library {
     if (columns.length) this.onMetadataChanged?.(original.root_id);
     return this.asset(assetId);
   }
-  async plan(input) {
+  async plan(input, jobId = null) {
     if (
       !["rename", "move", "trash"].includes(input.action) ||
       !Array.isArray(input.ids) ||
@@ -952,7 +989,7 @@ export class Library {
     const results = [];
     for (const assetId of [...new Set(input.ids)]) {
       try {
-        if ([...this.jobs.values()].some((j) => j.status === "running"))
+        if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
         const { a, p, stat } = await this.source(assetId);
         let target = "";
@@ -1061,8 +1098,8 @@ export class Library {
       throw e;
     }
   }
-  async execute(input, expectedPlans = null) {
-    const plans = await this.plan(input);
+  async execute(input, expectedPlans = null, jobId = null) {
+    const plans = await this.plan(input, jobId);
     const results = [];
     for (const p of plans) {
       if (!p.ok) {
@@ -1077,7 +1114,7 @@ export class Library {
       const operation = id();
       let changed = false;
       try {
-        if ([...this.jobs.values()].some((j) => j.status === "running"))
+        if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
         const { a, stat } = await this.source(p.id);
         if (expectedPlans) {

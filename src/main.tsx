@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { KeywordSearch, KeywordTokens, type SearchMode } from "./KeywordSearch";
 import {
   Aperture,
   Library,
@@ -43,6 +44,8 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightOpen,
+  PanelRightClose,
   SlidersHorizontal,
   MoreHorizontal,
   Database,
@@ -75,6 +78,7 @@ import { FolderBrowser } from "./FolderBrowser";
 import { MoveDestinationPicker } from "./MoveDestinationPicker";
 import { readRefreshSeconds, REFRESH_STORAGE_KEY } from "./refresh-preferences";
 import { displayDirectoryOptions, type DirectoryOption } from "./directory-labels";
+import { MetadataBatchHistory } from "./MetadataBatchHistory";
 
 export type Asset = {
   id: string;
@@ -134,6 +138,8 @@ type Root = {
   retired?: number;
   revision?: number;
   reconciled_ms?: number | null;
+  managed_added_ms?: number | null;
+  management_order?: number;
 };
 type RelocateResult = {
   needsConfirm?: boolean;
@@ -354,6 +360,7 @@ function App() {
   const [view, setView] = useState("all"),
     [q, setQ] = useState(""),
     [search, setSearch] = useState(""),
+    [searchMode, setSearchMode] = useState<SearchMode>("all"),
     [rootFilter, setRootFilter] = useState<string[]>([]),
     [category, setCategory] = useState(""),
     [ext, setExt] = useState(""),
@@ -378,10 +385,17 @@ function App() {
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
   const [tagRules, setTagRules] = useState<TagRules>(emptyTagRules);
+  const [detailsHidden, setDetailsHidden] = useState(() => { try { return localStorage.getItem("shiguang.detailsHidden") === "true"; } catch { return false; } });
+  const [detailsWidth, setDetailsWidth] = useState(() => { try { const n = Number(localStorage.getItem("shiguang.detailsWidth")); return Number.isFinite(n) && n >= 280 ? Math.min(n, 600) : 340; } catch { return 340; } });
+  const [playerHeight, setPlayerHeight] = useState(0);
+  const [topbarHeight, setTopbarHeight] = useState(72);
+  const playerRef = useRef<HTMLDivElement>(null);
+  const topbarRef = useRef<HTMLElement>(null);
+  useEffect(() => { try { localStorage.setItem("shiguang.detailsHidden", String(detailsHidden)); localStorage.setItem("shiguang.detailsWidth", String(detailsWidth)); } catch {} }, [detailsHidden, detailsWidth]);
   const [advancedFilters, setAdvancedFilters] = useState(false);
   const folderView = true;
   const filterMemory = useRef(new Map<string, {
-    q: string; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
+    q: string; searchMode: SearchMode; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
     duration: string; createdFrom: string; createdTo: string; dateField: "created" | "captured";
     captureUnknown: boolean; onlyFavorites: boolean;
   }>());
@@ -681,6 +695,7 @@ function App() {
   function assetParams(targetPage = page) {
     const params = new URLSearchParams({
       q: search,
+      qMode: searchMode,
       view,
       page: String(targetPage),
       sort,
@@ -870,6 +885,7 @@ function App() {
     ready,
     view,
     search,
+    searchMode,
     rootFilter,
     category,
     tagRules,
@@ -926,6 +942,7 @@ function App() {
   }, [
     view,
     search,
+    searchMode,
     rootFilter,
     category,
     tagRules,
@@ -976,10 +993,11 @@ function App() {
   }, [volume, playing]);
   function navigate(v: string) {
     if (v !== view) {
-      filterMemory.current.set(view, { q, rootFilter, category, tagRules, ext, duration, createdFrom, createdTo, dateField, captureUnknown, onlyFavorites });
+      filterMemory.current.set(view, { q, searchMode, rootFilter, category, tagRules, ext, duration, createdFrom, createdTo, dateField, captureUnknown, onlyFavorites });
       const saved = filterMemory.current.get(v);
       setQ(saved?.q || "");
       setSearch(saved?.q || "");
+      setSearchMode(saved?.searchMode || "all");
       setRootFilter(saved?.rootFilter || []);
       setCategory(saved?.category || "");
       setTagRules(saved?.tagRules || emptyTagRules());
@@ -1237,8 +1255,21 @@ function App() {
   );
   const allChecked =
     assets.length > 0 && assets.every((a) => checked.has(a.id));
+  useEffect(() => {
+    const player = playerRef.current;
+    const topbar = topbarRef.current;
+    const measure = () => { setPlayerHeight(player ? Math.ceil(player.getBoundingClientRect().height) : 0); setTopbarHeight(topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 72); };
+    const observer = new ResizeObserver(measure);
+    if (player) observer.observe(player);
+    if (topbar) observer.observe(topbar);
+    measure();
+    return () => observer.disconnect();
+  }, [!!playing]);
+  function resizeDetails(clientX: number) {
+    setDetailsWidth(Math.max(280, Math.min(600, window.innerWidth - 80, window.innerWidth - clientX)));
+  }
   return (
-    <div className={"app" + (navCollapsed ? " nav-collapsed" : "")}>
+    <div className={"app" + (navCollapsed ? " nav-collapsed" : "") + (detailsHidden ? " details-hidden" : "")} style={{ "--details-width": `${detailsWidth}px`, "--player-height": `${playerHeight}px`, "--inspector-top": `${topbarHeight}px` } as React.CSSProperties}>
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
       {navSettings && <NavigationSettings items={[...navs.map(([id, label]): [string, string] => [id, label]), ["roots", "素材目录"]]} hidden={hiddenNav}
         toggle={id => { setHiddenNav(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]); if (view === id) navigate("all"); }}
@@ -1328,7 +1359,7 @@ function App() {
         </div>
       </aside>
       <main aria-busy={refreshing || showWork || undefined}>
-        <header className="topbar">
+        <header ref={topbarRef} className="topbar">
           <IconButton
             icon={Menu}
             title={mobileNav ? "关闭导航" : "展开导航"}
@@ -1342,6 +1373,7 @@ function App() {
             <HardDrive size={14} />
             LOCAL LIBRARY
           </span>
+          {libraryView && <button className="icon-button details-toggle" title={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-label={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-expanded={!detailsHidden} aria-controls="asset-details" onClick={() => { if (detailsHidden && !selected && assets[0]) setSelected(assets[0]); setDetailsHidden(v => !v); }}>{detailsHidden ? <PanelRightOpen size={18}/> : <PanelRightClose size={18}/>}</button>}
           {jobsActive && (
             <span className="work-pill" role="status" aria-live="polite">
               <span className="spinner" aria-hidden="true" />
@@ -1354,7 +1386,7 @@ function App() {
             添加素材目录
           </button>
         </header>
-        {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)}/> : view === "tagManagement" ? (
+        {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
@@ -1374,7 +1406,7 @@ function App() {
         ) : view === "categoryManagement" ? (
           <FolderBrowser roots={roots} request={api} revision={editRevision} play={play} playingId={playing?.id} isPlaying={auditionActive} tags={setTagAsset} move={moveAsset} addToProject={addToProject} stopAudio={pauseAudition} categories={allCategories}/>
         ) : (
-          <>
+          <div className="library-browser">
             <section className="library-heading">
               <div>
                 <h1>{title}</h1>
@@ -1408,29 +1440,7 @@ function App() {
               </div>
             )}
             <div className="filters search-toolbar" data-expanded={advancedFilters}>
-              <label className="search">
-                <Search size={18} />
-                <input
-                  placeholder="搜索名称、标签或备注"
-                  aria-label="搜索素材"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                />
-                {q && (
-                  <IconButton
-                    icon={X}
-                    title="清空搜索"
-                    onClick={() => setQ("")}
-                  />
-                )}
-                {selected && !folderView && (
-                  <IconButton
-                    icon={ListPlus}
-                    title="给选中素材添加分类"
-                    onClick={() => setQuickCategory(selected)}
-                  />
-                )}
-              </label>
+              <KeywordSearch value={q} change={setQ} mode={searchMode} changeMode={setSearchMode}/>
               <CategoryFilter value={category} categories={displayDirectoryOptions(filterCategories, allCategories.length ? allCategories : filterCategories)} onChange={setCategory} formatName={name => name}/>
               <TagRuleFilter value={tagRules} tags={filterTags} change={setTagRules}/>
               <button className="plain advanced-filter-trigger" aria-label="更多筛选" aria-expanded={advancedFilters} aria-controls="advanced-asset-filters" onClick={() => { setAdvancedFilters(v => !v); setRootMenuOpen(false); }}><SlidersHorizontal size={16}/><span>筛选</span>{(rootFilter.length > 0 || ext || duration || createdFrom || createdTo || captureUnknown || onlyFavorites) && <i className="filter-indicator"/>}<ChevronDown size={14}/></button>
@@ -1641,17 +1651,7 @@ function App() {
                     />
                   </span>
                 ))}
-                {q && (
-                  <span className="filter-token">
-                    <Search size={13} />
-                    {q}
-                    <IconButton
-                      icon={X}
-                      title="取消关键词筛选"
-                      onClick={() => setQ("")}
-                    />
-                  </span>
-                )}
+                <KeywordTokens value={q} change={setQ} mode={searchMode}/>
                 {category && (
                   <span className="filter-token">
                     {categoryLabel(category)}
@@ -1721,7 +1721,7 @@ function App() {
                   </span>
                 )}
                 <button className="text-button" onClick={() => {
-                  setQ(""); setSearch(""); setRootFilter([]); setCategory(""); setTagRules(emptyTagRules()); setExt(""); setDuration(""); setCreatedFrom(""); setCreatedTo(""); setCaptureUnknown(false); setOnlyFavorites(false);
+                  setQ(""); setSearch(""); setSearchMode("all"); setRootFilter([]); setCategory(""); setTagRules(emptyTagRules()); setExt(""); setDuration(""); setCreatedFrom(""); setCreatedTo(""); setCaptureUnknown(false); setOnlyFavorites(false);
                 }}>重置筛选</button>
               </div>
             )}
@@ -2019,16 +2019,19 @@ function App() {
                   </div>
                 </footer>
               </section>
-              <aside className={"details " + (selected ? "has-selection" : "")}>
+              <aside id="asset-details" aria-label="素材详情" aria-hidden={detailsHidden} className={"details " + (selected ? "has-selection" : "")}>
+                <div className="details-resizer" role="separator" aria-label="调整详情宽度" aria-orientation="vertical" aria-valuemin={280} aria-valuemax={600} aria-valuenow={detailsWidth} tabIndex={0}
+                  onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }}
+                  onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeDetails(e.clientX); }}
+                  onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
+                  onKeyDown={e => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) { e.preventDefault(); setDetailsWidth(n => e.key === "Home" ? 280 : e.key === "End" ? 600 : Math.max(280, Math.min(600, n + (e.key === "ArrowLeft" ? 20 : -20)))); } }}/>
                 <div className="details-head">
                   <strong>素材详情</strong>
-                  {selected && (
                     <IconButton
                       icon={X}
                       title="关闭详情"
-                      onClick={() => setSelected(null)}
+                      onClick={() => setDetailsHidden(true)}
                     />
-                  )}
                 </div>
                 {!selected ? (
                   <div className="details-empty">
@@ -2319,6 +2322,7 @@ function App() {
                       <label className="field">
                         备注
                         <textarea
+                          aria-label="详情备注"
                           value={note}
                           onChange={(e) => setNote(e.target.value)}
                           rows={3}
@@ -2422,7 +2426,7 @@ function App() {
                 查看任务
               </button>
             </div>
-          </>
+          </div>
         )}
       </main>
       {cleanupIds && <MissingCleanupDialog key={cleanupIds.join(",")} ids={cleanupIds} request={api} close={() => setCleanupIds(null)} changed={async (result: CleanupResult) => {
@@ -2481,7 +2485,7 @@ function App() {
         />
       )}
       {playing && (
-        <div className="player audition-player">
+        <div ref={playerRef} className="player audition-player">
           <AuditionControls asset={playing} playing={auditionActive} position={position} length={length} volume={volume} inPoint={inPoint} outPoint={outPoint} loop={loop}
             toggle={toggleAudition} seek={seekAudition} previous={() => void stepAudition(-1)} next={() => void stepAudition(1)}
             hasPrevious={libraryView && !stepping && (auditionIndex > 0 || page > 1 || (auditionIndex < 0 && auditionQueue.length > 0))}
@@ -2625,6 +2629,7 @@ function App() {
                         </strong>
                         <p>{r.path}</p>
                         <span>{r.retired ? "已注销（可恢复）" : r.online ? "在线" : "离线"}</span>
+                        <small className="root-management-info">{r.managed_added_ms ? `加入管理：${new Date(r.managed_added_ms).toLocaleString("zh-CN")}` : "历史加入时间未知"}{r.management_order ? ` · 保留顺序 ${r.management_order}` : ""}</small>
                       </div>
                       <div className="folder-actions">
                         {!r.retired && (
@@ -2703,9 +2708,17 @@ function App() {
                               void run(async () => {
                                 if (!window.confirm(`仅注销「${r.name}」？\n\n· 不会删除任何文件\n· 不会删除素材的标签、备注与项目关联\n· 该目录将不再被扫描与监听，之后可随时恢复`)) return;
                                 await api("/roots/" + r.id + "/retire", {});
+                                if (playing?.root_id === r.id) { pauseAudition(); setPlaying(null); }
+                                setSelected(prev => prev?.root_id === r.id ? null : prev);
+                                setEditingAsset(prev => prev?.root_id === r.id ? null : prev);
+                                setChecked(new Set());
+                                setRootFilter(prev => prev.filter(id => id !== r.id));
+                                if (allCategories.some(c => c.id === category && c.rootId === r.id)) setCategory("");
+                                setPage(1);
+                                setEditRevision(n => n + 1);
                                 await loadAllRoots();
                                 await refresh();
-                                setNotice("已注销（文件与标签都保留，可恢复）");
+                                setNotice("已注销，该目录素材已隐藏，文件与标签保留，可恢复");
                               })
                             }
                           >
@@ -2819,6 +2832,8 @@ function App() {
               )}
               {modal === "history" && (
                 <>
+                  <MetadataBatchHistory request={api} runTask={runWith} changed={() => { setEditRevision(n => n + 1); void refreshRef.current().catch(fail); }}/>
+                  <h3 className="file-history-heading">文件操作记录</h3>
                   {!ops.length ? (
                     <div className="empty">
                       <History size={32} />

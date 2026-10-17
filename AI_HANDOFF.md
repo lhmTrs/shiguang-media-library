@@ -78,14 +78,19 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - 界面耗时操作一律走 `run(fn, label)` / `runWith(label, fn)`：它同时负责禁用按钮（`busy`）与显示"正在做什么"的全屏遮罩；列表重新读取只用 `refreshing` 做内联提示（不遮内容）；有扫描任务时 `jobsActive` 驱动 1.5 秒轮询。新增重操作请用 `runWith("正在…", fn)`，不要另造一套 loading 状态。
 - 清单写入必须过三道闸：`writeManifest` 里串行化 + 唯一临时名（防并发踩踏）、`prepareManifestDir` 的符号链接/越界校验与"绝不代建登记目录"、（`MEDIA_READONLY_FILES=1` 时直接跳过）。只读模式下对账仍会索引，只是不写登记目录。
 - 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。
+- 日常素材可见性统一使用 `lib.activeAssetScope()`：列表、搜索、收藏、待确认、类型/格式/分类统计、标签计数和重复检测排除已注销根，不删除其索引。`asset(id)` 仍可读取历史数据，项目历史保留但该素材标为不可用；恢复登记后同一 ID 和属性重新显示。不要通过把素材标为删除/离线来实现注销隐藏。
 - 身份匹配逐级降级：路径 → `dev:ino` → xattr(`com.shiguang.assetid`) → `sha256`。第 5 级「同名同大小且唯一」**默认只记进 `report.suspectedClaims`，不认领**（自动认领会把另一个内容不同的文件继承上旧 id 与标签，已实测复现）；要自动认领必须显式 `adoptSuspected` / `MEDIA_ADOPT_SUSPECTED=1`，且条目已有 sha256 而候选哈希不同时永不认领。扫描时就要写入 `dev/ino`（`library.mjs` 的 scanWork），否则"扫描完立刻改名"这条最常见路径拿不到线索。
 - 界面风格是纯前端、纯 CSS 变量的事：切换只改 `<html data-theme>` 与 `localStorage`，不落库、不发请求。**改样式时不要在 `src/style.css` 里写死颜色**——写死的色块在深色/午夜蓝下不会跟随，改用 `var(--c-xxxxxx)` 或 `var(--green|--line|--muted|--soft)`；新增色值后跑一次 `node scripts/theme-gen.mjs --tokenize`。语义色（素材四类图标、危险/成功/提醒）在 `scripts/theme-gen.mjs` 的 `PROTECTED` 里锁色相，不要随意增删。
 - 当前分类取相对根路径前两层，`assets.category/sub/review` 是可重建投影。扫描、移动/撤销、完整/路径对账都要同步，清单导入不能覆盖位置派生字段。正式服务不初始化旧分类表、不接受旧分类写操作。跨根重名只改前端显示，数据中绝不保存拼接前缀。历史分类表不是现版分类来源。
 - 当前 `DirectoryClassification.options` 直接对根隔离的目录投影分组计数，不读旧分类表。历史 `MusicCategories.list` 的 UNION/30秒缓存仅为旧模块兼容。`observeDatabase` 仍保留数据库写入观察；不要将其误认为当前目录分类的数据来源。前端 `/categories` 在列表提交后独立请求，失败保留选项，不阻塞列表，不接受过期响应。
 - `asset_tags` 是注册表，素材实际标签在 `assets.tags`。同一个素材可以有多个普通标签。
+- 素材关键词搜索由 `server/search-query.mjs` 统一拆词：空白分隔、双引号内保留词组、去重；`qMode=all`（默认）要求每个词分别命中名称/标签/备注/主子类之一，`any` 为任一命中。`lib.assetFilter` 统一用于列表、分页和目录分类统计，SQL 参数化并转义 LIKE 通配符；最多 32 词、2000 字。前端 `KeywordSearch` 与独立关键词条复用同一解析器，匹配方式纳入导航记忆和刷新 key。不要在前端仅过滤当前页。
+- AI 批量标签/备注使用 `server/metadata-batches.mjs` 和 `AI_METADATA_API.md`，通过本机会话绑定的预览确认写入，不能让外部 AI 直接连库。`metadata_batches` 保存批次 before/after、依据和撤销状态，迁移 MySQL 时一并复制；`scripts/annotate.mjs` 仅调用 HTTP，不读取密码。旧备注默认只补空白，覆盖需显式 replace。预览后变更跳过，撤销只恢复本批实际改变且未再被修改的字段。原媒体不改，清单通过既有 hook 防抖同步；离线根的清单写入不保证当场完成。网页操作记录可查看并撤销批量标注。
 - `media_projects`、`project_assets` 独立于分类；项目内 `(project_id,asset_id)` 唯一。实际使用由人确认，不把收藏、试听、访达、复制当成使用；`used_at` 保留首次确认时间。
 - 项目快照让离线、废纸篓或已清理索引的历史仍可查看；不要把项目关联当成需要随 assets 删除的垃圾数据。
 - 重复音频按字节一致，不是听感指纹；删除后仅剩一个可移除重复标签，但离线/改类型/筛选隐藏不算删除。
+- 一键清理见 `server/duplicate-cleanup.mjs`：当前检测范围的完整报告（不按前端搜索缩小），绑定会话的一次性预览确认，10分钟过期。预览和执行均重算 SHA-256，逐项走废纸篓和可撤销操作记录，保留者离线/变化时整组跳过。项目引用、独立标签/备注/收藏冲突不自动丢弃，结果逐组报告。开发和验收只能用临时副本，不要调用真实清理接口试功能。
+- `roots.managed_added_ms` 是新增登记的真实毫秒时间；旧库保持 NULL，绝不伪造。`management_order` 是持久化保留顺序，默认新库按登记先后追加；旧 MySQL 无可靠历史顺序，迁移先备份并按路径生成初始顺序，跨根清理必须由用户确认。预览可手动调序，显式保存后覆盖默认优先级；注销、恢复、路径迁移不改变时间/顺序。此数据只在本机库中维护。
 - 文件状态检查不自动删除数据。清理、移动、改名、废纸篓都保留既有确认与安全边界。
 - FFmpeg 等缺失是可降级状态：显示预览/参数错误，而不是删索引或覆盖原文件。
 - 连播使用 `wantsPlayback` 意图与请求代次，不要退回仅凭 `audio.paused` 推断用户操作，否则亚秒音频会出现暂停后继续的竞态。

@@ -35,7 +35,12 @@ if (connection)
       const [rows] =
         mode === "exec"
           ? await connection.query(sql)
-          : await connection.execute(sql, values || []);
+          : await connection.execute(sql, (values || []).map(value =>
+              // Keep the text parameter type, but make its UTF-8 bytes explicit.
+              typeof value === "string"
+                ? mysql.TypedParameter.VAR_STRING(Buffer.from(value, "utf8"))
+                : value,
+            ));
       reply({
         value:
           mode === "get"

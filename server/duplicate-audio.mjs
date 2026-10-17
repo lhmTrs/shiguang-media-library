@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
+import { DuplicateCleanup } from "./duplicate-cleanup.mjs";
 
 const stamp = s => `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
 export class DuplicateAudio {
-  constructor(lib, busy = () => false) { this.lib = lib; this.busy = busy; this.active = null; this.marking = false; this.init(); }
+  constructor(lib, busy = () => false) { this.lib = lib; this.busy = busy; this.active = null; this.marking = false; this.init(); this.cleanup = new DuplicateCleanup(this); }
   init() {
     this.lib.db.exec(this.lib.db.kind === "mysql"
       ? "CREATE TABLE IF NOT EXISTS duplicate_audio_reports (id VARCHAR(36) PRIMARY KEY,payload LONGTEXT NOT NULL) ENGINE=InnoDB"
@@ -20,7 +21,7 @@ export class DuplicateAudio {
       const ids = [...new Set(report.groups.flatMap(g => g.files.map(f => f.id)))], current = new Map();
       for (let i = 0; i < ids.length; i += 200) {
         const batch = ids.slice(i, i + 200);
-        const rows = this.lib.db.prepare(`SELECT id,path,name,category,sub,tags,reveal_count,online,kind,ext FROM assets WHERE trashed=0 AND id IN (${batch.map(() => "?").join(",")})`).all(...batch);
+        const rows = this.lib.db.prepare(`SELECT id,path,name,category,sub,tags,reveal_count,online,kind,ext FROM assets WHERE trashed=0 AND ${this.lib.activeAssetScope()} AND id IN (${batch.map(() => "?").join(",")})`).all(...batch);
         for (const row of rows) current.set(row.id, { ...row, tags: JSON.parse(row.tags) });
       }
       report.groups = report.groups.map(group => {
@@ -32,7 +33,7 @@ export class DuplicateAudio {
       report.extraCopies = report.groups.reduce((n, g) => n + g.files.length - 1, 0);
       report.extraBytes = report.groups.reduce((n, g) => n + g.extraBytes, 0);
     }
-    return { active: this.active ? { ...this.active, errors: undefined } : null, lastJob: this.lastJob || null, marking: this.marking, report };
+    return { active: this.active ? { ...this.active, errors: undefined } : null, cleanup: this.cleanup.active, lastJob: this.lastJob || null, marking: this.marking, report };
   }
   async inspect(asset) {
     const root = this.lib.roots().find(r => r.id === asset.root_id);
@@ -56,7 +57,7 @@ export class DuplicateAudio {
   async work(job, force) {
     try {
       const old = this.read(job.scope), fingerprints = {}, skipped = [], sizes = new Map(), hashes = new Map();
-      const assets = this.lib.db.prepare("SELECT * FROM assets WHERE trashed=0 AND " + (job.scope === "all" ? "kind IN ('sfx','music')" : "kind=?")).all(...(job.scope === "all" ? [] : [job.scope]));
+      const assets = this.lib.db.prepare("SELECT * FROM assets WHERE trashed=0 AND " + this.lib.activeAssetScope() + " AND " + (job.scope === "all" ? "kind IN ('sfx','music')" : "kind=?")).all(...(job.scope === "all" ? [] : [job.scope]));
       job.total = assets.length;
       for (const asset of assets) {
         this.guard(job);

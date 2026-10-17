@@ -7,6 +7,7 @@ export function folderScope(lib, rootId, directory = "") {
   if (directory && directory.split("/").some(p => !p || p === "." || p === "..")) throw Error("文件夹必须是登记目录内的相对路径");
   const root = lib.db.prepare("SELECT * FROM roots WHERE id=?").get(rootId);
   if (!root) throw Error("未登记的素材目录");
+  if (root.retired) throw Error("目录已注销，请先恢复登记");
   const absolute = path.resolve(root.path, ...directory.split("/"));
   if (absolute !== root.path && !absolute.startsWith(root.path + path.sep)) throw Error("文件夹超出登记目录");
   return { root, directory, absolute };

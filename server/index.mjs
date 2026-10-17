@@ -13,6 +13,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
+import { MetadataBatches, metadataCapabilities } from "./metadata-batches.mjs";
 import { createManifestSync, reconcileRoot, relocateRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
 
@@ -59,13 +60,14 @@ lib.onMetadataChanged = (rootId) => manifestSync.touch(rootId);
 const categories = lib.directoryClassification;
 const tags = new Tags(lib).init();
 const projects = new Projects(lib).init();
+const metadataBatches = new MetadataBatches(lib).init();
 const folderBrowser = new FolderBrowser(lib);
 const musicAnalysis = await new MusicAnalysis(lib).init();
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
 for (const a of lib.db
   .prepare(
-    "SELECT id FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0",
+    "SELECT id FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0 AND " + lib.activeAssetScope(),
   )
   .all())
   lib.enqueue(a.id);
@@ -128,6 +130,10 @@ app.use("/api", (req, res, next) => {
 });
 app.get("/api/stats", (req, res) => res.json(lib.stats()));
 app.use("/api", (req, res, next) => {
+  if (req.method !== "GET" && [...lib.jobs.values()].some(j => j.type === "duplicate-cleanup" && j.status === "running")) return res.status(423).json({ error: "正在校验或清理重复音频，请稍后修改素材" });
+  next();
+});
+app.use("/api", (req, res, next) => {
   if (
     mysqlStorage.migrating &&
     !req.path.startsWith("/mysql") &&
@@ -148,6 +154,7 @@ app.post(
   ),
 );
 app.get("/api/roots", (req, res) => res.json(lib.roots()));
+app.post("/api/roots/management-order", (req, res) => res.json(lib.setRootManagementOrder(req.body.ids)));
 app.get("/api/folder-browser", asyncRoute(async (req, res) => res.json(await folderBrowser.branch(req.query))));
 app.post("/api/folder-browser", asyncRoute(async (req, res) => {
   if (process.env.MEDIA_READONLY_FILES === "1") return res.status(403).json({ error: "当前为原文件只读模式，不允许新建文件夹" });
@@ -227,6 +234,20 @@ app.get("/api/duplicate-audio", asyncRoute(async (req, res) => res.json(duplicat
 app.post("/api/duplicate-audio/start", asyncRoute(async (req, res) => res.json(duplicateAudio.start(req.body))));
 app.post("/api/duplicate-audio/cancel", (req, res) => res.json(duplicateAudio.cancel()));
 app.post("/api/duplicate-audio/mark", asyncRoute(async (req, res) => res.json(await duplicateAudio.mark(req.body))));
+const duplicateCleanupConfirmations = new Map();
+app.post("/api/duplicate-audio/cleanup/preview", asyncRoute(async (req, res) => {
+  for (const [key, record] of duplicateCleanupConfirmations) if (Date.now() - record.createdAt > 600000) duplicateCleanupConfirmations.delete(key);
+  const { plan, preview } = await duplicateAudio.cleanup.preview(req.body);
+  const confirmation = crypto.randomBytes(24).toString("hex");
+  duplicateCleanupConfirmations.set(confirmation, { plan, createdAt: Date.now(), session: req.headers.cookie });
+  res.json({ ...preview, confirmation });
+}));
+app.post("/api/duplicate-audio/cleanup", asyncRoute(async (req, res) => {
+  const record = duplicateCleanupConfirmations.get(req.body.confirmation);
+  if (!record || record.session !== req.headers.cookie || Date.now() - record.createdAt > 600000) throw Error("清理确认已失效，请重新预览");
+  duplicateCleanupConfirmations.delete(req.body.confirmation);
+  res.json(await duplicateAudio.cleanup.execute(record.plan, req.body.acknowledgeOrder));
+}));
 app.post("/api/maintenance/files", asyncRoute(async (req, res) => {
   res.json(await missingFiles.check({ force: req.body.force === true, dryRun: req.body.dryRun === true }));
 }));
@@ -286,6 +307,25 @@ app.post(
   ),
 );
 app.get("/api/tags", (req, res) => res.json(tags.list()));
+app.get("/api/automation", (req, res) => res.json(metadataCapabilities));
+const metadataConfirmations = new Map();
+app.post("/api/metadata/batches/preview", asyncRoute(async (req, res) => {
+  for (const [key, record] of metadataConfirmations) if (Date.now() - record.createdAt > 600000) metadataConfirmations.delete(key);
+  if (metadataConfirmations.size >= 5) throw Error("待确认批次过多，请先提交已有预览或等待其过期");
+  const { plan, preview } = metadataBatches.preview(req.body);
+  const confirmation = crypto.randomBytes(24).toString("hex"), createdAt = Date.now();
+  metadataConfirmations.set(confirmation, { plan, createdAt, session: req.headers.cookie });
+  res.json({ ...preview, confirmation, expiresAt: createdAt + 600000 });
+}));
+app.post("/api/metadata/batches", asyncRoute(async (req, res) => {
+  const record = metadataConfirmations.get(req.body.confirmation);
+  if (!record || record.session !== req.headers.cookie || Date.now() - record.createdAt > 600000) throw Error("批量标注确认已失效，请重新预览");
+  metadataConfirmations.delete(req.body.confirmation);
+  res.json(await metadataBatches.apply(record.plan));
+}));
+app.get("/api/metadata/batches", (req, res) => res.json(metadataBatches.list()));
+app.get("/api/metadata/batches/:id", (req, res) => res.json(metadataBatches.read(req.params.id)));
+app.post("/api/metadata/batches/:id/undo", asyncRoute(async (req, res) => res.json(await metadataBatches.undo(req.params.id))));
 app.post(
   "/api/tags",
   asyncRoute(async (req, res) => res.json(tags.create(req.body))),
@@ -329,7 +369,7 @@ app.get("/api/jobs", (req, res) =>
       active: lib.workers,
       pending: lib.db
         .prepare(
-          "SELECT COUNT(*) n FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0",
+          "SELECT COUNT(*) n FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0 AND " + lib.activeAssetScope(),
         )
         .get().n,
     },
@@ -447,9 +487,9 @@ app.get("/api/export", (req, res) => {
     .split(",")
     .filter(Boolean);
   const rows = selected.length
-    ? selected.slice(0, 200).map((id) => lib.asset(id))
+    ? selected.slice(0, 200).map((id) => lib.asset(id)).filter(a => !a.trashed && lib.roots().some(r => r.id === a.root_id))
     : lib.db
-        .prepare("SELECT * FROM assets WHERE trashed=0 ORDER BY name")
+        .prepare("SELECT * FROM assets WHERE trashed=0 AND " + lib.activeAssetScope() + " ORDER BY name")
         .all()
         .map((a) => ({ ...a, tags: JSON.parse(a.tags) }));
   const cell = (v) => {

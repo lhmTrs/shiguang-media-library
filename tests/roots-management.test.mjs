@@ -72,10 +72,18 @@ test("仅注销可恢复：记录与属性保留，只是不再参与管理", as
   assert.equal(lib.allRoots().length, 1, "管理界面里仍应看得见");
   assert.deepEqual(lib.asset(asset.id).tags, ["注销也要留着"], "素材与标签必须保留");
   assert.equal(lib.asset(asset.id).note, "备注");
+  assert.equal(lib.list().total, 0, "注销素材不再出现在全部素材中");
+  assert.equal(lib.list({ kind: "music" }).total, 0);
+  assert.equal(lib.list({ root: root.id, q: "甲" }).total, 0);
+  assert.equal(lib.stats().total, 0);
+  assert.deepEqual(lib.stats().kinds, []);
+  assert.deepEqual(lib.stats().formats, []);
 
   const restored = lib.restoreRoot(root.id);
   assert.equal(Number(restored.retired), 0);
   assert.equal(lib.roots().length, 1);
+  assert.equal(lib.list().total, 1, "恢复后重新显示同一素材");
+  assert.equal(lib.list().items[0].id, asset.id);
   // 重新登记同一路径 = 恢复，而不是新建一条
   lib.retireRoot(root.id);
   const readded = await lib.addRoot(source, "music");

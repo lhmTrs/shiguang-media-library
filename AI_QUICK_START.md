@@ -103,3 +103,4 @@ npm run portable
 ## 可转发给 AI 的任务
 
 > 请在我的电脑安装并启动 https://github.com/lhmTrs/shiguang-media-library 的 main 分支。先读 README.md 和 AI_QUICK_START.md，再遵循 AGENTS.md、AI_HANDOFF.md 与 START_HERE.md。使用 Node.js 22，执行 npm run setup 和 npm run portable，新安装默认 SQLite，不安装 MySQL/Redis、不使用原作者凭证。核对服务真实响应后给我实际访问地址；添加素材目录前问我，测试文件操作只用副本，不删除或覆盖我的已有数据。
+AI 批量打标签、写备注请先读 `AI_METADATA_API.md`，使用 `node scripts/annotate.mjs help` 或本机 API；不要直接改数据库，不要把文档示例当成真实批量修改授权。

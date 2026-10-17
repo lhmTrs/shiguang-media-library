@@ -252,7 +252,7 @@ export class MysqlStorage {
           .get()
       )
         tables.push("music_category_links");
-      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets"])
+      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches"])
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
       const snapshot = this.lib.db.transaction(() =>
         Object.fromEntries(

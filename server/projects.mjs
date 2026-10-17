@@ -126,11 +126,13 @@ export class Projects {
     for (const row of base) { const kind = kindOf(row); if (Object.hasOwn(kinds, kind) && kind !== "all") kinds[kind]++; }
     const matching = base.filter(row => !query.kind || kindOf(row) === query.kind);
     // Keep a snapshot if the original index is cleaned; project history must survive.
+    const activeRoots = new Set(this.lib.roots().map(r => r.id));
     const items = matching.slice((page - 1) * 60, page * 60).map(({ snapshot, live_name, live_path, live_kind, ...row }) => {
       let asset;
       try { asset = this.lib.asset(row.asset_id); }
       catch (e) { if (e.message !== "素材不存在") throw e; asset = { ...JSON.parse(snapshot), online: 0 }; }
-      const unavailable = !asset.online || !!asset.trashed || asset.file_status === "missing";
+      const retired = !activeRoots.has(asset.root_id);
+      const unavailable = retired || !asset.online || !!asset.trashed || asset.file_status === "missing";
       return { ...row, asset: { ...asset, online: unavailable ? 0 : 1 }, unavailable };
     });
     return { items, total: matching.length, pages: Math.ceil(matching.length / 60), kinds };
