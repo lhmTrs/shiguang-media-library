@@ -23,12 +23,12 @@ export function AssetActions({ asset, busy, canTrash, reveal, trash, tags, categ
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); window.removeEventListener("scroll", scroll, true); window.removeEventListener("resize", scroll); };
   }, [!!menu]);
   if (compact) return <div className={"asset-quick-actions" + (grid ? " asset-card-actions" : "")} onClick={e => e.stopPropagation()}>
+    <button className="icon-button" title="在访达中显示" aria-label={"定位素材：" + asset.name} disabled={busy} onClick={reveal}><ExternalLink size={16}/></button>
     <button className={"icon-button favorite " + (asset.favorite ? "saved" : "")} title={asset.favorite ? "取消收藏" : "收藏"} aria-label={asset.favorite ? "取消收藏" : "收藏"} disabled={busy} onClick={favorite}><Star size={16} fill={asset.favorite ? "currentColor" : "none"}/></button>
     <button ref={trigger} className="icon-button" title="更多素材操作" aria-label={"更多素材操作：" + asset.name} aria-haspopup="menu" aria-expanded={!!menu} disabled={busy} onClick={() => { const r = trigger.current!.getBoundingClientRect(); setMenu(menu ? null : { left: Math.max(8, Math.min(r.right - 180, innerWidth - 188)), top: Math.max(8, Math.min(r.bottom + 4, innerHeight - (project ? 276 : 236))) }); }}><MoreHorizontal size={18}/></button>
     {menu && createPortal(<div ref={panel} className="asset-action-menu" role="menu" aria-label={"素材操作：" + asset.name} style={menu} onClick={e => { e.stopPropagation(); trigger.current?.focus(); setMenu(null); }} onKeyDown={e => {
       if (["ArrowDown", "ArrowUp"].includes(e.key)) { e.preventDefault(); e.stopPropagation(); const nodes = Array.from(panel.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || []), index = nodes.indexOf(document.activeElement as HTMLButtonElement); nodes[(index + (e.key === "ArrowDown" ? 1 : -1) + nodes.length) % nodes.length]?.focus(); }
     }}>
-      <button role="menuitem" aria-label={"定位素材：" + asset.name} onClick={reveal}><ExternalLink size={16}/>在访达中显示</button>
       {project && <button role="menuitem" aria-label={"加入当前项目：" + asset.name} disabled={inProject} onClick={project}>{inProject ? <Check size={16}/> : <FolderPlus size={16}/>}{inProject ? "已加入当前项目" : "加入当前项目"}</button>}
       <button role="menuitem" aria-label={"添加素材标签：" + asset.name} onClick={tags}><Tag size={16}/>添加标签</button>
       {move && <button role="menuitem" aria-label={"移动素材：" + asset.name} disabled={!asset.online} onClick={move}><FolderInput size={16}/>移动到文件夹</button>}
