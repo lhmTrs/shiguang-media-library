@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { TimelineImports } from "./timeline-imports.mjs";
+import { ProjectRenders } from "./project-renders.mjs";
 
 export class Projects {
   constructor(lib) { this.lib = lib; }
@@ -11,6 +13,8 @@ export class Projects {
          "CREATE TABLE IF NOT EXISTS project_assets (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,asset_id TEXT NOT NULL,status TEXT NOT NULL,note TEXT NOT NULL,source TEXT NOT NULL,added_at REAL NOT NULL,used_at REAL,updated_at REAL NOT NULL,snapshot TEXT NOT NULL,UNIQUE(project_id,asset_id))",
          "CREATE INDEX IF NOT EXISTS project_assets_asset ON project_assets(asset_id)"];
     for (const sql of definitions) this.lib.db.exec(sql);
+    this.imports = new TimelineImports(this).init();
+    this.renders = new ProjectRenders(this).init();
     return this;
   }
   text(value, max, label, required = false) {
@@ -47,6 +51,8 @@ export class Projects {
   remove(id) {
     this.get(id);
     this.lib.db.transaction(() => {
+      this.imports.removeProject(id);
+      this.lib.db.prepare("DELETE FROM project_renders WHERE project_id=?").run(id);
       this.lib.db.prepare("DELETE FROM project_assets WHERE project_id=?").run(id);
       this.lib.db.prepare("DELETE FROM media_projects WHERE id=?").run(id);
     })();
@@ -85,8 +91,7 @@ export class Projects {
       const now = Date.now();
       for (const row of rows) {
         const status = input.status ?? row.status;
-        this.lib.db.prepare("UPDATE project_assets SET status=?,note=?,used_at=?,updated_at=? WHERE id=?")
-          .run(status, note ?? row.note, status === "used" ? row.used_at ?? now : row.used_at, now, row.id);
+        this.imports.editManual(row, { status: input.status, note: note ?? undefined });
       }
       this.lib.db.prepare("UPDATE media_projects SET updated_at=? WHERE id=?").run(now, projectId);
     })();
@@ -96,7 +101,9 @@ export class Projects {
     this.get(projectId);
     const ids = this.ids(input.ids);
     this.lib.db.transaction(() => {
+      if (ids.some(id => this.imports.refs(projectId,id).length)) throw Error("素材仍被时间线引用，请先更新或撤销对应的时间线导入");
       for (const id of ids) this.lib.db.prepare("DELETE FROM project_assets WHERE project_id=? AND asset_id=?").run(projectId, id);
+      for (const id of ids) this.lib.db.prepare("DELETE FROM project_manual_assets WHERE project_id=? AND asset_id=?").run(projectId, id);
       this.lib.db.prepare("UPDATE media_projects SET updated_at=? WHERE id=?").run(Date.now(), projectId);
     })();
     return { removed: ids.length };
@@ -107,7 +114,7 @@ export class Projects {
   }
   history(assetId) {
     return this.lib.db.prepare(`SELECT a.*,p.name project_name,p.software FROM project_assets a
-      JOIN media_projects p ON p.id=a.project_id WHERE a.asset_id=? ORDER BY a.updated_at DESC,a.id`).all(assetId).map(({ snapshot, ...row }) => row);
+      JOIN media_projects p ON p.id=a.project_id WHERE a.asset_id=? ORDER BY a.updated_at DESC,a.id`).all(assetId).map(({ snapshot, ...row }) => this.imports.decorate(row.project_id,row));
   }
   items(projectId, query = {}) {
     this.get(projectId);
@@ -127,13 +134,14 @@ export class Projects {
     const matching = base.filter(row => !query.kind || kindOf(row) === query.kind);
     // Keep a snapshot if the original index is cleaned; project history must survive.
     const activeRoots = new Set(this.lib.roots().map(r => r.id));
+    const importContext = this.imports.context(projectId);
     const items = matching.slice((page - 1) * 60, page * 60).map(({ snapshot, live_name, live_path, live_kind, ...row }) => {
       let asset;
       try { asset = this.lib.asset(row.asset_id); }
       catch (e) { if (e.message !== "素材不存在") throw e; asset = { ...JSON.parse(snapshot), online: 0 }; }
       const retired = !activeRoots.has(asset.root_id);
       const unavailable = retired || !asset.online || !!asset.trashed || asset.file_status === "missing";
-      return { ...row, asset: { ...asset, online: unavailable ? 0 : 1 }, unavailable };
+      return { ...this.imports.decorate(projectId,row,importContext), asset: { ...asset, online: unavailable ? 0 : 1 }, unavailable };
     });
     return { items, total: matching.length, pages: Math.ceil(matching.length / 60), kinds };
   }

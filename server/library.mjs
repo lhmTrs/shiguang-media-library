@@ -830,7 +830,7 @@ export class Library {
       .all(...values);
   }
   list(query = {}) {
-    if (["name", "revealCount"].includes(query.sort)) return naturalAssetList(this, query);
+    if (["name", "revealCount", "projectCount"].includes(query.sort)) return naturalAssetList(this, query);
     const { where: w, values } = this.assetFilter(query);
     const total = this.db
       .prepare("SELECT COUNT(*) n FROM assets WHERE " + w)

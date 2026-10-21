@@ -374,7 +374,7 @@ function App() {
     [createdTo, setCreatedTo] = useState(""),
     [dateField, setDateField] = useState<"created" | "captured">("created"),
     [captureUnknown, setCaptureUnknown] = useState(false),
-    [sort, setSort] = useState("revealCount"),
+    [sort, setSort] = useState(() => { try { const saved = localStorage.getItem("shiguang.assetSort"); return saved && ["name", "revealCount", "projectCount", "recent", "createdNewest", "createdOldest", "capturedNewest", "capturedOldest", "size"].includes(saved) ? saved : "revealCount"; } catch { return "revealCount"; } }),
     [onlyFavorites, setOnlyFavorites] = useState(false),
     [page, setPage] = useState(1),
     [layout, setLayout] = useState<"list" | "grid">("list");
@@ -419,6 +419,8 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]), [projectRevision, setProjectRevision] = useState(0);
   const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
   const [projectMembers, setProjectMembers] = useState<{ asset_id: string; status: string }[]>([]);
+  const [projectUsageCounts,setProjectUsageCounts] = useState<Record<string,number>>({});
+  useEffect(()=>{let live=true;if(ready)void api<{asset_id:string;n:number}[]>("/projects/usage-counts").then(rows=>{if(live)setProjectUsageCounts(Object.fromEntries(rows.map(row=>[row.asset_id,Number(row.n)])));}).catch(()=>{});return()=>{live=false;};},[ready,projectRevision]);
   useEffect(() => { try { localStorage.setItem("shiguang.activeProject", activeProject); } catch {} }, [activeProject]);
   useEffect(() => {
     if (!ready) return;
@@ -439,6 +441,7 @@ function App() {
     setNotice(`已加入 ${result.added} 个候选素材${result.alreadyAdded ? `，${result.alreadyAdded} 个已在项目中` : ""}`);
   }
   useEffect(() => { try { localStorage.setItem("shiguang.assetActions", compactActions ? "compact" : "full"); } catch {} }, [compactActions]);
+  useEffect(() => { try { localStorage.setItem("shiguang.assetSort", sort); } catch {} }, [sort]);
   const [inPoint, setInPoint] = useState(0), [outPoint, setOutPoint] = useState(0), [loop, setLoop] = useState(false), [stepping, setStepping] = useState(false);
   const stepInFlight = useRef(false);
   const pendingAudition = useRef<string | null>(null);
@@ -1796,6 +1799,7 @@ function App() {
                 >
                   <option value="name">名称排序</option>
                   <option value="revealCount">访达次数：从多到少</option>
+                  <option value="projectCount">项目使用次数：从多到少</option>
                   <option value="recent">最近修改</option>
                   <option value="createdNewest">创建时间最新</option>
                   <option value="createdOldest">创建时间最早</option>
@@ -1974,6 +1978,7 @@ function App() {
                                 <i>·</i>
                                 {kindNames[a.kind]}
                                 <i>·</i>访达 {a.reveal_count || 0} 次
+                                {!!projectUsageCounts[a.id]&&<><i>·</i>已用于 {projectUsageCounts[a.id]} 个项目</>}
                                 {projectMembers.some(m => m.asset_id === a.id) && <b className="project-member-badge">已加入项目</b>}
                                 {!a.online && <b>离线</b>}
                                 {!!a.review && (

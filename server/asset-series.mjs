@@ -10,6 +10,7 @@ function compare(sort) {
   return (a, b) => {
     if (sort === "name") return compareName(a, b);
     if (sort === "revealCount") return (b.reveal_count || 0) - (a.reveal_count || 0) || -compareName(a, b);
+    if (sort === "projectCount") return (b.project_count || 0) - (a.project_count || 0) || -compareName(a, b);
     const field = { size: "size", recent: "mtime", createdNewest: "created_ms", createdOldest: "created_ms", capturedNewest: "captured_ms", capturedOldest: "captured_ms" }[sort];
     if (!field) return compareName(a, b);
     return Number(a[field] == null) - Number(b[field] == null) ||
@@ -21,6 +22,10 @@ function index(lib, query) {
   const key = "asset-series:" + JSON.stringify([where, values, query.sort || "name"]);
   return cachedRead(lib.db, key, () => {
     const rows = lib.db.prepare(`SELECT id,name,path,root_id,kind,ext,reveal_count,size,mtime,created_ms,captured_ms FROM assets WHERE ${where}`).all(...values);
+    if (query.sort === "projectCount") {
+      const counts = new Map(lib.db.prepare("SELECT asset_id,COUNT(DISTINCT project_id) n FROM project_assets WHERE status='used' GROUP BY asset_id").all().map(row => [row.asset_id, Number(row.n)]));
+      for (const row of rows) row.project_count = counts.get(row.id) || 0;
+    }
     rows.sort(compare(query.sort || "name"));
     const candidates = new Map();
     const identities = new Map();

@@ -67,4 +67,16 @@ test("series cover all results, isolate location/type/format, paginate and inval
   add("v2", "视频 (2).mp4", "/same", "root", "sfx", "mp4");
   assert(!assetSeriesList(lib,{}).groups.some(group=>group.name==="视频"));
   assert.notEqual(assetSeriesAdjacent(lib,{currentId:"v2",direction:"1"}).item?.ext,"mp4");
+  db.exec("CREATE TABLE project_assets (asset_id TEXT,project_id TEXT,status TEXT)");
+  db.prepare("INSERT INTO project_assets VALUES (?,?,?)").run("a2","p1","used");
+  db.prepare("INSERT INTO project_assets VALUES (?,?,?)").run("a2","p1","used");
+  db.prepare("INSERT INTO project_assets VALUES (?,?,?)").run("a1","p1","used");
+  db.prepare("INSERT INTO project_assets VALUES (?,?,?)").run("a1","p2","used");
+  db.prepare("INSERT INTO project_assets VALUES (?,?,?)").run("a3","p3","candidate");
+  assert.deepEqual(lib.list({sort:"projectCount"}).items.slice(0,2).map(a=>a.id),["a1","a2"]);
+  const ranked=assetSeriesList(lib,{sort:"projectCount"}), rankedGroup=ranked.groups.find(g=>g.name==="神秘");
+  assert.equal(ranked.groups[0].key,rankedGroup.key);
+  assert.deepEqual(assetSeriesMembers(lib,{sort:"projectCount",seriesKey:rankedGroup.key}).items.slice(0,2).map(a=>a.id),["a1","a2"]);
+  db.prepare("UPDATE project_assets SET status='candidate' WHERE asset_id='a1'").run();
+  assert.equal(lib.list({sort:"projectCount"}).items[0].id,"a2","project edits invalidate ranking cache");
 });

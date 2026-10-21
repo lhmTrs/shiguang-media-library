@@ -17,6 +17,7 @@
     "update:code": "node scripts/update-code.mjs"
   },
   "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
     "better-sqlite3": "^11.10.0",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",

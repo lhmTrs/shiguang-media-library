@@ -73,6 +73,7 @@ export function mysqlColumnType(table, col) {
   if (table === "asset_subcategories" && col.name === "name") return "VARCHAR(120)";
   if (table === "media_projects" && col.name === "name") return "VARCHAR(120)";
   if (table === "project_assets" && ["project_id", "asset_id"].includes(col.name)) return "VARCHAR(36)";
+  if (["project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders"].includes(table) && ["project_id", "timeline_id", "asset_id", "revision", "head_id"].includes(col.name)) return "VARCHAR(36)";
   if (table === "music_category_links" || (table === "asset_subcategories" && col.name === "category_id")) return "VARCHAR(36)";
   if (/INT/.test(col.type)) return "BIGINT";
   if (/REAL/.test(col.type)) return "DOUBLE";
@@ -252,7 +253,7 @@ export class MysqlStorage {
           .get()
       )
         tables.push("music_category_links");
-      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches"])
+      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches", "project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders"])
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
       const snapshot = this.lib.db.transaction(() =>
         Object.fromEntries(
@@ -307,6 +308,7 @@ export class MysqlStorage {
           defs.push("operation_seq BIGINT AUTO_INCREMENT UNIQUE");
         if (t === "asset_subcategories") defs.push("UNIQUE(category_id,name)");
         if (t === "media_projects") defs.push("UNIQUE(name)");
+        if (t === "project_manual_assets") defs.push("UNIQUE(project_id,asset_id)");
         if (t === "project_assets") defs.push("UNIQUE(project_id,asset_id)", "INDEX project_assets_asset(asset_id)");
         if (t === "music_category_links")
           defs.push(

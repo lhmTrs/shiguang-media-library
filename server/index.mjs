@@ -74,6 +74,10 @@ for (const a of lib.db
   lib.enqueue(a.id);
 const app = express();
 app.disable("x-powered-by");
+app.use("/api/projects/:id/timeline-import/preview", express.json({ limit: "10mb" }));
+app.use("/api/projects/:id/timeline-import/confirm", express.json({ limit: "1mb" }));
+app.use("/api/projects/timeline-import/preview", express.json({ limit: "10mb" }));
+app.use("/api/projects/timeline-import/confirm", express.json({ limit: "1mb" }));
 app.use(express.json({ limit: "256kb" }));
 const sessions = new Map();
 let port;
@@ -222,6 +226,27 @@ app.post("/api/reconcile", asyncRoute(async (req, res) => {
   res.json({ reports });
 }));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
+app.get("/api/projects/usage-counts", (req,res) => res.json(lib.db.prepare("SELECT asset_id,COUNT(*) n FROM project_assets WHERE status='used' GROUP BY asset_id").all()));
+app.post("/api/projects/timeline-import/preview", (req,res) => res.json(projects.imports.preview(null,req.body,req.headers.cookie)));
+app.post("/api/projects/timeline-import/confirm", (req,res) => res.json(projects.imports.apply(null,req.body,req.headers.cookie)));
+app.get("/api/projects/:id/timelines", (req,res) => res.json(projects.imports.list(req.params.id)));
+app.get("/api/projects/:id/timeline-overview", (req,res) => res.json(projects.imports.overview(req.params.id)));
+app.get("/api/projects/:id/timelines/:timelineId/render", (req,res) => res.json(projects.renders.get(req.params.id,req.params.timelineId)));
+app.post("/api/projects/:id/timelines/:timelineId/render", asyncRoute(async (req,res) => res.json(await projects.renders.save(req.params.id,req.params.timelineId,req.body))));
+app.delete("/api/projects/:id/timelines/:timelineId/render", (req,res) => res.json(projects.renders.remove(req.params.id,req.params.timelineId)));
+app.post("/api/projects/:id/timelines/:timelineId/render/choose", asyncRoute(async (req,res) => {
+  projects.renders.validate(req.params.id,req.params.timelineId);
+  if (process.platform !== "darwin") throw Error("系统文件选择器仅支持 Mac，请输入本地绝对路径");
+  const {stdout} = await run("osascript",["-e",'POSIX path of (choose file with prompt "选择本时间线导出的成片" of type {"public.movie"})'],{timeout:120000});
+  res.json(await projects.renders.save(req.params.id,req.params.timelineId,{path:stdout.trim(),offset:req.body.offset}));
+}));
+app.get("/api/projects/:id/timelines/:timelineId/render/media", asyncRoute(async (req,res) => {
+  const {handle,path:file} = await projects.renders.open(req.params.id,req.params.timelineId);
+  return sendMedia(req,res,file,handle);
+}));
+app.post("/api/projects/:id/timeline-import/preview", (req,res) => res.json(projects.imports.preview(req.params.id,req.body,req.headers.cookie)));
+app.post("/api/projects/:id/timeline-import/confirm", (req,res) => res.json(projects.imports.apply(req.params.id,req.body,req.headers.cookie)));
+app.post("/api/projects/:id/timeline-import/:batchId/undo", (req,res) => res.json(projects.imports.undo(req.params.id,req.params.batchId)));
 app.post("/api/projects", asyncRoute(async (req, res) => res.json(projects.save(null, req.body))));
 app.patch("/api/projects/:id", asyncRoute(async (req, res) => res.json(projects.save(req.params.id, req.body))));
 app.delete("/api/projects/:id", asyncRoute(async (req, res) => res.json(projects.remove(req.params.id))));
@@ -591,8 +616,9 @@ async function cached(a, suffix, generate) {
   }
   return cacheJobs.get(dest);
 }
-async function sendMedia(req, res, p) {
-  const s = await fs.stat(p);
+async function sendMedia(req, res, p, handle = null) {
+  const s = handle ? await handle.stat() : await fs.stat(p);
+  if (handle) res.on("close", () => { void handle.close().catch(() => {}); });
   const ext = path.extname(p).slice(1).toLowerCase();
   const types = {
     mp3: "audio/mpeg",
@@ -604,6 +630,7 @@ async function sendMedia(req, res, p) {
     flac: "audio/flac",
     mp4: "video/mp4",
     mov: "video/quicktime",
+    m4v: "video/mp4",
     webm: "video/webm",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
@@ -640,13 +667,13 @@ async function sendMedia(req, res, p) {
     res.status(206);
     res.setHeader("Content-Range", `bytes ${start}-${end}/${s.size}`);
     res.setHeader("Content-Length", end - start + 1);
-    const stream = createReadStream(p, { start, end });
+    const stream = createReadStream(p, { start, end, ...(handle ? {fd:handle.fd,autoClose:false} : {}) });
     stream.on("error", () => res.destroy());
     res.on("close", () => stream.destroy());
     stream.pipe(res);
   } else {
     res.setHeader("Content-Length", s.size);
-    const stream = createReadStream(p);
+    const stream = createReadStream(p, handle ? {fd:handle.fd,autoClose:false} : undefined);
     stream.on("error", () => res.destroy());
     res.on("close", () => stream.destroy());
     stream.pipe(res);

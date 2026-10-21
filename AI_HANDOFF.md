@@ -48,6 +48,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/read-cache.mjs` | 历史分类计数缓存与数据库写入观察，当前目录投影统计不使用旧分类缓存 |
 | `server/tags.mjs` | 标签注册、统计、批量增删 |
 | `server/projects.mjs` | 项目、候选/已使用、首次使用时间、快照历史、类型统计 |
+| `server/resolve-xml.mjs`、`server/timeline-imports.mjs`、`src/TimelineImportDialog.tsx` | 本地达芬奇 FCP7 XML 预览/确认/撤销；先读 `DAVINCI_IMPORT.md`，时间线与手动记录独立，禁止撤销覆盖后续手动编辑 |
 | `server/duplicate-audio.mjs` | 文件大小 + SHA-256 重复检测、报告、重复标签与删除后孤立标签清理 |
 | `server/missing-files.mjs` | 10 分钟文件状态缓存、仅人工确认的失效索引清理 |
 | `server/music-analysis.mjs`、`server/secrets.mjs` | 可选付费音乐分析、密钥加密、诊断与缓存 |
@@ -130,4 +131,8 @@ Docker 配置仅做静态 Compose 验证，本次没有可用守护进程来执�
 
 `npm run package` 先构建，再按白名单生成 ZIP 与 SHA-256。不要发送整个开发工作区，不要附私人数据目录。发布前重新执行包验收；清单可核对篡改但不是可信签名。
 
-后续可做：真实 Windows/Linux 验收、原生跨平台废纸篓、项目导出、达芬奇 XML 导入。尚未实现剪映草稿解析、自动判断项目实际使用、版权识别、云同步或安装器级免环境分发。不要把这些当成已有功能。
+已实现本地达芬奇 FCP 7 XML 导入、引用位置与独立时间线成片关联，详见 `DAVINCI_IMPORT.md`。成片路径只在用户主动关联后保存到 `project_renders`；不得通过测试触发原生文件选择器或关联用户媒体。关联视频按文件身份校验并用本机会话保护的 Range 接口播放，解除关联不删除原文件。旧快照没有总长时不得虚构全片比例。素材排序增加 `projectCount`，只计算已确认使用的不同项目，排序设置仅保存在浏览器 `shiguang.assetSort`。
+
+项目列表的 `TimelineUsage compact` 默认折叠文件路径、日期和位置明细，保留时间点击播放。`ProjectTimelineOverview` 按轨道展示完整时间线的音效，可包含音乐及缩放；数据来自 `/api/projects/:id/timeline-overview`，不能只取当前列表页或当前筛选结果。旧快照以最后引用作参考范围并明确标示，不伪造成片总长。
+
+后续可做：真实 Windows/Linux 验收、原生跨平台废纸篓、项目导出。尚未实现剪映草稿解析、自动判断项目实际使用、版权识别、云同步或安装器级免环境分发。不要把这些当成已有功能。

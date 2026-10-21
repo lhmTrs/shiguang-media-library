@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 const run = promisify(execFile), project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const shareFiles = ["package.json", "package-lock.json", "index.html", "tsconfig.json", ".gitignore", ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "START_HERE.md", "AI_HANDOFF.md", "AI_QUICK_START.md", "AGENTS.md", "CODE_SYNC.md", "FOLDER_VIEW.md", "DIRECTORY_CLASSIFICATION.md", "AI_METADATA_API.md", "启动分享版.command", "安装并启动.cmd", "src", "server", "tests", "dist",
-  ...["launch", "portable", "doctor", "setup", "stop-portable", "package", "qa", "qa-directory-classification", "test-mysql-local", "verify-mysql", "verify-package", "update-code", "theme-gen", "export-manifest", "relocate-root", "annotate"].map(n => `scripts/${n}.mjs`)];
+  "DAVINCI_IMPORT.md", ...["launch", "portable", "doctor", "setup", "stop-portable", "package", "qa", "qa-directory-classification", "test-mysql-local", "verify-mysql", "verify-package", "update-code", "theme-gen", "export-manifest", "relocate-root", "annotate"].map(n => `scripts/${n}.mjs`)];
 export async function collectFiles(root, entry, result = []) {
   const absolute = path.join(root, entry), stat = await fs.lstat(absolute);
   if (stat.isSymbolicLink()) throw Error("分享包拒绝包含符号链接：" + entry);
