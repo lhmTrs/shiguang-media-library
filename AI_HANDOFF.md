@@ -53,6 +53,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/music-analysis.mjs`、`server/secrets.mjs` | 可选付费音乐分析、密钥加密、诊断与缓存 |
 | `src/main.tsx` | 应用状态、搜索/筛选/详情、试听意图和操作流程 |
 | `src/AuditionControls.tsx` | 播放器、波形、选段、连续试听；暂停优先于异步连播 |
+| `server/asset-series.mjs`、`src/SeriesAssetList.tsx` | 同目录、同类型和格式、同名前缀的括号编号系列折叠；完整筛选后分组，系列与成员各 60 项分页，展开才加载成员；自然编号排序、跨成员页连续试听 |
 | `src/ProjectManager.tsx` | 项目页面、媒体类型筛选、图片/视频预览与使用历史 |
 | `server/folder-browser.mjs`、`src/FolderBrowser.tsx`、`src/MoveDestinationPicker.tsx` | 登记范围内真实目录浏览、任意层级、素材路径范围筛选；移动目标浏览与显式新建文件夹，保留旧分类 |
 | `src/*Dialog.tsx`、`*Manager.tsx` | 独立编辑弹窗、分类/标签/重复管理 |
@@ -88,7 +89,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - 搜索栏标签选择器的个人习惯只存在浏览器 `localStorage.shiguang.tagFilterUsage.v1`（`src/tag-usage.ts`），不落库、不发送服务端；选中才记，单标签 10 秒内计数一次，最近使用时间每次选中更新。顶部最多 4 个最近使用，下方按使用次数、最近时间、名称排序；打开时冻结可选标签和顺序，关闭再开才重排，避免勾选时跳位。存储不可用则退回内存，清除浏览器数据会重置。
 - 标签右侧数字是当前完整筛选结果中的素材数量，不是点击次数，也不是预测加入该标签后的 OR 结果数。`GET /api/tags/facets` 复用 `lib.assetFilter`，一次返回该范围全部标签的 `n`（当前匹配）和 `total`（保留其他筛选、去掉标签条件的基准数量），不会修改注册表或素材。面板打开后保留候选项的排序快照，但数字随最新 props 更新；计数为 0 的候选项在全部/搜索/最近使用区隐藏，恢复非零时按原顺序重新显示。已选条件保留在独立区域，避免零结果时无法取消。
 - `src/tag-facet-cache.ts` 将整组统计保存在 `localStorage.shiguang.tagFacetCache.v1`，按规范化筛选条件缓存，去掉分页/排序，上限 24 组、约 750K 字符、单条 10 分钟。每次读取先请求 `/api/tags/revision` 的廉价版本号；`ReadCache` 在数据库写入/事务时递增版本，扫描、标签接口、AI 批量标注、注销及删除都会使旧版本不可复用，重启/换库也隔离。网页 API 写入成功立即清空统计缓存；在途旧请求不得回填。此缓存与最近使用/点击计数独立；更新不阻挡素材列表，失败保留原选项并提示刷新。浏览器不支持存储时直接查询。外部接口变更在下一次筛选/刷新时检查版本；没有实时推送，也不检测绕过应用的直接 SQL。
-- 素材关键词搜索由 `server/search-query.mjs` 统一拆词：空白分隔、双引号内保留词组、去重；`qMode=all`（默认）要求每个词分别命中名称/标签/备注/主子类之一，`any` 为任一命中。`lib.assetFilter` 统一用于列表、分页和目录分类统计，SQL 参数化并转义 LIKE 通配符；最多 32 词、2000 字。前端 `KeywordSearch` 与独立关键词条复用同一解析器，匹配方式纳入导航记忆和刷新 key。不要在前端仅过滤当前页。
+- 素材关键词搜索由 `server/search-query.mjs` 统一拆词：空白分隔、双引号内保留词组、去重；`qMode=all`（默认）要求每个词分别命中名称/标签/备注/主子类之一，`any` 为任一命中。`qField=name` 只检索名称，默认 `all` 保留跨字段匹配；前端「仅搜索名称」纳入导航记忆、刷新及标签统计缓存 key。`server/search-aliases.mjs` 内置保守中英文词组，仅对音效扩展同义词，不写标签、不改原文件；已知英文词用单词边界，未知词保留转义 LIKE。每个关键词各自展开再组合 AND/OR，不拆完整引号词组。SQLite 按需注册 REGEXP，MySQL 使用原生 REGEXP。AI 批量标注选择通过 `expandAliases:false` 保留字面范围，不能因搜索词库升级而扩大写入对象。`lib.assetFilter` 统一用于列表、分页和目录分类统计；最多 32 词、2000 字。访达次数排序同次数按名称倒序，其他排序不变。不要在前端仅过滤当前页。
 - AI 批量标签/备注使用 `server/metadata-batches.mjs` 和 `AI_METADATA_API.md`，通过本机会话绑定的预览确认写入，不能让外部 AI 直接连库。`metadata_batches` 保存批次 before/after、依据和撤销状态，迁移 MySQL 时一并复制；`scripts/annotate.mjs` 仅调用 HTTP，不读取密码。旧备注默认只补空白，覆盖需显式 replace。预览后变更跳过，撤销只恢复本批实际改变且未再被修改的字段。原媒体不改，清单通过既有 hook 防抖同步；离线根的清单写入不保证当场完成。网页操作记录可查看并撤销批量标注。
 - `media_projects`、`project_assets` 独立于分类；项目内 `(project_id,asset_id)` 唯一。实际使用由人确认，不把收藏、试听、访达、复制当成使用；`used_at` 保留首次确认时间。
 - 项目快照让离线、废纸篓或已清理索引的历史仍可查看；不要把项目关联当成需要随 assets 删除的垃圾数据。
@@ -98,6 +99,8 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - 文件状态检查不自动删除数据。清理、移动、改名、废纸篓都保留既有确认与安全边界。
 - FFmpeg 等缺失是可降级状态：显示预览/参数错误，而不是删索引或覆盖原文件。
 - 连播使用 `wantsPlayback` 意图与请求代次，不要退回仅凭 `audio.paused` 推断用户操作，否则亚秒音频会出现暂停后继续的竞态。
+- 列表默认启用同系列分组，可切换平铺，偏好仅存 `localStorage.shiguang.seriesMode`；网格不折叠。识别仅接受末尾 `(数字)` 或 `（数字）`，至少两个不同编号，同根/同直接父目录/同素材类型/同格式/完全相同前缀才合并；不依据标签、相似含义或内容重复推断。仅使用当前完整搜索结果构建分组，不做当前页局部折叠；成员按需读取，每次最多 60 项，不自动选择折叠组成员。`/api/asset-series` 返回代表素材与组计数，`/members` 返回组成员，`/adjacent` 按完整分组顺序跳过离线及不可试听项；组键是不可逆摘要，不接受任意路径。所有端点复用 active/nonMissing/关键词/标签等筛选与现有会话保护。索引是进程内 30 秒只读缓存，受数据库写入观察失效，不新增表和媒体写操作。名称与访达排序由该模块在完整筛选范围内自然排序后分页，不能先 LIMIT 再排序。
+- 分页由 `server/pagination.mjs` 统一校验 `pageSize`（默认 60，上限 200），普通 SQL 列表、自然排序列表、系列列表、成员页和连续试听定位必须使用同一大小；页码越界收敛到末页。前端 `PaginationControls` 提供数字页码、省略号及远页输入，主列表与系列成员共用。每页选项 20/50/60/100/200 仅存浏览器 `shiguang.pageSize`，修改后回第一页；分组模式数量指列表组/独立项，成员页指实际素材。此规则替代上文固定 60 项的初版描述，标签统计缓存不区分页大小。
 
 数据优先级：显式 `MEDIA_DATA_DIR` > `MEDIA_PORTABLE=1` 时的项目 `data/` > 原生平台默认目录。Mac 原生目录保持历史兼容；不要把原生旧库误认为分享包数据。
 

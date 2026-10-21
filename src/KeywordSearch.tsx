@@ -4,13 +4,15 @@ import { searchTerms, joinSearchTerms } from "../server/search-query.mjs";
 export type SearchMode = "all" | "any";
 export { searchTerms, joinSearchTerms };
 
-export function KeywordSearch({ value, change, mode, changeMode }: {
+export function KeywordSearch({ value, change, mode, changeMode, nameOnly, changeNameOnly }: {
   value: string; change: (value: string) => void; mode: SearchMode; changeMode: (mode: SearchMode) => void;
+  nameOnly: boolean; changeNameOnly: (value: boolean) => void;
 }) {
   return <div className="search keyword-search" role="search">
     <Search size={18}/>
-    <input aria-label="搜索素材" placeholder="搜索名称、标签或备注" maxLength={2000} value={value} onChange={e => change(e.target.value)}/>
+    <input aria-label="搜索素材" placeholder={nameOnly ? "搜索素材名称" : "搜索名称、标签或备注"} maxLength={2000} value={value} onChange={e => change(e.target.value)}/>
     {value && <button className="icon-button" title="清空搜索" aria-label="清空搜索" onClick={() => change("")}><X size={16}/></button>}
+    <label className="keyword-name-only"><input type="checkbox" checked={nameOnly} onChange={e => changeNameOnly(e.target.checked)}/>仅搜索名称</label>
     <select className="keyword-match-mode" aria-label="关键词匹配方式" value={mode} onChange={e => changeMode(e.target.value as SearchMode)}>
       <option value="all">同时匹配</option><option value="any">任一匹配</option>
     </select>

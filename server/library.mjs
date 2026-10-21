@@ -11,6 +11,9 @@ import { folderPredicate } from "./folder-browser.mjs";
 import { observeDatabase } from "./read-cache.mjs";
 import { DirectoryClassification } from "./directory-classification.mjs";
 import { searchTerms } from "./search-query.mjs";
+import { keywordPredicate } from "./search-aliases.mjs";
+import { naturalAssetList } from "./asset-series.mjs";
+import { pageSize, currentPage } from "./pagination.mjs";
 export const run = promisify(execFile);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
@@ -662,7 +665,7 @@ export class Library {
   nonMissingAssetScope(alias = "assets") {
     return `COALESCE(${alias}.file_status,'unknown') <> 'missing'`;
   }
-  assetFilter(query = {}, ignoreCategory = false) {
+  assetFilter(query = {}, ignoreCategory = false, { expandAliases = true } = {}) {
     const where = ["trashed=0", this.activeAssetScope()],
       values = [];
     if (query.view !== "missing") where.push(this.nonMissingAssetScope());
@@ -759,14 +762,15 @@ export class Library {
       }
     }
     if (query.qMode !== undefined && !["all", "any"].includes(query.qMode)) throw Error("关键词匹配方式无效");
+    if (query.qField !== undefined && !["all", "name"].includes(query.qField)) throw Error("搜索字段无效");
     if (query.q) {
       if (typeof query.q !== "string" || query.q.length > 2000) throw Error("搜索内容最多 2000 字");
       const terms = searchTerms(query.q);
       if (terms.length > 32) throw Error("最多组合 32 个关键词");
       const expressions = terms.map(word => {
-        const term = "%" + word.replace(/[\\%_]/g, "\\$&") + "%";
-        values.push(...Array(5).fill(term));
-        return "(name LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\' OR sub LIKE ? ESCAPE '\\')";
+        const predicate = keywordPredicate(word, this.db, { nameOnly: query.qField === "name", expandAliases });
+        values.push(...predicate.values);
+        return predicate.sql;
       });
       if (expressions.length) where.push("(" + expressions.join(query.qMode === "any" ? " OR " : " AND ") + ")");
     }
@@ -826,15 +830,16 @@ export class Library {
       .all(...values);
   }
   list(query = {}) {
+    if (["name", "revealCount"].includes(query.sort)) return naturalAssetList(this, query);
     const { where: w, values } = this.assetFilter(query);
     const total = this.db
       .prepare("SELECT COUNT(*) n FROM assets WHERE " + w)
       .get(...values).n;
-    const page = Math.max(1, Number(query.page) || 1);
-    const limit = 60;
+    const limit = pageSize(query.pageSize);
+    const page = currentPage(query.page, total, limit);
     const sort =
       query.sort === "revealCount"
-        ? "reveal_count DESC,name COLLATE NOCASE ASC"
+        ? "reveal_count DESC,name COLLATE NOCASE DESC"
         : query.sort === "size"
         ? "size DESC"
         : query.sort === "recent"

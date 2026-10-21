@@ -73,7 +73,7 @@ export class MetadataBatches {
       if (!rules || !["all", "any", "none"].some(k => Array.isArray(rules[k]) && rules[k].length)) throw Error("标签规则不能为空");
       filter.tagRules = JSON.stringify(rules);
     } else if (Object.hasOwn(filter, "tagRules")) throw Error("标签规则不能为空");
-    const { where, values } = this.lib.assetFilter(filter);
+    const { where, values } = this.lib.assetFilter(filter, false, { expandAliases: false });
     let extra = "";
     if (selection.match) {
       const { fields, keywords } = selection.match;

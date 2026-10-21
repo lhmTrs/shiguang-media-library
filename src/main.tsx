@@ -80,6 +80,8 @@ import { MoveDestinationPicker } from "./MoveDestinationPicker";
 import { readRefreshSeconds, REFRESH_STORAGE_KEY } from "./refresh-preferences";
 import { displayDirectoryOptions, type DirectoryOption } from "./directory-labels";
 import { MetadataBatchHistory } from "./MetadataBatchHistory";
+import { SeriesAssetList, type AssetSeries } from "./SeriesAssetList";
+import { PaginationControls } from "./PaginationControls";
 
 export type Asset = {
   id: string;
@@ -363,6 +365,7 @@ function App() {
     [q, setQ] = useState(""),
     [search, setSearch] = useState(""),
     [searchMode, setSearchMode] = useState<SearchMode>("all"),
+    [nameOnly, setNameOnly] = useState(false),
     [rootFilter, setRootFilter] = useState<string[]>([]),
     [category, setCategory] = useState(""),
     [ext, setExt] = useState(""),
@@ -397,7 +400,7 @@ function App() {
   const [advancedFilters, setAdvancedFilters] = useState(false);
   const folderView = true;
   const filterMemory = useRef(new Map<string, {
-    q: string; searchMode: SearchMode; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
+    q: string; searchMode: SearchMode; nameOnly: boolean; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
     duration: string; createdFrom: string; createdTo: string; dateField: "created" | "captured";
     captureUnknown: boolean; onlyFavorites: boolean;
   }>());
@@ -467,6 +470,17 @@ function App() {
   const listLoading = loading || refreshing;
   // 空列表的首次加载已经有自己的大转圈，不再叠一层蒙层
   const showTableMask = listLoading && assets.length > 0;
+  const [seriesMode, setSeriesMode] = useState(() => { try { return localStorage.getItem("shiguang.seriesMode") !== "flat"; } catch { return true; } });
+  const [pageSize, setPageSize] = useState(() => { try { const value = Number(localStorage.getItem("shiguang.pageSize")); return [20,50,60,100,200].includes(value) ? value : 60; } catch { return 60; } });
+  useEffect(() => { try { localStorage.setItem("shiguang.pageSize", String(pageSize)); } catch {} }, [pageSize]);
+  const [seriesGroups, setSeriesGroups] = useState<AssetSeries[]>([]);
+  const [seriesRevision, setSeriesRevision] = useState("");
+  const [seriesEntries, setSeriesEntries] = useState(0), [seriesCount, setSeriesCount] = useState(0);
+  const [seriesAssets, setSeriesAssets] = useState<Asset[]>([]);
+  const [seriesFocus, setSeriesFocus] = useState<{ key: string; assetId: string } | null>(null);
+  const grouped = seriesMode && layout === "list";
+  const displayedAssets = grouped ? seriesAssets : assets;
+  useEffect(() => { try { localStorage.setItem("shiguang.seriesMode", seriesMode ? "group" : "flat"); } catch {} }, [seriesMode]);
   // 蒙层要贴合"当前可见的那部分列表"：页面整体滚动、列表可能高于一屏，
   // 直接用 absolute inset:0 会把转圈甩到屏幕外（Element 的 v-loading 在小表格里没这个问题）
   const resultsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -698,10 +712,13 @@ function App() {
     const params = new URLSearchParams({
       q: search,
       qMode: searchMode,
+      qField: nameOnly ? "name" : "all",
       view,
       page: String(targetPage),
+      pageSize: String(pageSize),
       sort,
     });
+    if (grouped) params.set("series", "1");
     if (kindNames[view]) params.set("kind", view);
     for (const rootId of rootFilter) params.append("root", rootId);
     if (category) params.set("category", category);
@@ -774,9 +791,11 @@ function App() {
       api<{
         items: Asset[];
         total: number;
+        page: number;
         pages: number;
         categories: Stats["categories"];
-      }>("/assets?" + params),
+        groups?: AssetSeries[]; revision?: string; entries?: number; seriesCount?: number;
+      }>((params.get("series") === "1" ? "/asset-series?" : "/assets?") + params),
       api<Stats>("/stats"),
       api<Root[]>("/roots"),
       api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs"),
@@ -785,6 +804,9 @@ function App() {
     setFilterCategories(data.categories);
     setCategoryChoicesRevision(n => n + 1);
     setAssets(data.items);
+    setSeriesGroups(data.groups || []);
+    setSeriesRevision(data.revision || "");
+    setSeriesEntries(data.entries || 0); setSeriesCount(data.seriesCount || 0);
     const freshSelected = data.items.find((a) => a.id === selected?.id);
     if (freshSelected) {
       if (opts.silent) {
@@ -832,6 +854,7 @@ function App() {
     }
     setTotal(data.total);
     setPages(data.pages);
+    setPage(data.page);
     setStats(s);
     setRoots(r);
     setJobs(j.jobs);
@@ -898,6 +921,9 @@ function App() {
     view,
     search,
     searchMode,
+    nameOnly,
+    grouped,
+    pageSize,
     rootFilter,
     category,
     tagRules,
@@ -955,6 +981,9 @@ function App() {
     view,
     search,
     searchMode,
+    nameOnly,
+    grouped,
+    pageSize,
     rootFilter,
     category,
     tagRules,
@@ -1005,11 +1034,12 @@ function App() {
   }, [volume, playing]);
   function navigate(v: string) {
     if (v !== view) {
-      filterMemory.current.set(view, { q, searchMode, rootFilter, category, tagRules, ext, duration, createdFrom, createdTo, dateField, captureUnknown, onlyFavorites });
+      filterMemory.current.set(view, { q, searchMode, nameOnly, rootFilter, category, tagRules, ext, duration, createdFrom, createdTo, dateField, captureUnknown, onlyFavorites });
       const saved = filterMemory.current.get(v);
       setQ(saved?.q || "");
       setSearch(saved?.q || "");
       setSearchMode(saved?.searchMode || "all");
+      setNameOnly(saved?.nameOnly || false);
       setRootFilter(saved?.rootFilter || []);
       setCategory(saved?.category || "");
       setTagRules(saved?.tagRules || emptyTagRules());
@@ -1094,14 +1124,25 @@ function App() {
   const libraryView = !["projects", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
-  const auditionQueue = assets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
+  const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
   const auditionIndex = auditionQueue.findIndex(a => a.id === (playing?.id || selected?.id));
   async function stepAudition(direction: number, automatic = false) {
-    if (!libraryView || stepInFlight.current || (automatic && (auditionIndex < 0 || !wantsPlayback.current))) return false;
+    if (!libraryView || stepInFlight.current || (automatic && ((!grouped && auditionIndex < 0) || !wantsPlayback.current))) return false;
     stepInFlight.current = true; setStepping(true);
     const key = browseKey.current;
     const generation = auditionGeneration.current;
     try {
+      if (grouped) {
+        const params = assetParams();
+        params.set("direction", String(direction));
+        params.set("currentId", playing?.id || selected?.id || "");
+        const result = await api<{ item: Asset | null; page?: number; seriesKey?: string }>("/asset-series/adjacent?" + params);
+        if (key !== browseKey.current || generation !== auditionGeneration.current || auditionContext.current.id !== playing?.id || auditionContext.current.view !== view || (automatic && !wantsPlayback.current)) return false;
+        if (!result.item) return false;
+        pendingAudition.current = result.item.id;
+        setSeriesFocus({ key: result.seriesKey!, assetId: result.item.id });
+        setPage(result.page!); play(result.item, automatic); return true;
+      }
       const next = auditionIndex < 0 ? (direction > 0 ? auditionQueue[0] : auditionQueue.at(-1)) : auditionQueue[auditionIndex + direction];
       if (next) { pendingAudition.current = next.id; play(next, automatic); return true; }
       for (let p = page + direction; p >= 1 && p <= pages; p += direction) {
@@ -1117,12 +1158,12 @@ function App() {
     if (!pendingAudition.current) return;
     const row = document.querySelector(`[data-asset-id="${pendingAudition.current}"]`);
     if (row) { row.scrollIntoView({ block: "nearest" }); pendingAudition.current = null; }
-  }, [playing?.id, assets]);
+  }, [playing?.id, assets, seriesAssets]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (e.defaultPrevented || e.isComposing || e.repeat || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('[role="dialog"]') || target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="combobox"],[role="slider"],[role="menu"],.tag-rule-panel')) return;
-      if (e.code === "Space" && !target.closest("button,a")) { e.preventDefault(); if (playing) toggleAudition(); else if (selected && audioAsset(selected)) play(selected); else if (auditionQueue[0] && libraryView) play(auditionQueue[0]); }
+      if (e.code === "Space" && !target.closest("button,a")) { e.preventDefault(); if (playing) toggleAudition(); else if (selected && audioAsset(selected)) play(selected); else if (auditionQueue[0] && libraryView) play(auditionQueue[0]); else if (grouped && libraryView && total) void stepAudition(1); }
       if (libraryView && ["ArrowUp", "ArrowDown"].includes(e.key)) { e.preventDefault(); void stepAudition(e.key === "ArrowDown" ? 1 : -1); }
     };
     window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler);
@@ -1255,6 +1296,7 @@ function App() {
   ];
   const filtersActive = !!(
     q ||
+    nameOnly ||
     rootFilter.length ||
     category ||
     Object.values(tagRules).some(v => v.length) ||
@@ -1266,7 +1308,7 @@ function App() {
     onlyFavorites
   );
   const allChecked =
-    assets.length > 0 && assets.every((a) => checked.has(a.id));
+    displayedAssets.length > 0 && displayedAssets.every((a) => checked.has(a.id));
   useEffect(() => {
     const player = playerRef.current;
     const topbar = topbarRef.current;
@@ -1398,7 +1440,7 @@ function App() {
             添加素材目录
           </button>
         </header>
-        {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
+        {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
@@ -1452,7 +1494,7 @@ function App() {
               </div>
             )}
             <div className="filters search-toolbar" data-expanded={advancedFilters}>
-              <KeywordSearch value={q} change={setQ} mode={searchMode} changeMode={setSearchMode}/>
+              <KeywordSearch value={q} change={setQ} mode={searchMode} changeMode={setSearchMode} nameOnly={nameOnly} changeNameOnly={setNameOnly}/>
               <CategoryFilter value={category} categories={displayDirectoryOptions(filterCategories, allCategories.length ? allCategories : filterCategories)} onChange={setCategory} formatName={name => name}/>
               <TagRuleFilter value={tagRules} tags={filterTags} change={setTagRules}/>
               <button className="plain advanced-filter-trigger" aria-label="更多筛选" aria-expanded={advancedFilters} aria-controls="advanced-asset-filters" onClick={() => { setAdvancedFilters(v => !v); setRootMenuOpen(false); }}><SlidersHorizontal size={16}/><span>筛选</span>{(rootFilter.length > 0 || ext || duration || createdFrom || createdTo || captureUnknown || onlyFavorites) && <i className="filter-indicator"/>}<ChevronDown size={14}/></button>
@@ -1664,6 +1706,7 @@ function App() {
                   </span>
                 ))}
                 <KeywordTokens value={q} change={setQ} mode={searchMode}/>
+                {nameOnly && <span className="filter-token">仅搜索名称<IconButton icon={X} title="恢复搜索全部字段" onClick={() => setNameOnly(false)}/></span>}
                 {category && (
                   <span className="filter-token">
                     {categoryLabel(category)}
@@ -1733,15 +1776,19 @@ function App() {
                   </span>
                 )}
                 <button className="text-button" onClick={() => {
-                  setQ(""); setSearch(""); setSearchMode("all"); setRootFilter([]); setCategory(""); setTagRules(emptyTagRules()); setExt(""); setDuration(""); setCreatedFrom(""); setCreatedTo(""); setCaptureUnknown(false); setOnlyFavorites(false);
+                  setQ(""); setSearch(""); setSearchMode("all"); setNameOnly(false); setRootFilter([]); setCategory(""); setTagRules(emptyTagRules()); setExt(""); setDuration(""); setCreatedFrom(""); setCreatedTo(""); setCaptureUnknown(false); setOnlyFavorites(false);
                 }}>重置筛选</button>
               </div>
             )}
             <div className="content-toolbar">
               <div>
-                <span className="result-count" role="status">{loading ? "搜索中…" : `${total.toLocaleString()} 条结果`}</span>
+                <span className="result-count" role="status">{loading ? "搜索中…" : `${total.toLocaleString()} 条结果${grouped && seriesCount ? ` · ${seriesCount} 个系列 · ${seriesEntries - seriesCount} 个独立素材` : ""}`}</span>
               </div>
               <div>
+                {layout === "list" && <div className="segmented series-mode" aria-label="素材分组方式">
+                  <button aria-pressed={!seriesMode} onClick={() => setSeriesMode(false)}>平铺</button>
+                  <button aria-pressed={seriesMode} onClick={() => setSeriesMode(true)}>同系列分组</button>
+                </div>}
                 <select
                   aria-label="排序"
                   value={sort}
@@ -1867,14 +1914,14 @@ function App() {
                   <div className={"asset-table" + (view === "missing" ? " missing-assets" : "")}>
                     <div className="table-head">
                       <input
-                        aria-label="选择本页全部素材"
+                        aria-label="选择当前显示的素材"
                         type="checkbox"
                         checked={allChecked}
                         onChange={() =>
                           setChecked(
                             allChecked
                               ? new Set()
-                              : new Set(assets.map((a) => a.id)),
+                              : new Set(displayedAssets.map((a) => a.id)),
                           )
                         }
                       />
@@ -1884,7 +1931,7 @@ function App() {
                       <span>大小</span>
                       <span className="operations-heading">操作</span>
                     </div>
-                    {assets.map((a) => {
+                    {(() => { const renderAsset = (a: Asset) => {
                       const Icon = kindIcons[a.kind];
                       return (
                         <div
@@ -1945,7 +1992,7 @@ function App() {
                           {assetActions(a)}
                         </div>
                       );
-                    })}
+                    }; return grouped ? <SeriesAssetList key={browseKey.current} groups={seriesGroups} assets={assets} query={assetParams().toString()} revision={seriesRevision} request={api} renderAsset={renderAsset} onVisible={setSeriesAssets} focus={seriesFocus}/> : assets.map(renderAsset); })()}
                   </div>
                 ) : (
                   <div className="asset-grid">
@@ -2003,6 +2050,7 @@ function App() {
                 <footer className="pagination">
                   <span>
                     共 {total.toLocaleString()} 项
+                    {grouped && <small> · {seriesEntries.toLocaleString()} 个列表条目</small>}
                     {refreshing && (
                       <span className="inline-loading" role="status">
                         <span className="spinner" aria-hidden="true" />读取中…
@@ -2012,22 +2060,13 @@ function App() {
                       <small> · {pending.toLocaleString()} 项参数读取中</small>
                     )}
                   </span>
-                  <div>
-                    <IconButton
-                      icon={ChevronLeft}
-                      title="上一页"
-                      disabled={page <= 1}
-                      onClick={() => setPage(page - 1)}
-                    />
-                    <span>
-                      {pages ? page : 0} / {pages}
-                    </span>
-                    <IconButton
-                      icon={ChevronRight}
-                      title="下一页"
-                      disabled={page >= pages}
-                      onClick={() => setPage(page + 1)}
-                    />
+                  <div className="pagination-options">
+                    <label className="page-size-control" title={grouped ? "每条代表一个系列或独立素材；展开后的成员使用相同分页数量" : "每页显示的素材数量"}>
+                      <select aria-label="每页显示数量" value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(1); setChecked(new Set()); setSeriesFocus(null); }}>
+                        {[20,50,60,100,200].map(size => <option key={size} value={size}>{size} 条/页</option>)}
+                      </select>
+                    </label>
+                    <PaginationControls page={page} pages={pages} change={setPage} disabled={loading || refreshing}/>
                   </div>
                 </footer>
               </section>
@@ -2500,8 +2539,8 @@ function App() {
         <div ref={playerRef} className="player audition-player">
           <AuditionControls asset={playing} playing={auditionActive} position={position} length={length} volume={volume} inPoint={inPoint} outPoint={outPoint} loop={loop}
             toggle={toggleAudition} seek={seekAudition} previous={() => void stepAudition(-1)} next={() => void stepAudition(1)}
-            hasPrevious={libraryView && !stepping && (auditionIndex > 0 || page > 1 || (auditionIndex < 0 && auditionQueue.length > 0))}
-            hasNext={libraryView && !stepping && (auditionIndex < auditionQueue.length - 1 || page < pages)}
+            hasPrevious={libraryView && !stepping && (grouped ? total > 1 : (auditionIndex > 0 || page > 1 || (auditionIndex < 0 && auditionQueue.length > 0)))}
+            hasNext={libraryView && !stepping && (grouped ? total > 1 : (auditionIndex < auditionQueue.length - 1 || page < pages))}
             setVolume={setVolume} setRange={auditionRange} setLoop={changeLoop}
             continuous={continuous} setContinuous={changeContinuous} canContinue={libraryView}
             favorite={() => void run(async () => { const current = await api<Asset>("/assets/" + playing.id); const updated = await api<Asset>("/assets/" + playing.id, { favorite: !current.favorite }, "PATCH"); setPlaying(updated); await refreshRef.current(); })}

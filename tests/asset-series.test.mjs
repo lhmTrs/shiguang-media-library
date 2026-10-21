@@ -1,0 +1,70 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import { Library } from "../server/library.mjs";
+import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "../server/asset-series.mjs";
+import { observeDatabase } from "../server/read-cache.mjs";
+
+test("series cover all results, isolate location/type/format, paginate and invalidate safely", t => {
+  const db = new Database(":memory:"); t.after(() => db.close());
+  db.exec(`CREATE TABLE assets (
+    id TEXT PRIMARY KEY, name TEXT, path TEXT, root_id TEXT DEFAULT 'root', kind TEXT DEFAULT 'sfx', ext TEXT DEFAULT 'wav',
+    tags TEXT DEFAULT '[]', note TEXT DEFAULT '', category TEXT DEFAULT '', sub TEXT DEFAULT '',
+    trashed INTEGER DEFAULT 0, reveal_count INTEGER DEFAULT 0, file_status TEXT DEFAULT 'online',
+    online INTEGER DEFAULT 1, size INTEGER DEFAULT 12, mtime INTEGER DEFAULT 0, created_ms INTEGER, captured_ms INTEGER
+  )`);
+  const lib = Object.create(Library.prototype);
+  Object.assign(lib, { db, activeAssetScope: () => "root_id<>'retired'", nonMissingAssetScope: () => "file_status<>'missing'", categoryOptions: () => [], enqueue: () => {} });
+  observeDatabase(db);
+  const insert = db.prepare("INSERT INTO assets(id,name,path,root_id,kind,ext) VALUES(?,?,?,?,?,?)");
+  const add = (id, name, dir = "/same", root = "root", kind = "sfx", ext = "wav") => insert.run(id,name,dir+"/"+name,root,kind,ext);
+  for (let i=1;i<=125;i++) add("a"+i,`神秘 (${i}).wav`);
+  add("otherdir", "神秘 (126).wav", "/different");
+  add("otherroot", "神秘 (127).wav", "/same", "root2");
+  add("otherformat", "神秘 (128).mp3", "/same", "root", "sfx", "mp3");
+  add("otherkind", "神秘 (129).wav", "/same", "root", "music");
+  add("retired", "神秘 (130).wav", "/same", "retired");
+  add("missing", "神秘 (131).wav");
+  db.prepare("UPDATE assets SET file_status='missing' WHERE id='missing'").run();
+  let listed=assetSeriesList(lib,{sort:"revealCount"});
+  assert.equal(listed.total,129); assert.equal(listed.entries,5); assert.equal(listed.seriesCount,1);
+  const group=listed.groups.find(item=>item.count>1);
+  assert.equal(group.count,125);
+  assert.equal(listed.items.length,5);
+  const params={sort:"revealCount",seriesKey:group.key};
+  let members=assetSeriesMembers(lib,params);
+  assert.equal(members.items.length,60); assert.equal(members.pages,3);
+  assert.equal(members.items[0].name,"神秘 (125).wav");
+  assert.equal(assetSeriesMembers(lib,{...params,focusId:"a1"}).page,3);
+  assert.equal(assetSeriesMembers(lib,{...params,memberPage:3}).items.length,5);
+  assert.equal(assetSeriesAdjacent(lib,{sort:"revealCount",currentId:"a100",direction:"1"}).item.id,"a99");
+  assert.equal(assetSeriesAdjacent(lib,{sort:"revealCount",currentId:"a99",direction:"-1"}).item.id,"a100");
+  assert.equal(assetSeriesAdjacent(lib,{sort:"revealCount",currentId:"unknown",direction:"1"}).item.id,listed.items[0].id);
+  assert.equal(assetSeriesList(lib,{q:"100",qField:"name"}).seriesCount,0);
+  assert.equal(assetSeriesList(lib,{kind:"music"}).seriesCount,0);
+  const revision=listed.revision;
+  db.prepare("UPDATE assets SET trashed=1 WHERE id='a125'").run();
+  listed=assetSeriesList(lib,{sort:"revealCount"});
+  assert.notEqual(listed.revision,revision);
+  assert.equal(listed.groups.find(item=>item.count>1).count,124);
+  for (let i=0;i<65;i++) add("single"+i,`独立${i}.wav`);
+  listed=assetSeriesList(lib,{sort:"revealCount"});
+  assert.equal(listed.groups.length,60); assert.equal(listed.pages,2);
+  assert.equal(assetSeriesList(lib,{sort:"revealCount",page:2}).groups.length,10);
+  const smaller = assetSeriesList(lib,{sort:"revealCount",pageSize:"20",page:2});
+  assert.equal(smaller.groups.length,20); assert.equal(smaller.pages,4);
+  assert.equal(assetSeriesList(lib,{pageSize:"20",page:999}).page,4);
+  assert.equal(assetSeriesMembers(lib,{...params,pageSize:"20",focusId:"a1"}).page,7);
+  assert.equal(assetSeriesMembers(lib,{...params,pageSize:"20",memberPage:999}).items.length,4);
+  assert.equal(lib.list({sort:"revealCount",pageSize:"20",page:2}).items.length,20);
+  assert.equal(lib.list({sort:"size",pageSize:"50",page:2}).items.length,50);
+  for (const invalid of ["0","201","20.5","bad",["20"]]) assert.throws(()=>assetSeriesList(lib,{pageSize:invalid}),/每页数量/);
+  const flat=lib.list({sort:"revealCount"});
+  assert(flat.items.findIndex(item=>item.id==="a99") > flat.items.findIndex(item=>item.id==="a100"));
+  assert.throws(()=>assetSeriesMembers(lib,{seriesKey:"not-found"}),/已变化/);
+  assert.throws(()=>assetSeriesAdjacent(lib,{direction:"bad"}),/方向/);
+  add("v1", "视频 (1).mp4", "/same", "root", "sfx", "mp4");
+  add("v2", "视频 (2).mp4", "/same", "root", "sfx", "mp4");
+  assert(!assetSeriesList(lib,{}).groups.some(group=>group.name==="视频"));
+  assert.notEqual(assetSeriesAdjacent(lib,{currentId:"v2",direction:"1"}).item?.ext,"mp4");
+});

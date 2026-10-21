@@ -6,6 +6,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
+import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
 import { MysqlStorage } from "./mysql.mjs";
 import { Tags } from "./tags.mjs";
 import { MusicAnalysis } from "./music-analysis.mjs";
@@ -377,6 +378,9 @@ app.get("/api/jobs", (req, res) =>
     },
   }),
 );
+app.get("/api/asset-series", (req, res) => res.json(assetSeriesList(lib, req.query)));
+app.get("/api/asset-series/members", (req, res) => res.json(assetSeriesMembers(lib, req.query)));
+app.get("/api/asset-series/adjacent", (req, res) => res.json(assetSeriesAdjacent(lib, req.query)));
 app.get("/api/assets", (req, res) => res.json(lib.list(req.query)));
 app.get("/api/assets/:id", (req, res, next) => {
   try {

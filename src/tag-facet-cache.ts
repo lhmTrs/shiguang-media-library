@@ -12,7 +12,7 @@ export function clearTagFacetCache(): void {
 
 export function tagFacetKey(params: URLSearchParams): string {
   const normalized = new URLSearchParams(params);
-  normalized.delete("page"); normalized.delete("sort");
+  normalized.delete("page"); normalized.delete("sort"); normalized.delete("pageSize");
   for (const key of ["root", "tagRules"]) {
     if (key === "root") {
       const roots = [...new Set(normalized.getAll(key))].sort(); normalized.delete(key);
