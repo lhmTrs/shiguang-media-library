@@ -1,0 +1,29 @@
+diff --git a/src/style.css b/src/style.css
+index e67aef4..c242d97 100644
+--- a/src/style.css
++++ b/src/style.css
+@@ -3505,7 +3505,12 @@ dd {
+   .search-toolbar .advanced-filter-trigger { gap: 4px; padding-inline: 6px; }
+   .search-toolbar .advanced-filter-trigger > svg:last-child { display: none; }
+   .search-toolbar .advanced-filter-trigger .filter-indicator { position: absolute; top: 4px; right: 4px; }
+-  .content-toolbar > div { min-width: 0; }
++  .content-toolbar > div { min-width: 0; flex-shrink: 1; }
++  /* 控件行必须可收缩并允许内部换行；固定 max-content 会把右侧按钮挤出屏幕。 */
++  .content-toolbar > div:last-child { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
++  .content-toolbar > div:last-child > .segmented,
++  .content-toolbar > div:last-child > .toolbar-popover { flex: 0 0 auto; }
++  .content-toolbar > div:last-child > select { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+ }
+ 
+ .category-view-switch { display: flex; gap: 3px; border-bottom: 1px solid var(--line); padding: 12px 30px; background: var(--c-fff); }
+@@ -3904,3 +3909,10 @@ dd {
+   .duplicate-group > summary { padding: 12px; }
+   .duplicate-group > .duplicate-file { margin-inline: 10px; gap: 5px; }
+ }
++
++/* T-LOCAL-002: 320px 批量栏保持单行可点击，文字不折成两行。 */
++@media (max-width: 380px) {
++  .batch-bar { gap: 1px; }
++  .batch-bar > span, .batch-bar .text-button { white-space: nowrap; }
++  .batch-bar .icon-button { width: 28px; height: 28px; }
++}

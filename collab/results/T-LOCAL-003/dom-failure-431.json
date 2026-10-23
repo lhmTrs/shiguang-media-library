@@ -1,0 +1,365 @@
+{
+  "error": "locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for getByRole('region', { name: '真实文件夹浏览', exact: true }).getByRole('button', { name: /^快速/ })\n",
+  "url": "http://127.0.0.1:4587/",
+  "breadcrumbs": "音效 测试\n转场\n呼啸",
+  "childrenText": "",
+  "childrenHtml": "",
+  "regionButtons": [
+    "",
+    "扫描当前素材目录",
+    "",
+    "",
+    "归档\n0",
+    "",
+    "摄影素材",
+    "",
+    "音效 测试\n2",
+    "",
+    "音效 测试_待确认",
+    "",
+    "转场\n0",
+    "",
+    "呼啸",
+    "音效 测试",
+    "转场",
+    "呼啸",
+    "全部标签"
+  ],
+  "folderApi": [
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试",
+        "writable": true,
+        "state": "online",
+        "direct": 2,
+        "total": 2,
+        "children": [
+          {
+            "name": "转场",
+            "directory": "转场",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "呼啸",
+            "directory": "转场/呼啸",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA%2F%E5%91%BC%E5%95%B8",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场/呼啸",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场/呼啸",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "快速",
+            "directory": "转场/呼啸/快速",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "呼啸",
+            "directory": "转场/呼啸",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA%2F%E5%91%BC%E5%95%B8",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场/呼啸",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场/呼啸",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "快速",
+            "directory": "转场/呼啸/快速",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "呼啸",
+            "directory": "转场/呼啸",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser",
+      "status": 400,
+      "body": {
+        "error": "同名文件或文件夹已存在，请换一个名称"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser",
+      "status": 200,
+      "body": {
+        "root": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+        "directory": "转场/测试归档"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA%2F%E6%B5%8B%E8%AF%95%E5%BD%92%E6%A1%A3",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场/测试归档",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场/测试归档",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": []
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=d19770c3-57f5-43bb-8f28-cb09f4c273d8&directory=&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "d19770c3-57f5-43bb-8f28-cb09f4c273d8",
+          "name": "归档"
+        },
+        "directory": "",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/归档",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": []
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=d19770c3-57f5-43bb-8f28-cb09f4c273d8&directory=&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "d19770c3-57f5-43bb-8f28-cb09f4c273d8",
+          "name": "归档"
+        },
+        "directory": "",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/归档",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": []
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试",
+        "writable": true,
+        "state": "online",
+        "direct": 2,
+        "total": 2,
+        "children": [
+          {
+            "name": "待确认",
+            "directory": "\u0000pending",
+            "direct": 2,
+            "total": 2
+          },
+          {
+            "name": "转场",
+            "directory": "转场",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试",
+        "writable": true,
+        "state": "online",
+        "direct": 2,
+        "total": 2,
+        "children": [
+          {
+            "name": "待确认",
+            "directory": "\u0000pending",
+            "direct": 2,
+            "total": 2
+          },
+          {
+            "name": "转场",
+            "directory": "转场",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "呼啸",
+            "directory": "转场/呼啸",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA%2F%E5%91%BC%E5%95%B8&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场/呼啸",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场/呼啸",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": []
+      }
+    },
+    {
+      "url": "http://127.0.0.1:4587/api/folder-browser?root=30cd9f95-b671-4e3e-a0d9-d9d42989a560&directory=%E8%BD%AC%E5%9C%BA&classification=1",
+      "status": 200,
+      "body": {
+        "root": {
+          "id": "30cd9f95-b671-4e3e-a0d9-d9d42989a560",
+          "name": "音效 测试"
+        },
+        "directory": "转场",
+        "path": "/private/var/folders/vv/gd7zjdgd11153_pfkdyjqb2h0000gn/T/shiguang-browser-IzCnEV/音效 测试/转场",
+        "writable": true,
+        "state": "online",
+        "direct": 0,
+        "total": 0,
+        "children": [
+          {
+            "name": "呼啸",
+            "directory": "转场/呼啸",
+            "direct": 0,
+            "total": 0
+          }
+        ]
+      }
+    }
+  ]
+}

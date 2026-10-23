@@ -1,0 +1,37 @@
+{
+  "rootIncludedPathLen0": {
+    "verifierAccepts": false,
+    "code": "CERT_CHAIN_INVALID",
+    "opensslAccepts": false,
+    "mismatch": false
+  },
+  "rootOmittedPathLen0": {
+    "verifierAccepts": false,
+    "code": "CERT_CHAIN_INVALID",
+    "opensslAccepts": false,
+    "mismatch": false
+  },
+  "validTwoIntermediates": {
+    "verifierAccepts": true,
+    "code": null,
+    "opensslAccepts": true,
+    "mismatch": false
+  },
+  "parentPathLen0": {
+    "verifierAccepts": false,
+    "code": "CERT_CHAIN_INVALID",
+    "opensslAccepts": false,
+    "mismatch": false
+  },
+  "cancelDuringMetadataRename": {
+    "outcome": {
+      "code": "STALE"
+    },
+    "finalState": "logged-in",
+    "persistedActivated": false,
+    "retry": {
+      "session": true
+    },
+    "staleCommit": false
+  }
+}

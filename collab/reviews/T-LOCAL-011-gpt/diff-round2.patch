@@ -1,0 +1,394 @@
+diff -ruN a/server/cloud-auth.mjs b/server/cloud-auth.mjs
+--- a/server/cloud-auth.mjs	2026-10-23 09:02:24
++++ b/server/cloud-auth.mjs	2026-10-23 09:02:24
+@@ -28,11 +28,14 @@
+ const MAX_RESPONSE_CHARS = 1_000_000;
+ /**
+  * 受控 keep-alive 连接池（T-LOCAL-011）：只复用同一实例、同一套 TLS 材料的连接。
+- * 并发上限保持小而有界；空闲连接最多保留 4 条并快速过期，避免长期占用云端连接。
++ * 并发上限保持小而有界；空闲连接最多保留 4 条并在 30s 后被主动关闭。
++ *
++ * 注意：Node 核心 http.Agent 并不读取 `freeSocketTimeout`（那是 agentkeepalive 的
++ * 扩展字段），所以这里不依赖它，而是在 Agent 的 `free` 事件上对真正处于空闲池的
++ * socket 挂有界计时器；socket 被复用/关闭时不会误杀，具体见 #armIdleTimer。
+  */
+ const AGENT_MAX_SOCKETS = 4;
+ const AGENT_MAX_FREE_SOCKETS = 4;
+-const AGENT_FREE_SOCKET_TIMEOUT_MS = 10_000;
+ const AGENT_IDLE_TIMEOUT_MS = 30_000;
+ const AGENT_KEEPALIVE_MS = 1_000;
+ /** 429 没有可用 Retry-After 时的安全冷却 */
+@@ -159,11 +162,13 @@
+ const nowIso = (ms) => new Date(ms).toISOString();
+ 
+ export class CloudAuth {
+-  constructor(lib, { dataDir, clock = () => Date.now(), timeoutMs = 15_000, secrets = null } = {}) {
++  constructor(lib, { dataDir, clock = () => Date.now(), timeoutMs = 15_000, idleSocketMs = AGENT_IDLE_TIMEOUT_MS, secrets = null } = {}) {
+     this.lib = lib;
+     this.dataDir = dataDir || lib.dataDir;
+     this.clock = clock;
+     this.timeoutMs = timeoutMs;
++    /** 空闲 socket 保留时长；测试可注入更短值，生产默认 30s。 */
++    this.idleSocketMs = Number.isFinite(idleSocketMs) && idleSocketMs > 0 ? idleSocketMs : AGENT_IDLE_TIMEOUT_MS;
+     this.secrets = secrets || new SecretStore(lib);
+     this.configPath = path.join(this.dataDir, CONFIG_FILE);
+     this.statePath = path.join(this.dataDir, STATE_FILE);
+@@ -183,6 +188,9 @@
+     this.agent = null;
+     this.agentKey = null;
+     this.poolGenerations = 0;
++    /** 空闲 socket -> 回收计时器；随池一起清理。 */
++    this.idleTimers = new Map();
++    this.idleSocketsWatched = new WeakSet();
+     /** 认证生命周期代次：logout/configure/login/activate 都会递增并中止旧请求 */
+     this.epoch = 0;
+     /** 控制类操作串行，避免 logout/configure/login 同时改状态文件 */
+@@ -229,6 +237,8 @@
+       freeSockets: count(agent?.freeSockets),
+       maxSockets: agent?.maxSockets ?? 0,
+       maxFreeSockets: agent?.maxFreeSockets ?? 0,
++      idleSocketMs: this.idleSocketMs,
++      idleTimers: this.idleTimers.size,
+     };
+   }
+ 
+@@ -900,12 +910,13 @@
+       keepAliveMsecs: AGENT_KEEPALIVE_MS,
+       maxSockets: AGENT_MAX_SOCKETS,
+       maxFreeSockets: AGENT_MAX_FREE_SOCKETS,
+-      timeout: AGENT_IDLE_TIMEOUT_MS,
+-      freeSocketTimeout: AGENT_FREE_SOCKET_TIMEOUT_MS,
+       scheduling: "lifo",
+     });
+     // 空闲连接不阻止进程退出；下一次请求仍可复用同一 socket。
+     agent.on("free", (socket) => {
++      // 核心 Agent 只负责把 socket 放入空闲池，不提供“空闲 N 秒后关闭”的选项；
++      // 这里显式回收，避免空闲连接无限期占用云端/本机资源。
++      this.#armIdleTimer(agent, socket);
+       try {
+         socket.unref();
+       } catch {
+@@ -918,10 +929,46 @@
+     return agent;
+   }
+ 
++  /**
++   * 给空闲 socket 挂有界回收计时器。计时器触发时只销毁“仍在 agent.freeSockets 里”
++   * 的 socket：若它已被新请求取走，就什么都不做，避免误杀在途请求。
++   */
++  #armIdleTimer(agent, socket) {
++    if (!socket || socket.destroyed) return;
++    const previous = this.idleTimers.get(socket);
++    if (previous) clearTimeout(previous);
++    if (!this.idleSocketsWatched.has(socket)) {
++      this.idleSocketsWatched.add(socket);
++      socket.once("close", () => {
++        const timer = this.idleTimers.get(socket);
++        if (timer) clearTimeout(timer);
++        this.idleTimers.delete(socket);
++      });
++    }
++    const timer = setTimeout(() => {
++      this.idleTimers.delete(socket);
++      if (socket.destroyed) return;
++      const free = Object.values(agent.freeSockets || {}).some(
++        (list) => Array.isArray(list) && list.includes(socket),
++      );
++      if (!free) return;
++      try {
++        socket.destroy();
++      } catch {
++        /* 已由其它路径关闭 */
++      }
++    }, this.idleSocketMs);
++    // 空闲计时器不阻止进程退出；下一次请求仍复用，超时后才关闭。
++    timer.unref?.();
++    this.idleTimers.set(socket, timer);
++  }
++
+   #destroyAgent() {
+     const agent = this.agent;
+     this.agent = null;
+     this.agentKey = null;
++    for (const timer of this.idleTimers.values()) clearTimeout(timer);
++    this.idleTimers.clear();
+     if (!agent) return;
+     try {
+       agent.destroy();
+diff -ruN a/src/CloudWorkspace.tsx b/src/CloudWorkspace.tsx
+--- a/src/CloudWorkspace.tsx	2026-10-23 09:02:24
++++ b/src/CloudWorkspace.tsx	2026-10-23 09:02:24
+@@ -279,13 +279,16 @@
+   const authRef = useRef(auth);
+   authRef.current = auth;
+   /** 同代次并发的资料读取合并成一个 promise；完成/失败后清理。 */
+-  const inflightProfile = useRef<{ epoch: number; promise: Promise<void> } | null>(null);
++  const inflightProfile = useRef<{ epoch: number; seq: number; promise: Promise<void> } | null>(null);
++  /** 每次真正发起 profile 读取都递增；旧请求即使晚到也不能覆盖新结果。 */
++  const profileSeq = useRef(0);
+   const viewState = auth.view?.state;
+   const accountKey = auth.view?.accountId || "";
+   const signedIn = viewState === "logged-in";
+ 
+   useEffect(() => {
+     generation.current += 1;
++    profileSeq.current += 1;
+     inflightProfile.current = null;
+     // 切账号/退出/重新登录：先丢弃旧资料，不能在新请求回来前继续显示旧权限。
+     profileRef.current = null;
+@@ -305,47 +308,54 @@
+     return value;
+   }, []);
+ 
+-  const loadProfile = useCallback(async (): Promise<void> => {
+-    if (viewState !== "logged-in") {
+-      profileRef.current = null;
+-      setProfile(null);
+-      setLoading(false);
+-      setRefreshing(false);
+-      return;
+-    }
+-    const epoch = generation.current;
+-    const pending = inflightProfile.current;
+-    if (pending && pending.epoch === epoch) return pending.promise;
+-    const entry: { epoch: number; promise: Promise<void> } = { epoch, promise: Promise.resolve() };
+-    if (profileRef.current) setRefreshing(true);
+-    else setLoading(true);
+-    entry.promise = (async () => {
+-      try {
+-        const next = await guard(() => request<Profile>("/cloud-management/profile"));
+-        if (epoch !== generation.current) return;
+-        profileRef.current = next;
+-        setProfile(next);
+-        setError("");
+-      } catch (failure) {
+-        if (epoch !== generation.current) return;
+-        const text = failureText(failure);
+-        if ((failure as CloudLastError)?.status === 401) {
+-          profileRef.current = null;
+-          setProfile(null);
+-          void authRef.current.readStatus().catch(() => undefined);
+-        }
+-        setError(text);
+-      } finally {
+-        if (epoch === generation.current) {
+-          setLoading(false);
+-          setRefreshing(false);
+-        }
+-        if (inflightProfile.current === entry) inflightProfile.current = null;
++  const loadProfile = useCallback(
++    async (options?: { force?: boolean }): Promise<void> => {
++      if (viewState !== "logged-in") {
++        profileRef.current = null;
++        setProfile(null);
++        setLoading(false);
++        setRefreshing(false);
++        return;
+       }
+-    })();
+-    inflightProfile.current = entry;
+-    return entry.promise;
+-  }, [accountKey, guard, request, viewState]);
++      const epoch = generation.current;
++      const pending = inflightProfile.current;
++      // 普通刷新（含双击）合并在途读取；权限失效/写后刷新必须另起一轮，
++      // 否则会把“旧权限/写前”的在途响应当成新结果。
++      if (!options?.force && pending && pending.epoch === epoch) return pending.promise;
++      const seq = (profileSeq.current += 1);
++      const entry: { epoch: number; seq: number; promise: Promise<void> } = { epoch, seq, promise: Promise.resolve() };
++      if (profileRef.current) setRefreshing(true);
++      else setLoading(true);
++      entry.promise = (async () => {
++        try {
++          const next = await guard(() => request<Profile>("/cloud-management/profile"));
++          // 只有“当前代次 + 当前这一轮”的响应可以落到界面；被 force 取代的旧响应直接丢弃。
++          if (epoch !== generation.current || seq !== profileSeq.current || inflightProfile.current !== entry) return;
++          profileRef.current = next;
++          setProfile(next);
++          setError("");
++        } catch (failure) {
++          if (epoch !== generation.current || seq !== profileSeq.current || inflightProfile.current !== entry) return;
++          const text = failureText(failure);
++          if ((failure as CloudLastError)?.status === 401) {
++            profileRef.current = null;
++            setProfile(null);
++            void authRef.current.readStatus().catch(() => undefined);
++          }
++          setError(text);
++        } finally {
++          if (epoch === generation.current && inflightProfile.current === entry) {
++            setLoading(false);
++            setRefreshing(false);
++          }
++          if (inflightProfile.current === entry) inflightProfile.current = null;
++        }
++      })();
++      inflightProfile.current = entry;
++      return entry.promise;
++    },
++    [accountKey, guard, request, viewState],
++  );
+ 
+   useEffect(() => {
+     void loadProfile();
+@@ -381,11 +391,12 @@
+         return "登录状态已失效，请重新登录。";
+       }
+       if (status === 403) {
+-        // 权限可能已被云端调整：先清掉旧权限视图，再按最新 capabilities 重取。
++        // 权限可能已被云端调整：先清掉旧权限视图，再强制开启新一轮 capabilities 读取。
++        // 若沿用同代次在途请求，旧响应会把已撤销的 capabilities 重新显示出来。
+         profileRef.current = null;
+         setProfile(null);
+         setLoading(true);
+-        void loadProfile();
++        void loadProfile({ force: true });
+       }
+       return failureText(failure);
+     },
+@@ -550,7 +561,7 @@
+   request: LocalRequest;
+   guard: <T>(task: () => Promise<T>) => Promise<T>;
+   onAuthFailure: (failure: unknown) => string;
+-  reload: () => Promise<void>;
++  reload: (options?: { force?: boolean }) => Promise<void>;
+   onLogin: () => void;
+   onNotice: (message: string) => void;
+ }) {
+@@ -573,7 +584,8 @@
+       if (result?.signedOut) {
+         onLogin();
+       } else {
+-        await reload();
++        // 设备撤销是写操作：即使有旧 profile 在途，也必须真正读到新设备列表。
++        await reload({ force: true });
+         setSuccess("设备已撤销。");
+       }
+     } catch (failure) {
+@@ -768,7 +780,7 @@
+   request: LocalRequest;
+   guard: <T>(task: () => Promise<T>) => Promise<T>;
+   onAuthFailure: (failure: unknown) => string;
+-  reloadProfile: () => Promise<void>;
++  reloadProfile: (options?: { force?: boolean }) => Promise<void>;
+ }) {
+   const system = useMemo(() => new Set(capabilities.systemPermissions), [capabilities.systemPermissions]);
+   const canAdminister = system.has("group:administer");
+@@ -853,7 +865,8 @@
+   async function refresh() {
+     await loadGroups();
+     if (selectedId) await loadDetail(selectedId);
+-    await reloadProfile();
++    // 这是写后刷新：旧 profile 若仍在途，必须另起一轮，不能返回写前结果。
++    await reloadProfile({ force: true });
+   }
+ 
+   function resetMessages() {
+diff -ruN a/tests/cloud-auth.test.mjs b/tests/cloud-auth.test.mjs
+--- a/tests/cloud-auth.test.mjs	2026-10-23 09:02:24
++++ b/tests/cloud-auth.test.mjs	2026-10-23 09:02:24
+@@ -31,7 +31,7 @@
+ const PASSWORD = "correct horse battery staple";
+ const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+ 
+-async function setup(t, { timeoutMs } = {}) {
++async function setup(t, { timeoutMs, idleSocketMs } = {}) {
+   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-cloud-")));
+   const lib = await new Library(path.join(base, "data")).init();
+   const cloud = await startMockCloud();
+@@ -42,6 +42,7 @@
+     dataDir: lib.dataDir,
+     clock: () => now,
+     ...(timeoutMs ? { timeoutMs } : {}),
++    ...(idleSocketMs ? { idleSocketMs } : {}),
+   }).init();
+   t.after(async () => {
+     auth.dispose();
+@@ -580,6 +581,31 @@
+   assert.ok(cloud.secureConnections() > base, "重新登录必须新建连接");
+   assert.equal((await auth.me()).username, "alice");
+   assert.ok(auth.getConnectionPoolInfo().generations >= 2);
++});
++
++test("空闲连接有界回收：核心 Agent 不支持 freeSocketTimeout，超时后真实关闭并重连", async (t) => {
++  // Node 22.7.0 的 _http_agent 不读取 freeSocketTimeout；生产默认 30s，
++  // 这里注入 250ms 证明“真正关闭空闲 socket、下一次重新握手”，不用等 30 秒。
++  const { auth, configure, cloud } = await setup(t, { idleSocketMs: 250 });
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  assert.equal((await auth.me()).username, "alice");
++
++  const pool = auth.getConnectionPoolInfo();
++  assert.equal(pool.idleSocketMs, 250);
++  assert.ok(pool.freeSockets >= 1, `应有一条空闲连接，实际 ${pool.freeSockets}`);
++  await new Promise((resolve) => setTimeout(resolve, 20));
++  assert.equal(auth.getConnectionPoolInfo().idleTimers, auth.getConnectionPoolInfo().freeSockets);
++
++  const base = cloud.secureConnections();
++  const deadline = Date.now() + 3_000;
++  while (Date.now() < deadline && auth.getConnectionPoolInfo().freeSockets > 0)
++    await new Promise((resolve) => setTimeout(resolve, 50));
++  assert.equal(auth.getConnectionPoolInfo().freeSockets, 0, "空闲超时后必须从池中移除");
++  assert.equal(auth.getConnectionPoolInfo().idleTimers, 0, "回收后不能遗留计时器");
++
++  await auth.me();
++  assert.equal(cloud.secureConnections(), base + 1, "空闲连接被回收后，下一次请求必须重新握手");
+ });
+ 
+ async function freePort() {
+diff -ruN a/tests/cloud-management-mock.mjs b/tests/cloud-management-mock.mjs
+--- a/tests/cloud-management-mock.mjs	2026-10-23 09:02:24
++++ b/tests/cloud-management-mock.mjs	2026-10-23 09:02:24
+@@ -82,7 +82,7 @@
+   const resetCodes = new Map(); // token -> {accountId, securityVersion, expiresAt, used}
+   const audits = [];
+   const idempotency = new Map(); // requestId -> {body, groupId}
+-  const flags = { failNext: null, failPaths: new Map() };
++  const flags = { failNext: null, failPaths: new Map(), hold: null };
+   const requests = [];
+   let counter = 0;
+ 
+@@ -311,6 +311,13 @@
+         flags.failNext = null;
+         return fail(res, status, code);
+       }
++      // 测试用：挂起指定路径的响应，便于复现“旧 profile 在途 → 403 → 新读取”。
++      if (flags.hold && flags.hold.remaining > 0 && url.pathname === flags.hold.path) {
++        const hold = flags.hold;
++        hold.remaining -= 1;
++        hold.arrivedResolve();
++        await hold.gate;
++      }
+       const route = `${req.method} ${url.pathname.replace(/^\/api\/v1/, "")}`;
+       const session = bearer(req);
+       const account = session ? accounts.get(session.accountId) : null;
+@@ -740,6 +747,29 @@
+     secureConnections: () => secureConnections,
+     failNext(status, code) {
+       flags.failNext = { status, code };
++    },
++    /**
++     * 测试用：挂起接下来 count 个匹配 pathname 的响应。
++     * 返回的 arrived 在请求进入服务端后 resolve；release 放行。
++     */
++    holdNext(pathname, count = 1) {
++      let releaseGate;
++      let arrivedResolve;
++      const gate = new Promise((resolve) => {
++        releaseGate = resolve;
++      });
++      const arrived = new Promise((resolve) => {
++        arrivedResolve = resolve;
++      });
++      const entry = { path: pathname, remaining: count, gate, arrivedResolve };
++      flags.hold = entry;
++      return {
++        arrived,
++        release: () => {
++          releaseGate();
++          if (flags.hold === entry && entry.remaining <= 0) flags.hold = null;
++        },
++      };
+     },
+     revokeAllSessions() {
+       sessions.clear();

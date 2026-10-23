@@ -1,0 +1,83 @@
+{
+  "ticket": "T-LOCAL-012",
+  "measuredAt": "2026-10-23T04:20:03.318Z",
+  "environment": {
+    "node": "v22.7.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "note": "随机回环 TLS + 合成 4KB gzip 归档；临时 MEDIA_DATA_DIR；不访问生产、不下载真实引擎"
+  },
+  "archive": {
+    "bytes": 119,
+    "sha256": "50bf3e1897df485bc96c2dff761daef82b3340329318309b897eef2f86ed1245"
+  },
+  "cold": [
+    {
+      "ms": 23.21,
+      "requests": 1,
+      "handshakes": 1
+    },
+    {
+      "ms": 10.62,
+      "requests": 1,
+      "handshakes": 1
+    },
+    {
+      "ms": 11.69,
+      "requests": 1,
+      "handshakes": 1
+    },
+    {
+      "ms": 10.36,
+      "requests": 1,
+      "handshakes": 1
+    },
+    {
+      "ms": 10.88,
+      "requests": 1,
+      "handshakes": 1
+    }
+  ],
+  "warm": [
+    {
+      "ms": 10.59,
+      "requests": 1,
+      "handshakes": 0
+    },
+    {
+      "ms": 10.76,
+      "requests": 1,
+      "handshakes": 0
+    },
+    {
+      "ms": 10.36,
+      "requests": 1,
+      "handshakes": 0
+    },
+    {
+      "ms": 11.56,
+      "requests": 1,
+      "handshakes": 0
+    },
+    {
+      "ms": 11.45,
+      "requests": 1,
+      "handshakes": 0
+    }
+  ],
+  "status": {
+    "calls": 500,
+    "totalMs": 19.02,
+    "perCallMs": 0.038,
+    "network": {
+      "requests": 0,
+      "handshakes": 0
+    }
+  },
+  "aggregate": {
+    "coldMeanMs": 13.35,
+    "warmMeanMs": 10.94,
+    "coldHandshakes": 5,
+    "warmHandshakes": 0
+  }
+}

@@ -1,0 +1,1941 @@
+--- a/server/audio-engine.mjs
++++ b/server/audio-engine.mjs
+@@ -1,154 +1,859 @@
+ /**
+- * 音频分析引擎的安装/卸载（按需下载，基础安装包不带）。
++ * 音频分析引擎安装器（T-LOCAL-012）。
+  *
+- * - 下载源：自有服务器（自签证书，**固定 CA**，不关闭校验）
+- * - 校验：sha256 与清单一致才解压
+- * - 安装：临时目录解压 → 原子 rename 到 <dataDir>/engines/audio/
+- * - 卸载：删目录（已存的分析结果不动）
++ * 安全边界：
++ * - 只信任应用内固定发布描述（版本/平台/URL/大小/hash），HTTP 与环境变量不能替换；
++ * - 只支持 darwin-arm64；固定公开 CA，严格 TLS，不跟随重定向；
++ * - 流式下载，长度/字节/hash 三重校验，空闲超时 + 总截止 + 显式取消；
++ * - 复用成熟 tar-stream 解析，只允许白名单普通文件，拒绝链接/设备/PAX 路径；
++ * - 安装/取消/卸载共享跨进程锁与单一状态机，先提交新版本再切换指针，旧版本保留到提交成功；
++ * - 状态只读本地可信标记，错误返回固定码，不泄露本地路径/令牌/原始异常。
+  */
+ import fs from "node:fs/promises";
+ import fssync from "node:fs";
+ import path from "node:path";
+ import https from "node:https";
+ import crypto from "node:crypto";
+-import { spawn } from "node:child_process";
++import { createGunzip } from "node:zlib";
++import { pipeline } from "node:stream/promises";
+ import { fileURLToPath } from "node:url";
++import tar from "tar-stream";
+ 
+ const HERE = path.dirname(fileURLToPath(import.meta.url));
+-const CA_FILE = path.join(HERE, "audio-engine-ca.pem");
++const DEFAULT_CA_FILE = path.join(HERE, "audio-engine-ca.pem");
++const MiB = 1024 * 1024;
+ 
+-export const ENGINE = {
++/** 应用内固定发布描述；生产路径不允许环境变量/浏览器覆盖。 */
++export const ENGINE_RELEASE = Object.freeze({
++  id: "audio-engine-v1-macos-arm64",
+   version: "1.0.0",
+-  url: process.env.AUDIO_ENGINE_URL || "https://112.74.109.173/downloads/audio-engine-v1-macos-arm64.tar.gz",
+-  sha256: process.env.AUDIO_ENGINE_SHA256 || "61911f96c26a5cda6aae214fcde622d952729d48475754902d42905bedc7413e",
++  platform: "darwin",
++  arch: "arm64",
++  url: "https://112.74.109.173/downloads/audio-engine-v1-macos-arm64.tar.gz",
++  size: 120156053,
++  sha256: "61911f96c26a5cda6aae214fcde622d952729d48475754902d42905bedc7413e",
++  archiveMaxBytes: 130 * MiB,
++  extractedMaxBytes: 256 * MiB,
++  maxEntries: 8,
+   binary: "audio-analyze",
++});
++
++const CODES = {
++  UNSUPPORTED_PLATFORM: "UNSUPPORTED_PLATFORM",
++  CONFIRM_REQUIRED: "ENGINE_CONFIRM_REQUIRED",
++  BUSY: "ENGINE_BUSY",
++  DISK_SPACE_LOW: "ENGINE_DISK_SPACE_LOW",
++  HTTP_STATUS: "ENGINE_HTTP_STATUS",
++  CONTENT_ENCODING: "ENGINE_CONTENT_ENCODING",
++  LENGTH_MISMATCH: "ENGINE_LENGTH_MISMATCH",
++  HASH_MISMATCH: "ENGINE_HASH_MISMATCH",
++  TIMEOUT: "ENGINE_TIMEOUT",
++  CANCELLED: "ENGINE_CANCELLED",
++  TLS_FAILED: "ENGINE_TLS_FAILED",
++  DOWNLOAD_FAILED: "ENGINE_DOWNLOAD_FAILED",
++  WRITE_FAILED: "ENGINE_WRITE_FAILED",
++  ARCHIVE_INVALID: "ENGINE_ARCHIVE_INVALID",
++  ARCHIVE_UNSAFE: "ENGINE_ARCHIVE_UNSAFE",
++  ARCHIVE_TOO_LARGE: "ENGINE_ARCHIVE_TOO_LARGE",
++  UNSAFE_TARGET: "ENGINE_UNSAFE_TARGET",
++  COMMIT_FAILED: "ENGINE_COMMIT_FAILED",
++  INSTALL_FAILED: "ENGINE_INSTALL_FAILED",
++  LOCK_FAILED: "ENGINE_LOCK_FAILED",
+ };
+ 
++const MESSAGES = {
++  [CODES.UNSUPPORTED_PLATFORM]: "当前平台不支持音频引擎安装",
++  [CODES.CONFIRM_REQUIRED]: "需要明确确认后才能安装",
++  [CODES.BUSY]: "安装器正忙，请稍后重试",
++  [CODES.DISK_SPACE_LOW]: "磁盘空间不足",
++  [CODES.HTTP_STATUS]: "下载服务器响应异常",
++  [CODES.CONTENT_ENCODING]: "下载响应包含不支持的压缩编码",
++  [CODES.LENGTH_MISMATCH]: "下载大小与发布描述不一致",
++  [CODES.HASH_MISMATCH]: "安装包校验失败",
++  [CODES.TIMEOUT]: "下载超时",
++  [CODES.CANCELLED]: "安装已取消",
++  [CODES.TLS_FAILED]: "下载服务器证书校验失败",
++  [CODES.DOWNLOAD_FAILED]: "下载失败",
++  [CODES.WRITE_FAILED]: "写入安装临时文件失败",
++  [CODES.ARCHIVE_INVALID]: "安装包格式无效",
++  [CODES.ARCHIVE_UNSAFE]: "安装包包含不安全内容",
++  [CODES.ARCHIVE_TOO_LARGE]: "安装包展开超出限制",
++  [CODES.UNSAFE_TARGET]: "安装目录不安全",
++  [CODES.COMMIT_FAILED]: "安装提交失败",
++  [CODES.INSTALL_FAILED]: "安装失败",
++  [CODES.LOCK_FAILED]: "无法获取安装锁",
++};
++
++export class AudioEngineError extends Error {
++  constructor(code, message = MESSAGES[code] || MESSAGES[CODES.INSTALL_FAILED], status) {
++    super(message);
++    this.name = "AudioEngineError";
++    this.code = code;
++    this.status = status || statusForCode(code);
++  }
++}
++
++export function isAudioEngineError(error) {
++  return error instanceof AudioEngineError;
++}
++
++function statusForCode(code) {
++  if (code === CODES.CONFIRM_REQUIRED) return 400;
++  if (code === CODES.BUSY || code === CODES.UNSUPPORTED_PLATFORM) return 409;
++  if (code === CODES.DISK_SPACE_LOW) return 507;
++  return 400;
++}
++
++function safeRelease(release) {
++  const merged = { ...ENGINE_RELEASE, ...release };
++  for (const key of ["version", "platform", "arch", "url", "sha256", "binary", "id"]) {
++    if (typeof merged[key] !== "string" || !merged[key]) throw new Error(`发布描述缺少 ${key}`);
++  }
++  if (!/^[0-9a-f]{64}$/.test(merged.sha256)) throw new Error("发布描述 hash 无效");
++  for (const key of ["size", "archiveMaxBytes", "extractedMaxBytes", "maxEntries"]) {
++    if (!Number.isSafeInteger(merged[key]) || merged[key] <= 0) throw new Error(`发布描述 ${key} 无效`);
++  }
++  if (merged.size > merged.archiveMaxBytes) throw new Error("发布描述大小超过归档上限");
++  return Object.freeze(merged);
++}
++
+ export class AudioEngine {
+-  constructor(dataDir) {
++  constructor(dataDir, options = {}) {
+     this.dataDir = dataDir;
+-    this.root = path.join(dataDir, "engines", "audio");
++    this.release = safeRelease(options.release);
++    this.platform = options.platform || process.platform;
++    this.arch = options.arch || process.arch;
++    this.ca = options.ca !== undefined ? options.ca : fssync.readFileSync(DEFAULT_CA_FILE);
++    this.idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
++    this.totalTimeoutMs = options.totalTimeoutMs ?? 600_000;
++    this.diskReserveBytes = options.diskReserveBytes ?? 64 * MiB;
++    this.diskFreeBytes = options.diskFreeBytes; // 仅测试注入；生产用 statfs
++    this.hooks = options.hooks || {};
++
++    this.engineRoot = path.join(dataDir, "engines", "audio");
++    this.versionsRoot = path.join(this.engineRoot, "versions");
+     this.tmpRoot = path.join(dataDir, "engines", ".tmp");
+-    this.binaryPath = path.join(this.root, ENGINE.binary);
+-    this.marker = path.join(this.root, ".installed.json");
+-    this.job = null; // { state, progress, bytes, total, error }
++    this.enginesRoot = path.join(dataDir, "engines");
++    this.lockRoot = path.join(this.enginesRoot, ".audio-install.lock");
++
++    this.job = null;
++    this._jobSeq = 0;
++    this._state = "idle";
++    this._runPromise = null;
++    this._cancelRequested = false;
++    this._abort = null;
++
++    this.agent = new https.Agent({
++      keepAlive: true,
++      maxSockets: 1,
++      maxFreeSockets: 1,
++      timeout: this.idleTimeoutMs,
++      scheduling: "lifo",
++    });
+   }
+ 
++  /** 已安装版本；只从可信指针 + 安装标记读取。 */
++  get version() {
++    return this.#installedInfo()?.version ?? null;
++  }
++
++  /** 分析器内部使用的二进制路径；不通过 HTTP 暴露。 */
++  get binaryPath() {
++    return this.#installedInfo()?.binaryPath ?? path.join(this.engineRoot, this.release.binary);
++  }
++
+   status() {
+-    const installed = fssync.existsSync(this.binaryPath);
+-    let info = null;
+-    try {
+-      info = JSON.parse(fssync.readFileSync(this.marker, "utf8"));
+-    } catch {}
++    const info = this.#installedInfo();
+     return {
+-      installed,
+-      version: info?.version || (installed ? "unknown" : null),
+-      path: installed ? this.binaryPath : null,
+-      size: installed ? safeSize(this.binaryPath) : 0,
+-      job: this.job ? { ...this.job } : null,
+-      expected: { version: ENGINE.version, sha256: ENGINE.sha256, url: ENGINE.url, size: 120156053 },
++      installed: !!info,
++      version: info?.version ?? null,
++      path: null,
++      size: info?.size ?? 0,
++      job: this.job ? cloneJob(this.job) : null,
++      expected: {
++        version: this.release.version,
++        platform: this.release.platform,
++        arch: this.release.arch,
++        size: this.release.size,
++        sha256: this.release.sha256,
++      },
+     };
+   }
+ 
+-  /** 开始安装；重复调用返回同一个 job */
+-  install() {
+-    if (this.job && this.job.state === "downloading") return this.status();
+-    if (fssync.existsSync(this.binaryPath)) return this.status();
+-    this.job = { state: "downloading", progress: 0, bytes: 0, total: 0, error: null };
+-    this.#run().catch((e) => {
+-      this.job = { state: "error", progress: 0, bytes: 0, total: 0, error: String(e.message || e) };
+-    });
++  /**
++   * 开始安装。必须显式 confirm:true；同一时刻只允许一个安装/取消/卸载。
++   * 返回当前状态（job 可能仍在 downloading），不等待完成。
++   */
++  install({ confirm } = {}) {
++    if (confirm !== true) throw new AudioEngineError(CODES.CONFIRM_REQUIRED);
++    if (this.platform !== this.release.platform || this.arch !== this.release.arch) {
++      throw new AudioEngineError(CODES.UNSUPPORTED_PLATFORM);
++    }
++    if (this._state !== "idle") throw new AudioEngineError(CODES.BUSY);
++    if (this.#peekLockBusy()) throw new AudioEngineError(CODES.BUSY);
++
++    const current = this.#installedInfo();
++    if (current && current.version === this.release.version && current.releaseSha256 === this.release.sha256) {
++      return this.status();
++    }
++
++    this._state = "busy";
++    this._cancelRequested = false;
++    const id = crypto.randomBytes(12).toString("hex");
++    this.job = {
++      id,
++      state: "queued",
++      bytes: 0,
++      total: this.release.size,
++      progress: 0,
++      startedAt: new Date().toISOString(),
++      error: null,
++    };
++    this._runPromise = this.#runInstall(id).catch(() => {});
+     return this.status();
+   }
+ 
+-  async uninstall() {
+-    await fs.rm(this.root, { recursive: true, force: true });
+-    this.job = null;
++  /** 取消当前任务；等待临时目录/网络/锁全部清理后才返回。 */
++  async cancel() {
++    const running = this._runPromise;
++    if (!running) return this.status();
++    this._cancelRequested = true;
++    if (this._abort) this._abort();
++    await running;
++    if (this.job && this.job.state !== "installed") {
++      this.job = {
++        ...this.job,
++        state: "cancelled",
++        progress: 0,
++        error: { code: CODES.CANCELLED, message: MESSAGES[CODES.CANCELLED] },
++      };
++    }
+     return this.status();
+   }
+ 
+-  async #run() {
+-    await fs.mkdir(this.tmpRoot, { recursive: true });
+-    await fs.mkdir(path.dirname(this.root), { recursive: true });
+-    const tmpDir = await fs.mkdtemp(path.join(this.tmpRoot, "dl-"));
+-    const tarPath = path.join(tmpDir, "engine.tar.gz");
++  /** 卸载；安装中直接 409，不会先卸载再让安装目录冒出来。 */
++  async uninstall() {
++    if (this._state !== "idle") throw new AudioEngineError(CODES.BUSY);
++    this._state = "busy";
++    let lock = null;
+     try {
+-      await this.#download(tarPath);
+-      this.job = { ...this.job, state: "verifying" };
+-      const hash = await sha256File(tarPath);
+-      if (hash !== ENGINE.sha256) throw new Error(`校验失败：期望 ${ENGINE.sha256}，实际 ${hash}`);
+-      this.job = { ...this.job, state: "extracting" };
+-      await runCommand("tar", ["xzf", tarPath, "-C", tmpDir]);
+-      const bin = path.join(tmpDir, ENGINE.binary);
+-      const st = await fs.stat(bin).catch(() => null);
+-      if (!st) throw new Error("压缩包里没有 audio-analyze");
+-      await fs.chmod(bin, 0o755);
+-      const staged = path.join(tmpDir, "staged");
+-      await fs.mkdir(staged, { recursive: true });
+-      await fs.rename(bin, path.join(staged, ENGINE.binary));
+-      await fs.writeFile(
+-        path.join(staged, ".installed.json"),
+-        JSON.stringify({ version: ENGINE.version, sha256: ENGINE.sha256, installedAt: new Date().toISOString() }),
+-      );
+-      await fs.rm(this.root, { recursive: true, force: true });
+-      await fs.rename(staged, this.root);
+-      this.job = { state: "installed", progress: 100, bytes: this.job.total, total: this.job.total, error: null };
++      await this.#ensureBaseDirs();
++      lock = await this.#acquireLock("uninstall");
++      await this.#cleanOwnedTmp();
++      const root = await lstatOrNull(this.engineRoot);
++      if (!root) {
++        this.job = null;
++        return this.status();
++      }
++      if (root.isSymbolicLink() || !root.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++      // 先摘掉指针，再删自己目录；即使中途崩溃也不会让旧版本重新“出现”。
++      await unlinkRegular(path.join(this.engineRoot, "current.json"));
++      await unlinkRegular(path.join(this.engineRoot, this.release.binary));
++      await unlinkRegular(path.join(this.engineRoot, ".installed.json"));
++      const versions = await lstatOrNull(this.versionsRoot);
++      if (versions) {
++        if (versions.isSymbolicLink() || !versions.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++        await fs.rm(this.versionsRoot, { recursive: true, force: true });
++      }
++      await fs.rm(this.engineRoot, { recursive: true, force: true });
++      this.job = null;
++      return this.status();
+     } finally {
+-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
++      if (lock) await this.#releaseLock(lock).catch(() => {});
++      this._state = "idle";
+     }
+   }
+ 
++  /** 测试/进程退出时释放连接池；HTTP 不暴露。 */
++  dispose() {
++    if (this._abort) this._abort();
++    this.agent.destroy();
++  }
++
++  async #runInstall(jobId) {
++    let tmpDir = null;
++    let staging = null;
++    let lock = null;
++    let terminalState = null;
++    let terminalError = null;
++    try {
++      await this.#ensureBaseDirs();
++      lock = await this.#acquireLock(jobId);
++      await this.#cleanOwnedTmp();
++      await this.#checkDiskSpace();
++
++      this.#setJobState("downloading");
++      tmpDir = await fs.mkdtemp(path.join(this.tmpRoot, "job-"));
++      await fs.chmod(tmpDir, 0o700);
++      const archive = path.join(tmpDir, "release.tar.gz");
++      const downloaded = await this.#download(archive);
++      this._abort = null;
++
++      this.#throwIfCancelled();
++      this.#setJobState("verifying");
++      const stat = await fs.lstat(archive);
++      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== this.release.size) {
++        throw new AudioEngineError(CODES.LENGTH_MISMATCH);
++      }
++      if (downloaded.sha256 !== this.release.sha256) throw new AudioEngineError(CODES.HASH_MISMATCH);
++
++      this.#throwIfCancelled();
++      this.#setJobState("extracting");
++      staging = path.join(tmpDir, "staging");
++      await fs.mkdir(staging, { mode: 0o700 });
++      await this.#extract(archive, staging);
++      this._abort = null;
++      if (this.hooks.afterExtract) await this.hooks.afterExtract({ staging, tmpDir });
++      this.#throwIfCancelled();
++
++      const binary = path.join(staging, this.release.binary);
++      const binaryStat = await fs.lstat(binary);
++      if (!binaryStat.isFile() || binaryStat.isSymbolicLink()) throw new AudioEngineError(CODES.ARCHIVE_UNSAFE);
++      if (binaryStat.size <= 0 || binaryStat.size > this.release.extractedMaxBytes) {
++        throw new AudioEngineError(CODES.ARCHIVE_TOO_LARGE);
++      }
++      await fs.chmod(binary, 0o755);
++
++      if (this.hooks.beforeCommit) await this.hooks.beforeCommit({ staging, tmpDir });
++      this.#throwIfCancelled();
++      this.#setJobState("installing");
++      await this.#commit(staging, jobId);
++      staging = null;
++      terminalState = "installed";
++    } catch (error) {
++      const normalized = normalizeError(error, this._cancelRequested);
++      terminalState = normalized.code === CODES.CANCELLED ? "cancelled" : "error";
++      terminalError = { code: normalized.code, message: normalized.message };
++      console.error(`[audio-engine] ${normalized.code}`);
++    } finally {
++      if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
++      if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
++      if (lock) await this.#releaseLock(lock).catch(() => {});
++      // 清理完成后再公布终态，避免测试/调用方看到 error 时锁还没释放。
++      this.job = {
++        ...(this.job || { id: jobId, total: this.release.size, bytes: 0 }),
++        state: terminalState || "error",
++        bytes: terminalState === "installed" ? this.release.size : this.job?.bytes || 0,
++        total: this.release.size,
++        progress: terminalState === "installed" ? 100 : 0,
++        error: terminalError,
++      };
++      this._cancelRequested = false;
++      this._abort = null;
++      this._runPromise = null;
++      this._state = "idle";
++    }
++  }
++
++  #throwIfCancelled() {
++    if (this._cancelRequested) throw new AudioEngineError(CODES.CANCELLED);
++  }
++
++  #setJobState(state) {
++    if (!this.job) return;
++    this.job = { ...this.job, state };
++  }
++
++  async #checkDiskSpace() {
++    const free = await this.#freeBytes();
++    const required = this.release.size * 2 + this.diskReserveBytes;
++    if (!Number.isFinite(free) || free < required) throw new AudioEngineError(CODES.DISK_SPACE_LOW);
++  }
++
++  async #freeBytes() {
++    if (typeof this.diskFreeBytes === "function") return await this.diskFreeBytes();
++    if (typeof this.diskFreeBytes === "number") return this.diskFreeBytes;
++    const stats = await fs.statfs(this.dataDir);
++    return Number(stats.bavail) * Number(stats.bsize);
++  }
++
++  async #ensureBaseDirs() {
++    await fs.mkdir(this.enginesRoot, { recursive: true, mode: 0o700 }).catch((error) => {
++      if (error.code !== "EEXIST") throw error;
++    });
++    await this.#assertOwnedDir(this.enginesRoot);
++    await fs.mkdir(this.engineRoot, { recursive: true, mode: 0o700 }).catch((error) => {
++      if (error.code !== "EEXIST") throw error;
++    });
++    await this.#assertOwnedDir(this.engineRoot);
++    await fs.mkdir(this.tmpRoot, { recursive: true, mode: 0o700 }).catch((error) => {
++      if (error.code !== "EEXIST") throw error;
++    });
++    await this.#assertOwnedDir(this.tmpRoot);
++  }
++
++  async #assertOwnedDir(dir) {
++    const stat = await fs.lstat(dir);
++    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++  }
++
++  async #cleanOwnedTmp() {
++    const entries = await fs.readdir(this.tmpRoot).catch(() => []);
++    for (const entry of entries) {
++      await fs.rm(path.join(this.tmpRoot, entry), { recursive: true, force: true }).catch(() => {});
++    }
++  }
++
+   #download(dest) {
++    const release = this.release;
++    const url = new URL(release.url);
++    if (url.protocol !== "https:") throw new AudioEngineError(CODES.HTTP_STATUS);
++
+     return new Promise((resolve, reject) => {
+-      const ca = fssync.readFileSync(CA_FILE);
+-      const req = https.get(ENGINE.url, { ca, rejectUnauthorized: true, timeout: 120_000 }, (res) => {
+-        if (res.statusCode !== 200) {
+-          res.resume();
+-          return reject(new Error(`下载失败：HTTP ${res.statusCode}`));
++      let settled = false;
++      let received = 0;
++      let req = null;
++      let res = null;
++      let out = null;
++      let totalTimer = null;
++      const hash = crypto.createHash("sha256");
++
++      const cleanup = () => {
++        if (totalTimer) clearTimeout(totalTimer);
++        if (req) {
++          try {
++            req.setTimeout(0);
++          } catch {}
++          req.destroy();
+         }
+-        const total = Number(res.headers["content-length"] || 0);
+-        this.job = { ...this.job, total };
+-        const hash = crypto.createHash("sha256");
+-        const out = fssync.createWriteStream(dest);
+-        let bytes = 0;
+-        res.on("data", (chunk) => {
+-          bytes += chunk.length;
+-          hash.update(chunk);
+-          this.job = { ...this.job, bytes, progress: total ? Math.round((bytes / total) * 100) : 0 };
++        if (res) res.destroy();
++        if (out) out.destroy();
++      };
++      const finish = (error, result) => {
++        if (settled) return;
++        settled = true;
++        cleanup();
++        if (error) reject(error);
++        else resolve(result);
++      };
++      const fail = (code, message) => finish(new AudioEngineError(code, message));
++
++      this._abort = () => {
++        fail(CODES.CANCELLED);
++      };
++
++      try {
++        req = https.request(
++          url,
++          {
++            method: "GET",
++            agent: this.agent,
++            ca: this.ca,
++            rejectUnauthorized: true,
++            timeout: this.idleTimeoutMs,
++            headers: {
++              accept: "application/octet-stream",
++              "accept-encoding": "identity",
++              "user-agent": "shiguang-audio-installer/1",
++            },
++          },
++          (response) => {
++            res = response;
++            if (this._cancelRequested) return fail(CODES.CANCELLED);
++            if (res.statusCode !== 200) {
++              res.resume();
++              return fail(CODES.HTTP_STATUS);
++            }
++            const encoding = String(res.headers["content-encoding"] || "").toLowerCase();
++            if (encoding && encoding !== "identity") return fail(CODES.CONTENT_ENCODING);
++            const transfer = String(res.headers["transfer-encoding"] || "").toLowerCase();
++            if (transfer && transfer !== "identity") return fail(CODES.LENGTH_MISMATCH);
++            const rawLength = String(res.headers["content-length"] ?? "");
++            if (!/^\d+$/.test(rawLength)) return fail(CODES.LENGTH_MISMATCH);
++            const total = Number(rawLength);
++            if (!Number.isSafeInteger(total) || total !== release.size || total > release.archiveMaxBytes) {
++              return fail(CODES.LENGTH_MISMATCH);
++            }
++            this.job = { ...this.job, total, bytes: 0, progress: 0 };
++
++            out = fssync.createWriteStream(dest, { flags: "wx", mode: 0o600 });
++            out.on("error", (error) => {
++              if (error.code === "ENOSPC") fail(CODES.DISK_SPACE_LOW);
++              else fail(CODES.WRITE_FAILED);
++            });
++
++            res.on("data", (chunk) => {
++              if (settled) return;
++              received += chunk.length;
++              if (received > release.size) return fail(CODES.LENGTH_MISMATCH);
++              hash.update(chunk);
++              this.job = {
++                ...this.job,
++                bytes: received,
++                progress: Math.min(99, Math.floor((received / total) * 100)),
++              };
++            });
++            res.on("aborted", () => fail(CODES.DOWNLOAD_FAILED));
++            res.on("error", () => fail(CODES.DOWNLOAD_FAILED));
++            res.pipe(out);
++            out.on("finish", () => {
++              if (settled) return;
++              if (received !== release.size) return fail(CODES.LENGTH_MISMATCH);
++              finish(null, { sha256: hash.digest("hex"), bytes: received });
++            });
++          },
++        );
++        req.on("timeout", () => fail(CODES.TIMEOUT));
++        req.on("error", (error) => {
++          if (this._cancelRequested) return fail(CODES.CANCELLED);
++          const raw = String(error?.code || "");
++          if (/CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|ERR_TLS/.test(raw)) {
++            return fail(CODES.TLS_FAILED);
++          }
++          return fail(CODES.DOWNLOAD_FAILED);
+         });
+-        res.pipe(out);
+-        out.on("finish", () => out.close(() => resolve()));
+-        out.on("error", reject);
++        totalTimer = setTimeout(() => fail(CODES.TIMEOUT), this.totalTimeoutMs);
++        totalTimer.unref?.();
++        req.end();
++      } catch {
++        fail(CODES.DOWNLOAD_FAILED);
++      }
++    });
++  }
++
++  #extract(archive, staging) {
++    const release = this.release;
++    const allowed = new Set([release.binary]);
++
++    return new Promise((resolve, reject) => {
++      const extractor = tar.extract();
++      const read = fssync.createReadStream(archive);
++      const gunzip = createGunzip();
++      const seen = new Set();
++      let count = 0;
++      let expanded = 0;
++      let failed = false;
++
++      const fail = (code) => {
++        if (failed) return;
++        failed = true;
++        gunzip.destroy();
++        extractor.destroy();
++        read.destroy();
++        reject(new AudioEngineError(code));
++      };
++      this._abort = () => fail(CODES.CANCELLED);
++
++      extractor.on("entry", (header, stream, next) => {
++        if (failed) {
++          stream.resume();
++          return next();
++        }
++        count += 1;
++        if (count > release.maxEntries) return fail(CODES.ARCHIVE_TOO_LARGE);
++        if (!header || header.type !== "file" || header.linkname || header.sparse) {
++          stream.resume();
++          return fail(CODES.ARCHIVE_UNSAFE);
++        }
++        let name;
++        try {
++          name = validateEntryName(header.name);
++          validatePax(header);
++        } catch {
++          stream.resume();
++          return fail(CODES.ARCHIVE_UNSAFE);
++        }
++        if (!allowed.has(name) || seen.has(name)) {
++          stream.resume();
++          return fail(CODES.ARCHIVE_UNSAFE);
++        }
++        seen.add(name);
++        if (!Number.isSafeInteger(header.size) || header.size < 0) {
++          stream.resume();
++          return fail(CODES.ARCHIVE_INVALID);
++        }
++        if (expanded + header.size > release.extractedMaxBytes) {
++          stream.resume();
++          return fail(CODES.ARCHIVE_TOO_LARGE);
++        }
++        expanded += header.size;
++
++        let written = 0;
++        const target = path.join(staging, name);
++        const out = fssync.createWriteStream(target, { flags: "wx", mode: 0o600 });
++        stream.on("data", (chunk) => {
++          written += chunk.length;
++          if (written > header.size || expanded > release.extractedMaxBytes) fail(CODES.ARCHIVE_TOO_LARGE);
++        });
++        out.on("error", () => fail(CODES.WRITE_FAILED));
++        pipeline(stream, out)
++          .then(() => {
++            if (failed) return;
++            if (written !== header.size) return fail(CODES.ARCHIVE_INVALID);
++            next();
++          })
++          .catch(() => fail(CODES.ARCHIVE_INVALID));
+       });
+-      req.on("timeout", () => req.destroy(new Error("下载超时")));
+-      req.on("error", reject);
++
++      extractor.on("finish", () => {
++        if (failed) return;
++        if (!seen.has(release.binary)) return fail(CODES.ARCHIVE_INVALID);
++        resolve();
++      });
++      extractor.on("error", () => fail(CODES.ARCHIVE_INVALID));
++      gunzip.on("error", () => fail(CODES.ARCHIVE_INVALID));
++      read.on("error", () => fail(CODES.ARCHIVE_INVALID));
++      read.pipe(gunzip).pipe(extractor);
+     });
+   }
++
++  async #commit(staging, jobId) {
++    const release = this.release;
++    const versions = await this.#ensureVersionsDir();
++    const dirName = `${sanitizeSegment(release.version)}-${release.sha256.slice(0, 12)}`;
++    const finalDir = path.join(versions, dirName);
++    let created = null;
++    try {
++      const existing = await lstatOrNull(finalDir);
++      if (existing) {
++        if (existing.isSymbolicLink() || !existing.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++        await fs.rm(finalDir, { recursive: true, force: true });
++      }
++      await fs.rename(staging, finalDir);
++      created = finalDir;
++      const marker = {
++        version: release.version,
++        releaseSha256: release.sha256,
++        archiveBytes: release.size,
++        binary: release.binary,
++        installedAt: new Date().toISOString(),
++      };
++      await fs.writeFile(path.join(finalDir, ".installed.json"), JSON.stringify(marker), { mode: 0o600 });
++      const pointer = {
++        version: release.version,
++        dir: dirName,
++        binary: release.binary,
++        releaseSha256: release.sha256,
++        size: release.size,
++        installedAt: marker.installedAt,
++      };
++      const tmpPointer = path.join(this.engineRoot, `.current-${jobId}.tmp`);
++      await fs.writeFile(tmpPointer, JSON.stringify(pointer), { mode: 0o600 });
++      await fs.rename(tmpPointer, path.join(this.engineRoot, "current.json"));
++      created = null;
++      // 新版本已提交；旧版平铺文件清理失败不能反过来把已提交的新版本判为失败。
++      await unlinkRegular(path.join(this.engineRoot, release.binary)).catch(() => {});
++      await unlinkRegular(path.join(this.engineRoot, ".installed.json")).catch(() => {});
++    } catch (error) {
++      if (created) await fs.rm(created, { recursive: true, force: true }).catch(() => {});
++      if (isAudioEngineError(error)) throw error;
++      throw new AudioEngineError(CODES.COMMIT_FAILED);
++    }
++  }
++
++  async #ensureVersionsDir() {
++    await fs.mkdir(this.versionsRoot, { recursive: true, mode: 0o700 }).catch((error) => {
++      if (error.code !== "EEXIST") throw error;
++    });
++    const stat = await fs.lstat(this.versionsRoot);
++    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++    return this.versionsRoot;
++  }
++
++  #installedInfo() {
++    const release = this.release;
++    const rootStat = lstatOrNullSync(this.engineRoot);
++    if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) return null;
++
++    const pointerPath = path.join(this.engineRoot, "current.json");
++    const pointerStat = lstatOrNullSync(pointerPath);
++    if (pointerStat && !pointerStat.isSymbolicLink() && pointerStat.isFile()) {
++      try {
++        const pointer = JSON.parse(fssync.readFileSync(pointerPath, "utf8"));
++        if (
++          typeof pointer.dir !== "string" ||
++          !/^[A-Za-z0-9._-]+$/.test(pointer.dir) ||
++          pointer.binary !== release.binary
++        ) {
++          return null;
++        }
++        const dir = path.join(this.versionsRoot, pointer.dir);
++        const dirStat = lstatOrNullSync(dir);
++        if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
++        const binary = path.join(dir, pointer.binary);
++        const binaryStat = lstatOrNullSync(binary);
++        if (!binaryStat || binaryStat.isSymbolicLink() || !binaryStat.isFile()) return null;
++        const markerPath = path.join(dir, ".installed.json");
++        const markerStat = lstatOrNullSync(markerPath);
++        if (!markerStat || markerStat.isSymbolicLink() || !markerStat.isFile()) return null;
++        const marker = JSON.parse(fssync.readFileSync(markerPath, "utf8"));
++        if (
++          marker.version !== pointer.version ||
++          marker.releaseSha256 !== pointer.releaseSha256 ||
++          marker.binary !== pointer.binary
++        ) {
++          return null;
++        }
++        if (binaryStat.size <= 0) return null;
++        return {
++          version: marker.version,
++          releaseSha256: marker.releaseSha256,
++          size: binaryStat.size,
++          binaryPath: binary,
++          legacy: false,
++        };
++      } catch {
++        return null;
++      }
++    }
++
++    // 兼容旧版平铺安装：只有标记存在且 hash 与当前可信发布一致才算可信。
++    const legacyBinary = path.join(this.engineRoot, release.binary);
++    const legacyStat = lstatOrNullSync(legacyBinary);
++    if (!legacyStat || legacyStat.isSymbolicLink() || !legacyStat.isFile()) return null;
++    try {
++      const marker = JSON.parse(fssync.readFileSync(path.join(this.engineRoot, ".installed.json"), "utf8"));
++      if (marker.sha256 !== release.sha256 || typeof marker.version !== "string") return null;
++      return {
++        version: marker.version,
++        releaseSha256: marker.sha256,
++        size: legacyStat.size,
++        binaryPath: legacyBinary,
++        legacy: true,
++      };
++    } catch {
++      return null;
++    }
++  }
++
++  #peekLockBusy() {
++    try {
++      const raw = fssync.readFileSync(path.join(this.lockRoot, "owner.json"), "utf8");
++      const owner = JSON.parse(raw);
++      return isProcessAlive(owner?.pid);
++    } catch {
++      return false;
++    }
++  }
++
++  async #acquireLock(jobId) {
++    const token = crypto.randomBytes(16).toString("hex");
++    const owner = {
++      pid: process.pid,
++      jobId,
++      token,
++      startedAt: new Date().toISOString(),
++    };
++    for (let attempt = 0; attempt < 3; attempt += 1) {
++      try {
++        await fs.mkdir(this.lockRoot, { mode: 0o700 });
++        await fs.writeFile(path.join(this.lockRoot, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
++        return { token };
++      } catch (error) {
++        if (error.code !== "EEXIST") throw new AudioEngineError(CODES.LOCK_FAILED);
++        const other = await readLockOwner(this.lockRoot);
++        if (other && isProcessAlive(other.pid)) throw new AudioEngineError(CODES.BUSY);
++        if (!other) {
++          // 可能是另一个进程刚 mkdir、还没写 owner；短时间内的无主锁按 BUSY 处理，
++          // 只有确认锁目录已存在一段时间后才按崩溃残留回收，避免误删活锁。
++          const stat = await fs.stat(this.lockRoot).catch(() => null);
++          const age = stat ? Date.now() - stat.mtimeMs : 0;
++          if (age < 2000) throw new AudioEngineError(CODES.BUSY);
++        }
++        const stale = `${this.lockRoot}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
++        try {
++          await fs.rename(this.lockRoot, stale);
++        } catch (renameError) {
++          if (renameError.code === "ENOENT") continue;
++          throw new AudioEngineError(CODES.LOCK_FAILED);
++        }
++        await fs.rm(stale, { recursive: true, force: true }).catch(() => {});
++      }
++    }
++    throw new AudioEngineError(CODES.LOCK_FAILED);
++  }
++
++  async #releaseLock(lock) {
++    const current = await readLockOwner(this.lockRoot);
++    if (!current || current.token !== lock.token) return;
++    await fs.rm(this.lockRoot, { recursive: true, force: true });
++  }
+ }
+ 
+-function sha256File(file) {
+-  return new Promise((resolve, reject) => {
+-    const h = crypto.createHash("sha256");
+-    fssync
+-      .createReadStream(file)
+-      .on("data", (c) => h.update(c))
+-      .on("end", () => resolve(h.digest("hex")))
+-      .on("error", reject);
+-  });
++function validateEntryName(raw) {
++  if (typeof raw !== "string" || raw.length === 0 || raw.length > 255) throw new Error("bad name");
++  if (raw.includes("\0") || raw.includes("\\")) throw new Error("bad name");
++  if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) throw new Error("absolute");
++  for (const segment of raw.split("/")) {
++    if (segment === "" || segment === "." || segment === "..") throw new Error("bad segment");
++  }
++  return raw;
+ }
+ 
+-function runCommand(cmd, args) {
+-  return new Promise((resolve, reject) => {
+-    const child = spawn(cmd, args, { stdio: "ignore" });
+-    child.on("error", reject);
+-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} 退出码 ${code}`))));
+-  });
++function validatePax(header) {
++  const pax = header.pax;
++  if (!pax) return;
++  for (const [key, value] of Object.entries(pax)) {
++    if (key === "path") {
++      if (value !== header.name) throw new Error("pax path mismatch");
++    } else if (key === "linkpath") {
++      throw new Error("pax link");
++    } else if (key === "size") {
++      if (!/^\d+$/.test(String(value)) || Number(value) !== header.size) throw new Error("pax size");
++    } else if (!/^(mtime|atime|ctime|uid|gid|uname|gname)$/.test(key) && !/^(SCHILY|LIBARCHIVE)\.(xattr|acl)\./.test(key)) {
++      throw new Error("pax extension");
++    }
++  }
+ }
+ 
+-function safeSize(file) {
++function sanitizeSegment(value) {
++  return String(value).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "engine";
++}
++
++function normalizeError(error, cancelled) {
++  if (cancelled) return new AudioEngineError(CODES.CANCELLED);
++  if (isAudioEngineError(error)) return error;
++  if (error?.code === "ENOSPC") return new AudioEngineError(CODES.DISK_SPACE_LOW);
++  return new AudioEngineError(CODES.INSTALL_FAILED);
++}
++
++function cloneJob(job) {
++  return {
++    ...job,
++    error: job.error ? { ...job.error } : null,
++  };
++}
++
++function lstatOrNullSync(target) {
+   try {
+-    return fssync.statSync(file).size;
++    return fssync.lstatSync(target);
+   } catch {
+-    return 0;
++    return null;
+   }
+ }
++
++async function lstatOrNull(target) {
++  try {
++    return await fs.lstat(target);
++  } catch {
++    return null;
++  }
++}
++
++async function unlinkRegular(target) {
++  const stat = await lstatOrNull(target);
++  if (!stat) return;
++  if (stat.isSymbolicLink() || !stat.isFile()) return;
++  await fs.unlink(target);
++}
++
++async function readLockOwner(lockRoot) {
++  try {
++    const raw = await fs.readFile(path.join(lockRoot, "owner.json"), "utf8");
++    const owner = JSON.parse(raw);
++    if (!Number.isSafeInteger(owner?.pid) || typeof owner?.token !== "string") return null;
++    return owner;
++  } catch {
++    return null;
++  }
++}
++
++function isProcessAlive(pid) {
++  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
++  try {
++    process.kill(pid, 0);
++    return true;
++  } catch (error) {
++    return error.code === "EPERM";
++  }
++}
+--- a/server/index.mjs
++++ b/server/index.mjs
+@@ -9,7 +9,7 @@
+ import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
+ import { MysqlStorage } from "./mysql.mjs";
+ import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
+-import { AudioEngine } from "./audio-engine.mjs";
++import { AudioEngine, isAudioEngineError } from "./audio-engine.mjs";
+ import { AudioAnalysis } from "./audio-analysis.mjs";
+ import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
+ import { CloudManagement, cloudManagementErrorHandler } from "./cloud-management.mjs";
+@@ -205,15 +205,38 @@
+   if (!audio) return rejectAudioFeature(res);
+   res.json(audio.engine.status());
+ });
++function rejectAudioEngine(res, error) {
++  const code = isAudioEngineError(error) ? error.code : "ENGINE_INSTALL_FAILED";
++  const message = isAudioEngineError(error) ? error.message : "安装失败";
++  const status = isAudioEngineError(error) ? error.status : 400;
++  return res.status(status).json({ error: message, code });
++}
+ app.post("/api/audio-engine/install", asyncRoute(async (req, res) => {
+   const audio = audioFeature();
+   if (!audio) return rejectAudioFeature(res);
+-  res.json(audio.engine.install());
++  try {
++    res.json(audio.engine.install({ confirm: req.body?.confirm === true }));
++  } catch (error) {
++    return rejectAudioEngine(res, error);
++  }
+ }));
++app.post("/api/audio-engine/cancel", asyncRoute(async (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
++  try {
++    res.json(await audio.engine.cancel());
++  } catch (error) {
++    return rejectAudioEngine(res, error);
++  }
++}));
+ app.delete("/api/audio-engine", asyncRoute(async (req, res) => {
+   const audio = audioFeature();
+   if (!audio) return rejectAudioFeature(res);
+-  res.json(await audio.engine.uninstall());
++  try {
++    res.json(await audio.engine.uninstall());
++  } catch (error) {
++    return rejectAudioEngine(res, error);
++  }
+ }));
+ app.get("/api/assets/:id/audio", asyncRoute(async (req, res) => {
+   const audio = audioFeature();
+--- a/.gitignore
++++ b/.gitignore
+@@ -18,6 +18,8 @@
+ *.db
+ *.sql
+ *.pem
++# 公开 CA 随 Git 检出/分享包一致提供；只精确放行这一份证书，不取消其它 *.pem 忽略规则。
++!server/audio-engine-ca.pem
+ *.key
+ mysql-connection.json
+ SHARE_PACKAGE.json
+--- a/package.json
++++ b/package.json
+@@ -23,7 +23,8 @@
+     "lucide-react": "^0.468.0",
+     "mysql2": "^3.24.6",
+     "react": "^18.3.1",
+-    "react-dom": "^18.3.1"
++    "react-dom": "^18.3.1",
++    "tar-stream": "^2.2.0"
+   },
+   "devDependencies": {
+     "@playwright/test": "^1.51.1",
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -12,7 +12,8 @@
+         "lucide-react": "^0.468.0",
+         "mysql2": "^3.24.6",
+         "react": "^18.3.1",
+-        "react-dom": "^18.3.1"
++        "react-dom": "^18.3.1",
++        "tar-stream": "^2.2.0"
+       },
+       "devDependencies": {
+         "@playwright/test": "^1.51.1",
+--- a/tests/audio-feature-flag.test.mjs
++++ b/tests/audio-feature-flag.test.mjs
+@@ -157,6 +157,7 @@
+   return [
+     ["GET", "/api/audio-engine/status"],
+     ["POST", "/api/audio-engine/install"],
++    ["POST", "/api/audio-engine/cancel"],
+     ["DELETE", "/api/audio-engine"],
+     ["GET", `/api/assets/${assetId}/audio`],
+     ["POST", `/api/assets/${assetId}/analyze-audio`, { force: true }],
+@@ -171,7 +172,7 @@
+   assert.equal(audioFeatureEnabled({ SHIGUANG_AUDIO_ANALYSIS: "1" }), true);
+ });
+ 
+-test("默认关闭：5 路由在 session/Origin 之后 503，零音频副作用，普通入口无回归", async (t) => {
++test("默认关闭：6 路由在 session/Origin 之后 503，零音频副作用，普通入口无回归", async (t) => {
+   const { base, dataDir, assetId } = await makeLibrary(t);
+   const server = await startServer(t, { dataDir, flag: false });
+ 
+@@ -246,6 +247,14 @@
+   assert.equal(body.path, null);
+   assert.equal(typeof body.expected, "object");
+ 
++  // T-LOCAL-012：install 必须显式 confirm，取消接口同样受 session/token 保护。
++  const noConfirm = await call(server, "/api/audio-engine/install", { method: "POST", body: {} });
++  assert.equal(noConfirm.status, 400, "缺少 confirm 应是 400，而不是开始下载");
++  assert.equal((await noConfirm.json()).code, "ENGINE_CONFIRM_REQUIRED");
++  const cancel = await call(server, "/api/audio-engine/cancel", { method: "POST", body: {} });
++  assert.equal(cancel.status, 200, "空闲时取消应返回当前状态");
++  assert.equal((await cancel.json()).installed, false);
++
+   const db = new Database(path.join(dataDir, "library.sqlite"), { readonly: true });
+   const audioTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='asset_audio'").get();
+   db.close();
+--- /dev/null
++++ b/tests/audio-engine-fixtures.mjs
+@@ -0,0 +1,172 @@
++/**
++ * T-LOCAL-012 安装器隔离测试夹具：一次性 TLS 证书、回环 HTTPS、合成 tar.gz。
++ * 只使用临时目录与本地回环，不访问生产服务器、不下载真实引擎。
++ */
++import fs from "node:fs/promises";
++import fssync from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import https from "node:https";
++import crypto from "node:crypto";
++import { execFile } from "node:child_process";
++import { promisify } from "node:util";
++import { once } from "node:events";
++import { gzipSync } from "node:zlib";
++import tar from "tar-stream";
++
++const run = promisify(execFile);
++
++export function delay(ms) {
++  return new Promise((resolve) => setTimeout(resolve, ms));
++}
++
++export function sha256(buffer) {
++  return crypto.createHash("sha256").update(buffer).digest("hex");
++}
++
++export async function tempDir(t, prefix = "shiguang-t12-") {
++  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
++  t.after(async () => {
++    await fs.rm(dir, { recursive: true, force: true });
++  });
++  return dir;
++}
++
++/** 生成仅用于本机回环测试的自签 CA/服务器证书（私钥只在临时目录）。 */
++export async function makeTlsFixture(t) {
++  const dir = await tempDir(t, "shiguang-t12-tls-");
++  const key = path.join(dir, "key.pem");
++  const cert = path.join(dir, "cert.pem");
++  const config = path.join(dir, "openssl.cnf");
++  await fs.writeFile(
++    config,
++    [
++      "[req]",
++      "distinguished_name=dn",
++      "x509_extensions=v3",
++      "prompt=no",
++      "[dn]",
++      "CN=127.0.0.1",
++      "[v3]",
++      "subjectAltName=IP:127.0.0.1",
++      "basicConstraints=CA:TRUE",
++      "keyUsage=digitalSignature,keyEncipherment,keyCertSign",
++      "",
++    ].join("\n"),
++  );
++  await run("openssl", [
++    "req",
++    "-x509",
++    "-newkey",
++    "rsa:2048",
++    "-nodes",
++    "-keyout",
++    key,
++    "-out",
++    cert,
++    "-days",
++    "1",
++    "-config",
++    config,
++  ]);
++  return {
++    dir,
++    key: await fs.readFile(key),
++    cert: await fs.readFile(cert),
++    ca: await fs.readFile(cert),
++  };
++}
++
++export async function startTlsServer(t, tls, handler) {
++  const counts = { connections: 0, handshakes: 0, requests: 0 };
++  const server = https.createServer({ key: tls.key, cert: tls.cert }, (req, res) => {
++    counts.requests += 1;
++    Promise.resolve(handler(req, res, counts)).catch(() => {
++      try {
++        res.destroy();
++      } catch {}
++    });
++  });
++  server.on("connection", () => {
++    counts.connections += 1;
++  });
++  server.on("secureConnection", () => {
++    counts.handshakes += 1;
++  });
++  server.listen(0, "127.0.0.1");
++  await once(server, "listening");
++  t.after(async () => {
++    server.closeAllConnections?.();
++    await new Promise((resolve) => server.close(resolve));
++  });
++  return {
++    server,
++    counts,
++    url: `https://127.0.0.1:${server.address().port}/engine.tar.gz`,
++  };
++}
++
++/** 用成熟 tar-stream 生成合成归档；支持 file/symlink/fifo/duplicate/PAX 等负例。 */
++export async function makeTar(entries, { gzip = true } = {}) {
++  const pack = tar.pack();
++  const chunks = [];
++  pack.on("data", (chunk) => chunks.push(chunk));
++  const ended = once(pack, "end");
++  for (const entry of entries) {
++    const header = {
++      name: entry.name,
++      type: entry.type || "file",
++      size: entry.data ? entry.data.length : 0,
++      mode: entry.mode ?? 0o644,
++    };
++    if (entry.linkname) header.linkname = entry.linkname;
++    if (entry.pax) header.pax = entry.pax;
++    await new Promise((resolve, reject) => {
++      pack.entry(header, entry.data || Buffer.alloc(0), (error) => (error ? reject(error) : resolve()));
++    });
++  }
++  pack.finalize();
++  await ended;
++  const raw = Buffer.concat(chunks);
++  return gzip ? gzipSync(raw) : raw;
++}
++
++export function makeRelease(archive, url, overrides = {}) {
++  return {
++    id: "test-engine",
++    version: "1.0.0-test",
++    platform: "darwin",
++    arch: "arm64",
++    url,
++    size: archive.length,
++    sha256: sha256(archive),
++    archiveMaxBytes: archive.length + 4096,
++    extractedMaxBytes: 1024 * 1024,
++    maxEntries: 8,
++    binary: "audio-analyze",
++    ...overrides,
++  };
++}
++
++export async function waitForJob(engine, { timeout = 8000 } = {}) {
++  const deadline = Date.now() + timeout;
++  while (Date.now() < deadline) {
++    const status = engine.status();
++    if (status.job && ["installed", "error", "cancelled"].includes(status.job.state)) return status;
++    await delay(10);
++  }
++  throw new Error(`等待安装任务结束超时：${JSON.stringify(engine.status())}`);
++}
++
++export async function readJson(file) {
++  return JSON.parse(await fs.readFile(file, "utf8"));
++}
++
++export function exists(target) {
++  try {
++    fssync.lstatSync(target);
++    return true;
++  } catch {
++    return false;
++  }
++}
+--- /dev/null
++++ b/tests/audio-engine-installer.test.mjs
+@@ -0,0 +1,680 @@
++/**
++ * T-LOCAL-012：音频引擎安装器安全加固的定向测试。
++ *
++ * 全部使用临时 MEDIA_DATA_DIR 等价的临时目录、随机回环 TLS、合成小归档；
++ * 不访问 112.74.109.173、不下载真实 120MB 引擎、不运行发行引擎、不碰真实素材/库。
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import fssync from "node:fs";
++import path from "node:path";
++import os from "node:os";
++import crypto from "node:crypto";
++import { execFile, spawn } from "node:child_process";
++import { promisify } from "node:util";
++import { once } from "node:events";
++import { fileURLToPath, pathToFileURL } from "node:url";
++import { AudioEngine, AudioEngineError } from "../server/audio-engine.mjs";
++import {
++  delay,
++  exists,
++  makeRelease,
++  makeTar,
++  makeTlsFixture,
++  startTlsServer,
++  tempDir,
++  waitForJob,
++} from "./audio-engine-fixtures.mjs";
++
++const PROJECT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
++const BINARY = Buffer.from("#!/bin/sh\necho test-engine\n", "utf8");
++const execFileAsync = promisify(execFile);
++
++async function setup(t, archive, overrides = {}) {
++  const root = await tempDir(t);
++  const dataDir = path.join(root, "data");
++  await fs.mkdir(dataDir, { recursive: true });
++  const tls = await makeTlsFixture(t);
++  let body = archive;
++  const server = await startTlsServer(t, tls, async (req, res) => {
++    if (overrides.handler) return overrides.handler(req, res, body);
++    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": body.length });
++    res.end(body);
++  });
++  const release = makeRelease(archive, server.url, overrides.release);
++  const engine = new AudioEngine(dataDir, {
++    release,
++    ca: tls.ca,
++    platform: "darwin",
++    arch: "arm64",
++    idleTimeoutMs: overrides.idleTimeoutMs ?? 1000,
++    totalTimeoutMs: overrides.totalTimeoutMs ?? 5000,
++    diskFreeBytes: overrides.diskFreeBytes ?? 1024 * 1024 * 1024,
++    hooks: overrides.hooks,
++  });
++  t.after(() => engine.dispose());
++  const setBody = (next) => {
++    body = next;
++  };
++  const setRelease = (next) => {
++    engine.release = next;
++  };
++  return { root, dataDir, tls, server, release, engine, setBody, setRelease };
++}
++
++function assertClean(dataDir) {
++  assert.equal(exists(path.join(dataDir, "engines", ".audio-install.lock")), false, "安装锁应释放");
++  const tmp = path.join(dataDir, "engines", ".tmp");
++  if (exists(tmp)) assert.deepEqual(fssync.readdirSync(tmp), [], "临时目录应清空");
++}
++
++async function expectJobError(dataDir, engine, code) {
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "error", JSON.stringify(status));
++  assert.equal(status.job.error.code, code, JSON.stringify(status));
++  assert.equal(status.installed, false);
++  assertClean(dataDir);
++  return status;
++}
++
++test("成功安装：固定描述/长度/hash、0700 临时目录、0600 文件、提交后复用且 status 零外呼", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY, mode: 0o755 }]);
++  const { dataDir, server, engine, release } = await setup(t, archive);
++
++  const started = engine.install({ confirm: true });
++  assert.equal(started.job.state, "queued");
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "installed", JSON.stringify(status));
++  assert.equal(status.installed, true);
++  assert.equal(status.version, release.version);
++  assert.equal(status.path, null, "状态不得返回本机安装路径");
++  assert.equal(status.size, BINARY.length);
++  assert.equal(server.counts.requests, 1);
++
++  const current = JSON.parse(await fs.readFile(path.join(dataDir, "engines/audio/current.json"), "utf8"));
++  assert.equal(current.version, release.version);
++  assert.equal(current.releaseSha256, release.sha256);
++  const versionDir = path.join(dataDir, "engines/audio/versions", current.dir);
++  const marker = JSON.parse(await fs.readFile(path.join(versionDir, ".installed.json"), "utf8"));
++  assert.equal(marker.version, release.version);
++  assert.equal(marker.releaseSha256, release.sha256);
++  const installed = await fs.readFile(path.join(versionDir, "audio-analyze"));
++  assert.deepEqual(installed, BINARY);
++  const binaryMode = (await fs.stat(path.join(versionDir, "audio-analyze"))).mode & 0o777;
++  assert.equal(binaryMode, 0o755);
++  assertClean(dataDir);
++
++  // 已安装后重复 install 不再联网
++  const again = engine.install({ confirm: true });
++  assert.equal(again.installed, true);
++  assert.equal(server.counts.requests, 1);
++
++  const requestsBefore = server.counts.requests;
++  for (let i = 0; i < 50; i += 1) engine.status();
++  assert.equal(server.counts.requests, requestsBefore, "status 轮询不得发起外部请求");
++  assert.equal(engine.version, release.version);
++  assert.equal(exists(engine.binaryPath), true);
++
++  const removed = await engine.uninstall();
++  assert.equal(removed.installed, false);
++  assert.equal(exists(path.join(dataDir, "engines/audio")), false);
++  assertClean(dataDir);
++
++  // 卸载后再装一轮，仍可成功（连接池可复用，不要求新握手）
++  engine.install({ confirm: true });
++  const second = await waitForJob(engine);
++  assert.equal(second.job.state, "installed", JSON.stringify(second));
++  assert.equal(server.counts.requests, 2);
++});
++
++test("确认、平台、磁盘不足在联网前被拒绝", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, server, engine, release, setRelease } = await setup(t, archive);
++
++  assert.throws(
++    () => engine.install({}),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_CONFIRM_REQUIRED",
++  );
++  assert.equal(server.counts.requests, 0);
++
++  engine.platform = "linux";
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "UNSUPPORTED_PLATFORM",
++  );
++  engine.platform = "darwin";
++  assert.equal(server.counts.requests, 0);
++
++  engine.diskFreeBytes = 1;
++  engine.install({ confirm: true });
++  await expectJobError(dataDir, engine, "ENGINE_DISK_SPACE_LOW");
++  assert.equal(server.counts.requests, 0);
++
++  // 恢复可用磁盘后仍能安装，说明失败没有留下锁/临时目录
++  engine.diskFreeBytes = 1024 * 1024 * 1024;
++  engine.install({ confirm: true });
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "installed", JSON.stringify(status));
++  assert.equal(status.version, release.version);
++  setRelease(release);
++});
++
++test("hash 不匹配、缺失/错误长度、压缩编码、重定向、证书失败、中断都被拒绝", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++
++  {
++    const { dataDir, engine } = await setup(t, archive, { release: { sha256: "0".repeat(64) } });
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_HASH_MISMATCH");
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-type": "application/octet-stream" });
++        res.end(archive);
++      },
++    });
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_LENGTH_MISMATCH");
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-length": archive.length + 9 });
++        res.end(archive);
++      },
++    });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error");
++    assert.ok(["ENGINE_LENGTH_MISMATCH", "ENGINE_DOWNLOAD_FAILED"].includes(status.job.error.code), JSON.stringify(status));
++    assertClean(dataDir);
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-length": archive.length, "content-encoding": "gzip" });
++        res.end(archive);
++      },
++    });
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_CONTENT_ENCODING");
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      handler: (_req, res) => {
++        res.writeHead(302, { location: "/elsewhere" });
++        res.end();
++      },
++    });
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_HTTP_STATUS");
++  }
++
++  {
++    const other = await makeTlsFixture(t);
++    const { dataDir, engine } = await setup(t, archive, { handler: (_req, res) => res.end(archive) });
++    engine.ca = other.ca;
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_TLS_FAILED");
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-length": archive.length });
++        res.write(archive.subarray(0, 10));
++        res.destroy();
++      },
++    });
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_DOWNLOAD_FAILED");
++  }
++});
++
++test("空闲超时与总截止：慢速滴流、停止发送都终止并清理", async (t) => {
++  const big = Buffer.concat([BINARY, Buffer.alloc(4096, 1)]);
++  const archive = await makeTar([{ name: "audio-analyze", data: big }]);
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      idleTimeoutMs: 100,
++      totalTimeoutMs: 5000,
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-length": archive.length });
++        res.write(archive.subarray(0, 5));
++        // 之后不再发送，等待空闲超时
++      },
++    });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error");
++    assert.equal(status.job.error.code, "ENGINE_TIMEOUT", JSON.stringify(status));
++    assertClean(dataDir);
++  }
++
++  {
++    const { dataDir, engine } = await setup(t, archive, {
++      idleTimeoutMs: 100,
++      totalTimeoutMs: 220,
++      handler: (_req, res) => {
++        res.writeHead(200, { "content-length": archive.length });
++        let sent = 0;
++        const timer = setInterval(() => {
++          if (res.destroyed || sent >= archive.length) {
++            clearInterval(timer);
++            if (!res.destroyed) res.end();
++            return;
++          }
++          // 每 20ms 1 字节：低于空闲超时，但总时长超过总截止
++          res.write(archive.subarray(sent, sent + 1));
++          sent += 1;
++        }, 20);
++        res.on("close", () => clearInterval(timer));
++      },
++    });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error");
++    assert.equal(status.job.error.code, "ENGINE_TIMEOUT", JSON.stringify(status));
++    assertClean(dataDir);
++  }
++});
++
++test("取消下载：等待网络/临时目录清理，重入 BUSY，卸载竞态返回 BUSY", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  let releaseResponse;
++  const gate = new Promise((resolve) => {
++    releaseResponse = resolve;
++  });
++  const { dataDir, engine, server } = await setup(t, archive, {
++    handler: async (_req, res) => {
++      res.writeHead(200, { "content-length": archive.length });
++      res.write(archive.subarray(0, 3));
++      await gate;
++      if (!res.destroyed) res.end(archive.subarray(3));
++    },
++  });
++
++  engine.install({ confirm: true });
++  const deadline = Date.now() + 2000;
++  while (engine.status().job?.state !== "downloading" && Date.now() < deadline) await delay(10);
++  assert.equal(engine.status().job.state, "downloading");
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
++  );
++  await assert.rejects(engine.uninstall(), (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY");
++
++  const cancelled = await engine.cancel();
++  releaseResponse();
++  assert.equal(cancelled.job.state, "cancelled");
++  assert.equal(cancelled.job.error.code, "ENGINE_CANCELLED");
++  assertClean(dataDir);
++  assert.ok(server.counts.requests >= 1);
++
++  // 取消后同一实例可重新安装
++  engine.install({ confirm: true });
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "installed", JSON.stringify(status));
++});
++
++test("取消解包/校验阶段：不留下 staging 或安装目录", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  let releaseHook;
++  const gate = new Promise((resolve) => {
++    releaseHook = resolve;
++  });
++  const { dataDir, engine } = await setup(t, archive, {
++    hooks: {
++      async afterExtract() {
++        await gate;
++      },
++    },
++  });
++  engine.install({ confirm: true });
++  const deadline = Date.now() + 2000;
++  while (engine.status().job?.state !== "extracting" && Date.now() < deadline) await delay(10);
++  const cancelPromise = engine.cancel();
++  releaseHook();
++  const status = await cancelPromise;
++  assert.equal(status.job.state, "cancelled");
++  assert.equal(status.job.error.code, "ENGINE_CANCELLED");
++  assert.equal(status.installed, false);
++  assertClean(dataDir);
++  assert.equal(exists(path.join(dataDir, "engines/audio/current.json")), false);
++});
++
++test("恶意归档：类型/路径/重复/PAX/过长/超量/条目数都被拒绝且不越界写", async (t) => {
++  const cases = [
++    {
++      name: "symlink",
++      archive: await makeTar([{ name: "audio-analyze", type: "symlink", linkname: "/tmp/outside" }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "hardlink",
++      archive: await makeTar([{ name: "audio-analyze", type: "link", linkname: "elsewhere" }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "fifo",
++      archive: await makeTar([{ name: "audio-analyze", type: "fifo" }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "path traversal",
++      archive: await makeTar([{ name: "../evil", data: BINARY }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "absolute path",
++      archive: await makeTar([{ name: "/tmp/evil", data: BINARY }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "long name",
++      archive: await makeTar([{ name: "a".repeat(300), data: BINARY }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "duplicate target",
++      archive: await makeTar([
++        { name: "audio-analyze", data: BINARY },
++        { name: "audio-analyze", data: BINARY },
++      ]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "pax path",
++      archive: await makeTar([{ name: "audio-analyze", pax: { path: "../evil" }, data: BINARY }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "pax unknown extension",
++      archive: await makeTar([{ name: "audio-analyze", pax: { comment: "x" }, data: BINARY }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "extra whitelist miss",
++      archive: await makeTar([{ name: "README.txt", data: Buffer.from("hi") }]),
++      code: "ENGINE_ARCHIVE_UNSAFE",
++    },
++    {
++      name: "expanded too large",
++      archive: await makeTar([{ name: "audio-analyze", data: Buffer.alloc(64, 1) }]),
++      code: "ENGINE_ARCHIVE_TOO_LARGE",
++      release: { extractedMaxBytes: 32 },
++    },
++    {
++      name: "too many entries",
++      archive: await makeTar([
++        { name: "audio-analyze", data: BINARY },
++        { name: "README.txt", data: Buffer.from("hi") },
++      ]),
++      code: "ENGINE_ARCHIVE_TOO_LARGE",
++      release: { maxEntries: 1 },
++    },
++  ];
++
++  for (const item of cases) {
++    const { root, dataDir, engine } = await setup(t, item.archive, { release: item.release });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error", `${item.name}: ${JSON.stringify(status)}`);
++    assert.equal(status.job.error.code, item.code, `${item.name}: ${JSON.stringify(status)}`);
++    assert.equal(status.installed, false, item.name);
++    assertClean(dataDir);
++    assert.equal(exists(path.join(root, "evil")), false, `${item.name} 不得写出数据目录`);
++    assert.equal(exists(path.join(dataDir, "evil")), false, `${item.name} 不得写出数据目录`);
++  }
++});
++
++test("目标/父目录符号链接：拒绝安装且不写链接指向", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++
++  {
++    const root = await tempDir(t);
++    const dataDir = path.join(root, "data");
++    const outside = path.join(root, "outside");
++    await fs.mkdir(dataDir, { recursive: true });
++    await fs.mkdir(outside);
++    await fs.mkdir(path.join(dataDir, "engines"));
++    await fs.symlink(outside, path.join(dataDir, "engines", "audio"));
++    const tls = await makeTlsFixture(t);
++    const server = await startTlsServer(t, tls, (_req, res) => {
++      res.writeHead(200, { "content-length": archive.length });
++      res.end(archive);
++    });
++    const engine = new AudioEngine(dataDir, {
++      release: makeRelease(archive, server.url),
++      ca: tls.ca,
++      platform: "darwin",
++      arch: "arm64",
++      diskFreeBytes: 1024 * 1024 * 1024,
++    });
++    t.after(() => engine.dispose());
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_UNSAFE_TARGET");
++    assert.deepEqual(await fs.readdir(outside), []);
++  }
++
++  {
++    const root = await tempDir(t);
++    const dataDir = path.join(root, "data");
++    const outside = path.join(root, "outside");
++    await fs.mkdir(dataDir, { recursive: true });
++    await fs.mkdir(outside);
++    await fs.symlink(outside, path.join(dataDir, "engines"));
++    const tls = await makeTlsFixture(t);
++    const server = await startTlsServer(t, tls, (_req, res) => {
++      res.writeHead(200, { "content-length": archive.length });
++      res.end(archive);
++    });
++    const engine = new AudioEngine(dataDir, {
++      release: makeRelease(archive, server.url),
++      ca: tls.ca,
++      platform: "darwin",
++      arch: "arm64",
++      diskFreeBytes: 1024 * 1024 * 1024,
++    });
++    t.after(() => engine.dispose());
++    engine.install({ confirm: true });
++    await expectJobError(dataDir, engine, "ENGINE_UNSAFE_TARGET");
++    assert.deepEqual(await fs.readdir(outside), []);
++  }
++});
++
++test("提交失败保留旧版本；状态不谎报新版本", async (t) => {
++  const v1 = await makeTar([{ name: "audio-analyze", data: Buffer.from("#!/bin/sh\necho v1\n") }]);
++  const v2 = await makeTar([{ name: "audio-analyze", data: Buffer.from("#!/bin/sh\necho v2\n") }]);
++  const { dataDir, tls, engine, server, setBody } = await setup(t, v1, {
++    release: { version: "1.0.0-test" },
++  });
++  engine.install({ confirm: true });
++  const first = await waitForJob(engine);
++  assert.equal(first.job.state, "installed", JSON.stringify(first));
++  const v1Path = engine.binaryPath;
++  const v1Bytes = await fs.readFile(v1Path);
++
++  setBody(v2);
++  const second = new AudioEngine(dataDir, {
++    release: makeRelease(v2, server.url, { version: "2.0.0-test" }),
++    ca: tls.ca,
++    platform: "darwin",
++    arch: "arm64",
++    diskFreeBytes: 1024 * 1024 * 1024,
++    hooks: {
++      beforeCommit() {
++        throw new Error("synthetic commit failure");
++      },
++    },
++  });
++  t.after(() => second.dispose());
++  second.install({ confirm: true });
++  const failed = await waitForJob(second);
++  assert.equal(failed.job.state, "error");
++  assert.equal(failed.job.error.code, "ENGINE_INSTALL_FAILED", JSON.stringify(failed));
++  assert.equal(failed.installed, true);
++  assert.equal(failed.version, "1.0.0-test");
++  assert.deepEqual(await fs.readFile(second.binaryPath), v1Bytes);
++  assertClean(dataDir);
++
++  const removed = await second.uninstall();
++  assert.equal(removed.installed, false);
++});
++
++test("跨进程锁：活锁 BUSY、死进程锁可恢复，不无条件删锁", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  const lock = path.join(dataDir, "engines", ".audio-install.lock");
++  await fs.mkdir(path.join(dataDir, "engines"), { recursive: true });
++  await fs.mkdir(lock);
++  await fs.writeFile(
++    path.join(lock, "owner.json"),
++    JSON.stringify({ pid: process.pid, token: "live", jobId: "live", startedAt: new Date().toISOString() }),
++  );
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
++  );
++  await fs.rm(lock, { recursive: true, force: true });
++
++  await fs.mkdir(lock);
++  await fs.writeFile(
++    path.join(lock, "owner.json"),
++    JSON.stringify({ pid: 2147483647, token: "dead", jobId: "dead", startedAt: new Date().toISOString() }),
++  );
++  engine.install({ confirm: true });
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "installed", JSON.stringify(status));
++  assertClean(dataDir);
++});
++
++test("两个进程同时安装：一个成功，另一个明确 BUSY", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const base = await tempDir(t);
++  const dataDir = path.join(base, "data");
++  await fs.mkdir(dataDir, { recursive: true });
++  const tls = await makeTlsFixture(t);
++  let releaseGate;
++  const gate = new Promise((resolve) => {
++    releaseGate = resolve;
++  });
++  const server = await startTlsServer(t, tls, async (_req, res) => {
++    res.writeHead(200, { "content-length": archive.length });
++    await gate;
++    if (!res.destroyed) res.end(archive);
++  });
++  const release = makeRelease(archive, server.url);
++  const childScript = path.join(base, "child-install.mjs");
++  await fs.writeFile(
++    childScript,
++    `
++import fs from "node:fs";
++import { AudioEngine } from ${JSON.stringify(pathToFileURL(path.join(PROJECT, "server/audio-engine.mjs")).href)};
++const engine = new AudioEngine(process.env.DATA_DIR, {
++  release: JSON.parse(process.env.RELEASE_JSON),
++  ca: fs.readFileSync(process.env.CA_FILE),
++  platform: "darwin",
++  arch: "arm64",
++  idleTimeoutMs: 2000,
++  totalTimeoutMs: 8000,
++  diskFreeBytes: 1024 * 1024 * 1024,
++});
++try {
++  engine.install({ confirm: true });
++  console.log("STARTED");
++  const deadline = Date.now() + 7000;
++  while (Date.now() < deadline) {
++    const status = engine.status();
++    if (status.job && ["installed", "error", "cancelled"].includes(status.job.state)) {
++      console.log("RESULT " + JSON.stringify(status.job));
++      break;
++    }
++    await new Promise((resolve) => setTimeout(resolve, 10));
++  }
++} catch (error) {
++  console.log("BUSY " + error.code);
++} finally {
++  engine.dispose();
++}
++`,
++  );
++  const env = {
++    ...process.env,
++    DATA_DIR: dataDir,
++    RELEASE_JSON: JSON.stringify(release),
++    CA_FILE: path.join(tls.dir, "cert.pem"),
++  };
++  const children = [0, 1].map(() =>
++    spawn(process.execPath, [childScript], { env, stdio: ["ignore", "pipe", "pipe"] }),
++  );
++  const outputs = children.map(() => "");
++  for (const [index, child] of children.entries()) {
++    child.stdout.setEncoding("utf8").on("data", (chunk) => {
++      outputs[index] += chunk;
++    });
++    child.stderr.setEncoding("utf8").on("data", (chunk) => {
++      outputs[index] += chunk;
++    });
++  }
++
++  const deadline = Date.now() + 3000;
++  while (Date.now() < deadline) {
++    const started = outputs.filter((output) => output.includes("STARTED")).length;
++    const busy = outputs.filter((output) => output.includes("ENGINE_BUSY")).length;
++    if ((started >= 2 && busy >= 1) || (started >= 1 && busy >= 1)) break;
++    await delay(20);
++  }
++  // 第一个进程已持锁并在等待响应；放行后让两个子进程结束。
++  releaseGate();
++  await Promise.all(
++    children.map((child) =>
++      Promise.race([
++        child.exitCode !== null ? Promise.resolve() : once(child, "exit"),
++        delay(8000).then(() => {
++          child.kill("SIGKILL");
++          return [null, null];
++        }),
++      ]),
++    ),
++  );
++
++  const combined = outputs.join("\n");
++  // 先拿到锁的进程成功；另一个可能在 install 同步阶段直接 BUSY，
++  // 也可能在异步获取跨进程锁时得到带 ENGINE_BUSY 的失败任务。
++  assert.match(combined, /BUSY ENGINE_BUSY|"code":"ENGINE_BUSY"/, combined);
++  assert.equal((combined.match(/"state":"installed"/g) || []).length, 1, combined);
++  assert.equal((combined.match(/"code":"ENGINE_BUSY"/g) || []).length, 1, combined);
++  assertClean(dataDir);
++});
++
++test("公开 CA 随 Git 检出与分享包一致提供，不取消全局私钥忽略", async () => {
++  const gitignore = await fs.readFile(path.join(PROJECT, ".gitignore"), "utf8");
++  assert.match(gitignore, /^\*\.pem$/m);
++  assert.match(gitignore, /^!server\/audio-engine-ca\.pem$/m);
++  await assert.rejects(
++    execFileAsync("git", ["check-ignore", "-q", "server/audio-engine-ca.pem"], { cwd: PROJECT }),
++    (error) => error.code === 1,
++    "server/audio-engine-ca.pem 不应再被 .gitignore 忽略",
++  );
++  const { collectFiles } = await import("../scripts/package.mjs");
++  const files = await collectFiles(PROJECT, "server");
++  assert.ok(files.includes("server/audio-engine-ca.pem"), "分享包必须包含公开 CA");
++  assert.ok(!files.some((file) => /\.key$|id_rsa/.test(file)), "分享包不得携带私钥文件");
++});
++
++test("安装器错误对象只带固定码/短消息，不含本机路径", async () => {
++  const error = new AudioEngineError("ENGINE_HASH_MISMATCH");
++  assert.equal(error.code, "ENGINE_HASH_MISMATCH");
++  assert.equal(error.message, "安装包校验失败");
++  assert.equal(error.message.includes(os.tmpdir()), false);
++  const unknown = new AudioEngineError("ENGINE_INSTALL_FAILED");
++  assert.equal(unknown.message, "安装失败");
++});

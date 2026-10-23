@@ -1,0 +1,29 @@
+{
+  "ticket": "T-LOCAL-007",
+  "date": "2026-10-22",
+  "baseline": { "branch": "main", "head": "2c15663" },
+  "implemented": [
+    "public release config schema + generator/validator",
+    "device enrollment v1 backend (RSA3072, key proof, strict TLS, cert chain validation, atomic install)",
+    "POST /api/cloud-auth/enroll + enrollment status",
+    "login page '开通本机' entry",
+    "share allowlist + private-key scan"
+  ],
+  "tests": {
+    "build": "pass",
+    "unit": "158/158",
+    "enrollment": "11/11",
+    "uiChromium": "pass",
+    "uiWebkit": "pass",
+    "screenshots": 22
+  },
+  "notDone": [
+    "formal release origins/CA",
+    "real Java/Node integration",
+    "deployment / system trust / renewal",
+    "full npm run package in isolated copy"
+  ],
+  "committed": false,
+  "pushed": false,
+  "deployed": false
+}

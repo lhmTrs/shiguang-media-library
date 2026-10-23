@@ -1,0 +1,15 @@
+diff --git a/scripts/qa.mjs b/scripts/qa.mjs
+index dcd8857..27fcb70 100644
+--- a/scripts/qa.mjs
++++ b/scripts/qa.mjs
+@@ -202,7 +202,9 @@ async function verify(browserType, name, options) {
+         const rows = await response.json();
+         await route.fulfill({ json: rows.map(row => ({ ...row, revision: Number(row.revision || 0) + revision })) });
+       });
+-      await polling.route("**/api/assets?*", async route => {
++      // 列表请求有两类：普通模式 /api/assets?…、系列分组模式 /api/asset-series?…
++      // 只拦前者会让"自动刷新"用例在系列模式下永远数到 0（本轮 T-LOCAL-001 的根因）。
++      await polling.route(/\/api\/(?:assets|asset-series)\?/, async route => {
+         assetRequests++;
+         if (holdAssets) await assetsGate;
+         await route.continue();

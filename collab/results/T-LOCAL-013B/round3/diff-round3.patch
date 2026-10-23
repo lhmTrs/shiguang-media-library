@@ -1,0 +1,185 @@
+diff --git a/server/audio-snapshot.mjs b/server/audio-snapshot.mjs
+--- a/server/audio-snapshot.mjs
++++ b/server/audio-snapshot.mjs
+@@ -141,7 +141,39 @@
+     return true;
+   } catch {
+     return false;
++  }
++}
++
++/**
++ * 创建阶段失败、marker 尚未确认完整写入时的回收。
++ *
++ * 此目录只可能是本进程刚用排他 mkdir、随机 token 路径在 0700 私有根下创建的；
++ * 此时 marker 可能只有半段字节，不能按 marker 归属校验。这里只删除本任务固定
++ * 路径的 marker 和这个空目录，绝不递归删除目录内容；只要目录仍存在或任一步
++ * 失败就抛 CLEANUP_FAILED，交给上层保留租约/故障 busy。
++ */
++async function removeIncompleteDir(base, dir) {
++  if (!within(base, dir) || dir === base) fail("CLEANUP_FAILED");
++  // 只允许回收“除了本次未写完的 marker 之外什么都没有”的目录；出现任何未知
++  // 条目都保留现场，避免把并发/外部内容一起删掉。
++  let entries;
++  try {
++    entries = await fs.readdir(dir);
++  } catch {
++    fail("CLEANUP_FAILED");
+   }
++  if (entries.some((name) => name !== MARKER)) fail("CLEANUP_FAILED");
++  try {
++    await fs.unlink(path.join(dir, MARKER));
++  } catch (error) {
++    if (error?.code !== "ENOENT") fail("CLEANUP_FAILED");
++  }
++  try {
++    await fs.rmdir(dir);
++  } catch {
++    fail("CLEANUP_FAILED");
++  }
++  if (await exists(dir)) fail("CLEANUP_FAILED");
+ }
+ 
+ /**
+@@ -350,7 +382,7 @@
+     if (created) {
+       try {
+         if (markerWritten) await removeOwnedDir(base, dir, token);
+-        else await fs.rmdir(dir).catch(() => {});
++        else await removeIncompleteDir(base, dir);
+       } catch {
+         cleanupError = true;
+       }
+diff --git a/tests/audio-snapshot.test.mjs b/tests/audio-snapshot.test.mjs
+--- a/tests/audio-snapshot.test.mjs
++++ b/tests/audio-snapshot.test.mjs
+@@ -346,4 +346,69 @@
+   await expectCode(ok.cleanup(), "CLEANUP_FAILED");
+   assert.ok(await fs.lstat(ok.dir), "标记不匹配时不得删除目录");
+   await fs.rm(ok.dir, { recursive: true, force: true });
++});
++
++test("marker 部分写入后 ENOSPC：安全回收自有残留，不把未写完的标记当成功", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "marker-partial.bin");
++  await fs.writeFile(source, crypto.randomBytes(96 * 1024));
++
++  const originalWriteFile = fs.writeFile;
++  let injected = false;
++  fs.writeFile = async (file, ...rest) => {
++    if (!injected && path.basename(String(file)) === ".owner.json") {
++      injected = true;
++      // 先真实写入半段标记，再模拟磁盘满：markerWritten 仍为 false。
++      await originalWriteFile(file, "{partial", { mode: 0o600, flag: "wx" });
++      throw Object.assign(new Error("synthetic disk-full"), { code: "ENOSPC" });
++    }
++    return originalWriteFile(file, ...rest);
++  };
++  t.after(() => {
++    fs.writeFile = originalWriteFile;
++  });
++
++  await expectCode(createSnapshot(args(base, root, source)), "SNAPSHOT_FAILED");
++  assert.equal(injected, true);
++  const jobs = path.join(base, "data", "audio-jobs");
++  const left = await fs.readdir(jobs).catch(() => []);
++  assert.deepEqual(left.filter((name) => name.startsWith("job-")), [], "半段 marker 也应安全回收");
+ });
++
++test("marker 部分写入且 rmdir 失败：CLEANUP_FAILED 并保留残留目录", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "marker-rmdir.bin");
++  await fs.writeFile(source, crypto.randomBytes(96 * 1024));
++  const jobs = path.join(base, "data", "audio-jobs");
++
++  const originalWriteFile = fs.writeFile;
++  const originalRmdir = fs.rmdir;
++  let injected = false;
++  fs.writeFile = async (file, ...rest) => {
++    if (!injected && path.basename(String(file)) === ".owner.json") {
++      injected = true;
++      await originalWriteFile(file, "{partial", { mode: 0o600, flag: "wx" });
++      throw Object.assign(new Error("synthetic disk-full"), { code: "ENOSPC" });
++    }
++    return originalWriteFile(file, ...rest);
++  };
++  fs.rmdir = async (p, ...rest) => {
++    if (path.basename(String(p)).startsWith("job-")) {
++      throw Object.assign(new Error("synthetic rmdir failure"), { code: "EACCES" });
++    }
++    return originalRmdir(p, ...rest);
++  };
++  t.after(() => {
++    fs.writeFile = originalWriteFile;
++    fs.rmdir = originalRmdir;
++  });
++
++  await expectCode(createSnapshot(args(base, root, source)), "CLEANUP_FAILED");
++  assert.equal(injected, true);
++  const residual = (await fs.readdir(jobs)).filter((name) => name.startsWith("job-"));
++  assert.equal(residual.length, 1, "rmdir 失败时不得吞掉清理失败，保留自有残留");
++  const residualDir = path.join(jobs, residual[0]);
++  await fs.rm(residualDir, { recursive: true, force: true });
++});
+diff --git a/tests/audio-job-queue.test.mjs b/tests/audio-job-queue.test.mjs
+--- a/tests/audio-job-queue.test.mjs
++++ b/tests/audio-job-queue.test.mjs
+@@ -670,4 +670,56 @@
+   const cancelled = await h.queue.submit("self-cancel");
+   const done = await waitState(h.queue, cancelled.id, "cancelled");
+   assert.equal(done.error, null);
++});
++
++test("marker 部分写入 + rmdir 失败 + 取消交错：CLEANUP_FAILED，保留租约且后续不启动", async (t) => {
++  const reached = deferred();
++  const gate = deferred();
++  const h = await harness(t);
++  await h.addAsset("a");
++  await h.addAsset("b");
++
++  const originalWriteFile = fs.writeFile;
++  const originalRmdir = fs.rmdir;
++  let injected = false;
++  fs.writeFile = async (file, ...rest) => {
++    if (!injected && path.basename(String(file)) === ".owner.json") {
++      injected = true;
++      // 先真实写入半段标记，挂起到取消发生后再模拟 ENOSPC。
++      await originalWriteFile(file, "{partial", { mode: 0o600, flag: "wx" });
++      reached.resolve();
++      await gate.promise;
++      throw Object.assign(new Error("synthetic disk-full"), { code: "ENOSPC" });
++    }
++    return originalWriteFile(file, ...rest);
++  };
++  fs.rmdir = async (p, ...rest) => {
++    if (path.basename(String(p)).startsWith("job-")) {
++      throw Object.assign(new Error("synthetic rmdir failure"), { code: "EACCES" });
++    }
++    return originalRmdir(p, ...rest);
++  };
++
++  try {
++    const a = await h.queue.submit("a");
++    await reached.promise;
++    assert.equal((await h.queue.cancel(a.id)).state, "cancelling");
++    gate.resolve();
++    const failed = await waitState(h.queue, a.id, "failed");
++    assert.equal(failed.error.code, "CLEANUP_FAILED", "取消不能覆盖半段 marker 的清理失败");
++    assert.ok(await fs.lstat(h.lockPath), "清理失败必须保留租约");
++    assert.equal(h.queue.busy, true);
++    assert.equal(h.stats.executions.length, 0, "marker 未写成时执行器一次也不应被调用");
++
++    const b = await h.queue.submit("b");
++    await delay(30);
++    assert.equal((await h.queue.get(b.id)).state, "queued", "故障后不得启动后续任务");
++    await h.queue.dispose();
++    assert.equal((await h.queue.get(b.id)).state, "cancelled");
++    assert.ok(await fs.lstat(h.lockPath), "dispose 不释放未完成清理的租约");
++    assert.equal((await jobDirs(h.jobsPath)).length, 1, "只保留未清理的自有残留目录");
++  } finally {
++    fs.writeFile = originalWriteFile;
++    fs.rmdir = originalRmdir;
++  }
+ });

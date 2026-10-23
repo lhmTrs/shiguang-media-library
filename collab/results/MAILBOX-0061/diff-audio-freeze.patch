@@ -1,0 +1,442 @@
+--- a/server/index.mjs
++++ b/server/index.mjs
+@@ -11,6 +11,7 @@
+ import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
+ import { AudioEngine } from "./audio-engine.mjs";
+ import { AudioAnalysis } from "./audio-analysis.mjs";
++import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
+ import { CloudManagement, cloudManagementErrorHandler } from "./cloud-management.mjs";
+ import { loadReleaseConfig } from "./cloud-release-config.mjs";
+ import { DeviceEnrollment } from "./device-enrollment.mjs";
+@@ -73,9 +74,19 @@
+ // 云端认证适配：令牌/私钥只在本进程，浏览器只拿到脱敏状态（T-LOCAL-CLOUD-001）
+ const cloudAuth = await new CloudAuth(lib, { dataDir }).init();
+ 
+-// 音频分析：引擎按需安装，分析只在本机进行（不上传音频）
+-const audioEngine = new AudioEngine(dataDir);
+-const audioAnalysis = new AudioAnalysis(lib, audioEngine);
++// 音频分析：默认关闭，只有运维显式设置 SHIGUANG_AUDIO_ANALYSIS=1 才按需创建实例。
++// 默认启动不建表、不联网、不下载、不 spawn；HTTP 不能改这个开关。
++const audioEnabled = audioFeatureEnabled();
++let audioEngine = null;
++let audioAnalysis = null;
++function audioFeature() {
++  if (!audioEnabled) return null;
++  if (!audioAnalysis) {
++    audioEngine = new AudioEngine(dataDir);
++    audioAnalysis = new AudioAnalysis(lib, audioEngine);
++  }
++  return { engine: audioEngine, analysis: audioAnalysis };
++}
+ // 内置发行配置只含公共地址/CA；原始仓库默认未启用，未就绪时普通用户只看到提示。
+ const releaseConfig = await loadReleaseConfig(
+   process.env.SHIGUANG_CLOUD_RELEASE_CONFIG || path.join(project, "config/cloud-release.json"),
+@@ -188,14 +199,32 @@
+   res.json(await cloudAuth.logout());
+ }));
+ 
+-// 音频分析引擎：按需下载/卸载；分析结果存本地 asset_audio
+-app.get("/api/audio-engine/status", (req, res) => res.json(audioEngine.status()));
+-app.post("/api/audio-engine/install", asyncRoute(async (req, res) => res.json(audioEngine.install())));
+-app.delete("/api/audio-engine", asyncRoute(async (req, res) => res.json(await audioEngine.uninstall())));
+-app.get("/api/assets/:id/audio", asyncRoute(async (req, res) => res.json(audioAnalysis.get(req.params.id))));
++// 音频分析引擎：默认关闭（503 AUDIO_FEATURE_DISABLED），启用后按需下载/卸载；分析结果存本地 asset_audio
++app.get("/api/audio-engine/status", (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
++  res.json(audio.engine.status());
++});
++app.post("/api/audio-engine/install", asyncRoute(async (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
++  res.json(audio.engine.install());
++}));
++app.delete("/api/audio-engine", asyncRoute(async (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
++  res.json(await audio.engine.uninstall());
++}));
++app.get("/api/assets/:id/audio", asyncRoute(async (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
++  res.json(audio.analysis.get(req.params.id));
++}));
+ app.post("/api/assets/:id/analyze-audio", asyncRoute(async (req, res) => {
++  const audio = audioFeature();
++  if (!audio) return rejectAudioFeature(res);
+   try {
+-    res.json(await audioAnalysis.analyze(req.params.id, { force: req.body?.force === true }));
++    res.json(await audio.analysis.analyze(req.params.id, { force: req.body?.force === true }));
+   } catch (e) {
+     if (e.code === "ENGINE_NOT_INSTALLED") return res.status(409).json({ error: "音频分析引擎未安装", code: e.code });
+     if (e.code === "NOT_FOUND") return res.status(404).json({ error: e.message, code: e.code });
+--- /dev/null
++++ b/server/audio-feature.mjs
+@@ -0,0 +1,20 @@
++/**
++ * 音频分析功能的默认关闭开关。
++ *
++ * 只认运维显式配置的环境变量，浏览器/HTTP 请求无法修改；默认（未设置或非 "1"）
++ * 一律视为关闭，启动时不创建音频实例、不建表、不联网、不下载、不 spawn。
++ */
++export const AUDIO_FEATURE_FLAG = "SHIGUANG_AUDIO_ANALYSIS";
++export const AUDIO_FEATURE_DISABLED = "AUDIO_FEATURE_DISABLED";
++
++export function audioFeatureEnabled(env = process.env) {
++  return env[AUDIO_FEATURE_FLAG] === "1";
++}
++
++/** 关闭态的固定拒绝：只回固定错误码与提示，不带引擎路径/下载地址。 */
++export function rejectAudioFeature(res) {
++  return res.status(503).json({
++    error: "音频分析功能未启用",
++    code: AUDIO_FEATURE_DISABLED,
++  });
++}
+--- /dev/null
++++ b/tests/audio-feature-flag.test.mjs
+@@ -0,0 +1,273 @@
++/**
++ * T-AUDIO-FREEZE（回复 #0061）：音频功能默认关闭的服务端开关。
++ *
++ * 契约：
++ *   1. 默认（不设 SHIGUANG_AUDIO_ANALYSIS 或非 "1"）启动不创建音频实例，5 条音频路由
++ *      在既有本机 session / Origin 校验之后统一 503 + AUDIO_FEATURE_DISABLED。
++ *   2. 关闭态零音频联网、零下载、零子进程、零 asset_audio 建表；响应不泄露引擎路径。
++ *   3. 不改变普通素材与云认证入口；开关只认服务端环境变量，HTTP 无法修改。
++ *
++ * 隔离：临时 MEDIA_DATA_DIR + 合成素材目录 + 随机端口；不碰真实库/素材/引擎。
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import crypto from "node:crypto";
++import net from "node:net";
++import { spawn } from "node:child_process";
++import { once } from "node:events";
++import { fileURLToPath } from "node:url";
++import Database from "better-sqlite3";
++import { Library } from "../server/library.mjs";
++import { AUDIO_FEATURE_DISABLED, audioFeatureEnabled } from "../server/audio-feature.mjs";
++
++const PROJECT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
++const PROBE = path.join(PROJECT, "tests", "audio-side-effect-probe.cjs");
++const AUDIO_PATTERN = /audio-engine|audio-analyze|112\.74\.109\.173/i;
++
++async function freePort() {
++  const server = net.createServer();
++  await new Promise((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
++  const { port } = server.address();
++  await new Promise((resolve) => server.close(resolve));
++  return port;
++}
++
++function wavBytes() {
++  const data = Buffer.alloc(32, 1);
++  const header = Buffer.alloc(44);
++  header.write("RIFF", 0);
++  header.writeUInt32LE(36 + data.length, 4);
++  header.write("WAVEfmt ", 8);
++  header.writeUInt32LE(16, 16);
++  header.writeUInt16LE(1, 20);
++  header.writeUInt16LE(1, 22);
++  header.writeUInt32LE(8000, 24);
++  header.writeUInt32LE(16000, 28);
++  header.writeUInt16LE(2, 32);
++  header.writeUInt16LE(16, 34);
++  header.write("data", 36);
++  header.writeUInt32LE(data.length, 40);
++  return Buffer.concat([header, data]);
++}
++
++async function makeLibrary(t) {
++  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-audio-flag-")));
++  const mediaRoot = path.join(base, "合成素材");
++  const dataDir = path.join(base, "data");
++  await fs.mkdir(mediaRoot, { recursive: true });
++  const assetPath = path.join(mediaRoot, "测试音效.wav");
++  await fs.writeFile(assetPath, wavBytes());
++
++  const lib = await new Library(dataDir, { directoryClassification: true }).init();
++  const root = await lib.addRoot(mediaRoot, "sfx");
++  const assetId = crypto.randomUUID();
++  const stat = await fs.stat(assetPath);
++  lib.db
++    .prepare(
++      "INSERT INTO assets (id,root_id,path,name,ext,kind,size,mtime,probe,capture_status,online,trashed) VALUES (?,?,?,?,?,?,?,?,?,?,1,0)",
++    )
++    .run(assetId, root.id, assetPath, path.basename(assetPath), ".wav", "sfx", stat.size, stat.mtimeMs, "ready", "ready");
++  lib.db.close();
++
++  t.after(async () => {
++    await fs.rm(base, { recursive: true, force: true });
++  });
++  return { base, dataDir, mediaRoot, assetId };
++}
++
++async function startServer(t, { dataDir, flag }) {
++  // 占位废纸篓组件，避免临时数据目录触发 swiftc 编译（与既有 HTTP 测试一致）。
++  const trashHash = crypto
++    .createHash("sha256")
++    .update(await fs.readFile(path.join(PROJECT, "server/trash.swift")))
++    .digest("hex")
++    .slice(0, 12);
++  const trashHelper = path.join(dataDir, `trash-helper-${trashHash}`);
++  await fs.writeFile(trashHelper, "", { mode: 0o755 });
++
++  const probeLog = path.join(dataDir, "audio-side-effects.jsonl");
++  await fs.writeFile(probeLog, "");
++  const port = await freePort();
++  const child = spawn(process.execPath, ["server/index.mjs"], {
++    cwd: PROJECT,
++    env: {
++      ...process.env,
++      MEDIA_DATA_DIR: dataDir,
++      MEDIA_SKIP_IMPORT: "1",
++      MEDIA_SKIP_RECONCILE: "1",
++      MEDIA_NO_WATCH: "1",
++      NODE_ENV: "production",
++      PORT: String(port),
++      SHIGUANG_AUDIO_ANALYSIS: flag ? "1" : "",
++      AUDIO_ENGINE_URL: "https://127.0.0.1:9/audio-engine-must-not-be-fetched.tar.gz",
++      AUDIO_PROBE_LOG: probeLog,
++      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require ${PROBE}`.trim(),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  let output = "";
++  child.stdout.setEncoding("utf8").on("data", (chunk) => (output += chunk));
++  child.stderr.setEncoding("utf8").on("data", (chunk) => (output += chunk));
++
++  t.after(async () => {
++    if (child.exitCode === null) {
++      child.kill("SIGTERM");
++      await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 3000))]);
++      if (child.exitCode === null) child.kill("SIGKILL");
++    }
++  });
++
++  const deadline = Date.now() + 15_000;
++  let url = null;
++  while (Date.now() < deadline) {
++    const match = output.match(/拾光素材库 (http:\/\/127\.0\.0\.1:\d+)/);
++    if (match) {
++      url = match[1];
++      break;
++    }
++    if (child.exitCode !== null) throw new Error(`本地服务提前退出：\n${output}`);
++    await new Promise((resolve) => setTimeout(resolve, 50));
++  }
++  assert.ok(url, `本地服务未在期限内启动：\n${output}`);
++
++  const sessionRes = await fetch(`${url}/api/session`);
++  assert.equal(sessionRes.status, 200);
++  const setCookie = sessionRes.headers.getSetCookie?.()[0] || sessionRes.headers.get("set-cookie");
++  const cookie = String(setCookie).split(";")[0];
++  const { token } = await sessionRes.json();
++  return { child, output: () => output, url, cookie, token, probeLog };
++}
++
++function call(server, pathname, { method = "GET", origin, body } = {}) {
++  const headers = { cookie: server.cookie };
++  if (method !== "GET") headers["x-local-token"] = server.token;
++  if (origin) headers.origin = origin;
++  if (body !== undefined) headers["content-type"] = "application/json";
++  return fetch(`${server.url}${pathname}`, {
++    method,
++    headers,
++    body: body === undefined ? undefined : JSON.stringify(body),
++  });
++}
++
++function audioRequests(server, assetId) {
++  return [
++    ["GET", "/api/audio-engine/status"],
++    ["POST", "/api/audio-engine/install"],
++    ["DELETE", "/api/audio-engine"],
++    ["GET", `/api/assets/${assetId}/audio`],
++    ["POST", `/api/assets/${assetId}/analyze-audio`, { force: true }],
++  ].map(([method, pathname, body]) => ({ method, pathname, body }));
++}
++
++test("开关只认服务端显式 =1，默认及其它值一律关闭", () => {
++  assert.equal(audioFeatureEnabled({}), false);
++  assert.equal(audioFeatureEnabled({ SHIGUANG_AUDIO_ANALYSIS: "" }), false);
++  assert.equal(audioFeatureEnabled({ SHIGUANG_AUDIO_ANALYSIS: "0" }), false);
++  assert.equal(audioFeatureEnabled({ SHIGUANG_AUDIO_ANALYSIS: "true" }), false);
++  assert.equal(audioFeatureEnabled({ SHIGUANG_AUDIO_ANALYSIS: "1" }), true);
++});
++
++test("默认关闭：5 路由在 session/Origin 之后 503，零音频副作用，普通入口无回归", async (t) => {
++  const { base, dataDir, assetId } = await makeLibrary(t);
++  const server = await startServer(t, { dataDir, flag: false });
++
++  // session / Origin 保护仍然先于开关生效
++  const noSession = await fetch(`${server.url}/api/audio-engine/status`);
++  assert.equal(noSession.status, 401, "未带本机会话应先被 401 拦住");
++  const crossOrigin = await fetch(`${server.url}/api/audio-engine/status`, {
++    headers: { cookie: server.cookie, origin: "http://evil.example" },
++  });
++  assert.equal(crossOrigin.status, 403, "跨站 Origin 应先被 403 拦住");
++
++  for (const { method, pathname, body } of audioRequests(server, assetId)) {
++    const res = await call(server, pathname, { method, body });
++    const text = await res.text();
++    assert.equal(res.status, 503, `${method} ${pathname} 应返回 503，实际 ${res.status}: ${text}`);
++    const parsed = JSON.parse(text);
++    assert.equal(parsed.code, AUDIO_FEATURE_DISABLED, `${method} ${pathname} 应回固定错误码`);
++    assert.equal(parsed.error, "音频分析功能未启用");
++    assert.equal(text.includes(base), false, "关闭态响应不得泄露本机数据目录");
++    assert.equal(AUDIO_PATTERN.test(text), false, "关闭态响应不得泄露引擎路径/下载地址");
++  }
++
++  // 普通素材与云认证入口不回归
++  const assetRes = await call(server, `/api/assets/${assetId}`);
++  assert.equal(assetRes.status, 200);
++  const asset = await assetRes.json();
++  assert.equal(asset.id, assetId);
++  assert.equal(asset.name, "测试音效.wav");
++
++  const cloudRes = await call(server, "/api/cloud-auth/status");
++  assert.equal(cloudRes.status, 200);
++  assert.equal(typeof (await cloudRes.json()), "object");
++
++  const statsRes = await call(server, "/api/stats");
++  assert.equal(statsRes.status, 200);
++
++  // 关闭态无音频实例：不生成 engines 目录、不建 asset_audio 表
++  await assert.rejects(fs.access(path.join(dataDir, "engines")), /ENOENT/);
++  const exited = once(server.child, "exit");
++  server.child.kill("SIGTERM");
++  await exited;
++
++  const db = new Database(path.join(dataDir, "library.sqlite"), { readonly: true });
++  const audioTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='asset_audio'").get();
++  db.close();
++  assert.equal(audioTable, undefined, "默认关闭时不得创建 asset_audio 表");
++
++  // 探针：零音频网络、零音频子进程、零 asset_audio SQL
++  const lines = (await fs.readFile(server.probeLog, "utf8"))
++    .split("\n")
++    .filter(Boolean)
++    .map((line) => JSON.parse(line));
++  const netHits = lines.filter((line) => line.kind.startsWith("net.") && AUDIO_PATTERN.test(line.detail));
++  const processHits = lines.filter(
++    (line) => line.kind.startsWith("process.") && /audio-analyze|\btar\b/i.test(line.detail),
++  );
++  const sqlHits = lines.filter((line) => line.kind.startsWith("db."));
++  assert.deepEqual(netHits, [], "关闭态不得发起音频下载/联网");
++  assert.deepEqual(processHits, [], "关闭态不得 spawn 音频引擎或 tar");
++  assert.deepEqual(sqlHits, [], "关闭态不得执行任何 asset_audio 建表/查询");
++  t.diagnostic(`probe: net=${lines.filter((l) => l.kind.startsWith("net.")).length} process=${lines.filter((l) => l.kind.startsWith("process.")).length} sql=${sqlHits.length}`);
++});
++
++test("显式 =1 才放行 status；仅创建实例本身仍不建表/不联网/不 spawn", async (t) => {
++  const { dataDir } = await makeLibrary(t);
++  const server = await startServer(t, { dataDir, flag: true });
++
++  const res = await call(server, "/api/audio-engine/status");
++  assert.equal(res.status, 200, "运维显式开启后 status 不应被 503 拦截");
++  const body = await res.json();
++  assert.equal(body.installed, false);
++  assert.equal(body.path, null);
++  assert.equal(typeof body.expected, "object");
++
++  const db = new Database(path.join(dataDir, "library.sqlite"), { readonly: true });
++  const audioTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='asset_audio'").get();
++  db.close();
++  assert.equal(audioTable, undefined, "只读 status 不应建 asset_audio 表");
++
++  const lines = (await fs.readFile(server.probeLog, "utf8"))
++    .split("\n")
++    .filter(Boolean)
++    .map((line) => JSON.parse(line));
++  assert.deepEqual(
++    lines.filter((line) => line.kind.startsWith("net.") && AUDIO_PATTERN.test(line.detail)),
++    [],
++    "未调用 install 不得联网",
++  );
++  assert.deepEqual(
++    lines.filter((line) => line.kind.startsWith("process.") && /audio-analyze|\btar\b/i.test(line.detail)),
++    [],
++    "未调用 install/analyze 不得 spawn",
++  );
++  assert.deepEqual(lines.filter((line) => line.kind.startsWith("db.")), [], "status 不应触达 asset_audio");
++
++  const exited = once(server.child, "exit");
++  server.child.kill("SIGTERM");
++  await exited;
++});
+--- /dev/null
++++ b/tests/audio-side-effect-probe.cjs
+@@ -0,0 +1,68 @@
++/**
++ * 测试专用副作用探针（NODE_OPTIONS=--require 预加载）。
++ *
++ * 只记录，不改变行为：出站 HTTP(S) 请求、子进程、以及任何提到 asset_audio 的 SQL。
++ * 用来证明“默认关闭”时音频路由零联网/零下载/零 spawn/零建表。
++ */
++const fs = require("node:fs");
++const http = require("node:http");
++const https = require("node:https");
++const cp = require("node:child_process");
++const util = require("node:util");
++const { syncBuiltinESMExports } = require("node:module");
++
++const logFile = process.env.AUDIO_PROBE_LOG;
++if (logFile) {
++  const record = (kind, detail) => {
++    try {
++      fs.appendFileSync(logFile, JSON.stringify({ kind, detail: String(detail) }) + "\n");
++    } catch {}
++  };
++
++  const urlOf = (args) => {
++    const first = args[0];
++    if (typeof first === "string") return first;
++    if (first && typeof first === "object") return first.href || `${first.protocol || ""}//${first.host || ""}${first.path || ""}`;
++    return String(first);
++  };
++
++  for (const [modName, mod] of [["http", http], ["https", https]]) {
++    for (const method of ["get", "request"]) {
++      const original = mod[method];
++      mod[method] = function (...args) {
++        record(`net.${modName}.${method}`, urlOf(args));
++        return original.apply(this, args);
++      };
++    }
++  }
++
++  const recordCommand = (kind, args) => {
++    const cmd = typeof args[0] === "string" ? args[0] : "";
++    const rest = Array.isArray(args[1]) ? args[1].join(" ") : "";
++    record(kind, `${cmd} ${rest}`.trim());
++  };
++
++  for (const method of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) {
++    const original = cp[method];
++    if (typeof original !== "function") continue;
++    const wrapped = function (...args) {
++      recordCommand(`process.${method}`, args);
++      return original.apply(this, args);
++    };
++    if (original[util.promisify.custom]) wrapped[util.promisify.custom] = original[util.promisify.custom];
++    cp[method] = wrapped;
++  }
++
++  try {
++    const Database = require("better-sqlite3");
++    for (const method of ["exec", "prepare"]) {
++      const original = Database.prototype[method];
++      Database.prototype[method] = function (sql, ...rest) {
++        if (typeof sql === "string" && /asset_audio/i.test(sql)) record(`db.${method}`, sql.replace(/\s+/g, " ").slice(0, 300));
++        return original.call(this, sql, ...rest);
++      };
++    }
++  } catch {}
++
++  syncBuiltinESMExports();
++}

@@ -1,0 +1,58 @@
+{
+  "startedAt": "2026-10-22T08:36:46.138Z",
+  "browsers": [
+    {
+      "name": "chromium-owner",
+      "passed": true,
+      "tabs": [
+        "个人安全",
+        "小组与成员",
+        "账户管理",
+        "角色与授权",
+        "审计"
+      ],
+      "managementRequests": 71,
+      "pageErrors": [],
+      "screenshots": 7
+    },
+    {
+      "name": "webkit-owner",
+      "passed": true,
+      "tabs": [
+        "个人安全",
+        "小组与成员",
+        "账户管理",
+        "角色与授权",
+        "审计"
+      ],
+      "managementRequests": 19,
+      "pageErrors": [],
+      "screenshots": 4
+    },
+    {
+      "name": "chromium-admin",
+      "passed": true,
+      "tabs": [
+        "个人安全",
+        "小组与成员",
+        "账户管理"
+      ],
+      "managementRequests": 11,
+      "pageErrors": [],
+      "screenshots": 3
+    },
+    {
+      "name": "chromium-leader",
+      "passed": true,
+      "tabs": [
+        "个人安全",
+        "小组与成员"
+      ],
+      "managementRequests": 10,
+      "pageErrors": [],
+      "screenshots": 3
+    }
+  ],
+  "errors": [],
+  "finishedAt": "2026-10-22T08:37:13.698Z"
+}

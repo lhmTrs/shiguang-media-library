@@ -1,0 +1,1788 @@
+diff --git a/server/audio-job-queue.mjs b/server/audio-job-queue.mjs
+new file mode 100644
+index 0000000..0b2a857
+--- /dev/null
++++ b/server/audio-job-queue.mjs
+@@ -0,0 +1,556 @@
++/**
++ * T-LOCAL-013B：本地音频分析任务队列（内存态、单 worker）。
++ *
++ * 边界：
++ *   - 只接受内部可信 resolveAsset(assetId) 与 execute(snapshot, {signal})，不接触 HTTP 输入；
++ *   - 队列、终态保留和取消都在内存，不建表、不联网、不启动常驻轮询；
++ *   - 同 dataDir 使用本模块独立的排他目录租约（与 T12 安装锁无关），已存在一律 fail-closed，
++ *     不按 pid/时间自动回收；构造与 get 不写锁；
++ *   - 不接入 index、旧 audio-analysis、schema、前端，也不在默认启动路径实例化。
++ *
++ * 任务状态：queued → validating → snapshotting → running → succeeded；
++ * 失败为 failed；取消运行中的任务先进入 cancelling，执行 settle + 快照清理后为 cancelled。
++ */
++import fs from "node:fs/promises";
++import path from "node:path";
++import crypto from "node:crypto";
++import { AudioSnapshotError, assertSourceUnchanged, createSnapshot } from "./audio-snapshot.mjs";
++
++const DEFAULT_MAX_WAITING = 8;
++const DEFAULT_MAX_TERMINAL = 100;
++const DEFAULT_TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
++const DEFAULT_WALL_DEADLINE_MS = 180_000;
++const ACTIVE_STATES = new Set(["queued", "validating", "snapshotting", "running", "cancelling"]);
++const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
++const RESOLVER_ERROR_CODES = new Set(["ASSET_NOT_FOUND", "ASSET_BUSY"]);
++const EXECUTOR_ERROR_CODES = new Set([
++  "TIMEOUT",
++  "OUTPUT_LIMIT",
++  "INVALID_OUTPUT",
++  "ENGINE_FAILED",
++  "RESOURCE_LIMIT",
++  "CANCELLED",
++]);
++
++export const AUDIO_JOB_STATES = Object.freeze([
++  "queued",
++  "validating",
++  "snapshotting",
++  "running",
++  "succeeded",
++  "failed",
++  "cancelling",
++  "cancelled",
++]);
++
++const MESSAGES = Object.freeze({
++  INVALID_REQUEST: "请求参数无效",
++  QUEUE_DISPOSED: "队列已关闭",
++  JOB_NOT_FOUND: "任务不存在",
++  ASSET_NOT_FOUND: "素材不存在",
++  ASSET_BUSY: "素材正被其它操作占用",
++  UNSUPPORTED_ASSET: "素材类型不支持音频分析",
++  SOURCE_OFFLINE: "素材已离线",
++  SOURCE_TRASHED: "素材在废纸篓",
++  SOURCE_RETIRED: "素材已注销",
++  ROOT_RETIRED: "素材根已注销",
++  SOURCE_MISSING: "源文件不存在",
++  SOURCE_NOT_REGULAR: "源不是普通文件",
++  SOURCE_OUTSIDE_ROOT: "源超出登记根",
++  SOURCE_UNREADABLE: "源文件不可读",
++  SOURCE_CHANGED: "源文件已变化",
++  INPUT_LIMIT_EXCEEDED: "源文件超出大小限制",
++  AUDIO_QUEUE_FULL: "分析队列已满",
++  AUDIO_ENGINE_BUSY: "另一个分析队列正在使用该数据目录",
++  AUDIO_LEASE_FAILED: "分析队列租约获取失败",
++  LEASE_RELEASE_FAILED: "分析队列租约释放失败",
++  CLEANUP_FAILED: "任务清理失败",
++  RESOLVER_FAILED: "素材校验失败",
++  SNAPSHOT_FAILED: "快照失败",
++  EXECUTION_FAILED: "分析执行失败",
++  TIMEOUT: "分析超时",
++  CANCELLED: "任务已取消",
++});
++
++export class AudioQueueError extends Error {
++  constructor(code, message) {
++    super(message || MESSAGES[code] || "队列操作失败");
++    this.name = "AudioQueueError";
++    this.code = code;
++  }
++}
++
++const fail = (code) => {
++  throw new AudioQueueError(code);
++};
++
++const isActive = (job) => ACTIVE_STATES.has(job.state);
++const isTerminal = (job) => TERMINAL_STATES.has(job.state);
++
++function validToken(value) {
++  return (
++    (typeof value === "string" && value.length > 0 && value.length <= 200) ||
++    (typeof value === "number" && Number.isSafeInteger(value))
++  );
++}
++
++function validateResolved(assetId, value) {
++  if (!value || typeof value !== "object" || Array.isArray(value)) fail("ASSET_NOT_FOUND");
++  if (value.assetId !== assetId) fail("SOURCE_CHANGED");
++  if (value.kind !== "music" && value.kind !== "sfx") fail("UNSUPPORTED_ASSET");
++  for (const key of ["sourcePath", "rootPath", "rootId"]) {
++    if (typeof value[key] !== "string" || !value[key]) fail("SOURCE_CHANGED");
++  }
++  if (!path.isAbsolute(value.sourcePath) || !path.isAbsolute(value.rootPath)) fail("SOURCE_CHANGED");
++  for (const key of ["online", "trashed", "retired", "rootRetired", "busy"]) {
++    if (typeof value[key] !== "boolean") fail("SOURCE_CHANGED");
++  }
++  for (const key of ["assetGeneration", "libraryGeneration", "sourceGeneration"]) {
++    if (!validToken(value[key])) fail("SOURCE_CHANGED");
++  }
++  if (!value.online) fail("SOURCE_OFFLINE");
++  if (value.trashed) fail("SOURCE_TRASHED");
++  if (value.retired) fail("SOURCE_RETIRED");
++  if (value.rootRetired) fail("ROOT_RETIRED");
++  if (value.busy) fail("ASSET_BUSY");
++  return value;
++}
++
++function sameResolved(a, b) {
++  for (const key of [
++    "assetId",
++    "kind",
++    "sourcePath",
++    "rootPath",
++    "rootId",
++    "assetGeneration",
++    "libraryGeneration",
++    "sourceGeneration",
++    "online",
++    "trashed",
++    "retired",
++    "rootRetired",
++    "busy",
++  ]) {
++    if (a[key] !== b[key]) return false;
++  }
++  return true;
++}
++
++function mapPhaseError(error, phase) {
++  if (error instanceof AudioQueueError) return error;
++  if (error instanceof AudioSnapshotError) return new AudioQueueError(error.code, MESSAGES[error.code]);
++  if (phase === "validating") return new AudioQueueError("RESOLVER_FAILED");
++  if (phase === "snapshotting") return new AudioQueueError("SNAPSHOT_FAILED");
++  return new AudioQueueError("EXECUTION_FAILED");
++}
++
++async function readSmallJson(file) {
++  try {
++    const raw = await fs.readFile(file, "utf8");
++    if (raw.length > 4096) return null;
++    const value = JSON.parse(raw);
++    return value && typeof value === "object" ? value : null;
++  } catch {
++    return null;
++  }
++}
++
++async function exists(p) {
++  try {
++    await fs.lstat(p);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * @param {object} options
++ * @param {string} options.dataDir 应用数据目录（租约和任务目录都在其 audio-jobs/ 下）
++ * @param {(assetId:string)=>Promise<object>|object} options.resolveAsset 可信内部解析器
++ * @param {(snapshot:object,{signal:AbortSignal})=>Promise<any>|any} options.execute 注入执行器
++ * @param {number} [options.maxWaiting=8]
++ * @param {number} [options.maxTerminal=100]
++ * @param {number} [options.terminalTtlMs]
++ * @param {number} [options.wallDeadlineMs=180000]
++ * @param {number} [options.maxSnapshotBytes]
++ * @param {object} [options.hooks] 测试注入：afterSnapshot / afterExecute / snapshotHooks
++ */
++export class AudioJobQueue {
++  #dataDir;
++  #resolveAsset;
++  #execute;
++  #maxWaiting;
++  #maxTerminal;
++  #terminalTtlMs;
++  #wallDeadlineMs;
++  #maxSnapshotBytes;
++  #hooks;
++  #jobs = new Map();
++  #waiting = [];
++  #activeJob = null;
++  #worker = null;
++  #lease = null;
++  #leaseBroken = false;
++  #disposed = false;
++  #disposePromise = null;
++  #submitChain = Promise.resolve();
++
++  constructor(options = {}) {
++    const {
++      dataDir,
++      resolveAsset,
++      execute,
++      maxWaiting = DEFAULT_MAX_WAITING,
++      maxTerminal = DEFAULT_MAX_TERMINAL,
++      terminalTtlMs = DEFAULT_TERMINAL_TTL_MS,
++      wallDeadlineMs = DEFAULT_WALL_DEADLINE_MS,
++      maxSnapshotBytes,
++      hooks = {},
++    } = options;
++    if (
++      typeof dataDir !== "string" ||
++      !dataDir ||
++      typeof resolveAsset !== "function" ||
++      typeof execute !== "function" ||
++      !Number.isSafeInteger(maxWaiting) ||
++      maxWaiting < 1 ||
++      !Number.isSafeInteger(maxTerminal) ||
++      maxTerminal < 1 ||
++      !Number.isSafeInteger(terminalTtlMs) ||
++      terminalTtlMs < 0 ||
++      !Number.isSafeInteger(wallDeadlineMs) ||
++      wallDeadlineMs < 1 ||
++      (maxSnapshotBytes !== undefined && (!Number.isSafeInteger(maxSnapshotBytes) || maxSnapshotBytes < 0))
++    ) {
++      throw new AudioQueueError("INVALID_REQUEST");
++    }
++    this.#dataDir = path.resolve(dataDir);
++    this.#resolveAsset = resolveAsset;
++    this.#execute = execute;
++    this.#maxWaiting = maxWaiting;
++    this.#maxTerminal = maxTerminal;
++    this.#terminalTtlMs = terminalTtlMs;
++    this.#wallDeadlineMs = wallDeadlineMs;
++    this.#maxSnapshotBytes = maxSnapshotBytes;
++    this.#hooks = hooks && typeof hooks === "object" ? hooks : {};
++  }
++
++  /** 只读 busy：有排队/运行任务或持有租约。供未来换库互斥判断，不写锁。 */
++  get busy() {
++    return this.#activeJob !== null || this.#waiting.length > 0 || this.#lease !== null || this.#leaseBroken;
++  }
++
++  async submit(assetId, options = {}) {
++    if (this.#disposed) fail("QUEUE_DISPOSED");
++    if (typeof assetId !== "string" || !assetId || assetId.length > 200) fail("INVALID_REQUEST");
++    if (options === null || typeof options !== "object" || Array.isArray(options)) fail("INVALID_REQUEST");
++    const keys = Object.keys(options);
++    if (keys.some((key) => key !== "force")) fail("INVALID_REQUEST");
++    if ("force" in options && typeof options.force !== "boolean") fail("INVALID_REQUEST");
++    const force = options.force === true;
++
++    return this.#serialize(async () => {
++      this.#pruneTerminal();
++      for (const job of this.#jobs.values()) {
++        if (job.assetId === assetId && isActive(job)) return this.#summary(job);
++      }
++      const resolved = validateResolved(assetId, await this.#resolve(assetId));
++      if (this.#disposed) fail("QUEUE_DISPOSED");
++      if (this.#waiting.length - (this.#activeJob ? 0 : 1) >= this.#maxWaiting) {
++        fail("AUDIO_QUEUE_FULL");
++      }
++      const job = {
++        id: crypto.randomUUID(),
++        assetId,
++        force,
++        state: "queued",
++        error: null,
++        createdAt: Date.now(),
++        startedAt: null,
++        finishedAt: null,
++        controller: null,
++        baseline: resolved,
++        snapshot: null,
++        cancelRequested: false,
++        timedOut: false,
++      };
++      this.#jobs.set(job.id, job);
++      this.#waiting.push(job);
++      this.#kick();
++      return this.#summary(job);
++    });
++  }
++
++  async get(jobId) {
++    this.#pruneTerminal();
++    if (typeof jobId !== "string" || !jobId) fail("JOB_NOT_FOUND");
++    const job = this.#jobs.get(jobId);
++    if (!job) fail("JOB_NOT_FOUND");
++    return this.#summary(job);
++  }
++
++  async cancel(jobId) {
++    this.#pruneTerminal();
++    if (typeof jobId !== "string" || !jobId) fail("JOB_NOT_FOUND");
++    const job = this.#jobs.get(jobId);
++    if (!job) fail("JOB_NOT_FOUND");
++    if (isTerminal(job)) return this.#summary(job);
++    if (job.state === "queued") {
++      const index = this.#waiting.indexOf(job);
++      if (index >= 0) this.#waiting.splice(index, 1);
++      this.#finish(job, "cancelled", null);
++      return this.#summary(job);
++    }
++    job.cancelRequested = true;
++    job.state = "cancelling";
++    job.controller?.abort();
++    return this.#summary(job);
++  }
++
++  /** 取消排队与活跃任务，await execute settle/快照清理；不自动恢复队列。 */
++  async dispose() {
++    if (this.#disposePromise) return this.#disposePromise;
++    this.#disposed = true;
++    this.#disposePromise = (async () => {
++      for (const job of [...this.#waiting]) {
++        if (job.state === "queued") this.#finish(job, "cancelled", null);
++      }
++      this.#waiting = [];
++      if (this.#activeJob) {
++        this.#activeJob.cancelRequested = true;
++        if (!isTerminal(this.#activeJob)) this.#activeJob.state = "cancelling";
++        this.#activeJob.controller?.abort();
++      }
++      await this.#worker?.catch(() => {});
++    })();
++    return this.#disposePromise;
++  }
++
++  #serialize(fn) {
++    const run = this.#submitChain.then(fn, fn);
++    this.#submitChain = run.catch(() => {});
++    return run;
++  }
++
++  #summary(job) {
++    return {
++      id: job.id,
++      assetId: job.assetId,
++      state: job.state,
++      queuePosition: job.state === "queued" ? this.#waiting.indexOf(job) + 1 : null,
++      error: job.error ? { code: job.error.code, message: job.error.message } : null,
++      createdAt: job.createdAt,
++      startedAt: job.startedAt,
++      finishedAt: job.finishedAt,
++    };
++  }
++
++  async #resolve(assetId) {
++    let value;
++    try {
++      value = await this.#resolveAsset(assetId);
++    } catch (error) {
++      if (error && RESOLVER_ERROR_CODES.has(error.code)) {
++        throw new AudioQueueError(error.code, MESSAGES[error.code]);
++      }
++      throw new AudioQueueError("RESOLVER_FAILED");
++    }
++    return validateResolved(assetId, value);
++  }
++
++  #kick() {
++    if (this.#worker || this.#disposed || this.#leaseBroken) return;
++    this.#worker = this.#drain()
++      .catch(() => {})
++      .finally(() => {
++        this.#worker = null;
++        if (!this.#disposed && !this.#leaseBroken && this.#waiting.length > 0) this.#kick();
++      });
++  }
++
++  async #drain() {
++    while (!this.#disposed && this.#waiting.length > 0 && !this.#leaseBroken) {
++      const job = this.#waiting.shift();
++      if (!job || job.state !== "queued") continue;
++      await this.#runJob(job);
++    }
++  }
++
++  async #runJob(job) {
++    this.#activeJob = job;
++    job.startedAt = Date.now();
++    // 从等待队列取出后立即脱离 queued，避免“已开始但取消仍按排队处理”的窗口。
++    job.state = "validating";
++    job.controller = new AbortController();
++    const { signal } = job.controller;
++    const timer = setTimeout(() => {
++      if (isTerminal(job)) return;
++      job.timedOut = true;
++      job.state = "cancelling";
++      job.controller?.abort();
++    }, this.#wallDeadlineMs);
++    let outcome = null;
++    let leaseReleased = false;
++    try {
++      await this.#acquireLease();
++      if (signal.aborted) fail("CANCELLED");
++      let current = await this.#resolve(job.assetId);
++      if (!sameResolved(current, job.baseline)) fail("SOURCE_CHANGED");
++      job.baseline = current;
++      if (signal.aborted) fail("CANCELLED");
++
++      job.state = "snapshotting";
++      job.snapshot = await createSnapshot({
++        dataDir: this.#dataDir,
++        rootPath: current.rootPath,
++        sourcePath: current.sourcePath,
++        maxBytes: this.#maxSnapshotBytes,
++        signal,
++        jobId: job.id,
++        hooks: this.#hooks.snapshotHooks,
++      });
++      if (this.#hooks.afterSnapshot) await this.#hooks.afterSnapshot({ job: this.#summary(job), snapshot: job.snapshot });
++
++      current = await this.#resolve(job.assetId);
++      if (!sameResolved(current, job.baseline)) fail("SOURCE_CHANGED");
++      job.baseline = current;
++      if (signal.aborted) fail("CANCELLED");
++
++      job.state = "running";
++      await this.#execute(job.snapshot, { signal });
++      if (this.#hooks.afterExecute) await this.#hooks.afterExecute({ job: this.#summary(job), snapshot: job.snapshot });
++
++      if (job.cancelRequested || signal.aborted) {
++        outcome = job.timedOut
++          ? new AudioQueueError("TIMEOUT")
++          : new AudioQueueError("CANCELLED");
++      } else {
++        current = await this.#resolve(job.assetId);
++        if (!sameResolved(current, job.baseline)) fail("SOURCE_CHANGED");
++        await assertSourceUnchanged(job.snapshot);
++        if (job.cancelRequested || signal.aborted) {
++          outcome = job.timedOut ? new AudioQueueError("TIMEOUT") : new AudioQueueError("CANCELLED");
++        }
++      }
++    } catch (error) {
++      if (job.timedOut) outcome = new AudioQueueError("TIMEOUT");
++      else if (job.cancelRequested || signal.aborted) outcome = new AudioQueueError("CANCELLED");
++      else if (job.state === "running" && EXECUTOR_ERROR_CODES.has(error?.code)) {
++        outcome = new AudioQueueError(error.code, MESSAGES[error.code]);
++      } else outcome = mapPhaseError(error, job.state === "cancelling" ? "running" : job.state);
++    }
++
++    // 清理先于租约释放和终态公布；清理失败 fail-closed，保留租约与 busy。
++    let cleanupError = null;
++    if (job.snapshot) {
++      try {
++        await job.snapshot.cleanup();
++      } catch {
++        cleanupError = new AudioQueueError("CLEANUP_FAILED");
++      }
++    }
++    if (cleanupError) {
++      this.#leaseBroken = true;
++      outcome = cleanupError;
++    } else {
++      try {
++        await this.#releaseLease();
++        leaseReleased = true;
++      } catch {
++        this.#leaseBroken = true;
++        outcome = new AudioQueueError("LEASE_RELEASE_FAILED");
++      }
++    }
++
++    clearTimeout(timer);
++    if (outcome && outcome.code === "CANCELLED") {
++      this.#finish(job, "cancelled", null);
++    } else if (outcome) {
++      this.#finish(job, "failed", outcome);
++    } else if (job.timedOut) {
++      this.#finish(job, "failed", new AudioQueueError("TIMEOUT"));
++    } else if (job.cancelRequested || signal.aborted) {
++      this.#finish(job, "cancelled", null);
++    } else {
++      this.#finish(job, "succeeded", null);
++    }
++    this.#activeJob = null;
++    job.controller = null;
++    this.#pruneTerminal();
++    if (!leaseReleased && !this.#leaseBroken) this.#lease = null;
++  }
++
++  #finish(job, state, error) {
++    job.state = state;
++    job.error = error ? { code: error.code, message: error.message } : null;
++    job.finishedAt = Date.now();
++    job.controller = null;
++  }
++
++  #pruneTerminal() {
++    const now = Date.now();
++    const terminal = [...this.#jobs.values()].filter(isTerminal);
++    const expired = new Set(
++      terminal.filter((job) => job.finishedAt !== null && now - job.finishedAt > this.#terminalTtlMs),
++    );
++    const alive = terminal
++      .filter((job) => !expired.has(job))
++      .sort((a, b) => b.finishedAt - a.finishedAt);
++    for (const job of alive.slice(this.#maxTerminal)) expired.add(job);
++    for (const job of expired) this.#jobs.delete(job.id);
++  }
++
++  async #acquireLease() {
++    const base = path.join(this.#dataDir, "audio-jobs");
++    const lockRoot = path.join(base, ".queue-lease");
++    const token = crypto.randomBytes(16).toString("hex");
++    try {
++      await fs.mkdir(base, { recursive: true, mode: 0o700 });
++      await fs.chmod(base, 0o700).catch(() => {});
++      await fs.mkdir(lockRoot, { mode: 0o700 });
++    } catch (error) {
++      if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
++        // 已存在锁（含无 owner/身份不可验证/旧进程已死）一律 BUSY；不自动回收。
++        throw new AudioQueueError("AUDIO_ENGINE_BUSY");
++      }
++      throw new AudioQueueError("AUDIO_LEASE_FAILED");
++    }
++    const owner = {
++      pid: process.pid,
++      token,
++      purpose: "audio-job-queue",
++      startedAt: new Date().toISOString(),
++    };
++    try {
++      await fs.writeFile(path.join(lockRoot, "owner.json"), JSON.stringify(owner), {
++        mode: 0o600,
++        flag: "wx",
++      });
++    } catch {
++      // 只回收本进程刚 mkdir、仍无 owner 的空锁；其它情况保留。
++      const marker = await exists(path.join(lockRoot, "owner.json"));
++      if (!marker) await fs.rmdir(lockRoot).catch(() => {});
++      throw new AudioQueueError("AUDIO_LEASE_FAILED");
++    }
++    this.#lease = { token };
++  }
++
++  async #releaseLease() {
++    if (!this.#lease) return;
++    const base = path.join(this.#dataDir, "audio-jobs");
++    const lockRoot = path.join(base, ".queue-lease");
++    const owner = await readSmallJson(path.join(lockRoot, "owner.json"));
++    if (!owner || owner.token !== this.#lease.token || owner.purpose !== "audio-job-queue") {
++      throw new AudioQueueError("LEASE_RELEASE_FAILED");
++    }
++    try {
++      await fs.rm(lockRoot, { recursive: true, force: true });
++    } catch {
++      throw new AudioQueueError("LEASE_RELEASE_FAILED");
++    }
++    if (await exists(lockRoot)) throw new AudioQueueError("LEASE_RELEASE_FAILED");
++    this.#lease = null;
++  }
++}
+diff --git a/server/audio-snapshot.mjs b/server/audio-snapshot.mjs
+new file mode 100644
+index 0000000..3a60e8f
+--- /dev/null
++++ b/server/audio-snapshot.mjs
+@@ -0,0 +1,358 @@
++/**
++ * T-LOCAL-013B：登记根内源文件的有界私有快照。
++ *
++ * 只接受内部可信 resolver 产物（assetId/rootPath/sourcePath 等），不接触 HTTP 输入。
++ * 设计目标：
++ *   - realpath 后复用 fs-identity.within 做登记根边界判断；
++ *   - 只接受普通文件，拒绝目录/FIFO/设备/最终符号链接与逃逸链接；
++ *   - 打开时 O_NOFOLLOW|O_NONBLOCK，打开后 fstat 复核身份，防止“验证后被换成 FIFO”挂死；
++ *   - 单个 64KiB 读循环同时完成复制与 SHA256，不 readFile 整文件；
++ *   - 前后核对 dev/ino/size/mtime/ctime，复制中增长/修改/替换都报 SOURCE_CHANGED；
++ *   - 任务目录 0700、文件 0600 且排他创建；清理只删带本任务 token 标记的目录。
++ *
++ * 本模块不启动进程、不联网、不读数据库、不写日志。
++ */
++import fs from "node:fs/promises";
++import { constants } from "node:fs";
++import path from "node:path";
++import crypto from "node:crypto";
++import { within } from "./fs-identity.mjs";
++
++const CHUNK_BYTES = 64 * 1024;
++const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
++const MARKER = ".owner.json";
++const SNAPSHOT_FILE = "source.bin";
++
++export const SNAPSHOT_CODES = Object.freeze({
++  SOURCE_MISSING: "SOURCE_MISSING",
++  SOURCE_NOT_REGULAR: "SOURCE_NOT_REGULAR",
++  SOURCE_OUTSIDE_ROOT: "SOURCE_OUTSIDE_ROOT",
++  SOURCE_UNREADABLE: "SOURCE_UNREADABLE",
++  SOURCE_CHANGED: "SOURCE_CHANGED",
++  INPUT_LIMIT_EXCEEDED: "INPUT_LIMIT_EXCEEDED",
++  CANCELLED: "CANCELLED",
++  SNAPSHOT_FAILED: "SNAPSHOT_FAILED",
++  CLEANUP_FAILED: "CLEANUP_FAILED",
++  INVALID_REQUEST: "INVALID_REQUEST",
++});
++
++const MESSAGES = Object.freeze({
++  SOURCE_MISSING: "源文件不存在",
++  SOURCE_NOT_REGULAR: "源不是普通文件",
++  SOURCE_OUTSIDE_ROOT: "源超出登记根",
++  SOURCE_UNREADABLE: "源文件不可读",
++  SOURCE_CHANGED: "源文件已变化",
++  INPUT_LIMIT_EXCEEDED: "源文件超出大小限制",
++  CANCELLED: "快照已取消",
++  SNAPSHOT_FAILED: "快照失败",
++  CLEANUP_FAILED: "快照清理失败",
++  INVALID_REQUEST: "快照参数无效",
++});
++
++export class AudioSnapshotError extends Error {
++  constructor(code, message) {
++    super(message || MESSAGES[code] || "快照失败");
++    this.name = "AudioSnapshotError";
++    this.code = code;
++  }
++}
++
++const fail = (code) => {
++  throw new AudioSnapshotError(code);
++};
++
++const isAborted = (signal) => Boolean(signal?.aborted);
++const checkAbort = (signal) => {
++  if (isAborted(signal)) fail("CANCELLED");
++};
++
++function mapFsError(error) {
++  if (error instanceof AudioSnapshotError) return error;
++  switch (error?.code) {
++    case "ENOENT":
++    case "ENOTDIR":
++      return new AudioSnapshotError("SOURCE_MISSING");
++    case "ELOOP":
++    case "EISDIR":
++    case "ENXIO":
++      return new AudioSnapshotError("SOURCE_NOT_REGULAR");
++    case "EACCES":
++    case "EPERM":
++      return new AudioSnapshotError("SOURCE_UNREADABLE");
++    default:
++      return new AudioSnapshotError("SNAPSHOT_FAILED");
++  }
++}
++
++function closeTo(a, b) {
++  return typeof a === "number" && typeof b === "number" && a === b;
++}
++
++/** dev/ino/size/mtime/ctime 同步身份；ctime 用于识别“内容被改但 mtime 被还原”。 */
++function sameIdentity(a, b) {
++  return (
++    a &&
++    b &&
++    a.dev === b.dev &&
++    a.ino === b.ino &&
++    a.size === b.size &&
++    closeTo(a.mtimeMs, b.mtimeMs) &&
++    closeTo(a.ctimeMs, b.ctimeMs)
++  );
++}
++
++function identityOf(stat) {
++  return {
++    dev: stat.dev,
++    ino: stat.ino,
++    size: stat.size,
++    mtimeMs: stat.mtimeMs,
++    ctimeMs: stat.ctimeMs,
++  };
++}
++
++async function readMarker(dir) {
++  try {
++    const raw = await fs.readFile(path.join(dir, MARKER), { encoding: "utf8", flag: "r" });
++    if (raw.length > 4096) return null;
++    const value = JSON.parse(raw);
++    return value && typeof value === "object" ? value : null;
++  } catch {
++    return null;
++  }
++}
++
++/** 只删除本进程创建、token 仍匹配、且位于私有 audio-jobs 根内的任务目录。 */
++async function removeOwnedDir(base, dir, token) {
++  const marker = await readMarker(dir);
++  if (!marker || marker.token !== token) fail("CLEANUP_FAILED");
++  if (!within(base, dir) || dir === base) fail("CLEANUP_FAILED");
++  try {
++    await fs.rm(dir, { recursive: true, force: true });
++  } catch {
++    fail("CLEANUP_FAILED");
++  }
++  if (await exists(dir)) fail("CLEANUP_FAILED");
++}
++
++async function exists(p) {
++  try {
++    await fs.lstat(p);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * 创建一份快照。
++ *
++ * @param {object} options
++ * @param {string} options.dataDir 应用数据目录；快照落在 <dataDir>/audio-jobs/ 下
++ * @param {string} options.rootPath 已登记根
++ * @param {string} options.sourcePath 源文件
++ * @param {number} [options.maxBytes] 实际复制字节上限，默认 256MiB
++ * @param {AbortSignal} [options.signal]
++ * @param {string} [options.jobId]
++ * @param {object} [options.hooks] 仅测试使用的注入点：beforeOpen / afterChunk
++ */
++export async function createSnapshot(options = {}) {
++  const {
++    dataDir,
++    rootPath,
++    sourcePath,
++    maxBytes = DEFAULT_MAX_BYTES,
++    signal,
++    jobId = "snapshot",
++    hooks = {},
++  } = options;
++  if (
++    typeof dataDir !== "string" ||
++    !dataDir ||
++    typeof rootPath !== "string" ||
++    !rootPath ||
++    typeof sourcePath !== "string" ||
++    !sourcePath ||
++    !Number.isSafeInteger(maxBytes) ||
++    maxBytes < 0 ||
++    typeof jobId !== "string" ||
++    !jobId
++  ) {
++    fail("INVALID_REQUEST");
++  }
++  checkAbort(signal);
++
++  let rootReal;
++  let sourceReal;
++  let before;
++  try {
++    rootReal = await fs.realpath(rootPath);
++    const rootStat = await fs.lstat(rootReal);
++    if (!rootStat.isDirectory()) fail("SOURCE_OUTSIDE_ROOT");
++    sourceReal = await fs.realpath(sourcePath);
++  } catch (error) {
++    throw mapFsError(error);
++  }
++  if (!within(rootReal, sourceReal)) fail("SOURCE_OUTSIDE_ROOT");
++  if (sourceReal === rootReal) fail("SOURCE_NOT_REGULAR");
++
++  try {
++    // 最终组件必须是普通文件，不接受符号链接（即使指向根内）；父级符号链接仅在其
++    // realpath 仍落在登记根内时允许。
++    const lst = await fs.lstat(sourcePath);
++    if (lst.isSymbolicLink()) fail("SOURCE_NOT_REGULAR");
++    if (!lst.isFile()) fail("SOURCE_NOT_REGULAR");
++    before = identityOf(lst);
++  } catch (error) {
++    throw mapFsError(error);
++  }
++  if (before.size > maxBytes) fail("INPUT_LIMIT_EXCEEDED");
++
++  if (typeof hooks.beforeOpen === "function") await hooks.beforeOpen({ sourcePath, sourceReal });
++
++  let handle;
++  try {
++    handle = await fs.open(
++      sourceReal,
++      constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0),
++    );
++  } catch (error) {
++    throw mapFsError(error);
++  }
++
++  let opened;
++  try {
++    opened = await handle.stat();
++    if (!opened.isFile()) fail("SOURCE_NOT_REGULAR");
++    if (!sameIdentity(before, identityOf(opened))) fail("SOURCE_CHANGED");
++  } catch (error) {
++    await handle.close().catch(() => {});
++    throw mapFsError(error);
++  }
++
++  const base = path.join(dataDir, "audio-jobs");
++  const token = crypto.randomBytes(16).toString("hex");
++  const dir = path.join(base, `job-${process.pid}-${token.slice(0, 16)}`);
++  let created = false;
++  let markerWritten = false;
++  let out;
++  try {
++    await fs.mkdir(base, { recursive: true, mode: 0o700 });
++    await fs.chmod(base, 0o700).catch(() => {});
++    await fs.mkdir(dir, { mode: 0o700 });
++    created = true;
++    await fs.writeFile(
++      path.join(dir, MARKER),
++      JSON.stringify({ token, jobId, pid: process.pid, createdAt: new Date().toISOString() }),
++      { mode: 0o600, flag: "wx" },
++    );
++    markerWritten = true;
++    const filePath = path.join(dir, SNAPSHOT_FILE);
++    out = await fs.open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
++
++    const hash = crypto.createHash("sha256");
++    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
++    let bytes = 0;
++    let chunks = 0;
++    for (;;) {
++      checkAbort(signal);
++      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
++      if (bytesRead === 0) break;
++      bytes += bytesRead;
++      if (bytes > maxBytes) fail("INPUT_LIMIT_EXCEEDED");
++      // 复制中增长：早于后置 fstat 给出确定错误，避免继续多读。
++      if (bytes > opened.size) fail("SOURCE_CHANGED");
++      hash.update(buffer.subarray(0, bytesRead));
++      await out.write(buffer, 0, bytesRead);
++      chunks += 1;
++      if (typeof hooks.afterChunk === "function") {
++        await hooks.afterChunk({ bytes, chunks, dir, filePath, sourcePath });
++      }
++    }
++    checkAbort(signal);
++
++    let after;
++    try {
++      after = await handle.stat();
++    } catch {
++      fail("SOURCE_CHANGED");
++    }
++    if (!sameIdentity(opened, identityOf(after))) fail("SOURCE_CHANGED");
++    if (bytes !== opened.size) fail("SOURCE_CHANGED");
++
++    // 路径仍指向打开时的同一对象；realpath 也不能在复制期间换到别处。
++    let now;
++    try {
++      now = await fs.lstat(sourceReal);
++      const realAgain = await fs.realpath(sourcePath);
++      if (realAgain !== sourceReal) fail("SOURCE_CHANGED");
++      if (!within(rootReal, realAgain)) fail("SOURCE_OUTSIDE_ROOT");
++    } catch (error) {
++      throw mapFsError(error);
++    }
++    if (now.isSymbolicLink() || !now.isFile()) fail("SOURCE_CHANGED");
++    if (now.dev !== opened.dev || now.ino !== opened.ino) fail("SOURCE_CHANGED");
++    if (!sameIdentity(identityOf(opened), identityOf(now))) fail("SOURCE_CHANGED");
++
++    const digest = hash.digest("hex");
++    const snapshot = {
++      filePath,
++      dir,
++      token,
++      sha256: digest,
++      bytes,
++      chunks,
++      sourcePath,
++      sourceReal,
++      rootReal,
++      rootPath,
++      jobId,
++      source: identityOf(opened),
++      cleaned: false,
++      cleanup: null,
++    };
++    snapshot.cleanup = async () => {
++      if (snapshot.cleaned) return;
++      await removeOwnedDir(base, dir, token);
++      snapshot.cleaned = true;
++    };
++    return snapshot;
++  } catch (error) {
++    try {
++      await out?.close();
++    } catch {
++      /* close 失败由目录清理兜底 */
++    }
++    out = null;
++    let cleanupError = null;
++    if (created) {
++      try {
++        if (markerWritten) await removeOwnedDir(base, dir, token);
++        else await fs.rmdir(dir).catch(() => {});
++      } catch {
++        cleanupError = true;
++      }
++    }
++    if (cleanupError) throw new AudioSnapshotError("CLEANUP_FAILED");
++    throw mapFsError(error);
++  } finally {
++    await out?.close().catch(() => {});
++    await handle.close().catch(() => {});
++  }
++}
++
++/** 运行结束后核对源文件仍是快照时的同一对象；返回 true 或抛固定错误。 */
++export async function assertSourceUnchanged(snapshot) {
++  if (!snapshot || typeof snapshot !== "object") fail("SOURCE_CHANGED");
++  try {
++    const realAgain = await fs.realpath(snapshot.sourcePath);
++    if (realAgain !== snapshot.sourceReal) fail("SOURCE_CHANGED");
++    if (!within(snapshot.rootReal, realAgain)) fail("SOURCE_OUTSIDE_ROOT");
++    const now = await fs.lstat(snapshot.sourceReal);
++    if (now.isSymbolicLink() || !now.isFile()) fail("SOURCE_CHANGED");
++    if (!sameIdentity(snapshot.source, identityOf(now))) fail("SOURCE_CHANGED");
++    return true;
++  } catch (error) {
++    throw mapFsError(error);
++  }
++}
+diff --git a/tests/audio-job-queue.test.mjs b/tests/audio-job-queue.test.mjs
+new file mode 100644
+index 0000000..d14bfe7
+--- /dev/null
++++ b/tests/audio-job-queue.test.mjs
+@@ -0,0 +1,591 @@
++/**
++ * T-LOCAL-013B：内存任务队列/租约/取消/终态保留的隔离测试。
++ *
++ * 使用临时目录、64KiB 合成文件与合成 executor；不启动真实引擎、不读真实素材/数据库、不联网。
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import crypto from "node:crypto";
++import { AudioJobQueue } from "../server/audio-job-queue.mjs";
++
++const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++
++function deferred() {
++  let resolve;
++  let reject;
++  const promise = new Promise((res, rej) => {
++    resolve = res;
++    reject = rej;
++  });
++  return { promise, resolve, reject };
++}
++
++async function tempBase(t) {
++  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-queue-")));
++  t.after(() => fs.rm(dir, { recursive: true, force: true }));
++  return dir;
++}
++
++async function waitFor(fn, label, timeoutMs = 3000) {
++  const started = Date.now();
++  for (;;) {
++    const value = await fn();
++    if (value) return value;
++    if (Date.now() - started > timeoutMs) throw new Error(`等待超时：${label}`);
++    await delay(5);
++  }
++}
++
++async function waitState(queue, id, state) {
++  return waitFor(async () => {
++    try {
++      const job = await queue.get(id);
++      return job.state === state ? job : null;
++    } catch {
++      return null;
++    }
++  }, `${id} -> ${state}`);
++}
++
++async function expectQueueCode(promise, code) {
++  await assert.rejects(promise, (error) => {
++    assert.equal(error.code, code, String(error));
++    return true;
++  });
++}
++
++async function harness(t, options = {}) {
++  const base = await tempBase(t);
++  const root = path.join(base, "media");
++  const dataDir = path.join(base, "data");
++  await fs.mkdir(root, { recursive: true });
++  const assets = new Map();
++  const stats = {
++    resolves: 0,
++    active: 0,
++    maxConcurrent: 0,
++    executions: [],
++  };
++  let executor = options.executor || (async () => ({ ok: true }));
++  const hooks = options.hooks || {};
++
++  const resolveAsset = async (assetId) => {
++    stats.resolves += 1;
++    const asset = assets.get(assetId);
++    return asset ? { ...asset } : null;
++  };
++  const execute = async (snapshot, context) => {
++    stats.active += 1;
++    stats.maxConcurrent = Math.max(stats.maxConcurrent, stats.active);
++    const entry = {
++      assetId: snapshot.jobId,
++      snapshotDir: snapshot.dir,
++      filePath: snapshot.filePath,
++      sha256: snapshot.sha256,
++      startedAt: Date.now(),
++      endedAt: null,
++    };
++    stats.executions.push(entry);
++    try {
++      return await executor(snapshot, context);
++    } finally {
++      stats.active -= 1;
++      entry.endedAt = Date.now();
++    }
++  };
++
++  const queue = new AudioJobQueue({
++    dataDir,
++    resolveAsset,
++    execute,
++    wallDeadlineMs: options.wallDeadlineMs ?? 1000,
++    maxSnapshotBytes: 1024 * 1024,
++    maxWaiting: options.maxWaiting ?? 8,
++    maxTerminal: options.maxTerminal ?? 100,
++    terminalTtlMs: options.terminalTtlMs ?? 24 * 60 * 60 * 1000,
++    hooks,
++  });
++  t.after(async () => {
++    await queue.dispose().catch(() => {});
++  });
++
++  async function addAsset(id, overrides = {}) {
++    const sourcePath = path.join(root, `${id}.bin`);
++    if (!(await fs.lstat(sourcePath).catch(() => null))) {
++      await fs.writeFile(sourcePath, crypto.randomBytes(96 * 1024));
++    }
++    const asset = {
++      assetId: id,
++      kind: "music",
++      sourcePath,
++      rootPath: root,
++      rootId: "root-1",
++      online: true,
++      trashed: false,
++      retired: false,
++      rootRetired: false,
++      busy: false,
++      assetGeneration: 1,
++      libraryGeneration: 1,
++      sourceGeneration: 1,
++      ...overrides,
++    };
++    assets.set(id, asset);
++    return asset;
++  }
++
++  const lockPath = path.join(dataDir, "audio-jobs", ".queue-lease");
++  const jobsPath = path.join(dataDir, "audio-jobs");
++  return {
++    base,
++    root,
++    dataDir,
++    queue,
++    assets,
++    stats,
++    hooks,
++    lockPath,
++    jobsPath,
++    addAsset,
++    setExecutor(fn) {
++      executor = fn;
++    },
++  };
++}
++
++async function jobDirs(jobsPath) {
++  const entries = await fs.readdir(jobsPath).catch(() => []);
++  return entries.filter((name) => name.startsWith("job-"));
++}
++
++test("严格输入：未知字段/非 boolean force/错误 assetId 拒绝，未知 job 固定 JOB_NOT_FOUND", async (t) => {
++  const h = await harness(t);
++  await h.addAsset("a");
++  await expectQueueCode(h.queue.submit(""), "INVALID_REQUEST");
++  await expectQueueCode(h.queue.submit(42), "INVALID_REQUEST");
++  await expectQueueCode(h.queue.submit("a", null), "INVALID_REQUEST");
++  await expectQueueCode(h.queue.submit("a", { force: "true" }), "INVALID_REQUEST");
++  await expectQueueCode(h.queue.submit("a", { model: "x" }), "INVALID_REQUEST");
++  await expectQueueCode(h.queue.get("missing"), "JOB_NOT_FOUND");
++  await expectQueueCode(h.queue.get(""), "JOB_NOT_FOUND");
++  await expectQueueCode(h.queue.cancel("missing"), "JOB_NOT_FOUND");
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null, "构造/get 不写锁");
++  assert.equal(h.queue.busy, false);
++});
++
++test("单 worker、8 等待上限、同 asset/force 合并、完成后重新解析并生成新任务", async (t) => {
++  const gate = deferred();
++  const h = await harness(t, {
++    executor: async () => {
++      await gate.promise;
++      return { ok: true };
++    },
++  });
++  const ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
++  for (const id of ids) await h.addAsset(id);
++  await h.addAsset("extra");
++  const jobs = [];
++  for (const id of ids) jobs.push(await h.queue.submit(id));
++  await waitState(h.queue, jobs[0].id, "running");
++  await expectQueueCode(h.queue.submit("extra"), "AUDIO_QUEUE_FULL");
++  const merged = await h.queue.submit("a", { force: true });
++  assert.equal(merged.id, jobs[0].id, "非终态同 asset 合并，force 也不重复");
++  assert.equal(jobs[0].queuePosition, null);
++
++  gate.resolve();
++  for (const job of jobs) await waitState(h.queue, job.id, "succeeded");
++  assert.equal(h.stats.maxConcurrent, 1, "最多一个 worker 同时执行");
++  assert.deepEqual(
++    h.stats.executions.map((entry) => entry.assetId),
++    jobs.map((job) => job.id),
++    "按提交顺序执行",
++  );
++  assert.equal((await h.queue.get(jobs[0].id)).state, "succeeded");
++
++  const before = h.stats.resolves;
++  const next = await h.queue.submit("a");
++  assert.notEqual(next.id, jobs[0].id, "完成后新提交必须新任务");
++  await waitState(h.queue, next.id, "succeeded");
++  assert.ok(h.stats.resolves - before >= 2, "重新解析素材");
++  assert.equal((await jobDirs(h.jobsPath)).length, 0, "任务目录均已清理");
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null, "租约已释放");
++});
++
++test("排队取消立即移除；终态 cancel 不改变结果", async (t) => {
++  const gate = deferred();
++  const h = await harness(t, {
++    executor: async () => {
++      await gate.promise;
++      return { ok: true };
++    },
++  });
++  for (const id of ["a", "b", "c"]) await h.addAsset(id);
++  const a = await h.queue.submit("a");
++  await waitState(h.queue, a.id, "running");
++  const b = await h.queue.submit("b");
++  const c = await h.queue.submit("c");
++  assert.equal(b.queuePosition, 1);
++  const cancelled = await h.queue.cancel(b.id);
++  assert.equal(cancelled.state, "cancelled");
++  assert.equal((await h.queue.get(c.id)).queuePosition, 1);
++  gate.resolve();
++  await waitState(h.queue, a.id, "succeeded");
++  await waitState(h.queue, c.id, "succeeded");
++  assert.equal((await h.queue.get(b.id)).state, "cancelled");
++  assert.deepEqual(
++    h.stats.executions.map((entry) => entry.assetId),
++    [a.id, c.id],
++    "取消的排队任务没有执行",
++  );
++  assert.equal((await h.queue.cancel(a.id)).state, "succeeded", "成功后 cancel 幂等且不改结果");
++});
++
++test("运行中取消：cancelling 等待 execute settle + 快照清理后才 cancelled，然后才下一项", async (t) => {
++  let first = true;
++  const h = await harness(t, {
++    executor: async (snapshot, { signal }) => {
++      if (!first) return { ok: true };
++      first = false;
++      return new Promise((resolve) => {
++        signal.addEventListener(
++          "abort",
++          () => {
++            setTimeout(() => resolve({ aborted: true }), 30);
++          },
++          { once: true },
++        );
++      });
++    },
++  });
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  await waitState(h.queue, a.id, "running");
++  const b = await h.queue.submit("b");
++  const started = Date.now();
++  const cancelling = await h.queue.cancel(a.id);
++  assert.equal(cancelling.state, "cancelling");
++  await delay(10);
++  assert.equal((await h.queue.get(a.id)).state, "cancelling", "execute 未 settle 前不得公布 cancelled");
++  assert.equal((await h.queue.get(b.id)).state, "queued", "前一任务未清理前不得启动下一项");
++  const done = await waitState(h.queue, a.id, "cancelled");
++  assert.ok(Date.now() - started >= 30, "确实等待 settle");
++  assert.equal(done.error, null);
++  await waitState(h.queue, b.id, "succeeded");
++  assert.equal(await fs.lstat(h.stats.executions[0].snapshotDir).catch(() => null), null);
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++});
++
++test("超时：wall deadline abort 并等待 settle，failed TIMEOUT，下一项可执行", async (t) => {
++  let first = true;
++  const h = await harness(t, {
++    wallDeadlineMs: 100,
++    executor: async (snapshot, { signal }) => {
++      if (!first) return { ok: true };
++      first = false;
++      return new Promise((resolve) => {
++        signal.addEventListener("abort", () => setTimeout(() => resolve({ late: true }), 20), { once: true });
++      });
++    },
++  });
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  const failed = await waitState(h.queue, a.id, "failed");
++  assert.equal(failed.error.code, "TIMEOUT");
++  const b = await h.queue.submit("b");
++  await waitState(h.queue, b.id, "succeeded");
++  assert.equal((await jobDirs(h.jobsPath)).length, 0);
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++});
++
++test("执行失败受控、摘要不泄露路径/原始错误，随后下一任务成功", async (t) => {
++  let first = true;
++  const h = await harness(t, {
++    executor: async () => {
++      if (first) {
++        first = false;
++        throw new Error("boom /private/tmp/x stderr=raw");
++      }
++      return { ok: true };
++    },
++  });
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  const failed = await waitState(h.queue, a.id, "failed");
++  assert.equal(failed.error.code, "EXECUTION_FAILED");
++  const text = JSON.stringify(failed);
++  assert.equal(text.includes(h.base), false, "摘要不含绝对路径");
++  assert.equal(text.includes("boom"), false, "摘要不含原始异常消息");
++  assert.equal(text.includes("stderr"), false);
++  const b = await h.queue.submit("b");
++  await waitState(h.queue, b.id, "succeeded");
++  assert.equal((await jobDirs(h.jobsPath)).length, 0);
++});
++
++test("成功/取消交错：最终校验前的取消不被旧成功覆盖；已公布成功后不可改", async (t) => {
++  const reached = deferred();
++  const gate = deferred();
++  const h = await harness(t);
++  h.hooks.afterExecute = async () => {
++    reached.resolve();
++    await gate.promise;
++  };
++  await h.addAsset("a");
++  const a = await h.queue.submit("a");
++  await reached.promise;
++  await h.queue.cancel(a.id);
++  gate.resolve();
++  const final = await waitState(h.queue, a.id, "cancelled");
++  assert.equal(final.error, null);
++
++  h.hooks.afterExecute = null;
++  await h.addAsset("b");
++  const b = await h.queue.submit("b");
++  await waitState(h.queue, b.id, "succeeded");
++  assert.equal((await h.queue.cancel(b.id)).state, "succeeded");
++});
++
++test("复制阶段取消：不执行 executor，快照目录清理，状态 cancelled", async (t) => {
++  const reached = deferred();
++  const gate = deferred();
++  const h = await harness(t);
++  h.hooks.snapshotHooks = {
++    afterChunk: async ({ chunks }) => {
++      if (chunks === 1) {
++        reached.resolve();
++        await gate.promise;
++      }
++    },
++  };
++  await h.addAsset("a");
++  const a = await h.queue.submit("a");
++  await reached.promise;
++  const cancelling = await h.queue.cancel(a.id);
++  assert.equal(cancelling.state, "cancelling");
++  gate.resolve();
++  await waitState(h.queue, a.id, "cancelled");
++  assert.equal(h.stats.executions.length, 0);
++  assert.equal((await jobDirs(h.jobsPath)).length, 0);
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++});
++
++test("开工前 generation/状态变化与完成后在线/废纸篓/注销/root/占用变化均受控失败", async (t) => {
++  const h = await harness(t);
++  await h.addAsset("blocker");
++  await h.addAsset("target");
++  const blockerGate = deferred();
++  let blockFirst = true;
++  h.setExecutor(async () => {
++    if (blockFirst) {
++      blockFirst = false;
++      await blockerGate.promise;
++    }
++    return { ok: true };
++  });
++  const blocker = await h.queue.submit("blocker");
++  await waitState(h.queue, blocker.id, "running");
++  const target = await h.queue.submit("target");
++  h.assets.get("target").assetGeneration = 2;
++  blockerGate.resolve();
++  await waitState(h.queue, blocker.id, "succeeded");
++  const changed = await waitState(h.queue, target.id, "failed");
++  assert.equal(changed.error.code, "SOURCE_CHANGED");
++
++  for (const [field, value, code] of [
++    ["online", false, "SOURCE_OFFLINE"],
++    ["trashed", true, "SOURCE_TRASHED"],
++    ["retired", true, "SOURCE_RETIRED"],
++    ["rootRetired", true, "ROOT_RETIRED"],
++    ["busy", true, "ASSET_BUSY"],
++    ["libraryGeneration", 9, "SOURCE_CHANGED"],
++    ["sourceGeneration", 9, "SOURCE_CHANGED"],
++  ]) {
++    const id = `case-${field}`;
++    await h.addAsset(id);
++    h.hooks.afterExecute = async () => {
++      h.assets.get(id)[field] = value;
++    };
++    const job = await h.queue.submit(id);
++    const failed = await waitFor(async () => {
++      const summary = await h.queue.get(job.id);
++      return summary.state === "failed" ? summary : null;
++    }, `${id} failed`);
++    assert.equal(failed.error.code, code, `${field} -> ${code}`);
++  }
++
++  h.hooks.afterExecute = null;
++  await h.addAsset("file-change");
++  h.hooks.afterExecute = async () => {
++    const source = h.assets.get("file-change").sourcePath;
++    await fs.writeFile(source, crypto.randomBytes(96 * 1024));
++  };
++  const modified = await h.queue.submit("file-change");
++  const modifiedDone = await waitState(h.queue, modified.id, "failed");
++  assert.equal(modifiedDone.error.code, "SOURCE_CHANGED");
++  assert.equal(h.stats.maxConcurrent, 1);
++});
++
++test("源文件在排队期间删除：SOURCE_MISSING，不返回旧成功", async (t) => {
++  const gate = deferred();
++  const h = await harness(t, {
++    executor: async () => {
++      await gate.promise;
++      return { ok: true };
++    },
++  });
++  await h.addAsset("first");
++  await h.addAsset("gone");
++  const first = await h.queue.submit("first");
++  await waitState(h.queue, first.id, "running");
++  const gone = await h.queue.submit("gone");
++  await fs.rm(h.assets.get("gone").sourcePath);
++  gate.resolve();
++  await waitState(h.queue, first.id, "succeeded");
++  const failed = await waitState(h.queue, gone.id, "failed");
++  assert.equal(failed.error.code, "SOURCE_MISSING");
++});
++
++test("同 dataDir 两实例：已存在租约 fail-closed，不并行执行；释放后可继续", async (t) => {
++  const gate = deferred();
++  const h = await harness(t, {
++    executor: async (snapshot, { signal }) => {
++      if (snapshot.jobId) await gate.promise;
++      return { ok: true };
++    },
++  });
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  await waitState(h.queue, a.id, "running");
++  assert.ok(await fs.lstat(h.lockPath), "执行期间持有租约");
++
++  const second = new AudioJobQueue({
++    dataDir: h.dataDir,
++    resolveAsset: async (id) => ({ ...h.assets.get(id) }),
++    execute: async () => ({ ok: true }),
++    maxSnapshotBytes: 1024 * 1024,
++  });
++  t.after(async () => second.dispose());
++  await expectQueueCode(second.get("x"), "JOB_NOT_FOUND");
++  assert.ok(await fs.lstat(h.lockPath), "构造/get 不改动别人的锁");
++  const blocked = await second.submit("b");
++  const blockedDone = await waitState(second, blocked.id, "failed");
++  assert.equal(blockedDone.error.code, "AUDIO_ENGINE_BUSY");
++  assert.equal((await second.get(blocked.id)).state, "failed");
++
++  gate.resolve();
++  await waitState(h.queue, a.id, "succeeded");
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++  const resumed = await second.submit("b");
++  await waitState(second, resumed.id, "succeeded");
++  assert.equal(h.stats.maxConcurrent, 1);
++});
++
++test("dispose：取消排队与活跃任务，await settle/清理，不自动恢复", async (t) => {
++  const h = await harness(t, {
++    executor: async (snapshot, { signal }) =>
++      new Promise((resolve) => {
++        signal.addEventListener("abort", () => setTimeout(() => resolve({ aborted: true }), 25), { once: true });
++      }),
++  });
++  for (const id of ["a", "b", "c"]) await h.addAsset(id);
++  const a = await h.queue.submit("a");
++  await waitState(h.queue, a.id, "running");
++  const b = await h.queue.submit("b");
++  const c = await h.queue.submit("c");
++  const disposing = h.queue.dispose();
++  await delay(5);
++  assert.equal((await h.queue.get(a.id)).state, "cancelling");
++  assert.equal((await h.queue.get(b.id)).state, "cancelled");
++  assert.equal((await h.queue.get(c.id)).state, "cancelled");
++  await disposing;
++  assert.equal((await h.queue.get(a.id)).state, "cancelled");
++  assert.equal((await jobDirs(h.jobsPath)).length, 0);
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++  await expectQueueCode(h.queue.submit("a"), "QUEUE_DISPOSED");
++  await h.queue.dispose();
++});
++
++test("终态最多保留 maxTerminal 条且按 TTL 惰性清理", async (t) => {
++  const h = await harness(t, { maxTerminal: 2, terminalTtlMs: 60 });
++  const ids = ["a", "b", "c"];
++  const done = [];
++  for (const id of ids) {
++    await h.addAsset(id);
++    const job = await h.queue.submit(id);
++    await waitState(h.queue, job.id, "succeeded");
++    done.push(job.id);
++  }
++  await expectQueueCode(h.queue.get(done[0]), "JOB_NOT_FOUND");
++  assert.equal((await h.queue.get(done[2])).state, "succeeded");
++  await delay(80);
++  await h.addAsset("d");
++  const d = await h.queue.submit("d");
++  await waitState(h.queue, d.id, "succeeded");
++  await expectQueueCode(h.queue.get(done[1]), "JOB_NOT_FOUND");
++});
++
++test("清理失败 fail-closed：任务 failed CLEANUP_FAILED，保留租约且不执行后续任务", async (t) => {
++  const h = await harness(t);
++  h.hooks.afterSnapshot = async ({ snapshot }) => {
++    await fs.writeFile(path.join(snapshot.dir, ".owner.json"), JSON.stringify({ token: "tampered" }));
++  };
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  const failed = await waitState(h.queue, a.id, "failed");
++  assert.equal(failed.error.code, "CLEANUP_FAILED");
++  assert.ok(await fs.lstat(h.lockPath), "清理未完成不得释放租约");
++  const b = await h.queue.submit("b");
++  await delay(30);
++  assert.equal((await h.queue.get(b.id)).state, "queued", "租约损坏时不启动后续任务");
++  assert.equal(h.queue.busy, true);
++  assert.equal((await h.queue.cancel(b.id)).state, "cancelled");
++  await h.queue.dispose();
++  assert.ok(await fs.lstat(h.lockPath), "dispose 也不静默释放未完成清理的租约");
++});
++
++test("busy 只读状态：排队/运行/持有租约时为真，构造与 get 不写锁", async (t) => {
++  const gate = deferred();
++  const h = await harness(t, {
++    executor: async () => {
++      await gate.promise;
++      return { ok: true };
++    },
++  });
++  await h.addAsset("a");
++  assert.equal(h.queue.busy, false);
++  const a = await h.queue.submit("a");
++  await waitState(h.queue, a.id, "running");
++  assert.equal(h.queue.busy, true);
++  assert.ok(await fs.lstat(h.lockPath));
++  gate.resolve();
++  await waitState(h.queue, a.id, "succeeded");
++  assert.equal(h.queue.busy, false);
++  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
++});
++
++test("executor 固定错误码透传：ENGINE_FAILED 失败、CANCELLED 归为 cancelled", async (t) => {
++  const h = await harness(t);
++  h.setExecutor(async () => {
++    throw Object.assign(new Error("raw stderr /private/tmp/secret"), { code: "ENGINE_FAILED" });
++  });
++  await h.addAsset("engine");
++  const engine = await h.queue.submit("engine");
++  const failed = await waitState(h.queue, engine.id, "failed");
++  assert.equal(failed.error.code, "ENGINE_FAILED");
++  assert.equal(JSON.stringify(failed).includes("/private/tmp/secret"), false);
++
++  h.setExecutor(async () => {
++    throw Object.assign(new Error("inner cancel"), { code: "CANCELLED" });
++  });
++  await h.addAsset("self-cancel");
++  const cancelled = await h.queue.submit("self-cancel");
++  const done = await waitState(h.queue, cancelled.id, "cancelled");
++  assert.equal(done.error, null);
++});
+diff --git a/tests/audio-snapshot.test.mjs b/tests/audio-snapshot.test.mjs
+new file mode 100644
+index 0000000..edfdc03
+--- /dev/null
++++ b/tests/audio-snapshot.test.mjs
+@@ -0,0 +1,259 @@
++/**
++ * T-LOCAL-013B：有界源文件快照的隔离测试。
++ *
++ * 全部在临时目录内用小合成文件/FIFO；不读取真实素材、不联网、不启动引擎。
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import crypto from "node:crypto";
++import { execFile } from "node:child_process";
++import { promisify } from "node:util";
++import {
++  AudioSnapshotError,
++  assertSourceUnchanged,
++  createSnapshot,
++} from "../server/audio-snapshot.mjs";
++
++const execFileAsync = promisify(execFile);
++const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
++
++async function tempBase(t) {
++  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-snapshot-")));
++  t.after(() => fs.rm(dir, { recursive: true, force: true }));
++  return dir;
++}
++
++async function makeRoot(base) {
++  const root = path.join(base, "media");
++  await fs.mkdir(root, { recursive: true });
++  return root;
++}
++
++function args(base, root, source, extra = {}) {
++  return {
++    dataDir: path.join(base, "data"),
++    rootPath: root,
++    sourcePath: source,
++    maxBytes: 1024 * 1024,
++    jobId: "test-job",
++    ...extra,
++  };
++}
++
++async function expectCode(promise, code) {
++  await assert.rejects(promise, (error) => {
++    assert.ok(error instanceof AudioSnapshotError, String(error));
++    assert.equal(error.code, code, String(error));
++    return true;
++  });
++}
++
++async function modeOf(p) {
++  return (await fs.stat(p)).mode & 0o777;
++}
++
++test("正常快照：流式 SHA256、0600/0700、原文件不变、只清理自有目录", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "track.bin");
++  const content = crypto.randomBytes(220 * 1024);
++  await fs.writeFile(source, content);
++
++  const snapshot = await createSnapshot(args(base, root, source));
++  assert.equal(snapshot.bytes, content.length);
++  assert.equal(snapshot.sha256, sha256(content));
++  assert.equal(await modeOf(snapshot.dir), 0o700);
++  assert.equal(await modeOf(snapshot.filePath), 0o600);
++  assert.deepEqual(await fs.readFile(snapshot.filePath), content);
++  assert.equal(snapshot.chunks >= 4, true, "64KiB 分块读取");
++  assert.equal(await fs.readFile(source).then((b) => b.equals(content)), true, "原文件未被修改");
++  assert.equal(await assertSourceUnchanged(snapshot), true);
++
++  const sibling = path.join(path.dirname(snapshot.dir), "unknown-task");
++  await fs.mkdir(sibling, { recursive: true });
++  await fs.writeFile(path.join(sibling, "keep.txt"), "keep");
++  await snapshot.cleanup();
++  await assert.rejects(fs.lstat(snapshot.dir), /ENOENT/);
++  assert.equal(await fs.readFile(path.join(sibling, "keep.txt"), "utf8"), "keep");
++  await snapshot.cleanup(); // 幂等
++});
++
++test("空文件策略：允许 0 字节普通文件，hash 为 sha256(空)", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "empty.wav");
++  await fs.writeFile(source, Buffer.alloc(0));
++  const snapshot = await createSnapshot(args(base, root, source));
++  assert.equal(snapshot.bytes, 0);
++  assert.equal(snapshot.sha256, sha256(Buffer.alloc(0)));
++  await snapshot.cleanup();
++});
++
++test("边界：根外、同名前缀目录、逃逸链接、目录、最终符号链接都拒绝", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const outside = path.join(base, "media-evil");
++  await fs.mkdir(outside, { recursive: true });
++  const secret = path.join(outside, "secret.bin");
++  await fs.writeFile(secret, "secret");
++
++  await expectCode(createSnapshot(args(base, root, secret)), "SOURCE_OUTSIDE_ROOT");
++
++  const escape = path.join(root, "escape.bin");
++  await fs.symlink(secret, escape);
++  await expectCode(createSnapshot(args(base, root, escape)), "SOURCE_OUTSIDE_ROOT");
++
++  const dir = path.join(root, "folder");
++  await fs.mkdir(dir);
++  await expectCode(createSnapshot(args(base, root, dir)), "SOURCE_NOT_REGULAR");
++
++  const inside = path.join(root, "real.bin");
++  await fs.writeFile(inside, "abc");
++  const link = path.join(root, "link.bin");
++  await fs.symlink(inside, link);
++  await expectCode(createSnapshot(args(base, root, link)), "SOURCE_NOT_REGULAR");
++});
++
++test("FIFO：直接拒绝；验证后被换成 FIFO 也不会挂死", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const fifo = path.join(root, "pipe");
++  await execFileAsync("mkfifo", [fifo]);
++  await expectCode(createSnapshot(args(base, root, fifo)), "SOURCE_NOT_REGULAR");
++
++  const source = path.join(root, "race.bin");
++  await fs.writeFile(source, crypto.randomBytes(96 * 1024));
++  const started = Date.now();
++  await expectCode(
++    createSnapshot(
++      args(base, root, source, {
++        hooks: {
++          async beforeOpen() {
++            await fs.rm(source);
++            await execFileAsync("mkfifo", [source]);
++          },
++        },
++      }),
++    ),
++    "SOURCE_NOT_REGULAR",
++  );
++  assert.ok(Date.now() - started < 3000, "O_NONBLOCK 打开 FIFO 不应挂起");
++});
++
++test("打开前被换成另一个普通文件：fstat 身份不一致，SOURCE_CHANGED", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "swap.bin");
++  const replacement = path.join(root, "replacement.bin");
++  await fs.writeFile(source, "original-content");
++  await fs.writeFile(replacement, "replacement!!!");
++
++  await expectCode(
++    createSnapshot(
++      args(base, root, source, {
++        hooks: {
++          async beforeOpen() {
++            await fs.rename(replacement, source);
++          },
++        },
++      }),
++    ),
++    "SOURCE_CHANGED",
++  );
++});
++
++test("复制中增长/同尺寸改写/替换：SOURCE_CHANGED 且自有副本清理", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++
++  const growth = path.join(root, "growth.bin");
++  await fs.writeFile(growth, crypto.randomBytes(160 * 1024));
++  await expectCode(
++    createSnapshot(
++      args(base, root, growth, {
++        hooks: {
++          async afterChunk({ chunks }) {
++            if (chunks === 1) await fs.appendFile(growth, Buffer.alloc(4096));
++          },
++        },
++      }),
++    ),
++    "SOURCE_CHANGED",
++  );
++
++  const rewrite = path.join(root, "rewrite.bin");
++  await fs.writeFile(rewrite, Buffer.alloc(160 * 1024, 1));
++  await expectCode(
++    createSnapshot(
++      args(base, root, rewrite, {
++        hooks: {
++          async afterChunk({ chunks }) {
++            if (chunks === 1) {
++              await fs.writeFile(rewrite, Buffer.alloc(160 * 1024, 2));
++              const now = new Date();
++              await fs.utimes(rewrite, now, now);
++            }
++          },
++        },
++      }),
++    ),
++    "SOURCE_CHANGED",
++  );
++
++  const replace = path.join(root, "replace.bin");
++  const next = path.join(root, "next.bin");
++  await fs.writeFile(replace, Buffer.alloc(160 * 1024, 3));
++  await fs.writeFile(next, Buffer.alloc(160 * 1024, 4));
++  await expectCode(
++    createSnapshot(
++      args(base, root, replace, {
++        hooks: {
++          async afterChunk({ chunks }) {
++            if (chunks === 1) await fs.rename(next, replace);
++          },
++        },
++      }),
++    ),
++    "SOURCE_CHANGED",
++  );
++
++  const jobs = path.join(base, "data", "audio-jobs");
++  const left = await fs.readdir(jobs).catch(() => []);
++  assert.deepEqual(left, [], "失败快照不应留下任务目录");
++});
++
++test("超量、取消与清理归属", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "big.bin");
++  await fs.writeFile(source, crypto.randomBytes(32 * 1024));
++  await expectCode(
++    createSnapshot(args(base, root, source, { maxBytes: 1024 })),
++    "INPUT_LIMIT_EXCEEDED",
++  );
++
++  const controller = new AbortController();
++  await expectCode(
++    createSnapshot(
++      args(base, root, source, {
++        signal: controller.signal,
++        maxBytes: 1024 * 1024,
++        hooks: {
++          async afterChunk({ chunks }) {
++            if (chunks === 1) controller.abort();
++          },
++        },
++      }),
++    ),
++    "CANCELLED",
++  );
++
++  const ok = await createSnapshot(args(base, root, source));
++  await fs.writeFile(path.join(ok.dir, ".owner.json"), JSON.stringify({ token: "not-mine" }));
++  await expectCode(ok.cleanup(), "CLEANUP_FAILED");
++  assert.ok(await fs.lstat(ok.dir), "标记不匹配时不得删除目录");
++  await fs.rm(ok.dir, { recursive: true, force: true });
++});

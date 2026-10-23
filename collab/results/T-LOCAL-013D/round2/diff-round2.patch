@@ -1,0 +1,239 @@
+--- a/server/audio-result.mjs
++++ b/server/audio-result.mjs
+@@ -183,13 +183,26 @@
+ /* context                                                             */
+ /* ------------------------------------------------------------------ */
+ 
++/**
++ * context 只接受纯数据：逐字段读自有 data descriptor，访问器一律拒绝且**不执行**
++ * getter；反射操作自身抛错（撤销 Proxy、trap 抛错、非法描述符）也收敛为固定
++ * INVALID_CONTEXT，绝不向调用方传播输入异常或原始 message。
++ */
+ function validateContext(context) {
+-  if (!isPlainObject(context)) return { ok: false };
+-  if (!hasExactKeys(context, CONTEXT_FIELDS)) return { ok: false };
++  try {
++    return readContext(context);
++  } catch {
++    return { ok: false };
++  }
++}
+ 
+-  const { kind, sourceSha256, sourceSize, durationSec } = context;
+-  const { engineVersion, engineBinarySha256, engineGeneration, parameters } = context;
++function readContext(context) {
++  const data = ownDataValues(context, CONTEXT_FIELDS);
++  if (data === null) return { ok: false };
+ 
++  const { kind, sourceSha256, sourceSize, durationSec } = data;
++  const { engineVersion, engineBinarySha256, engineGeneration, parameters } = data;
++
+   if (kind !== "music" && kind !== "sfx") return { ok: false };
+   if (typeof sourceSha256 !== "string" || !SHA256_HEX.test(sourceSha256)) return { ok: false };
+   if (!Number.isSafeInteger(sourceSize) || sourceSize < 0 || sourceSize > 256 * 1024 * 1024) {
+@@ -203,9 +216,8 @@
+   if (typeof engineGeneration !== "string" || !GENERATION_HEX.test(engineGeneration)) {
+     return { ok: false };
+   }
+-  if (!isPlainObject(parameters)) return { ok: false };
+-  if (!hasExactKeys(parameters, ["brief"])) return { ok: false };
+-  if (parameters.brief !== true) return { ok: false };
++  const params = ownDataValues(parameters, ["brief"]);
++  if (params === null || params.brief !== true) return { ok: false };
+ 
+   // 只快照原始基本类型，不保留调用方可变引用。
+   return {
+@@ -508,17 +520,26 @@
+   return prototype === Object.prototype || prototype === null;
+ }
+ 
+-/** 只允许恰好这些自有字符串键（拒绝符号键、未知键与缺失键）。 */
+-function hasExactKeys(object, expected) {
++/**
++ * 读取恰好 expected 个自有字符串键的 data descriptor 值。
++ * 访问器（无论是否 enumerable）、符号键、未知/缺失键一律返回 null；
++ * 这里只做数据读取，不执行调用方 getter。反射 trap 抛出的异常由调用方收敛。
++ */
++function ownDataValues(object, expected) {
++  if (!isPlainObject(object)) return null;
+   const keys = Reflect.ownKeys(object);
+-  if (keys.length !== expected.length) return false;
+-  for (const name of expected) {
+-    if (!hasOwn(object, name)) return false;
+-  }
++  if (keys.length !== expected.length) return null;
++  const values = Object.create(null);
+   for (const name of keys) {
+-    if (typeof name !== "string" || !expected.includes(name)) return false;
++    if (typeof name !== "string" || !expected.includes(name)) return null;
++    const descriptor = Object.getOwnPropertyDescriptor(object, name);
++    if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) return null;
++    values[name] = descriptor.value;
+   }
+-  return true;
++  for (const name of expected) {
++    if (!Object.hasOwn(values, name)) return null;
++  }
++  return values;
+ }
+ 
+ function deepFreeze(value) {
+--- a/tests/audio-result.test.mjs
++++ b/tests/audio-result.test.mjs
+@@ -520,8 +520,156 @@
+   }
+   const reordered = Object.fromEntries([["brief", true]]);
+   assert.equal(normalizeAudioResult('{"bpm":120}', ctx({ parameters: reordered })).ok, true);
++});
++
++test("context 顶层访问器不执行 getter：两个导出函数都返回固定 INVALID_CONTEXT", () => {
++  const fields = [
++    "kind",
++    "sourceSha256",
++    "sourceSize",
++    "durationSec",
++    "engineVersion",
++    "engineBinarySha256",
++    "engineGeneration",
++    "parameters",
++  ];
++  for (const field of fields) {
++    let called = 0;
++    const context = ctx();
++    Object.defineProperty(context, field, {
++      enumerable: true,
++      configurable: true,
++      get() {
++        called++;
++        // 即使 getter 返回合法值也必须拒绝，且绝不能执行。
++        return CTX[field];
++      },
++    });
++    for (const result of [
++      createAudioResultFingerprint(context),
++      normalizeAudioResult('{"bpm":120}', context),
++    ]) {
++      assert.equal(result.ok, false, field);
++      assert.equal(result.code, ERROR_CODES.INVALID_CONTEXT, field);
++      assert.deepEqual(Object.keys(result).sort(), ["code", "message", "ok"], field);
++      assert.equal(json(result).includes("/private/"), false, field);
++    }
++    assert.equal(called, 0, `${field} getter must not run`);
++  }
++});
++
++test("parameters.brief 访问器不执行 getter：抛错/合法返回值都拒绝", () => {
++  for (const mode of ["throw", "value"]) {
++    let called = 0;
++    const parameters = {};
++    Object.defineProperty(parameters, "brief", {
++      enumerable: true,
++      configurable: true,
++      get() {
++        called++;
++        if (mode === "throw") throw new Error("/private/synthetic/context-secret");
++        return true;
++      },
++    });
++    for (const result of [
++      createAudioResultFingerprint(ctx({ parameters })),
++      normalizeAudioResult('{"bpm":120}', ctx({ parameters })),
++    ]) {
++      assert.equal(result.ok, false, mode);
++      assert.equal(result.code, ERROR_CODES.INVALID_CONTEXT, mode);
++      assert.equal(json(result).includes("/private/"), false, mode);
++    }
++    assert.equal(called, 0, `${mode} brief getter must not run`);
++  }
++});
++
++test("反射自身异常/撤销 Proxy 收敛为固定 INVALID_CONTEXT，不传播原文", () => {
++  const secret = "/private/synthetic/context-secret";
++  const revoked = Proxy.revocable(ctx(), {});
++  revoked.revoke();
++  const cases = [
++    ["revoked", revoked.proxy],
++    [
++      "ownKeys throws",
++      new Proxy(ctx(), {
++        ownKeys() {
++          throw new Error(secret);
++        },
++      }),
++    ],
++    [
++      "ownKeys returns non-key",
++      new Proxy(ctx(), {
++        ownKeys() {
++          return [1];
++        },
++      }),
++    ],
++    [
++      "getPrototypeOf throws",
++      new Proxy(ctx(), {
++        getPrototypeOf() {
++          throw new Error(secret);
++        },
++      }),
++    ],
++    [
++      "getOwnPropertyDescriptor throws",
++      new Proxy(ctx(), {
++        getOwnPropertyDescriptor() {
++          throw new Error(secret);
++        },
++      }),
++    ],
++    [
++      "descriptor value getter throws",
++      new Proxy(ctx(), {
++        getOwnPropertyDescriptor() {
++          return {
++            enumerable: true,
++            configurable: true,
++            get value() {
++              throw new Error(secret);
++            },
++          };
++        },
++      }),
++    ],
++  ];
++  for (const [label, context] of cases) {
++    for (const result of [
++      createAudioResultFingerprint(context),
++      normalizeAudioResult('{"bpm":120}', context),
++    ]) {
++      assert.equal(result.ok, false, label);
++      assert.equal(result.code, ERROR_CODES.INVALID_CONTEXT, label);
++      assert.deepEqual(Object.keys(result).sort(), ["code", "message", "ok"], label);
++      assert.equal(json(result).includes(secret), false, label);
++      assert.equal(json(result).includes("/private/"), false, label);
++    }
++  }
+ });
+ 
++test("合法纯数据回归：冻结与 null-prototype context 仍可校验且指纹一致", () => {
++  const bare = Object.assign(Object.create(null), CTX);
++  bare.parameters = Object.assign(Object.create(null), { brief: true });
++  const bareFingerprint = createAudioResultFingerprint(bare);
++  const plainFingerprint = createAudioResultFingerprint(CTX);
++  assert.equal(bareFingerprint.ok, true);
++  assert.equal(bareFingerprint.fingerprint, plainFingerprint.fingerprint);
++
++  const normalized = normalizeAudioResult('{"bpm":120}', bare);
++  assert.equal(normalized.ok, true);
++  assert.equal(normalized.value.bpm, 120);
++  assert.equal(normalized.fingerprint, plainFingerprint.fingerprint);
++
++  const frozen = Object.freeze(ctx());
++  const frozenFingerprint = createAudioResultFingerprint(frozen);
++  assert.equal(frozenFingerprint.ok, true);
++  assert.equal(frozenFingerprint.fingerprint, plainFingerprint.fingerprint);
++});
++
++
+ /* ------------------------------------------------------------------ */
+ /* 指纹                                                                */
+ /* ------------------------------------------------------------------ */

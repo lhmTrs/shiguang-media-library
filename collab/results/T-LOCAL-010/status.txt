@@ -1,0 +1,5 @@
+T-LOCAL-010: delivered locally (not committed/pushed/deployed)
+build: pass (npm run build, exit 0)
+ui-verify: pass (50 checks, 18 screenshots, 0 errors)
+patch: dry-run/apply pass; 2 source files + verify script
+cloud/production: untouched

@@ -1,0 +1,30 @@
+{
+  "ticket": "T-LOCAL-007",
+  "round": 2,
+  "replyTo": 28,
+  "base": "2c15663a3b9b606f96220c0c3e26c5b7e3684c2e",
+  "tests": {
+    "all": { "passed": 166, "failed": 0, "skipped": 0 },
+    "deviceEnrollment": { "passed": 19, "failed": 0, "skipped": 0 },
+    "cloudAuth": { "passed": 19, "failed": 0, "skipped": 0 }
+  },
+  "build": "pass",
+  "ui": {
+    "chromium": { "passed": true, "pageErrors": 0, "screenshots": 11 },
+    "webkit": { "passed": true, "pageErrors": 0, "screenshots": 11 }
+  },
+  "gptReproduction": {
+    "exitCode": 1,
+    "cancelAfterConfigureReproduced": false,
+    "pendingIdentityReproduced": false,
+    "expiredIssuerReproduced": false
+  },
+  "boundaries": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "realCloudConnected": false,
+    "cloudProjectModified": false,
+    "realMediaUsed": false
+  }
+}

@@ -1,0 +1,361 @@
+--- a/server/device-enrollment.mjs
++++ b/server/device-enrollment.mjs
+@@ -13,6 +13,7 @@
+  *     迟到的配置、激活/登录与最终元数据提交都不能复活旧配置。
+  */
+ import crypto from "node:crypto";
++import { rmSync } from "node:fs";
+ import fs from "node:fs/promises";
+ import https from "node:https";
+ import net from "node:net";
+@@ -254,8 +255,10 @@
+ }
+ 
+ function countCaBelow(certificates, index) {
++  // 数组是 叶(0) → 中间 CA(1…) → 根；pathLen 限制的是"本证书向叶端"还有
++  // 多少张非 self-issued 中间 CA，绝不能朝根端数。叶和 self-issued 证书不计。
+   let count = 0;
+-  for (let i = index + 1; i < certificates.length; i += 1) {
++  for (let i = 1; i < index; i += 1) {
+     if (certificateBasicConstraints(certificates[i]).ca && !isSelfIssued(certificates[i])) count += 1;
+   }
+   return count;
+@@ -335,7 +338,7 @@
+     }
+     if (!anchorInChain) {
+       // 预置锚不在返回链里时，也要约束它下面允许的中间 CA 数量。
+-      const caBelow = countCaBelow(certificates, 0);
++      const caBelow = countCaBelow(certificates, certificates.length);
+       checkCaCertificate(anchor, caBelow);
+     }
+ 
+@@ -363,6 +366,9 @@
+     this.inflight = null;
+     this.cancelToken = null;
+     this.metadata = null;
++    /** 元数据提交串行链与代次：旧提交的回滚不得覆盖后一笔提交。 */
++    this.metadataPublishChain = Promise.resolve();
++    this.metadataCommitSeq = 0;
+   }
+ 
+   async init() {
+@@ -483,7 +489,7 @@
+ 
+     // 先写证书/元数据（原子 rename），再改 CloudAuth 配置；任何一步失败都不会
+     // 动到旧证书文件或旧连接配置。
+-    await this.#installFiles(verified, { ...data, needsActivation });
++    await this.#installFiles(verified, { ...data, needsActivation }, entry);
+     this.#assertActive(entry);
+ 
+     const config = {
+@@ -529,13 +535,16 @@
+       activated: session || !needsActivation,
+       lastSessionError: sessionError?.code || null,
+     };
+-    // 最终元数据也是一次提交：从构造到落盘之间必须再次确认身份未被外部取消。
+-    this.#assertActive(entry);
+-    await this.#saveMetadata(finalMetadata);
+-    this.#assertActive(entry);
++    // 最终元数据是最后一次可见提交：暂存写完后异步 rename；rename 完成后再
++    // 核验身份，若期间被取消则回滚到提交前值并返回 STALE，磁盘不会残留旧提交。
++    await this.#saveMetadata(finalMetadata, entry);
+     if (session) {
+-      await fs.rm(this.pendingPath, { force: true }).catch(() => {});
+-      this.#assertActive(entry);
++      // 提交点之后的清理保持同步，避免给取消留下"已提交却返回 STALE"的窗口。
++      try {
++        rmSync(this.pendingPath, { force: true });
++      } catch {
++        /* 清理失败不影响已提交结果 */
++      }
+     }
+     return {
+       enrolled: true,
+@@ -660,25 +669,71 @@
+     };
+   }
+ 
+-  async #installFiles(verified, data) {
++  async #installFiles(verified, data, entry) {
+     await this.#ensureDeviceDir();
+     await this.#writeFileAtomic(this.serverCaPath, this.release.serverCaPem, 0o644);
+     await this.#writeFileAtomic(this.certPath, verified.chainPem, 0o644);
+-    this.metadata = this.#metadataFrom(verified, data, data.needsActivation);
+-    await this.#saveMetadata({ ...this.metadata, activated: false });
++    await this.#saveMetadata({ ...this.#metadataFrom(verified, data, data.needsActivation), activated: false }, entry);
+   }
+ 
+-  async #saveMetadata(metadata) {
+-    this.metadata = metadata;
+-    await this.#writeFileAtomic(this.metadataPath, JSON.stringify(metadata, null, 2) + "\n", 0o600);
++  /**
++   * 元数据发布：内容先写入唯一临时文件，再在串行提交链里 rename。rename 是
++   * 一次真实异步 I/O，取消可能正好落在 rename 期间；因此 rename 完成后必须
++   * 再核验身份，已失活则把磁盘/内存恢复为提交前值并返回 STALE。
++   *
++   * 回滚安全：每次提交取单调代次 seq，只有磁盘仍归本次提交（seq 未被后一笔
++   * 提交推进）时才回滚；串行链保证回滚先于后一笔提交，旧操作不会碰新暂存文件。
++   * 这样不会出现"返回 STALE 但磁盘 activated=true"，也不会用回滚覆盖新提交。
++   */
++  async #saveMetadata(metadata, entry = null) {
++    await this.#enqueueMetadataPublish(async () => {
++      if (entry) this.#assertActive(entry);
++      const tmp = await this.#stageFile(this.metadataPath, JSON.stringify(metadata, null, 2) + "\n", 0o600);
++      try {
++        if (entry) this.#assertActive(entry);
++        const previous = this.metadata;
++        const seq = (this.metadataCommitSeq += 1);
++        await fs.rename(tmp, this.metadataPath);
++        if (entry && !this.#isActive(entry)) {
++          if (this.metadataCommitSeq === seq) await this.#restoreMetadata(previous).catch(() => {});
++          throw this.#stale();
++        }
++        this.metadata = metadata;
++      } catch (e) {
++        await fs.rm(tmp, { force: true }).catch(() => {});
++        throw e;
++      }
++    });
+   }
+ 
++  #enqueueMetadataPublish(task) {
++    const next = this.metadataPublishChain.then(task, task);
++    this.metadataPublishChain = next.catch(() => {});
++    return next;
++  }
++
++  async #restoreMetadata(previous) {
++    if (previous === null || previous === undefined) {
++      await fs.rm(this.metadataPath, { force: true });
++      this.metadata = null;
++      return;
++    }
++    const tmp = await this.#stageFile(this.metadataPath, JSON.stringify(previous, null, 2) + "\n", 0o600);
++    try {
++      await fs.rename(tmp, this.metadataPath);
++      this.metadata = previous;
++    } catch (e) {
++      await fs.rm(tmp, { force: true }).catch(() => {});
++      throw e;
++    }
++  }
++
+   async #ensureDeviceDir() {
+     await fs.mkdir(this.deviceDir, { recursive: true, mode: 0o700 });
+     await fs.chmod(this.deviceDir, 0o700);
+   }
+ 
+-  async #writeFileAtomic(file, content, mode) {
++  async #stageFile(file, content, mode) {
+     const dir = path.dirname(file);
+     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+     const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`);
+@@ -691,6 +746,16 @@
+         await handle.close();
+       }
+       await fs.chmod(tmp, mode);
++      return tmp;
++    } catch (e) {
++      await fs.rm(tmp, { force: true }).catch(() => {});
++      throw e;
++    }
++  }
++
++  async #writeFileAtomic(file, content, mode) {
++    const tmp = await this.#stageFile(file, content, mode);
++    try {
+       await fs.rename(tmp, file);
+     } catch (e) {
+       await fs.rm(tmp, { force: true }).catch(() => {});
+--- a/tests/device-enrollment.test.mjs
++++ b/tests/device-enrollment.test.mjs
+@@ -462,6 +462,64 @@
+     () => verifyEnrolledCertificate({ chainPem: leaf.pem + intermediate.pem, privateKey: otherKey, deviceCaPem: root.pem }),
+     (e) => e.code === "CERT_KEY_MISMATCH",
+   );
++});
++
++test("证书链：pathLen 向叶端计数，根是否随响应返回不改变结论", async (t) => {
++  const base = await newChainDir(t, "pathlen-direction");
++
++  // root(pathLen0) → intermediate → leaf：超限，带/不带根都必须拒绝。
++  const zeroRoot = await makeRoot(path.join(base, "zero-root"), "Direction Zero Root", { pathLen: 0 });
++  const zeroIntermediate = await makeIntermediate(path.join(base, "zero-intermediate"), zeroRoot, "Direction Zero Intermediate");
++  const zeroLeaf = await makeLeaf(path.join(base, "zero-leaf"), zeroIntermediate, "Direction Zero Leaf");
++  const zeroKey = crypto.createPrivateKey(await fs.readFile(zeroLeaf.key));
++  for (const chainPem of [
++    zeroLeaf.pem + zeroIntermediate.pem,
++    zeroLeaf.pem + zeroIntermediate.pem + zeroRoot.pem,
++  ]) {
++    assert.throws(
++      () => verifyEnrolledCertificate({ chainPem, privateKey: zeroKey, deviceCaPem: zeroRoot.pem }),
++      (e) => e.code === "CERT_CHAIN_INVALID",
++    );
++  }
++
++  // root(2) → parent(1) → child(0) → leaf：合法，带/不带根都必须接受。
++  const legalRoot = await makeRoot(path.join(base, "legal-root"), "Direction Legal Root", { pathLen: 2 });
++  const legalParent = await makeIntermediate(path.join(base, "legal-parent"), legalRoot, "Direction Legal Parent", {
++    constraints: "critical,CA:TRUE,pathlen:1",
++  });
++  const legalChild = await makeIntermediate(path.join(base, "legal-child"), legalParent, "Direction Legal Child", {
++    constraints: "critical,CA:TRUE,pathlen:0",
++  });
++  const legalLeaf = await makeLeaf(path.join(base, "legal-leaf"), legalChild, "Direction Legal Leaf");
++  const legalKey = crypto.createPrivateKey(await fs.readFile(legalLeaf.key));
++  for (const chainPem of [
++    legalLeaf.pem + legalChild.pem + legalParent.pem,
++    legalLeaf.pem + legalChild.pem + legalParent.pem + legalRoot.pem,
++  ]) {
++    const accepted = verifyEnrolledCertificate({ chainPem, privateKey: legalKey, deviceCaPem: legalRoot.pem });
++    assert.equal(accepted.leaf.subject, "CN=Direction Legal Leaf");
++  }
++
++  // root(2) → parent(0) → child(5) → leaf：parent 下方已有一张中间 CA，超限；
++  // 只看根端会误判为合法，带/不带根都必须拒绝。
++  const overRoot = await makeRoot(path.join(base, "over-root"), "Direction Over Root", { pathLen: 2 });
++  const overParent = await makeIntermediate(path.join(base, "over-parent"), overRoot, "Direction Over Parent", {
++    constraints: "critical,CA:TRUE,pathlen:0",
++  });
++  const overChild = await makeIntermediate(path.join(base, "over-child"), overParent, "Direction Over Child", {
++    constraints: "critical,CA:TRUE,pathlen:5",
++  });
++  const overLeaf = await makeLeaf(path.join(base, "over-leaf"), overChild, "Direction Over Leaf");
++  const overKey = crypto.createPrivateKey(await fs.readFile(overLeaf.key));
++  for (const chainPem of [
++    overLeaf.pem + overChild.pem + overParent.pem,
++    overLeaf.pem + overChild.pem + overParent.pem + overRoot.pem,
++  ]) {
++    assert.throws(
++      () => verifyEnrolledCertificate({ chainPem, privateKey: overKey, deviceCaPem: overRoot.pem }),
++      (e) => e.code === "CERT_CHAIN_INVALID",
++    );
++  }
+ });
+ 
+ const snapshotDeviceFiles = async (enrollment) => ({
+@@ -680,14 +738,15 @@
+   mock.getUser("alice").state = "ACTIVE";
+   const baseClock = enrollment.clock.bind(enrollment);
+   let calls = 0;
++  let logoutPromise = null;
+   enrollment.clock = () => {
+     calls += 1;
+     const value = baseClock();
+-    // 第 3 次：pending.createdAt、install metadata、最终 metadata。最后一次在
+-    // 最终提交前同步撤销 operation，模拟外部退出正好落在提交窗口。
+-    if (calls === 3) {
++    // 第 4 次：pending.createdAt、证书校验 now、install metadata、最终 metadata。
++    // 最后一次在最终提交前同步撤销 operation，模拟外部退出正好落在提交窗口。
++    if (calls === 4) {
+       enrollment.cancel();
+-      void auth.logout();
++      logoutPromise = auth.logout();
+     }
+     return value;
+   };
+@@ -696,7 +755,104 @@
+     () => enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "commit-gate-device" }),
+     (e) => e.code === "STALE",
+   );
++  await logoutPromise;
+   assert.equal(auth.getState().state, "logged-out");
+   const metadata = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
+   assert.equal(metadata.activated, false);
++});
++
++test("最终元数据 rename gate：取消后回滚，磁盘/内存不残留 activated=true", async (t) => {
++  const { mock, auth, enrollment } = await setup(t);
++  mock.getUser("alice").state = "ACTIVE";
++
++  let openGate;
++  let arrivedResolve;
++  const gate = new Promise((resolve) => (openGate = resolve));
++  const arrived = new Promise((resolve) => (arrivedResolve = resolve));
++  const originalRename = fs.rename;
++  // 与独立验收相同的位置：activated=true 已写入临时文件，真正 rename 之前。
++  fs.rename = async (source, target) => {
++    if (target === enrollment.metadataPath) {
++      const staged = JSON.parse(await fs.readFile(source, "utf8"));
++      if (staged.activated === true) {
++        arrivedResolve();
++        await gate;
++      }
++    }
++    return originalRename(source, target);
++  };
++  t.after(() => {
++    fs.rename = originalRename;
++  });
++
++  const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "rename-gate-device" });
++  await arrived;
++  enrollment.cancel();
++  await auth.logout();
++  openGate();
++
++  await assert.rejects(pending, (e) => e.code === "STALE");
++  assert.equal(auth.getState().state, "logged-out");
++  const disk = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(disk.activated, false, "rename 期间的旧提交必须回滚到磁盘");
++  assert.equal(enrollment.metadata.activated, false, "rename 期间的旧提交不得留在内存");
++  const leftovers = (await fs.readdir(enrollment.deviceDir)).filter((name) => name.includes(".device.json.tmp-"));
++  assert.deepEqual(leftovers, [], "旧提交的暂存文件必须清理");
++
++  // 旧操作的回滚不得覆盖后一笔提交。
++  const retry = await enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "rename-gate-device" });
++  assert.equal(retry.session, true);
++  const committed = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(committed.activated, true);
+ });
++
++test("最终元数据真实 I/O gate：取消后内存/磁盘都不接受旧提交，重试可完成", async (t) => {
++  const { mock, auth, enrollment } = await setup(t);
++  mock.getUser("alice").state = "ACTIVE";
++
++  let openGate;
++  let arrivedResolve;
++  const gate = new Promise((resolve) => (openGate = resolve));
++  const arrived = new Promise((resolve) => (arrivedResolve = resolve));
++  const originalChmod = fs.chmod;
++  let metadataTemps = 0;
++  // 真实文件 I/O gate：等 activated=true 的临时文件写完、fsync、chmod 完成，
++  // rename 尚未发生（#stageFile 已返回、提交临界区尚未进入）。
++  fs.chmod = async (file, mode) => {
++    const result = await originalChmod(file, mode);
++    if (String(file).includes(".device.json.tmp-")) {
++      metadataTemps += 1;
++      if (metadataTemps === 2) {
++        arrivedResolve();
++        await gate;
++      }
++    }
++    return result;
++  };
++  t.after(() => {
++    fs.chmod = originalChmod;
++  });
++
++  const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "io-gate-device" });
++  await arrived;
++  assert.equal(auth.getState().state, "logged-in");
++  enrollment.cancel();
++  await auth.logout();
++  assert.equal(auth.getState().state, "logged-out");
++  openGate();
++
++  await assert.rejects(pending, (e) => e.code === "STALE");
++  assert.equal(auth.getState().state, "logged-out");
++  const disk = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(disk.activated, false, "取消后的旧提交不得写入磁盘");
++  assert.equal(enrollment.metadata.activated, false, "取消后的旧提交不得留在内存");
++  const leftovers = (await fs.readdir(enrollment.deviceDir)).filter((name) => name.includes(".device.json.tmp-"));
++  assert.deepEqual(leftovers, [], "旧提交的暂存文件必须清理");
++
++  // 旧操作清理/回滚不得影响后一笔提交：原码原钥重试可正常完成。
++  const retry = await enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "io-gate-device" });
++  assert.equal(retry.session, true);
++  const committed = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(committed.activated, true);
++  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null), null);
++});

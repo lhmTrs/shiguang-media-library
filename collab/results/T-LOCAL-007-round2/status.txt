@@ -1,0 +1,43 @@
+# status
+ M scripts/package.mjs
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/main.tsx
+ M src/style.css
+?? collab/
+?? config/
+?? scripts/cloud-release-config.mjs
+?? server/cloud-auth.mjs
+?? server/cloud-release-config.mjs
+?? server/device-enrollment.mjs
+?? src/CloudAccount.tsx
+?? src/CloudConnectionSettings.tsx
+?? src/cloud-auth.ts
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+?? tests/device-enrollment-mock.mjs
+?? tests/device-enrollment.test.mjs
+
+# head
+2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+
+# diff-check
+clean
+
+# round2 files
+total 296
+drwxr-xr-x@ 15 luohongming  staff    480 Oct 22 15:11 .
+drwxr-xr-x@ 11 luohongming  staff    352 Oct 22 15:07 ..
+-rw-r--r--@  1 luohongming  staff    372 Oct 22 15:16 build.log
+-rw-r--r--@  1 luohongming  staff  56472 Oct 22 15:16 diff.patch
+-rw-r--r--@  1 luohongming  staff    568 Oct 22 15:17 gpt-reproduce.log
+-rw-------@  1 luohongming  staff   7771 Oct 22 15:11 report.md
+-rw-r--r--@  1 luohongming  staff    850 Oct 22 15:11 results.json
+drwxr-xr-x@ 24 luohongming  staff    768 Oct 22 15:08 screenshots
+-rw-r--r--@  1 luohongming  staff    548 Oct 22 15:17 status.txt
+-rw-r--r--@  1 luohongming  staff    309 Oct 22 15:16 test-ui.log
+-rw-r--r--@  1 luohongming  staff  36163 Oct 22 15:16 tests-all.log
+-rw-r--r--@  1 luohongming  staff   3815 Oct 22 15:16 tests-auth.log
+-rw-r--r--@  1 luohongming  staff   3898 Oct 22 15:16 tests-enroll.log
+-rw-r--r--@  1 luohongming  staff    396 Oct 22 15:16 ui-results.json
+-rw-------@  1 luohongming  staff  12653 Oct 22 15:07 verify-ui.mjs

@@ -1,0 +1,1252 @@
+diff --git a/server/cloud-auth.mjs b/server/cloud-auth.mjs
+--- a/server/cloud-auth.mjs
++++ b/server/cloud-auth.mjs
+@@ -125,6 +125,8 @@
+   ENROLLMENT_UNAVAILABLE: "本机自动开通尚未就绪",
+   DEVICE_ALREADY_ENROLLED: "本机已开通，无需重复操作",
+   DEVICE_KEY_LOST: "原设备密钥已丢失，需要重新开通",
++  DEVICE_PENDING_IDENTITY_MISMATCH: "本机存在另一笔未完成的开通记录，请使用原开通码和设备名重试",
++  DEVICE_PENDING_INVALID: "本机设备材料或开通记录不一致，已保留原文件，请联系管理员",
+   DEVICE_LIMIT: "该账户的设备数量已达上限，请联系管理员",
+   DEVICE_KEY_REUSED: "该公钥已被其他设备使用，需要重新开通",
+   ACCOUNT_ACTIVATION_PENDING: "该账户已有待激活设备，请联系管理员",
+@@ -169,8 +171,46 @@
+     this.controlChain = Promise.resolve();
+     /** 状态文件写入串行，写入时取最新内存状态 */
+     this.persistChain = Promise.resolve();
++    /**
++     * 跨 configure/activate/login/最终提交的"操作身份"：设备开通持有它，
++     * 外部退出/换账户/高级配置会撤销它。它不随内部 epoch 变化失效，否则
++     * 开通自己调用 configure/login 时就会把自己的身份取消掉。
++     */
++    this.operation = null;
+   }
+ 
++  /** 开始一段可被外部认证操作取消的组合操作（同一时刻只保留一个）。 */
++  beginOperation() {
++    if (this.operation) this.operation.active = false;
++    this.operation = { active: true };
++    return this.operation;
++  }
++
++  /** 结束组合操作；已被外部撤销或已被新操作取代时是幂等的。 */
++  endOperation(operation) {
++    if (operation) operation.active = false;
++    if (this.operation === operation) this.operation = null;
++  }
++
++  /** 主动取消组合操作：撤销身份、中止其进行中的认证请求并推进 epoch。 */
++  abortOperation(operation) {
++    if (!operation || !operation.active) return false;
++    this.endOperation(operation);
++    this.#invalidate();
++    return true;
++  }
++
++  #revokeOperation() {
++    if (this.operation) {
++      this.operation.active = false;
++      this.operation = null;
++    }
++  }
++
++  #assertOperation(operation) {
++    if (operation && (!operation.active || this.operation !== operation)) throw this.#staleError();
++  }
++
+   async init() {
+     await this.secrets.init();
+     this.config = await this.#readJson(this.configPath);
+@@ -222,21 +262,42 @@
+     };
+   }
+ 
+-  /** 保存连接配置；P12 密码只进 SecretStore，配置文件不含任何密码/令牌 */
+-  async configure(patch = {}) {
+-    // 只有 origin/证书/CA 真的变化时才中止进行中的认证请求；纯口令更新不打断刷新
+-    if (this.#connectionChanged(patch)) this.#invalidate();
+-    return this.#withControl(() => this.#configure(patch));
+-  }
+-
+-  async activate({ activationToken, password } = {}) {
++  /**
++   * 保存连接配置；P12 密码只进 SecretStore，配置文件不含任何密码/令牌。
++   * 设备开通传入自己的 operation：内部配置不能取消自己；任何外部 configure
++   * 都会先撤销该 operation，使旧开通不能继续登录/提交。
++   */
++  async configure(patch = {}, { operation = null } = {}) {
++    this.#assertOperation(operation);
++    const abortingEnrollment = !operation && this.operation !== null;
++    if (!operation) this.#revokeOperation();
++    // origin/证书/CA 变化，或外部配置打断了进行中的开通，都必须中止旧认证请求；
++    // 纯口令更新且无进行中的开通时仍不打断刷新。
++    if (this.#connectionChanged(patch) || abortingEnrollment) this.#invalidate();
++    return this.#withControl(() => {
++      this.#assertOperation(operation);
++      return this.#configure(patch, operation);
++    });
++  }
++
++  async activate({ activationToken, password } = {}, { operation = null } = {}) {
++    this.#assertOperation(operation);
++    if (!operation) this.#revokeOperation();
+     this.#invalidate();
+-    return this.#withControl(() => this.#activate({ activationToken, password }));
++    return this.#withControl(() => {
++      this.#assertOperation(operation);
++      return this.#activate({ activationToken, password }, operation);
++    });
+   }
+ 
+-  async login({ username, password } = {}) {
++  async login({ username, password } = {}, { operation = null } = {}) {
++    this.#assertOperation(operation);
++    if (!operation) this.#revokeOperation();
+     this.#invalidate();
+-    return this.#withControl(() => this.#login({ username, password }));
++    return this.#withControl(() => {
++      this.#assertOperation(operation);
++      return this.#login({ username, password }, operation);
++    });
+   }
+ 
+   /** 本人资料（GET /me）；401 时最多尝试一次合规刷新 */
+@@ -264,6 +325,7 @@
+   }
+ 
+   async logout() {
++    this.#revokeOperation();
+     this.#invalidate();
+     return this.#withControl(() => this.#logout());
+   }
+@@ -287,8 +349,9 @@
+ 
+   // ── 控制类操作（串行 + epoch 校验） ─────────────────────
+ 
+-  async #configure(patch) {
++  async #configure(patch, operation = null) {
+     const epoch = this.epoch;
++    this.#assertOperation(operation);
+     const next = {
+       origin: patch.origin ?? this.config?.origin ?? null,
+       caPath: patch.caPath ?? this.config?.caPath ?? null,
+@@ -318,6 +381,7 @@
+         .then((s) => s.isFile())
+         .catch(() => false);
+       if (!ok) throw new CloudAuthError(`${label}文件不存在或不可读`, { kind: "config" });
++      this.#assertOperation(operation);
+       if (epoch !== this.epoch) throw this.#staleError();
+     }
+     const previous = this.config || null;
+@@ -330,23 +394,28 @@
+         previous.caPath !== next.caPath);
+     if (patch.p12Password) await this.secrets.set(P12_SECRET, String(patch.p12Password));
+     if (patch.clearP12Password) this.secrets.remove(P12_SECRET);
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) throw this.#staleError();
+     this.config = next;
+     await this.#writeJson(this.configPath, next);
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) throw this.#staleError();
+     if (previousOrigin && (previousOrigin !== next.origin || identityChanged)) {
+       await this.#clear("logged-out", null, epoch);
++      this.#assertOperation(operation);
+       return this.getState();
+     }
+     if (!this.secrets.get(REFRESH_SECRET)) {
+       this.state = { ...this.state, state: "logged-out", refreshing: false, retryAt: 0, retryAfterMs: 0 };
+     }
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) throw this.#staleError();
+     await this.#persistState();
++    this.#assertOperation(operation);
+     return this.getState();
+   }
+ 
+-  async #activate({ activationToken, password }) {
++  async #activate({ activationToken, password }, operation = null) {
+     const startEpoch = this.epoch;
+     if (!this.config) throw new CloudAuthError("请先配置云端连接", { kind: "config" });
+     if (typeof activationToken !== "string" || !activationToken.trim())
+@@ -359,12 +428,13 @@
+       body: { activationToken: activationToken.trim(), password },
+       epoch,
+     });
+-    await this.#applySession(data, epoch);
+-    await this.#refreshProfile(epoch);
++    this.#assertOperation(operation);
++    await this.#applySession(data, epoch, operation);
++    await this.#refreshProfile(epoch, operation);
+     return this.getState();
+   }
+ 
+-  async #login({ username, password }) {
++  async #login({ username, password }, operation = null) {
+     const startEpoch = this.epoch;
+     if (!this.config) throw new CloudAuthError("请先配置云端连接", { kind: "config" });
+     if (typeof username !== "string" || !username.trim())
+@@ -377,8 +447,9 @@
+       body: { username: username.trim().toLowerCase(), password },
+       epoch,
+     });
+-    await this.#applySession(data, epoch);
+-    await this.#refreshProfile(epoch);
++    this.#assertOperation(operation);
++    await this.#applySession(data, epoch, operation);
++    await this.#refreshProfile(epoch, operation);
+     return this.getState();
+   }
+ 
+@@ -718,7 +789,8 @@
+     return options;
+   }
+ 
+-  async #applySession(data, epoch) {
++  async #applySession(data, epoch, operation = null) {
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) throw this.#staleError();
+     if (!data || typeof data.accessToken !== "string" || typeof data.refreshToken !== "string")
+       throw new CloudAuthError("云端认证响应缺少令牌字段", { kind: "cloud" });
+@@ -727,6 +799,7 @@
+       throw new CloudAuthError("云端认证响应缺少有效的 expiresIn", { kind: "cloud" });
+     // 原子替换刷新令牌（SecretStore.set 内部事务 + 回读校验）
+     await this.secrets.set(REFRESH_SECRET, data.refreshToken);
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) {
+       // 迟到响应不能把旧凭据写进新上下文；只删除仍属于本次响应的值
+       if (this.secrets.get(REFRESH_SECRET) === data.refreshToken) this.secrets.remove(REFRESH_SECRET);
+@@ -747,8 +820,9 @@
+     await this.#persistState();
+   }
+ 
+-  async #refreshProfile(epoch) {
++  async #refreshProfile(epoch, operation = null) {
+     const profile = await this.me();
++    this.#assertOperation(operation);
+     if (epoch !== this.epoch) throw this.#staleError();
+     this.state = {
+       ...this.state,
+diff --git a/server/device-enrollment.mjs b/server/device-enrollment.mjs
+--- a/server/device-enrollment.mjs
++++ b/server/device-enrollment.mjs
+@@ -2,14 +2,15 @@
+  * T-LOCAL-007：本机设备自动开通（device enrollment v1）。
+  *
+  * 安全边界：
+- *   - 私钥只在本机后端数据目录（目录 0700、文件 0600），不发给云端之外的任何一方，
+- *     更不返回浏览器；浏览器只提交开通码/密码并拿到脱敏状态。
++ *   - 私钥只在本机后端数据目录（目录 0700、文件 0600），绝不发送云端或浏览器；
++ *     浏览器只提交开通码/密码并拿到脱敏状态。
+  *   - 兑换只走 HTTPS，使用发行配置里的 serverCaPem 校验 CA 与主机名；不跟随重定向、
+  *     不关闭证书校验、不携带任何令牌/客户端证书。
+  *   - 返回的设备证书必须先匹配本机私钥、clientAuth/非 CA/有效期，并链到预置
+  *     deviceCaPem，才原子落盘；异常响应绝不覆盖已正常使用的设备配置。
+  *   - single-flight；原码响应丢失时复用原私钥与设备名；开通码只存 SHA-256。
+- *   - 与 CloudAuth 共用代次：退出/切换账户后，迟到的开通响应不能复活旧配置。
++ *   - 组合操作身份（CloudAuth.operation）：退出/切换账户/高级配置会撤销它，
++ *     迟到的配置、激活/登录与最终元数据提交都不能复活旧配置。
+  */
+ import crypto from "node:crypto";
+ import fs from "node:fs/promises";
+@@ -29,7 +30,7 @@
+ const MAX_REQUEST_BYTES = 16 * 1024;
+ const MAX_RESPONSE_BYTES = 128 * 1024;
+ const MAX_CERT_DAYS = 90;
+-const MAX_CERT_MS = (MAX_CERT_DAYS + 1) * 24 * 60 * 60 * 1000;
++const MAX_CERT_MS = MAX_CERT_DAYS * 24 * 60 * 60 * 1000;
+ /** 允许签发端与本机的少量时钟偏差；过期仍严格按本机时间判断。 */
+ const CERT_CLOCK_SKEW_MS = 5 * 60 * 1000;
+ const MIN_RETRY_AFTER_MS = 1_000;
+@@ -68,7 +69,7 @@
+ export function parseCertificateChain(pem, label = "certificateChainPem") {
+   if (typeof pem !== "string" || /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(pem))
+     throw fail("CERT_CHAIN_INVALID", "设备证书链无效");
+-  const blocks = [...pem.matchAll(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g)].map((m) => m[0]);
++  const blocks = [...pem.matchAll(/-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/g)].map((m) => m[0]);
+   if (!blocks.length) throw fail("CERT_CHAIN_INVALID", "设备证书链无效");
+   try {
+     return { pem: blocks.join("\n") + "\n", certificates: blocks.map((block) => new crypto.X509Certificate(block)) };
+@@ -77,13 +78,201 @@
+   }
+ }
+ 
++// ── 最小 DER 读取：只读 basicConstraints / keyUsage 这类证书扩展 ─────────
++// Node 的 X509Certificate 不暴露 pathLen 与 keyUsage，逐级签名校验也不检查
++// 中间 CA 的有效期/CA 约束。这里补足 RFC 5280 路径约束所需字段。
++
++function readDer(buf, offset = 0) {
++  if (!Buffer.isBuffer(buf) || offset < 0 || offset >= buf.length) throw new Error("der truncated");
++  const first = buf[offset];
++  if ((first & 0x1f) === 0x1f) throw new Error("der high tag unsupported");
++  let cursor = offset + 1;
++  if (cursor >= buf.length) throw new Error("der truncated");
++  let length = buf[cursor++];
++  if (length & 0x80) {
++    const count = length & 0x7f;
++    if (count < 1 || count > 4 || cursor + count > buf.length) throw new Error("der length");
++    length = 0;
++    for (let i = 0; i < count; i += 1) length = length * 256 + buf[cursor++];
++    if (length < 0x80) throw new Error("der non-minimal length");
++  }
++  if (cursor + length > buf.length) throw new Error("der truncated value");
++  return {
++    tag: first,
++    cls: first >> 6,
++    constructed: (first & 0x20) !== 0,
++    number: first & 0x1f,
++    start: offset,
++    valueStart: cursor,
++    valueEnd: cursor + length,
++    end: cursor + length,
++  };
++}
++
++function derChildren(buf, element) {
++  if (!element.constructed) throw new Error("der not constructed");
++  const out = [];
++  let offset = element.valueStart;
++  while (offset < element.valueEnd) {
++    const child = readDer(buf, offset);
++    out.push(child);
++    offset = child.end;
++  }
++  if (offset !== element.valueEnd) throw new Error("der children");
++  return out;
++}
++
++function derOid(buf, element) {
++  if (element.tag !== 0x06 || element.valueStart >= element.valueEnd) throw new Error("der oid");
++  const bytes = buf.subarray(element.valueStart, element.valueEnd);
++  const parts = [];
++  let value = 0;
++  for (let i = 0; i < bytes.length; i += 1) {
++    value = value * 128 + (bytes[i] & 0x7f);
++    if (value > Number.MAX_SAFE_INTEGER) throw new Error("der oid overflow");
++    if (!(bytes[i] & 0x80)) {
++      parts.push(value);
++      value = 0;
++    }
++  }
++  if (bytes[bytes.length - 1] & 0x80 || !parts.length) throw new Error("der oid truncated");
++  const first = parts.shift();
++  const a = first < 80 ? Math.floor(first / 40) : 2;
++  return [a, first - a * 40, ...parts].join(".");
++}
++
++function derBoolean(buf, element) {
++  if (element.tag !== 0x01 || element.valueEnd - element.valueStart !== 1) throw new Error("der boolean");
++  return buf[element.valueStart] !== 0;
++}
++
++function derInteger(buf, element) {
++  if (element.tag !== 0x02) throw new Error("der integer");
++  const bytes = buf.subarray(element.valueStart, element.valueEnd);
++  if (!bytes.length || bytes[0] & 0x80) throw new Error("der integer");
++  let value = 0;
++  for (const byte of bytes) {
++    value = value * 256 + byte;
++    if (value > Number.MAX_SAFE_INTEGER) throw new Error("der integer overflow");
++  }
++  return value;
++}
++
++function certificateExtension(cert, oid) {
++  const der = cert.raw;
++  const root = readDer(der, 0);
++  if (root.tag !== 0x30) throw new Error("certificate");
++  const top = derChildren(der, root);
++  if (!top.length) throw new Error("certificate");
++  const fields = derChildren(der, top[0]);
++  const wrapper = fields.find((field) => field.cls === 2 && field.number === 3);
++  if (!wrapper) return null;
++  const extensions = readDer(der, wrapper.valueStart);
++  if (extensions.tag !== 0x30) throw new Error("extensions");
++  for (const extension of derChildren(der, extensions)) {
++    if (extension.tag !== 0x30) throw new Error("extension");
++    const parts = derChildren(der, extension);
++    if (parts.length < 2) throw new Error("extension");
++    if (derOid(der, parts[0]) !== oid) continue;
++    let index = 1;
++    let critical = false;
++    if (parts[index]?.tag === 0x01) {
++      critical = derBoolean(der, parts[index]);
++      index += 1;
++    }
++    if (parts[index]?.tag !== 0x04) throw new Error("extension value");
++    return { critical, value: der.subarray(parts[index].valueStart, parts[index].valueEnd) };
++  }
++  return null;
++}
++
++function certificateBasicConstraints(cert) {
++  const extension = certificateExtension(cert, "2.5.29.19");
++  if (!extension) return { present: false, ca: false, pathLen: null };
++  const sequence = readDer(extension.value, 0);
++  if (sequence.tag !== 0x30) throw new Error("basicConstraints");
++  let ca = false;
++  let pathLen = null;
++  for (const field of derChildren(extension.value, sequence)) {
++    if (field.tag === 0x01) ca = derBoolean(extension.value, field);
++    else if (field.tag === 0x02) pathLen = derInteger(extension.value, field);
++    else throw new Error("basicConstraints field");
++  }
++  if (pathLen !== null && !ca) throw new Error("basicConstraints pathLen without CA");
++  return { present: true, ca, pathLen };
++}
++
++function certificateKeyUsage(cert) {
++  const extension = certificateExtension(cert, "2.5.29.15");
++  if (!extension) return null;
++  const bits = readDer(extension.value, 0);
++  if (bits.tag !== 0x03) throw new Error("keyUsage");
++  const value = extension.value;
++  if (bits.valueStart >= bits.valueEnd) throw new Error("keyUsage empty");
++  const unused = value[bits.valueStart];
++  if (unused > 7) throw new Error("keyUsage unused bits");
++  return { critical: extension.critical, bytes: value.subarray(bits.valueStart + 1, bits.valueEnd), unused };
++}
++
++function keyUsageHas(usage, bit) {
++  const index = Math.floor(bit / 8);
++  if (index >= usage.bytes.length) return false;
++  return (usage.bytes[index] & (0x80 >> bit % 8)) !== 0;
++}
++
++function isSelfIssued(cert) {
++  return cert.subject === cert.issuer;
++}
++
++function issuedBy(child, issuer) {
++  try {
++    return child.checkIssued(issuer) && child.verify(issuer.publicKey);
++  } catch {
++    return false;
++  }
++}
++
++function checkValidity(cert, nowMs, maxLifetimeMs = null) {
++  const from = Date.parse(cert.validFrom);
++  const to = Date.parse(cert.validTo);
++  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from)
++    throw fail("CERT_EXPIRED", "设备证书不在有效期内");
++  if (from > nowMs + CERT_CLOCK_SKEW_MS || to <= nowMs)
++    throw fail("CERT_EXPIRED", "设备证书不在有效期内");
++  if (maxLifetimeMs !== null && to - from > maxLifetimeMs)
++    throw fail("CERT_EXPIRED", "设备证书有效期超过允许范围");
++  return { from, to };
++}
++
++function checkCaCertificate(cert, caBelow) {
++  const constraints = certificateBasicConstraints(cert);
++  if (!constraints.ca) throw fail("CERT_CHAIN_INVALID", "设备证书链包含非 CA 签发者");
++  const usage = certificateKeyUsage(cert);
++  if (usage && !keyUsageHas(usage, 5)) throw fail("CERT_CHAIN_INVALID", "设备证书链签发者缺少 keyCertSign");
++  if (constraints.pathLen !== null && caBelow > constraints.pathLen)
++    throw fail("CERT_CHAIN_INVALID", "设备证书链 pathLen 超出限制");
++}
++
++function countCaBelow(certificates, index) {
++  let count = 0;
++  for (let i = index + 1; i < certificates.length; i += 1) {
++    if (certificateBasicConstraints(certificates[i]).ca && !isSelfIssued(certificates[i])) count += 1;
++  }
++  return count;
++}
++
+ /**
+- * 验证云端返回的设备证书。任何一项不满足都拒绝落盘。
++ * 验证云端返回的设备证书（完整路径约束）。任何一项不满足都拒绝落盘。
++ *
++ * 除叶子私钥匹配/clientAuth/非 CA/90 天有效期外，还检查路径上每一张
++ * 证书的有效期、CA basicConstraints、keyCertSign、pathLen 与预置信赖锚。
++ * 这不是"逐级 verify 签名"：过期的中间 CA 即使签名正确也会被拒绝。
+  * @returns {{chainPem:string, leaf:crypto.X509Certificate, expiresAt:string}}
+  */
+ export function verifyEnrolledCertificate({ chainPem, privateKey, deviceCaPem, now = Date.now() }) {
+   const chain = parseCertificateChain(chainPem);
+-  const leaf = chain.certificates[0];
++  const certificates = chain.certificates;
++  const leaf = certificates[0];
+   const keyPublic = crypto.createPublicKey(privateKey);
+   const keyDer = keyPublic.export({ type: "spki", format: "der" });
+   let leafDer;
+@@ -99,45 +288,62 @@
+     throw fail("CERT_KEY_MISMATCH", "设备证书与本机密钥不匹配");
+   }
+ 
+-  const from = Date.parse(leaf.validFrom);
+-  const to = Date.parse(leaf.validTo);
+-  if (!Number.isFinite(from) || !Number.isFinite(to) || from > now + CERT_CLOCK_SKEW_MS || to <= now)
+-    throw fail("CERT_EXPIRED", "设备证书不在有效期内");
+-  if (to - now > MAX_CERT_MS) throw fail("CERT_EXPIRED", "设备证书有效期超过允许范围");
+-  if (leaf.ca === true) throw fail("CERT_CHAIN_INVALID", "设备证书不能是 CA 证书");
+-
+-  const usage = leaf.toLegacyObject()?.ext_key_usage;
+-  if (!Array.isArray(usage) || !usage.includes(CLIENT_AUTH_EKU))
+-    throw fail("CERT_CHAIN_INVALID", "设备证书用途不是 clientAuth");
+-  if (Array.isArray(usage) && usage.includes("1.3.6.1.5.5.7.3.1"))
+-    throw fail("CERT_CHAIN_INVALID", "设备证书不能用于 serverAuth");
++  const nowMs = Number(now);
++  if (!Number.isFinite(nowMs)) throw fail("CERT_EXPIRED", "设备证书不在有效期内");
+ 
+-  // 逐级校验签名；链顺序必须是 叶 → 中间 → … → 根。
+-  for (let i = 1; i < chain.certificates.length; i += 1) {
+-    const child = chain.certificates[i - 1];
+-    const issuer = chain.certificates[i];
+-    let ok = false;
+-    try {
+-      ok = child.checkIssued(issuer) && child.verify(issuer.publicKey);
+-    } catch {
+-      ok = false;
++  try {
++    const leafConstraints = certificateBasicConstraints(leaf);
++    if (leafConstraints.ca) throw fail("CERT_CHAIN_INVALID", "设备证书不能是 CA 证书");
++    const leafUsage = certificateKeyUsage(leaf);
++    if (leafUsage && !keyUsageHas(leafUsage, 0))
++      throw fail("CERT_CHAIN_INVALID", "设备证书用途不包含 digitalSignature");
++    const eku = leaf.toLegacyObject()?.ext_key_usage;
++    if (!Array.isArray(eku) || !eku.includes(CLIENT_AUTH_EKU))
++      throw fail("CERT_CHAIN_INVALID", "设备证书用途不是 clientAuth");
++    if (eku.includes("1.3.6.1.5.5.7.3.1"))
++      throw fail("CERT_CHAIN_INVALID", "设备证书不能用于 serverAuth");
++
++    // 叶子证书的协议上限是 90 天；5 分钟只用于 notBefore 的签发端时钟偏差。
++    checkValidity(leaf, nowMs, MAX_CERT_MS);
++
++    const seen = new Set();
++    for (const cert of certificates) {
++      const fingerprint = cert.fingerprint256;
++      if (seen.has(fingerprint)) throw fail("CERT_CHAIN_INVALID", "设备证书链包含重复证书");
++      seen.add(fingerprint);
+     }
+-    if (!ok) throw fail("CERT_CHAIN_INVALID", "设备证书链签名无效");
+-  }
++    // 链顺序必须是 叶 → 中间 → … → 根，且每一级都由下一张签发。
++    for (let i = 1; i < certificates.length; i += 1) {
++      if (!issuedBy(certificates[i - 1], certificates[i]))
++        throw fail("CERT_CHAIN_INVALID", "设备证书链签名无效");
++    }
+ 
+-  const trusted = parseCertificateChain(deviceCaPem, "deviceCaPem").certificates;
+-  const last = chain.certificates[chain.certificates.length - 1];
+-  const anchored = trusted.some((root) => {
+-    if (last.fingerprint256 === root.fingerprint256) return true;
+-    try {
+-      return last.checkIssued(root) && last.verify(root.publicKey);
+-    } catch {
+-      return false;
++    const trusted = parseCertificateChain(deviceCaPem, "deviceCaPem").certificates;
++    if (!trusted.length) throw fail("CERT_CHAIN_INVALID", "设备证书不是预置设备 CA 签发");
++    const last = certificates[certificates.length - 1];
++    let anchor = trusted.find((root) => root.fingerprint256 === last.fingerprint256) || null;
++    const anchorInChain = anchor !== null;
++    if (!anchor) anchor = trusted.find((root) => issuedBy(last, root)) || null;
++    if (!anchor) throw fail("CERT_CHAIN_INVALID", "设备证书不是预置设备 CA 签发");
++
++    // 中间证书必须有效期有效且是真正的 CA；叶子不是签发者，不在这里检查。
++    for (let i = 1; i < certificates.length; i += 1) {
++      const cert = certificates[i];
++      const isAnchor = anchorInChain && cert.fingerprint256 === anchor.fingerprint256;
++      if (!isAnchor) checkValidity(cert, nowMs);
++      checkCaCertificate(cert, countCaBelow(certificates, i));
+     }
+-  });
+-  if (!anchored) throw fail("CERT_CHAIN_INVALID", "设备证书不是预置设备 CA 签发");
++    if (!anchorInChain) {
++      // 预置锚不在返回链里时，也要约束它下面允许的中间 CA 数量。
++      const caBelow = countCaBelow(certificates, 0);
++      checkCaCertificate(anchor, caBelow);
++    }
+ 
+-  return { chainPem: chain.pem, leaf, expiresAt: new Date(to).toISOString() };
++    return { chainPem: chain.pem, leaf, expiresAt: new Date(Date.parse(leaf.validTo)).toISOString() };
++  } catch (e) {
++    if (e instanceof CloudAuthError) throw e;
++    throw fail("CERT_CHAIN_INVALID", "设备证书链校验失败", { cause: e });
++  }
+ }
+ 
+ export class DeviceEnrollment {
+@@ -184,9 +390,10 @@
+     };
+   }
+ 
+-  /** 退出/取消时中止进行中的兑换（迟到的响应也会因代次变化被丢弃）。 */
++  /** 退出/取消时中止进行中的兑换，并撤销本次组合操作的身份。 */
+   cancel() {
+     this.cancelRequested = true;
++    if (this.operation) this.cloudAuth.abortOperation(this.operation);
+     this.cancelToken?.cancel?.abort();
+   }
+ 
+@@ -210,25 +417,32 @@
+ 
+     if (this.inflight) return this.inflight;
+     this.cancelRequested = false;
+-    const entry = { epoch: this.cloudAuth.epoch, cancel: null, promise: null };
++    const entry = {
++      operation: this.cloudAuth.beginOperation(),
++      cancel: null,
++      promise: null,
++    };
++    this.operation = entry.operation;
+     entry.promise = this.#runEnroll({ code, password, name, entry })
+       .catch((e) => {
+         // 文件权限/磁盘错误也收敛为固定码，绝不把本机路径或原始异常交给浏览器。
+         throw e instanceof CloudAuthError ? e : fail("STORAGE_ERROR", "本地设备配置保存失败", { kind: "config", status: 400, cause: e });
+       })
+       .finally(() => {
+-      if (this.inflight === entry.promise) this.inflight = null;
+-      if (this.cancelToken === entry) this.cancelToken = null;
+-    });
++        this.cloudAuth.endOperation(entry.operation);
++        if (this.operation === entry.operation) this.operation = null;
++        if (this.inflight === entry.promise) this.inflight = null;
++        if (this.cancelToken === entry) this.cancelToken = null;
++      });
+     this.inflight = entry.promise;
+     this.cancelToken = entry;
+     return entry.promise;
+   }
+ 
+   async #runEnroll({ code, password, name, entry }) {
+-    if (this.cancelRequested) throw this.#stale();
++    this.#assertActive(entry);
+     const pending = await this.#ensurePendingKey(code, name);
+-    if (this.cancelRequested || entry.epoch !== this.cloudAuth.epoch) throw this.#stale();
++    this.#assertActive(entry);
+ 
+     const signature = crypto
+       .sign("sha256", Buffer.from(canonicalEnrollmentText({ openingCode: code, publicKeyHash: pending.publicKeyHash, deviceName: name }), "utf8"), pending.privateKey)
+@@ -242,8 +456,14 @@
+     const body = Buffer.from(JSON.stringify(payload), "utf8");
+     if (body.length > MAX_REQUEST_BYTES) throw fail("INVALID_REQUEST", "开通请求过大", { status: 400 });
+ 
+-    const data = await this.#redeem(body, entry);
+-    if (this.cancelRequested || entry.epoch !== this.cloudAuth.epoch) throw this.#stale();
++    let data;
++    try {
++      data = await this.#redeem(body, entry);
++    } catch (e) {
++      if (!this.#isActive(entry)) throw this.#stale();
++      throw e;
++    }
++    this.#assertActive(entry);
+ 
+     const verified = verifyEnrolledCertificate({
+       chainPem: data?.certificateChainPem,
+@@ -251,7 +471,7 @@
+       deviceCaPem: this.release.deviceCaPem,
+       now: this.clock(),
+     });
+-    if (this.cancelRequested || entry.epoch !== this.cloudAuth.epoch) throw this.#stale();
++    this.#assertActive(entry);
+ 
+     const needsActivation = data?.needsActivation === true;
+     if (typeof data?.accountId !== "string" || !data.accountId || typeof data?.username !== "string" || !data.username)
+@@ -264,7 +484,7 @@
+     // 先写证书/元数据（原子 rename），再改 CloudAuth 配置；任何一步失败都不会
+     // 动到旧证书文件或旧连接配置。
+     await this.#installFiles(verified, { ...data, needsActivation });
+-    if (this.cancelRequested || entry.epoch !== this.cloudAuth.epoch) throw this.#stale();
++    this.#assertActive(entry);
+ 
+     const config = {
+       origin: this.release.apiOrigin,
+@@ -274,33 +494,49 @@
+       p12Path: null,
+     };
+     try {
+-      await this.cloudAuth.configure(config);
++      // configure/activate/login 与本次开通共享 operation：它们内部会改变
++      // CloudAuth.epoch，但不会撤销本操作；外部退出/换账户/高级配置才会撤销。
++      await this.cloudAuth.configure(config, { operation: entry.operation });
+     } catch (e) {
++      if (e?.code === "STALE" || !this.#isActive(entry)) throw this.#stale();
+       throw e instanceof CloudAuthError
+         ? e
+         : fail("STORAGE_ERROR", "本地云端配置保存失败", { kind: "config", status: 400, cause: e });
+     }
++    // configure 返回后必须再次核对身份：这正是 review 的确定性 gate 窗口。
++    this.#assertActive(entry);
+ 
+     let session = false;
+     let sessionError = null;
+     try {
+       if (needsActivation) {
+-        await this.cloudAuth.activate({ activationToken: data.activationToken, password });
++        await this.cloudAuth.activate({ activationToken: data.activationToken, password }, { operation: entry.operation });
+       } else {
+-        await this.cloudAuth.login({ username: data.username, password });
++        await this.cloudAuth.login({ username: data.username, password }, { operation: entry.operation });
+       }
++      this.#assertActive(entry);
+       session = true;
+     } catch (e) {
++      // 外部退出/换账户/高级配置后，迟到的登录/激活不得作为成功结果提交。
++      if (!this.#isActive(entry)) throw this.#stale();
+       // 设备证书已安全落盘；激活/登录失败不回滚设备，交给用户重试。PENDING 账户
+       // 保留 pending 记录，用原码原钥再次兑换可获取新的激活凭证。
+       sessionError = e instanceof CloudAuthError ? e.toPublic() : fail("INTERNAL", "云端认证操作失败").toPublic();
+     }
+-    await this.#saveMetadata({
++    this.#assertActive(entry);
++    const finalMetadata = {
+       ...this.#metadataFrom(verified, data, needsActivation),
+       activated: session || !needsActivation,
+       lastSessionError: sessionError?.code || null,
+-    });
+-    if (session) await fs.rm(this.pendingPath, { force: true }).catch(() => {});
++    };
++    // 最终元数据也是一次提交：从构造到落盘之间必须再次确认身份未被外部取消。
++    this.#assertActive(entry);
++    await this.#saveMetadata(finalMetadata);
++    this.#assertActive(entry);
++    if (session) {
++      await fs.rm(this.pendingPath, { force: true }).catch(() => {});
++      this.#assertActive(entry);
++    }
+     return {
+       enrolled: true,
+       session,
+@@ -311,21 +547,49 @@
+     };
+   }
+ 
++  #isActive(entry) {
++    return !this.cancelRequested && entry.operation?.active === true;
++  }
++
++  #assertActive(entry) {
++    if (!this.#isActive(entry)) throw this.#stale();
++  }
++
+   async #ensurePendingKey(code, deviceName) {
+     const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+-    let existing = null;
++    await this.#ensureDeviceDir();
++    let existing;
++    let journalPresent = false;
+     try {
+       existing = JSON.parse(await fs.readFile(this.pendingPath, "utf8"));
++      journalPresent = true;
+     } catch (e) {
+-      if (e.code !== "ENOENT") existing = null;
++      if (e.code !== "ENOENT")
++        throw fail("DEVICE_PENDING_INVALID", "本机未完成的开通记录已损坏，已保留原设备材料", { kind: "config", status: 409 });
++      existing = null;
+     }
+-    await this.#ensureDeviceDir();
+ 
+-    if (existing && existing.codeHash === codeHash && existing.deviceName === deviceName) {
++    if (journalPresent) {
++      if (
++        existing === null ||
++        typeof existing !== "object" ||
++        existing.schemaVersion !== SCHEMA_VERSION ||
++        typeof existing.codeHash !== "string" ||
++        typeof existing.deviceName !== "string" ||
++        typeof existing.publicKeyHash !== "string"
++      )
++        throw fail("DEVICE_PENDING_INVALID", "本机未完成的开通记录已损坏，已保留原设备材料", { kind: "config", status: 409 });
++      // 普通重试不能换码/换设备名：固定私钥只属于第一次绑定的身份，先覆盖再
++      // 让云端拒绝会永久丢失原码原名恢复所需的私钥。不一致时安全拒绝、不动文件。
++      if (existing.codeHash !== codeHash || existing.deviceName !== deviceName)
++        throw fail("DEVICE_PENDING_IDENTITY_MISMATCH", "本机存在另一笔未完成的开通记录，请使用原开通码和设备名重试", {
++          kind: "config",
++          status: 409,
++        });
+       try {
+         const privateKey = crypto.createPrivateKey(await fs.readFile(this.keyPath));
+         const publicKeyHash = publicKeyHashOf(privateKey);
+-        if (existing.publicKeyHash && existing.publicKeyHash !== publicKeyHash) throw new Error("hash mismatch");
++        if (existing.publicKeyHash !== publicKeyHash) throw new Error("hash mismatch");
+         return {
+           privateKey,
+           publicKeyPem: crypto.createPublicKey(privateKey).export({ type: "spki", format: "pem" }),
+@@ -336,6 +600,16 @@
+       }
+     }
+ 
++    // 没有 journal 却已有设备材料：可能是上次写到一半或记录损坏。此时生成新钥匙
++    // 会覆盖唯一可恢复材料，必须 fail closed，保留原文件等待人工处理。
++    for (const file of [this.keyPath, this.certPath, this.metadataPath]) {
++      if (await this.#fileExists(file))
++        throw fail("DEVICE_PENDING_INVALID", "本机已有设备材料但缺少未完成的开通记录，已保留原文件", {
++          kind: "config",
++          status: 409,
++        });
++    }
++
+     const { privateKey, publicKey } = await new Promise((resolve, reject) => {
+       crypto.generateKeyPair(
+         "rsa",
+@@ -364,6 +638,16 @@
+     return { privateKey, publicKeyPem, publicKeyHash };
+   }
+ 
++  async #fileExists(file) {
++    try {
++      await fs.access(file);
++      return true;
++    } catch (e) {
++      if (e.code === "ENOENT") return false;
++      throw e;
++    }
++  }
++
+   #metadataFrom(verified, data, needsActivation) {
+     return {
+       schemaVersion: SCHEMA_VERSION,
+@@ -443,6 +727,7 @@
+         fn(value);
+       };
+       const error = (e) => {
++        if (token.aborted) return finish(reject, this.#stale());
+         if (e instanceof CloudAuthError) return finish(reject, e);
+         const code = String(e?.code || "");
+         if (/CERT|TLS|SSL|SELF_SIGNED|VERIFY|ALTNAME|ERR_OSSL|PEM|X509/i.test(code) || /certificate|handshake/i.test(String(e?.message || "")))
+diff --git a/server/index.mjs b/server/index.mjs
+--- a/server/index.mjs
++++ b/server/index.mjs
+@@ -161,7 +161,10 @@
+ app.get("/api/cloud-auth/status", (req, res) =>
+   res.json({ ...cloudAuth.getState(), enrollment: deviceEnrollment.getStatus() }),
+ );
+-app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => res.json(await cloudAuth.configure(req.body))));
++app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => {
++  deviceEnrollment.cancel();
++  res.json(await cloudAuth.configure(req.body));
++}));
+ app.post("/api/cloud-auth/enroll", asyncRoute(async (req, res) => res.json(await deviceEnrollment.enroll(req.body))));
+ app.post("/api/cloud-auth/activate", asyncRoute(async (req, res) => {
+   deviceEnrollment.cancel();
+diff --git a/tests/device-enrollment.test.mjs b/tests/device-enrollment.test.mjs
+--- a/tests/device-enrollment.test.mjs
++++ b/tests/device-enrollment.test.mjs
+@@ -12,6 +12,7 @@
+ import path from "node:path";
+ import { execFile } from "node:child_process";
+ import { promisify } from "node:util";
++import { fileURLToPath } from "node:url";
+ import { Library } from "../server/library.mjs";
+ import { CloudAuth } from "../server/cloud-auth.mjs";
+ import { DeviceEnrollment, parseCertificateChain, verifyEnrolledCertificate } from "../server/device-enrollment.mjs";
+@@ -261,9 +262,14 @@
+   const { mock, auth, enrollment } = await setup(t);
+   mock.setDelayMs(250);
+   const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "测试机" });
++  const settled = pending.then(
++    (value) => ({ value }),
++    (error) => ({ error }),
++  );
+   await sleep(40);
+   await auth.logout();
+-  await assert.rejects(pending, (e) => e.code === "STALE");
++  const outcome = await settled;
++  assert.equal(outcome.error?.code, "STALE");
+   assert.equal(auth.getState().hasClientCertificate, false);
+   assert.equal(await fs.readFile(enrollment.certPath, "utf8").catch(() => null), null);
+   assert.equal(await fs.readFile(enrollment.metadataPath, "utf8").catch(() => null), null);
+@@ -296,4 +302,401 @@
+     (e) => e.code === "CERT_CHAIN_INVALID",
+   );
+   assert.equal(await fs.readFile(wrongChain.enrollment.certPath, "utf8").catch(() => null), null);
++});
++
++// ── 007 round-2：review 三项反例的确定性回归 ─────────────────────────
++
++const openssl = (args) => run("openssl", args, { maxBuffer: 4e6 });
++
++async function makeRoot(dir, name, { pathLen = null, keyUsage = "keyCertSign,cRLSign" } = {}) {
++  await fs.mkdir(dir, { recursive: true });
++  const key = path.join(dir, "root.key");
++  const crt = path.join(dir, "root.crt");
++  const constraints = pathLen === null ? "critical,CA:TRUE" : `critical,CA:TRUE,pathlen:${pathLen}`;
++  await openssl([
++    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
++    "-keyout", key, "-out", crt, "-days", "2", "-subj", `/CN=${name}`,
++    "-addext", `basicConstraints=${constraints}`,
++    "-addext", `keyUsage=critical,${keyUsage}`,
++  ]);
++  return { key, crt, pem: await fs.readFile(crt, "utf8") };
++}
++
++async function makeIntermediate(dir, ca, name, { days = "2", constraints = "critical,CA:TRUE", keyUsage = "critical,keyCertSign,cRLSign" } = {}) {
++  await fs.mkdir(dir, { recursive: true });
++  const key = path.join(dir, "intermediate.key");
++  const csr = path.join(dir, "intermediate.csr");
++  const crt = path.join(dir, "intermediate.crt");
++  const ext = path.join(dir, "intermediate.ext");
++  await openssl(["req", "-newkey", "rsa:2048", "-nodes", "-sha256", "-keyout", key, "-out", csr, "-subj", `/CN=${name}`]);
++  await fs.writeFile(ext, `basicConstraints=${constraints}\nkeyUsage=${keyUsage}\n`);
++  await openssl([
++    "x509", "-req", "-in", csr, "-CA", ca.crt, "-CAkey", ca.key,
++    "-set_serial", `0x${crypto.randomBytes(6).toString("hex")}`, "-days", days,
++    "-sha256", "-extfile", ext, "-out", crt,
++  ]);
++  return { key, crt, pem: await fs.readFile(crt, "utf8") };
++}
++
++async function makeLeaf(dir, ca, name, { days = "1", eku = "clientAuth", constraints = "critical,CA:FALSE", keyUsage = "critical,digitalSignature" } = {}) {
++  await fs.mkdir(dir, { recursive: true });
++  const key = path.join(dir, "leaf.key");
++  const csr = path.join(dir, "leaf.csr");
++  const crt = path.join(dir, "leaf.crt");
++  const ext = path.join(dir, "leaf.ext");
++  await openssl(["req", "-newkey", "rsa:2048", "-nodes", "-sha256", "-keyout", key, "-out", csr, "-subj", `/CN=${name}`]);
++  await fs.writeFile(ext, `basicConstraints=${constraints}\nkeyUsage=${keyUsage}\nextendedKeyUsage=${eku}\n`);
++  await openssl([
++    "x509", "-req", "-in", csr, "-CA", ca.crt, "-CAkey", ca.key,
++    "-set_serial", `0x${crypto.randomBytes(6).toString("hex")}`, "-days", days,
++    "-sha256", "-extfile", ext, "-out", crt,
++  ]);
++  return { key, crt, pem: await fs.readFile(crt, "utf8") };
++}
++
++async function newChainDir(t, label) {
++  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `shiguang-chain-${label}-`));
++  t.after(() => fs.rm(dir, { recursive: true, force: true }));
++  return dir;
++}
++
++test("证书链：有效中间链通过；过期/非CA/缺keyCertSign/pathLen/serverAuth/错锚均拒绝", async (t) => {
++  const base = await newChainDir(t, "valid");
++  const root = await makeRoot(path.join(base, "root"), "Round2 Root", { pathLen: 1 });
++  const intermediate = await makeIntermediate(path.join(base, "intermediate"), root, "Round2 Intermediate");
++  const leaf = await makeLeaf(path.join(base, "leaf"), intermediate, "Round2 Device");
++  const leafKey = crypto.createPrivateKey(await fs.readFile(leaf.key));
++
++  const accepted = verifyEnrolledCertificate({
++    chainPem: leaf.pem + intermediate.pem,
++    privateKey: leafKey,
++    deviceCaPem: root.pem,
++  });
++  assert.equal(accepted.leaf.subject, "CN=Round2 Device");
++  // 返回链里带根也应通过；根只作为预置锚，不要求根自签验证。
++  verifyEnrolledCertificate({
++    chainPem: leaf.pem + intermediate.pem + root.pem,
++    privateKey: leafKey,
++    deviceCaPem: root.pem,
++  });
++
++  const expired = await makeIntermediate(path.join(base, "expired"), root, "Expired Intermediate", { days: "-1" });
++  const expiredLeaf = await makeLeaf(path.join(base, "expired-leaf"), expired, "Expired Device");
++  const expiredLeafKey = crypto.createPrivateKey(await fs.readFile(expiredLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: expiredLeaf.pem + expired.pem,
++      privateKey: expiredLeafKey,
++      deviceCaPem: root.pem,
++    }),
++    (e) => e.code === "CERT_EXPIRED",
++  );
++
++  const nonCa = await makeIntermediate(path.join(base, "nonca"), root, "Not A CA", { constraints: "critical,CA:FALSE" });
++  const nonCaLeaf = await makeLeaf(path.join(base, "nonca-leaf"), nonCa, "NonCA Device");
++  const nonCaLeafKey = crypto.createPrivateKey(await fs.readFile(nonCaLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: nonCaLeaf.pem + nonCa.pem,
++      privateKey: nonCaLeafKey,
++      deviceCaPem: root.pem,
++    }),
++    (e) => e.code === "CERT_CHAIN_INVALID",
++  );
++
++  const noKeyCertSign = await makeIntermediate(path.join(base, "nokcs"), root, "No KeyCertSign", { keyUsage: "critical,digitalSignature" });
++  const noKsLeaf = await makeLeaf(path.join(base, "nokcs-leaf"), noKeyCertSign, "NoKs Device");
++  const noKsLeafKey = crypto.createPrivateKey(await fs.readFile(noKsLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: noKsLeaf.pem + noKeyCertSign.pem,
++      privateKey: noKsLeafKey,
++      deviceCaPem: root.pem,
++    }),
++    (e) => e.code === "CERT_CHAIN_INVALID",
++  );
++
++  const strictRoot = await makeRoot(path.join(base, "pathlen"), "PathLen Zero Root", { pathLen: 0 });
++  const underStrict = await makeIntermediate(path.join(base, "pathlen-intermediate"), strictRoot, "Too Deep Intermediate");
++  const strictLeaf = await makeLeaf(path.join(base, "pathlen-leaf"), underStrict, "PathLen Device");
++  const strictLeafKey = crypto.createPrivateKey(await fs.readFile(strictLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: strictLeaf.pem + underStrict.pem,
++      privateKey: strictLeafKey,
++      deviceCaPem: strictRoot.pem,
++    }),
++    (e) => e.code === "CERT_CHAIN_INVALID",
++  );
++
++  const serverLeaf = await makeLeaf(path.join(base, "serverleaf"), intermediate, "Server Leaf", { eku: "serverAuth" });
++  const serverLeafKey = crypto.createPrivateKey(await fs.readFile(serverLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: serverLeaf.pem + intermediate.pem,
++      privateKey: serverLeafKey,
++      deviceCaPem: root.pem,
++    }),
++    (e) => e.code === "CERT_CHAIN_INVALID",
++  );
++
++  const longLeaf = await makeLeaf(path.join(base, "longleaf"), intermediate, "Long Leaf", { days: "91" });
++  const longLeafKey = crypto.createPrivateKey(await fs.readFile(longLeaf.key));
++  assert.throws(
++    () => verifyEnrolledCertificate({
++      chainPem: longLeaf.pem + intermediate.pem,
++      privateKey: longLeafKey,
++      deviceCaPem: root.pem,
++    }),
++    (e) => e.code === "CERT_EXPIRED",
++  );
++
++  const foreign = await makeRoot(path.join(base, "foreign"), "Foreign Root");
++  assert.throws(
++    () => verifyEnrolledCertificate({ chainPem: leaf.pem + intermediate.pem, privateKey: leafKey, deviceCaPem: foreign.pem }),
++    (e) => e.code === "CERT_CHAIN_INVALID",
++  );
++
++  const otherKey = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
++  assert.throws(
++    () => verifyEnrolledCertificate({ chainPem: leaf.pem + intermediate.pem, privateKey: otherKey, deviceCaPem: root.pem }),
++    (e) => e.code === "CERT_KEY_MISMATCH",
++  );
+ });
++
++const snapshotDeviceFiles = async (enrollment) => ({
++  key: await fs.readFile(enrollment.keyPath, "utf8").catch(() => null),
++  cert: await fs.readFile(enrollment.certPath, "utf8").catch(() => null),
++  config: await fs.readFile(enrollment.cloudAuth.configPath, "utf8").catch(() => null),
++  pending: await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null),
++});
++
++test("未激活时改设备名/换码不覆盖原密钥，原码原名仍可恢复", async (t) => {
++  const { mock, enrollment } = await setup(t);
++  const first = await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "original-device" });
++  assert.equal(first.activationPending, true);
++  const keyBefore = await fs.readFile(enrollment.keyPath, "utf8");
++  const before = await snapshotDeviceFiles(enrollment);
++
++  for (const attempt of [
++    { openingCode: CODE, deviceName: "renamed-device" },
++    { openingCode: "B".repeat(43), deviceName: "original-device" },
++  ]) {
++    await assert.rejects(
++      () => enrollment.enroll({ ...attempt, password: PASSWORD }),
++      (e) => e.code === "DEVICE_PENDING_IDENTITY_MISMATCH" && e.status === 409,
++    );
++    assert.deepEqual(await snapshotDeviceFiles(enrollment), before, "身份不匹配时不得改动 key/cert/config/pending");
++  }
++
++  const retry = await enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "original-device" });
++  assert.equal(retry.session, true);
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore, "原码原名必须复用原私钥");
++  assert.equal(mock.state.redeemCalls.length, 2, "不一致重试不得发兑换请求");
++  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null), null);
++});
++
++test("pending 记录损坏/缺失时 fail closed，保留 key/cert/config 且恢复记录后可续做", async (t) => {
++  const { enrollment } = await setup(t);
++  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "damaged-device" });
++  const keyBefore = await fs.readFile(enrollment.keyPath, "utf8");
++  const certBefore = await fs.readFile(enrollment.certPath, "utf8");
++  const configBefore = await fs.readFile(enrollment.cloudAuth.configPath, "utf8");
++  const pendingBefore = await fs.readFile(enrollment.pendingPath, "utf8");
++
++  await fs.writeFile(enrollment.pendingPath, "{not json");
++  await assert.rejects(
++    () => enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "damaged-device" }),
++    (e) => e.code === "DEVICE_PENDING_INVALID",
++  );
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore);
++  assert.equal(await fs.readFile(enrollment.certPath, "utf8"), certBefore);
++  assert.equal(await fs.readFile(enrollment.cloudAuth.configPath, "utf8"), configBefore);
++  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8"), "{not json");
++
++  await fs.writeFile(enrollment.pendingPath, "null");
++  await assert.rejects(
++    () => enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "damaged-device" }),
++    (e) => e.code === "DEVICE_PENDING_INVALID",
++  );
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore);
++  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8"), "null");
++
++  await fs.rm(enrollment.pendingPath, { force: true });
++  await assert.rejects(
++    () => enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "damaged-device" }),
++    (e) => e.code === "DEVICE_PENDING_INVALID",
++  );
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore);
++  assert.equal(await fs.readFile(enrollment.certPath, "utf8"), certBefore);
++  assert.equal(await fs.readFile(enrollment.cloudAuth.configPath, "utf8"), configBefore);
++
++  // 人工恢复原 journal 后仍可用原码原名续做；损坏/缺失本身绝不自动删除旧材料。
++  await fs.writeFile(enrollment.pendingPath, pendingBefore);
++  const retry = await enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "damaged-device" });
++  assert.equal(retry.session, true);
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore);
++});
++
++test("待开通身份在真实重启后仍可原码原名恢复", async (t) => {
++  const { base, mock, enrollment } = await setup(t);
++  const first = await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "restart-device" });
++  assert.equal(first.activationPending, true);
++  const keyBefore = await fs.readFile(enrollment.keyPath, "utf8");
++
++  const release = releaseFor(mock);
++  const script = `
++    import { Library } from ${JSON.stringify(new URL("../server/library.mjs", import.meta.url).href)};
++    import { CloudAuth } from ${JSON.stringify(new URL("../server/cloud-auth.mjs", import.meta.url).href)};
++    import { DeviceEnrollment } from ${JSON.stringify(new URL("../server/device-enrollment.mjs", import.meta.url).href)};
++    import { validateReleaseConfig } from ${JSON.stringify(new URL("../server/cloud-release-config.mjs", import.meta.url).href)};
++    const f = JSON.parse(process.env.SHIGUANG_ENROLL_CHILD);
++    const lib = await new Library(f.dataDir).init();
++    try {
++      const auth = await new CloudAuth(lib, { dataDir: lib.dataDir }).init();
++      const checked = validateReleaseConfig(f.release);
++      if (!checked.usable) throw new Error("release config not usable");
++      const enrollment = await new DeviceEnrollment(lib, {
++        dataDir: lib.dataDir, cloudAuth: auth,
++        release: { ...checked.config, usable: true },
++      }).init();
++      const result = await enrollment.enroll(f.request);
++      console.log(JSON.stringify({ session: result.session, activationPending: result.activationPending }));
++    } finally {
++      lib.db.close();
++    }
++  `;
++  const child = await run(process.execPath, ["--input-type=module", "-e", script], {
++    cwd: fileURLToPath(new URL("../", import.meta.url)),
++    timeout: 30_000,
++    env: {
++      ...process.env,
++      SHIGUANG_ENROLL_CHILD: JSON.stringify({
++        dataDir: enrollment.dataDir,
++        release,
++        request: { openingCode: CODE, password: PASSWORD, deviceName: "restart-device" },
++      }),
++    },
++  });
++  const result = JSON.parse(child.stdout.trim().split("\n").pop());
++  assert.equal(result.session, true);
++  assert.equal(result.activationPending, false);
++  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore, "重启不得更换已绑定私钥");
++  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null), null);
++  const metadata = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(metadata.activated, true);
++  assert.equal(mock.state.redeemCalls.length, 2);
++});
++
++test("configure 返回后取消/退出：旧开通不得继续激活或复活会话", async (t) => {
++  const { auth, enrollment } = await setup(t);
++  let openGate;
++  let arrivedResolve;
++  const gate = new Promise((resolve) => (openGate = resolve));
++  const arrived = new Promise((resolve) => (arrivedResolve = resolve));
++  const original = auth.configure.bind(auth);
++  auth.configure = async (...args) => {
++    const result = await original(...args);
++    arrivedResolve();
++    await gate;
++    return result;
++  };
++
++  const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "gate-device" });
++  await arrived;
++  enrollment.cancel();
++  await auth.logout();
++  assert.equal(auth.getState().state, "logged-out");
++  openGate();
++  await assert.rejects(pending, (e) => e.code === "STALE");
++  assert.equal(auth.getState().state, "logged-out");
++  const metadata = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(metadata.activated, false);
++});
++
++test("configure 后切换到高级配置：旧开通不得写入登录态", async (t) => {
++  const { auth, enrollment } = await setup(t);
++  const foreign = await makeForeignCa();
++  t.after(() => foreign.cleanup());
++  let openGate;
++  let arrivedResolve;
++  let first = true;
++  const gate = new Promise((resolve) => (openGate = resolve));
++  const arrived = new Promise((resolve) => (arrivedResolve = resolve));
++  const original = auth.configure.bind(auth);
++  auth.configure = async (...args) => {
++    const result = await original(...args);
++    if (!first) return result;
++    first = false;
++    arrivedResolve();
++    await gate;
++    return result;
++  };
++
++  const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "config-switch-device" });
++  await arrived;
++  enrollment.cancel();
++  const switching = auth.configure({
++    origin: auth.config.origin,
++    caPath: foreign.dir + "/ca.crt",
++    certPath: auth.config.certPath,
++    keyPath: auth.config.keyPath,
++  });
++  openGate();
++  await Promise.all([assert.rejects(pending, (e) => e.code === "STALE"), switching]);
++  assert.equal(auth.getState().state, "logged-out");
++  assert.equal(auth.config.caPath, foreign.dir + "/ca.crt");
++});
++
++test("登录返回后取消/退出：不得提交成功元数据或复活会话", async (t) => {
++  const { mock, auth, enrollment } = await setup(t);
++  mock.getUser("alice").state = "ACTIVE";
++  let openGate;
++  let arrivedResolve;
++  const gate = new Promise((resolve) => (openGate = resolve));
++  const arrived = new Promise((resolve) => (arrivedResolve = resolve));
++  const original = auth.login.bind(auth);
++  auth.login = async (...args) => {
++    const result = await original(...args);
++    arrivedResolve();
++    await gate;
++    return result;
++  };
++
++  const pending = enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "login-gate-device" });
++  await arrived;
++  assert.equal(auth.getState().state, "logged-in");
++  enrollment.cancel();
++  await auth.logout();
++  openGate();
++  await assert.rejects(pending, (e) => e.code === "STALE");
++  assert.equal(auth.getState().state, "logged-out");
++  const metadata = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(metadata.activated, false);
++});
++
++test("最终元数据提交窗口取消：不写入 activated=true", async (t) => {
++  const { mock, auth, enrollment } = await setup(t);
++  mock.getUser("alice").state = "ACTIVE";
++  const baseClock = enrollment.clock.bind(enrollment);
++  let calls = 0;
++  enrollment.clock = () => {
++    calls += 1;
++    const value = baseClock();
++    // 第 3 次：pending.createdAt、install metadata、最终 metadata。最后一次在
++    // 最终提交前同步撤销 operation，模拟外部退出正好落在提交窗口。
++    if (calls === 3) {
++      enrollment.cancel();
++      void auth.logout();
++    }
++    return value;
++  };
++
++  await assert.rejects(
++    () => enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "commit-gate-device" }),
++    (e) => e.code === "STALE",
++  );
++  assert.equal(auth.getState().state, "logged-out");
++  const metadata = JSON.parse(await fs.readFile(enrollment.metadataPath, "utf8"));
++  assert.equal(metadata.activated, false);
++});

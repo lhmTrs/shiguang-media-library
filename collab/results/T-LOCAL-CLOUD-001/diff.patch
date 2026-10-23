@@ -1,0 +1,1079 @@
+diff --git a/server/index.mjs b/server/index.mjs
+index ace7267..1ca5f43 100644
+--- a/server/index.mjs
++++ b/server/index.mjs
+@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
+ import { Library, run } from "./library.mjs";
+ import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
+ import { MysqlStorage } from "./mysql.mjs";
++import { CloudAuth, CloudAuthError } from "./cloud-auth.mjs";
+ import { Tags } from "./tags.mjs";
+ import { MusicAnalysis } from "./music-analysis.mjs";
+ import { MissingFiles } from "./missing-files.mjs";
+@@ -64,6 +65,8 @@ const projects = new Projects(lib).init();
+ const metadataBatches = new MetadataBatches(lib).init();
+ const folderBrowser = new FolderBrowser(lib);
+ const musicAnalysis = await new MusicAnalysis(lib).init();
++// 云端认证适配：令牌/私钥只在本进程，浏览器只拿到脱敏状态（T-LOCAL-CLOUD-001）
++const cloudAuth = await new CloudAuth(lib, { dataDir }).init();
+ const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
+ const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
+ for (const a of lib.db
+@@ -148,6 +151,19 @@ app.use("/api", (req, res, next) => {
+   next();
+ });
+ app.get("/api/mysql", (req, res) => res.json(mysqlStorage.publicState()));
++app.get("/api/cloud-auth/status", (req, res) => res.json(cloudAuth.getState()));
++app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => res.json(await cloudAuth.configure(req.body))));
++app.post("/api/cloud-auth/activate", asyncRoute(async (req, res) => res.json(await cloudAuth.activate(req.body))));
++app.post("/api/cloud-auth/login", asyncRoute(async (req, res) => res.json(await cloudAuth.login(req.body))));
++app.post("/api/cloud-auth/logout", asyncRoute(async (req, res) => res.json(await cloudAuth.logout())));
++// 只回脱敏错误码与提示：不回云端原始 message，不记录令牌/请求体/本机路径
++app.use("/api/cloud-auth", (error, req, res, next) => {
++  if (!(error instanceof CloudAuthError)) return next(error);
++  const pub = error.toPublic();
++  if (pub.status !== 401 && pub.status !== 429) console.error(`[cloud-auth] ${pub.code}`);
++  const status = [400, 401, 404, 429].includes(pub.status) ? pub.status : 400;
++  res.status(status).json({ error: pub.message, code: pub.code, kind: pub.kind });
++});
+ app.post(
+   "/api/mysql/test",
+   asyncRoute(async (req, res) => res.json(await mysqlStorage.test(req.body))),
+diff --git a/server/cloud-auth.mjs b/server/cloud-auth.mjs
+new file mode 100644
+index 0000000..80d3154
+--- /dev/null
++++ b/server/cloud-auth.mjs
+@@ -0,0 +1,539 @@
++/**
++ * 云端认证适配（T-LOCAL-CLOUD-001，第一阶段：隔离 mock）。
++ *
++ * 边界（见 拾光云端后台/docs/AUTH-API.md 与 collab/specs/T-LOCAL-CLOUD-001.md）：
++ *   - 只在本地后端使用：mTLS 客户端证书、JWT、刷新令牌都不出本进程、不进浏览器。
++ *   - 严格校验 CA / 主机名：rejectUnauthorized 恒为 true，不跟随重定向，不回退 HTTP。
++ *   - access 只在内存；refresh 进 SecretStore（AES-256-GCM + 文件主密钥，不弹系统授权）。
++ *   - 刷新必须 single-flight；超时/响应丢失/崩溃恢复 → 需重新登录，不无限重试旧令牌。
++ *   - 日志与对外状态不含令牌、密码、P12 密码、私钥或本机路径。
++ */
++import fs from "node:fs/promises";
++import path from "node:path";
++import https from "node:https";
++import { SecretStore } from "./secrets.mjs";
++
++const CONFIG_FILE = "cloud-auth.json";
++const STATE_FILE = "cloud-auth-state.json";
++const REFRESH_SECRET = "cloud.refreshToken";
++const P12_SECRET = "cloud.p12Pass";
++const API_PREFIX = "/api/v1";
++/** 提前 120 秒按需刷新（契约建议值） */
++const REFRESH_SKEW_MS = 120_000;
++/** 这些错误说明请求根本没被云端消费，可以保留凭据等下次重试 */
++const UNCONSUMED_ERRORS = new Set([
++  "ECONNREFUSED",
++  "ENOTFOUND",
++  "EHOSTUNREACH",
++  "ENETUNREACH",
++  "EAI_AGAIN",
++  "CERT_HAS_EXPIRED",
++  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
++  "SELF_SIGNED_CERT_IN_CHAIN",
++  "DEPTH_ZERO_SELF_SIGNED_CERT",
++  "ERR_TLS_CERT_ALTNAME_INVALID",
++  "ERR_SSL_WRONG_VERSION_NUMBER",
++  "EPROTO",
++]);
++
++export class CloudAuthError extends Error {
++  constructor(message, { kind = "cloud", code = null, status = null, requestId = null, retryAfterMs = 0, cause = null, cloudMessage = false } = {}) {
++    super(message);
++    /** 消息是否来自云端响应（泄露风险高 → 对外只用固定文案） */
++    this.cloudMessage = cloudMessage;
++    this.name = "CloudAuthError";
++    this.kind = kind; // config | cert | network | timeout | cloud | auth
++    this.code = code;
++    this.status = status;
++    this.requestId = requestId;
++    this.retryAfterMs = retryAfterMs;
++    this.cause = cause;
++  }
++  /** 对外只给可展示的脱敏信息 */
++  toPublic() {
++    return {
++      code: this.code || this.kind,
++      kind: this.kind,
++      status: this.status,
++      requestId: this.requestId,
++      retryAfterMs: this.retryAfterMs,
++      message: this.cloudMessage
++        ? PUBLIC_MESSAGES[this.code] || PUBLIC_MESSAGES[this.kind] || "云端请求未完成"
++        : String(this.message || "云端请求未完成").slice(0, 200),
++    };
++  }
++}
++
++const PUBLIC_MESSAGES = {
++  config: "云端连接尚未配置完整",
++  cert: "客户端证书或云端 CA 校验失败，请检查证书文件与主机名",
++  network: "无法连接云端服务",
++  timeout: "云端请求超时",
++  cloud: "云端返回错误",
++  auth: "登录状态无效",
++  INVALID_REQUEST: "请求参数不合法",
++  UNAUTHORIZED: "凭据或会话已失效",
++  NOT_FOUND: "资源不存在",
++  RATE_LIMITED: "请求过于频繁，请稍后再试",
++  NOT_LOGGED_IN: "尚未登录",
++  REFRESH_INTERRUPTED: "上次刷新未完成，需要重新登录",
++  REFRESH_TIMEOUT: "刷新响应丢失，需要重新登录",
++  ACCOUNT_SWITCHED: "已切换账户，请重新登录",
++};
++
++const nowIso = (ms) => new Date(ms).toISOString();
++
++export class CloudAuth {
++  constructor(lib, { dataDir, clock = () => Date.now(), timeoutMs = 15_000, secrets = null } = {}) {
++    this.lib = lib;
++    this.dataDir = dataDir || lib.dataDir;
++    this.clock = clock;
++    this.timeoutMs = timeoutMs;
++    this.secrets = secrets || new SecretStore(lib);
++    this.configPath = path.join(this.dataDir, CONFIG_FILE);
++    this.statePath = path.join(this.dataDir, STATE_FILE);
++    this.config = null;
++    this.state = { state: "unconfigured", refreshing: false, lastError: null };
++    this.accessToken = null;
++    this.accessExpiresAt = 0;
++    this.inflightRefresh = null;
++  }
++
++  async init() {
++    await this.secrets.init();
++    this.config = await this.#readJson(this.configPath);
++    const persisted = await this.#readJson(this.statePath);
++    this.state = { ...this.state, ...(persisted || {}) };
++    if (!this.config) {
++      this.state.state = "unconfigured";
++    } else if (this.state.refreshing) {
++      // 上次刷新没走完就被中断：令牌可能已被云端消费，按契约转为"需重新登录"，
++      // 并且必须清掉旧刷新令牌 —— 留着它只会在下次启动时又拿它去换，触发云端撤销整个会话。
++      this.secrets.remove(REFRESH_SECRET);
++      this.state.state = "needs-login";
++      this.state.refreshing = false;
++      this.state.lastError = { code: "REFRESH_INTERRUPTED", kind: "auth", message: PUBLIC_MESSAGES.REFRESH_INTERRUPTED };
++    } else if (!this.secrets.get(REFRESH_SECRET)) {
++      this.state.state = "logged-out";
++    } else if (!this.state.state || this.state.state === "unconfigured") {
++      this.state.state = "logged-out";
++    }
++    await this.#persistState();
++    return this;
++  }
++
++  /** 对外状态：绝不含令牌、私钥、P12 密码或本机路径 */
++  getState() {
++    const host = this.config ? safeHost(this.config.origin) : null;
++    return {
++      configured: !!this.config,
++      originHost: host,
++      hasCA: !!this.config?.caPath,
++      hasClientCertificate: !!(this.config?.certPath || this.config?.p12Path),
++      state: this.state.state,
++      username: this.state.username || null,
++      displayName: this.state.displayName || null,
++      accountId: this.state.accountId || null,
++      deviceId: this.state.deviceId || null,
++      sessionId: this.state.sessionId || null,
++      refreshExpiresAt: this.state.refreshExpiresAt || null,
++      accessExpiresInMs: this.accessToken ? Math.max(0, this.accessExpiresAt - this.clock()) : null,
++      needsLogin: this.state.state === "needs-login",
++      lastError: this.state.lastError || null,
++      retryAfterMs: this.state.retryAfterMs || null,
++    };
++  }
++
++  /** 保存连接配置；P12 密码只进 SecretStore，配置文件不含任何密码/令牌 */
++  async configure(patch = {}) {
++    const next = {
++      origin: patch.origin ?? this.config?.origin ?? null,
++      caPath: patch.caPath ?? this.config?.caPath ?? null,
++      certPath: patch.certPath ?? this.config?.certPath ?? null,
++      keyPath: patch.keyPath ?? this.config?.keyPath ?? null,
++      p12Path: patch.p12Path ?? this.config?.p12Path ?? null,
++    };
++    if (!next.origin) throw new CloudAuthError("请填写云端地址", { kind: "config" });
++    let url;
++    try {
++      url = new URL(next.origin);
++    } catch {
++      throw new CloudAuthError("云端地址格式不正确", { kind: "config" });
++    }
++    if (url.protocol !== "https:") throw new CloudAuthError("云端地址必须使用 HTTPS", { kind: "config" });
++    if (!next.caPath) throw new CloudAuthError("请提供云端 CA 证书路径", { kind: "config" });
++    if (!((next.certPath && next.keyPath) || next.p12Path))
++      throw new CloudAuthError("请提供设备证书与私钥（PEM 或 P12）", { kind: "config" });
++    for (const [label, p] of [
++      ["云端 CA", next.caPath],
++      ["设备证书", next.certPath || next.p12Path],
++      ["设备私钥", next.keyPath],
++    ]) {
++      if (!p) continue;
++      const ok = await fs
++        .stat(p)
++        .then((s) => s.isFile())
++        .catch(() => false);
++      if (!ok) throw new CloudAuthError(`${label}文件不存在或不可读`, { kind: "config" });
++    }
++    const previous = this.config || null;
++    const previousOrigin = previous?.origin || null;
++    const identityChanged =
++      !!previous &&
++      (previous.certPath !== next.certPath ||
++        previous.keyPath !== next.keyPath ||
++        previous.p12Path !== next.p12Path ||
++        previous.caPath !== next.caPath);
++    if (patch.p12Password) await this.secrets.set(P12_SECRET, String(patch.p12Password));
++    if (patch.clearP12Password) this.secrets.remove(P12_SECRET);
++    this.config = next;
++    await this.#writeJson(this.configPath, next);
++    if (previousOrigin && (previousOrigin !== next.origin || identityChanged)) await this.#clear("logged-out");
++    else if (!this.secrets.get(REFRESH_SECRET)) this.state.state = "logged-out";
++    await this.#persistState();
++    return this.getState();
++  }
++
++  async activate({ activationToken, password } = {}) {
++    if (!this.config) throw new CloudAuthError("请先配置云端连接", { kind: "config" });
++    if (typeof activationToken !== "string" || !activationToken.trim())
++      throw new CloudAuthError("请填写激活凭证", { kind: "cloud", code: "INVALID_REQUEST" });
++    if (typeof password !== "string" || password.length < 12)
++      throw new CloudAuthError("密码至少 12 个字符", { kind: "cloud", code: "INVALID_REQUEST" });
++    await this.#resetForAccountSwitch();
++    const data = await this.#request("POST", "/auth/activate", {
++      body: { activationToken: activationToken.trim(), password },
++    });
++    await this.#applySession(data);
++    await this.#refreshProfile();
++    return this.getState();
++  }
++
++  async login({ username, password } = {}) {
++    if (!this.config) throw new CloudAuthError("请先配置云端连接", { kind: "config" });
++    if (typeof username !== "string" || !username.trim())
++      throw new CloudAuthError("请填写用户名", { kind: "cloud", code: "INVALID_REQUEST" });
++    if (typeof password !== "string" || !password)
++      throw new CloudAuthError("请填写密码", { kind: "cloud", code: "INVALID_REQUEST" });
++    await this.#resetForAccountSwitch();
++    const data = await this.#request("POST", "/auth/login", { body: { username: username.trim().toLowerCase(), password } });
++    await this.#applySession(data);
++    await this.#refreshProfile();
++    return this.getState();
++  }
++
++  /** 本人资料（GET /me）；401 时最多尝试一次合规刷新 */
++  async me() {
++    const token = await this.#access();
++    try {
++      return await this.#request("GET", "/me", { bearer: token });
++    } catch (e) {
++      if (!(e.status === 401 || e.code === "UNAUTHORIZED")) throw e;
++      const fresh = await this.refresh();
++      try {
++        return await this.#request("GET", "/me", { bearer: fresh });
++      } catch (again) {
++        if (again.status === 401 || again.code === "UNAUTHORIZED") {
++          await this.#clear("needs-login", again.toPublic ? again.toPublic() : null);
++          throw again;
++        }
++        throw again;
++      }
++    }
++  }
++
++  async logout() {
++    const access = this.accessToken && this.accessExpiresAt > this.clock() ? this.accessToken : null;
++    let cloudRevoked = false;
++    let error = null;
++    if (access) {
++      try {
++        await this.#request("POST", "/auth/logout", { bearer: access });
++        cloudRevoked = true;
++      } catch (e) {
++        if (e.status === 401 || e.code === "UNAUTHORIZED") cloudRevoked = true; // 已撤销，等同于退出成功
++        else error = e.toPublic ? e.toPublic() : { code: "network" };
++      }
++    }
++    await this.#clear("logged-out");
++    return {
++      localLoggedOut: true,
++      // 云端不可达时如实区分：本地已退出 ≠ 云端已撤销
++      cloudRevoked,
++      error,
++      state: this.getState(),
++    };
++  }
++
++  /** 到期前按需刷新；并发调用共享同一次刷新（single-flight） */
++  async ensureAccess() {
++    return this.#access();
++  }
++
++  async refresh() {
++    if (this.inflightRefresh) return this.inflightRefresh;
++    this.inflightRefresh = this.#doRefresh().finally(() => {
++      this.inflightRefresh = null;
++    });
++    return this.inflightRefresh;
++  }
++
++  // ── 内部 ──────────────────────────────────────────────
++
++  async #access() {
++    if (this.accessToken && this.accessExpiresAt - this.clock() > REFRESH_SKEW_MS) return this.accessToken;
++    return this.refresh();
++  }
++
++  async #doRefresh() {
++    const token = this.secrets.get(REFRESH_SECRET);
++    if (!token) {
++      await this.#clear("logged-out");
++      throw new CloudAuthError("尚未登录", { kind: "auth", code: "NOT_LOGGED_IN" });
++    }
++    const expiresAt = this.state.refreshExpiresAt ? Date.parse(this.state.refreshExpiresAt) : null;
++    if (expiresAt && expiresAt <= this.clock()) {
++      await this.#clear("needs-login", { code: "UNAUTHORIZED", kind: "auth", message: PUBLIC_MESSAGES.UNAUTHORIZED });
++      throw new CloudAuthError("会话已到最长期限，需要重新登录", { kind: "auth", code: "UNAUTHORIZED" });
++    }
++    // 先落盘"刷新进行中"：崩溃/断电后重启能识别为未完成刷新
++    await this.#patchState({ refreshing: true });
++    try {
++      const data = await this.#request("POST", "/auth/refresh", { body: { refreshToken: token } });
++      await this.#applySession(data);
++      return this.accessToken;
++    } catch (e) {
++      if (e.status === 401 || e.code === "UNAUTHORIZED") {
++        await this.#clear("needs-login", e.toPublic ? e.toPublic() : null);
++        throw e;
++      }
++      if (e.status === 429 || e.code === "RATE_LIMITED") {
++        // 请求被限流、令牌未被消费：保留凭据，但不自动轰炸
++        await this.#patchState({
++          refreshing: false,
++          state: "rate-limited",
++          retryAfterMs: e.retryAfterMs || 0,
++          lastError: e.toPublic ? e.toPublic() : null,
++        });
++        throw e;
++      }
++      if (e.kind === "cert" || (e.cause && UNCONSUMED_ERRORS.has(e.cause.code))) {
++        // 证书/连不上：请求没有到达业务层，令牌未被消费，保留凭据等恢复
++        await this.#patchState({
++          refreshing: false,
++          state: e.kind === "cert" ? "cert-error" : "cloud-unreachable",
++          lastError: e.toPublic ? e.toPublic() : null,
++        });
++        throw e;
++      }
++      // 超时 / 响应丢失 / 5xx：令牌状态不确定，按契约要求重新登录，绝不重试旧令牌
++      await this.#clear("needs-login", {
++        code: e.kind === "timeout" ? "REFRESH_TIMEOUT" : "UNAUTHORIZED",
++        kind: e.kind === "timeout" ? "timeout" : "cloud",
++        status: e.status || null,
++        message: PUBLIC_MESSAGES[e.kind === "timeout" ? "REFRESH_TIMEOUT" : "UNAUTHORIZED"],
++      });
++      throw e;
++    }
++  }
++
++  async #request(method, pathname, { body = null, bearer = null } = {}) {
++    if (!this.config) throw new CloudAuthError("云端连接尚未配置", { kind: "config" });
++    const url = new URL(API_PREFIX + pathname, this.config.origin);
++    if (url.protocol !== "https:") throw new CloudAuthError("云端地址必须使用 HTTPS", { kind: "config" });
++    const headers = { accept: "application/json" };
++    if (bearer) headers.authorization = `Bearer ${bearer}`;
++    let payload = null;
++    if (body) {
++      payload = Buffer.from(JSON.stringify(body), "utf8");
++      headers["content-type"] = "application/json";
++      headers["content-length"] = String(payload.length);
++    }
++    const tls = await this.#tlsOptions();
++    return await new Promise((resolve, reject) => {
++      const req = https.request(
++        url,
++        {
++          method,
++          headers,
++          ...tls,
++          // 关键：绝不关闭证书/主机名校验，也不接受 HTTP 回退
++          rejectUnauthorized: true,
++          timeout: this.timeoutMs,
++          agent: false,
++        },
++        (res) => {
++          let text = "";
++          res.setEncoding("utf8");
++          res.on("data", (chunk) => {
++            text += chunk;
++            if (text.length > 1_000_000) req.destroy(new Error("response too large"));
++          });
++          res.on("end", () => {
++            let parsed = null;
++            try {
++              parsed = text ? JSON.parse(text) : null;
++            } catch {
++              return reject(new CloudAuthError("云端响应无法解析", { kind: "cloud", status: res.statusCode }));
++            }
++            if (res.statusCode >= 200 && res.statusCode < 300 && parsed?.code === "OK") return resolve(parsed.data ?? null);
++            const retryAfterMs = Math.max(0, Number(res.headers["retry-after"] || 0)) * 1000;
++            reject(
++              new CloudAuthError(parsed?.message || "云端返回错误", {
++                kind: "cloud",
++                cloudMessage: true,
++                code: parsed?.code || `HTTP_${res.statusCode}`,
++                status: res.statusCode || null,
++                requestId: parsed?.requestId || null,
++                retryAfterMs,
++              }),
++            );
++          });
++        },
++      );
++      req.on("timeout", () => {
++        req.destroy(new CloudAuthError("云端请求超时", { kind: "timeout" }));
++      });
++      req.on("error", (e) => reject(this.#classify(e)));
++      if (payload) req.write(payload);
++      req.end();
++    });
++  }
++
++  #classify(e) {
++    if (e instanceof CloudAuthError) return e;
++    const code = e?.code || "";
++    if (
++      UNCONSUMED_ERRORS.has(code) ||
++      /CERT|TLS|SSL|SELF_SIGNED|VERIFY|ALTNAME/i.test(code) ||
++      /certificate|handshake/i.test(String(e?.message || ""))
++    )
++      return new CloudAuthError("客户端证书或云端 CA 校验失败", { kind: "cert", code, cause: e });
++    return new CloudAuthError("无法连接云端服务", { kind: "network", code, cause: e });
++  }
++
++  async #tlsOptions() {
++    const cfg = this.config;
++    const read = (p) => fs.readFile(p);
++    const options = { ca: await read(cfg.caPath), minVersion: "TLSv1.2" };
++    if (cfg.p12Path) {
++      const passphrase = this.secrets.get(P12_SECRET);
++      if (!passphrase) throw new CloudAuthError("缺少 P12 口令，请重新填写设备证书口令", { kind: "config" });
++      options.pfx = await read(cfg.p12Path);
++      options.passphrase = passphrase;
++    } else {
++      options.cert = await read(cfg.certPath);
++      options.key = await read(cfg.keyPath);
++    }
++    return options;
++  }
++
++  async #applySession(data) {
++    if (!data || typeof data.accessToken !== "string" || typeof data.refreshToken !== "string")
++      throw new CloudAuthError("云端认证响应缺少令牌字段", { kind: "cloud" });
++    const expiresIn = Number(data.expiresIn);
++    if (!Number.isFinite(expiresIn) || expiresIn <= 0)
++      throw new CloudAuthError("云端认证响应缺少有效的 expiresIn", { kind: "cloud" });
++    // 原子替换刷新令牌（SecretStore.set 内部事务 + 回读校验）
++    await this.secrets.set(REFRESH_SECRET, data.refreshToken);
++    this.accessToken = data.accessToken;
++    this.accessExpiresAt = this.clock() + expiresIn * 1000;
++    this.state = {
++      ...this.state,
++      refreshing: false,
++      state: "logged-in",
++      lastError: null,
++      retryAfterMs: 0,
++      accessExpiresAt: nowIso(this.accessExpiresAt),
++      refreshExpiresAt: data.refreshExpiresAt || this.state.refreshExpiresAt || null,
++    };
++    await this.#persistState();
++  }
++
++  async #refreshProfile() {
++    const profile = await this.me();
++    this.state = {
++      ...this.state,
++      username: profile?.username || this.state.username || null,
++      displayName: profile?.displayName || null,
++      accountId: profile?.accountId || null,
++      deviceId: profile?.deviceId || null,
++      sessionId: profile?.sessionId || null,
++      superAdmin: profile?.superAdmin === true,
++      state: "logged-in",
++    };
++    await this.#persistState();
++  }
++
++  async #resetForAccountSwitch() {
++    if (this.secrets.get(REFRESH_SECRET)) await this.#clear("logged-out");
++    this.state = { ...this.state, refreshing: false, lastError: null, retryAfterMs: 0 };
++    this.accessToken = null;
++    this.accessExpiresAt = 0;
++    this.inflightRefresh = null;
++  }
++
++  async #clear(stateName, publicError = null) {
++    this.secrets.remove(REFRESH_SECRET);
++    this.accessToken = null;
++    this.accessExpiresAt = 0;
++    this.inflightRefresh = null;
++    this.state = {
++      ...this.state,
++      state: stateName,
++      refreshing: false,
++      username: null,
++      displayName: null,
++      accountId: null,
++      deviceId: null,
++      sessionId: null,
++      superAdmin: false,
++      lastError: publicError || null,
++      retryAfterMs: 0,
++    };
++    await this.#persistState();
++  }
++
++  async #patchState(patch) {
++    this.state = { ...this.state, ...patch };
++    await this.#persistState();
++  }
++
++  async #persistState() {
++    const out = { ...this.state };
++    delete out._;
++    await this.#writeJson(this.statePath, out);
++  }
++
++  async #readJson(file) {
++    try {
++      return JSON.parse(await fs.readFile(file, "utf8"));
++    } catch (e) {
++      if (e.code === "ENOENT") return null;
++      throw new CloudAuthError("本地云端配置文件无法读取", { kind: "config", cause: e });
++    }
++  }
++
++  async #writeJson(file, value) {
++    const dir = path.dirname(file);
++    await fs.mkdir(dir, { recursive: true });
++    const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
++    const handle = await fs.open(tmp, "w", 0o600);
++    try {
++      await handle.writeFile(JSON.stringify(value, null, 2), "utf8");
++      await handle.sync();
++    } finally {
++      await handle.close();
++    }
++    await fs.chmod(tmp, 0o600);
++    await fs.rename(tmp, file);
++  }
++}
++
++function safeHost(origin) {
++  try {
++    return new URL(origin).host;
++  } catch {
++    return null;
++  }
++}
+diff --git a/tests/cloud-auth-mock.mjs b/tests/cloud-auth-mock.mjs
+new file mode 100644
+index 0000000..ed36426
+--- /dev/null
++++ b/tests/cloud-auth-mock.mjs
+@@ -0,0 +1,278 @@
++/**
++ * 隔离的云端认证 mock（T-LOCAL-CLOUD-001 测试夹具）。
++ *
++ * - 真实 HTTPS + 双向 TLS：服务端要求客户端证书，证书由一次性 CA 签发，全部生成在临时目录。
++ * - 只在本机 127.0.0.1 随机端口监听，跑完关掉；不连正式云端、不碰真实账户。
++ * - 按 `拾光云端后台/docs/AUTH-API.md` 实现 login / activate / refresh / logout / me 的语义：
++ *   refresh 轮换 + 旧令牌重放 → 撤销会话；429 限流；401 失效。
++ *
++ * 测试用：`const cloud = await startMockCloud();` → `cloud.origin / cloud.caCert / cloud.clientCertA ...`
++ */
++import crypto from "node:crypto";
++import fs from "node:fs/promises";
++import https from "node:https";
++import os from "node:os";
++import path from "node:path";
++import { execFile } from "node:child_process";
++import { promisify } from "node:util";
++
++const run = promisify(execFile);
++const b64url = (buf) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++const token = () => b64url(crypto.randomBytes(32));
++const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
++
++async function openssl(args) {
++  await run("openssl", args, { maxBuffer: 2e6 });
++}
++
++async function makeCa(dir, name, cn) {
++  const key = path.join(dir, `${name}.key`);
++  const crt = path.join(dir, `${name}.crt`);
++  await openssl([
++    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256",
++    "-keyout", key, "-out", crt, "-days", "2", "-subj", `/CN=${cn}`,
++    "-addext", "basicConstraints=critical,CA:TRUE",
++    "-addext", "keyUsage=critical,keyCertSign,cRLSign",
++  ]);
++  return { key, crt };
++}
++
++async function makeCert(dir, name, ca, { cn, san, eku }) {
++  const key = path.join(dir, `${name}.key`);
++  const csr = path.join(dir, `${name}.csr`);
++  const crt = path.join(dir, `${name}.crt`);
++  const ext = path.join(dir, `${name}.ext`);
++  const lines = ["basicConstraints=critical,CA:FALSE", `extendedKeyUsage=${eku}`];
++  if (san) lines.push(`subjectAltName=${san}`);
++  await fs.writeFile(ext, lines.join("\n") + "\n");
++  await openssl(["req", "-newkey", "rsa:2048", "-nodes", "-sha256", "-keyout", key, "-out", csr, "-subj", `/CN=${cn}`]);
++  await openssl([
++    "x509", "-req", "-in", csr, "-CA", ca.crt, "-CAkey", ca.key, "-CAcreateserial",
++    "-out", crt, "-days", "2", "-sha256", "-extfile", ext,
++  ]);
++  return { key, crt };
++}
++
++const fingerprintOf = (pem) => new crypto.X509Certificate(pem).fingerprint256;
++
++export async function startMockCloud() {
++  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-cloud-mock-"));
++  const ca = await makeCa(dir, "ca", "Shiguang Test CA");
++  const otherCa = await makeCa(dir, "other-ca", "Untrusted Test CA");
++  const server = await makeCert(dir, "server", ca, {
++    cn: "localhost",
++    san: "DNS:localhost,IP:127.0.0.1",
++    eku: "serverAuth",
++  });
++  const clientA = await makeCert(dir, "client-a", ca, { cn: "device-a", eku: "clientAuth" });
++  const clientB = await makeCert(dir, "client-b", ca, { cn: "device-b", eku: "clientAuth" });
++  const clientUntrusted = await makeCert(dir, "client-x", otherCa, { cn: "device-x", eku: "clientAuth" });
++
++  const accounts = new Map(); // username -> { password, displayName, superAdmin, deviceFp, deviceId }
++  const devices = new Map(); // fingerprint -> { id, accountId, state }
++  const activations = new Map(); // token -> { username, deviceFp, expiresAt }
++  const sessions = new Map(); // id -> { accountId, deviceId, fp, refreshHash, used:Set, revoked, expiresAt }
++  const accessTokens = new Map(); // jwt-ish -> sessionId
++  const counts = { login: 0, activate: 0, refresh: 0, logout: 0, me: 0 };
++  const flags = { dropRefreshResponse: false, rateLimitRefresh: false, revokeSessions: false };
++
++  const json = (res, status, body) => {
++    res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
++    res.end(JSON.stringify(body));
++  };
++  const ok = (res, data = null) => json(res, 200, { code: "OK", data });
++  const fail = (res, status, code, message = "失败") => json(res, status, { code, message, requestId: crypto.randomUUID() });
++
++  const fpOf = (req) => {
++    const cert = req.socket.getPeerCertificate?.();
++    return cert?.fingerprint256 || null;
++  };
++  const newSession = (accountId, deviceId, fp) => {
++    const id = crypto.randomUUID();
++    const refreshToken = token();
++    sessions.set(id, {
++      id,
++      accountId,
++      deviceId,
++      fp,
++      refreshHash: sha256(refreshToken),
++      used: new Set(),
++      revoked: false,
++      expiresAt: Date.now() + 30 * 24 * 3600 * 1000,
++    });
++    return { id, refreshToken, session: sessions.get(id) };
++  };
++  const issue = (session, refreshToken) => {
++    const access = token();
++    accessTokens.set(access, session.id);
++    return {
++      accessToken: access,
++      refreshToken,
++      tokenType: "Bearer",
++      expiresIn: 1800,
++      refreshExpiresAt: new Date(session.expiresAt).toISOString(),
++    };
++  };
++  const bearer = (req) => {
++    const h = String(req.headers.authorization || "");
++    if (!h.startsWith("Bearer ")) return null;
++    return accessTokens.get(h.slice(7)) || null;
++  };
++
++  const server_ = https.createServer(
++    { key: await fs.readFile(server.key), cert: await fs.readFile(server.crt), ca: await fs.readFile(ca.crt), requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.2" },
++    async (req, res) => {
++      const url = new URL(req.url, "https://127.0.0.1");
++      const fp = fpOf(req);
++      let body = "";
++      for await (const chunk of req) body += chunk;
++      let payload = {};
++      try {
++        payload = body ? JSON.parse(body) : {};
++      } catch {
++        return fail(res, 400, "INVALID_REQUEST", "JSON 无效");
++      }
++      const route = `${req.method} ${url.pathname.replace(/^\/api\/v1/, "")}`;
++      const device = fp ? devices.get(fp) : null;
++
++      if (route === "POST /auth/login") {
++        counts.login++;
++        if (!device || device.state !== "ACTIVE") return fail(res, 401, "UNAUTHORIZED", "设备未激活");
++        const account = accounts.get(String(payload.username || "").toLowerCase());
++        if (!account || account.password !== payload.password || account.deviceFp !== fp)
++          return fail(res, 401, "UNAUTHORIZED", "凭据无效");
++        const { id, refreshToken, session } = newSession(account.id, device.id, fp);
++        return ok(res, issue(session, refreshToken));
++      }
++
++      if (route === "POST /auth/activate") {
++        counts.activate++;
++        const record = activations.get(String(payload.activationToken || ""));
++        if (!record || record.used || record.expiresAt < Date.now() || record.deviceFp !== fp)
++          return fail(res, 401, "UNAUTHORIZED", "激活凭证无效");
++        if (String(payload.password || "").length < 12) return fail(res, 400, "INVALID_REQUEST", "密码太短");
++        record.used = true;
++        const account = accounts.get(record.username);
++        account.password = String(payload.password);
++        account.deviceFp = fp;
++        const dev = devices.get(fp);
++        dev.state = "ACTIVE";
++        const { refreshToken, session } = newSession(account.id, dev.id, fp);
++        return ok(res, issue(session, refreshToken));
++      }
++
++      if (route === "POST /auth/refresh") {
++        counts.refresh++;
++        if (flags.rateLimitRefresh) {
++          res.setHeader("retry-after", "1");
++          return fail(res, 429, "RATE_LIMITED", "限流");
++        }
++        const presented = String(payload.refreshToken || "");
++        const hash = sha256(presented);
++        const session = [...sessions.values()].find((s) => s.refreshHash === hash || s.used.has(hash));
++        if (!session || session.revoked || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "刷新令牌无效");
++        if (session.used.has(hash)) {
++          // 重放旧刷新令牌 → 撤销整个会话（契约第 5 节）
++          session.revoked = true;
++          for (const [at, sid] of accessTokens) if (sid === session.id) accessTokens.delete(at);
++          return fail(res, 401, "UNAUTHORIZED", "刷新令牌已使用");
++        }
++        if (session.expiresAt < Date.now()) {
++          session.revoked = true;
++          return fail(res, 401, "UNAUTHORIZED", "会话到期");
++        }
++        session.used.add(hash);
++        const nextRefresh = token();
++        session.refreshHash = sha256(nextRefresh);
++        if (flags.dropRefreshResponse) {
++          // 响应丢失：令牌已在服务端轮换，但客户端收不到
++          session.refreshHash = sha256(nextRefresh);
++          req.socket.destroy();
++          return;
++        }
++        return ok(res, issue(session, nextRefresh));
++      }
++
++      if (route === "POST /auth/logout") {
++        counts.logout++;
++        const sid = bearer(req);
++        const session = sid && sessions.get(sid);
++        if (!session || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "会话无效");
++        session.revoked = true;
++        for (const [at, id] of accessTokens) if (id === session.id) accessTokens.delete(at);
++        return ok(res, null);
++      }
++
++      if (route === "GET /me") {
++        counts.me++;
++        const sid = bearer(req);
++        const session = sid && sessions.get(sid);
++        if (!session || session.revoked || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "会话无效");
++        const account = [...accounts.values()].find((a) => a.id === session.accountId);
++        return ok(res, {
++          accountId: session.accountId,
++          username: account.username,
++          displayName: account.displayName,
++          deviceId: session.deviceId,
++          sessionId: session.id,
++          superAdmin: !!account.superAdmin,
++        });
++      }
++
++      return fail(res, 404, "NOT_FOUND", "接口不存在");
++    },
++  );
++
++  await new Promise((resolve) => server_.listen(0, "127.0.0.1", resolve));
++  const { port } = server_.address();
++
++  const api = {
++    origin: `https://127.0.0.1:${port}`,
++    caCert: ca.crt,
++    otherCaCert: otherCa.crt,
++    clientCertA: clientA.crt,
++    clientKeyA: clientA.key,
++    clientCertB: clientB.crt,
++    clientKeyB: clientB.key,
++    clientUntrustedCert: clientUntrusted.crt,
++    clientUntrustedKey: clientUntrusted.key,
++    counts,
++    flags,
++    /** 登记一个账户 + 绑定设备证书（测试夹具用，等价于云端离线登记工具） */
++    async enroll({ username, password, displayName, superAdmin = false, clientCert, clientKey }) {
++      const pem = await fs.readFile(clientCert, "utf8");
++      const fp = fingerprintOf(pem);
++      const accountId = crypto.randomUUID();
++      const deviceId = crypto.randomUUID();
++      accounts.set(username.toLowerCase(), { id: accountId, username: username.toLowerCase(), password, displayName, superAdmin, deviceFp: fp, deviceId });
++      devices.set(fp, { id: deviceId, accountId, state: "ACTIVE" });
++      return { accountId, deviceId };
++    },
++    /** 创建待激活账户（PENDING 设备 + 一次性激活凭证） */
++    async enrollPending({ username, displayName, clientCert }) {
++      const pem = await fs.readFile(clientCert, "utf8");
++      const fp = fingerprintOf(pem);
++      const accountId = crypto.randomUUID();
++      const deviceId = crypto.randomUUID();
++      accounts.set(username.toLowerCase(), { id: accountId, username: username.toLowerCase(), password: null, displayName, superAdmin: false, deviceFp: fp, deviceId });
++      devices.set(fp, { id: deviceId, accountId, state: "PENDING" });
++      const activationToken = token();
++      activations.set(activationToken, { username: username.toLowerCase(), deviceFp: fp, expiresAt: Date.now() + 24 * 3600 * 1000 });
++      return { accountId, deviceId, activationToken };
++    },
++    /** 让云端撤销全部会话（模拟停用/撤权） */
++    revokeAllSessions() {
++      for (const session of sessions.values()) session.revoked = true;
++      accessTokens.clear();
++    },
++    sessionCount: () => sessions.size,
++    deviceCount: () => devices.size,
++    close: () =>
++      new Promise((resolve) => {
++        server_.closeAllConnections?.();
++        server_.close(() => resolve());
++      }),
++    dir,
++  };
++  return api;
++}
+diff --git a/tests/cloud-auth.test.mjs b/tests/cloud-auth.test.mjs
+new file mode 100644
+index 0000000..3c6c02f
+--- /dev/null
++++ b/tests/cloud-auth.test.mjs
+@@ -0,0 +1,203 @@
++/**
++ * T-LOCAL-CLOUD-001：本地认证适配（隔离 mock）验收测试。
++ *
++ * 全部使用一次性证书 + 本机随机端口的 HTTPS 双向 TLS mock：
++ *   - 不连正式云端、不碰真实账户、不使用 18443 旧探针；
++ *   - 只读/写临时 MEDIA_DATA_DIR；
++ *   - 覆盖：激活、登录、退出、到期刷新 single-flight、刷新响应丢失、重启恢复、
++ *     401 撤权、429 限流、证书失败、账户切换、令牌不外泄。
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { Library } from "../server/library.mjs";
++import { CloudAuth, CloudAuthError } from "../server/cloud-auth.mjs";
++import { startMockCloud } from "./cloud-auth-mock.mjs";
++
++const PASSWORD = "correct horse battery staple";
++
++async function setup(t) {
++  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-cloud-")));
++  const lib = await new Library(path.join(base, "data")).init();
++  const cloud = await startMockCloud();
++  await cloud.enroll({ username: "alice", password: PASSWORD, displayName: "爱丽丝", superAdmin: true, clientCert: cloud.clientCertA, clientKey: cloud.clientKeyA });
++  await cloud.enroll({ username: "bob", password: PASSWORD, displayName: "鲍勃", clientCert: cloud.clientCertB, clientKey: cloud.clientKeyB });
++  let now = Date.now();
++  const auth = await new CloudAuth(lib, { dataDir: lib.dataDir, clock: () => now }).init();
++  t.after(async () => {
++    lib.db.close();
++    await cloud.close();
++    await fs.rm(base, { recursive: true, force: true });
++  });
++  const configure = (extra = {}) =>
++    auth.configure({ origin: cloud.origin, caPath: cloud.caCert, certPath: cloud.clientCertA, keyPath: cloud.clientKeyA, ...extra });
++  return { base, lib, cloud, auth, configure, advance: (ms) => (now += ms) };
++}
++
++test("配置要求 HTTPS，且拒绝不存在的证书文件", async (t) => {
++  const { auth, cloud } = await setup(t);
++  await assert.rejects(() => auth.configure({ origin: "http://127.0.0.1:1", caPath: cloud.caCert, certPath: cloud.clientCertA, keyPath: cloud.clientKeyA }), /HTTPS/);
++  await assert.rejects(
++    () => auth.configure({ origin: cloud.origin, caPath: path.join(os.tmpdir(), "missing-ca.crt"), certPath: cloud.clientCertA, keyPath: cloud.clientKeyA }),
++    /不存在或不可读/,
++  );
++});
++
++test("登录 → 本人资料 → 退出；对外状态与本地存储都不含令牌", async (t) => {
++  const { auth, configure, lib } = await setup(t);
++  await configure();
++  const state = await auth.login({ username: "alice", password: PASSWORD });
++  assert.equal(state.state, "logged-in");
++  assert.equal(state.username, "alice");
++  assert.equal(state.displayName, "爱丽丝");
++  assert.equal(state.hasClientCertificate, true);
++
++  const profile = await auth.me();
++  assert.equal(profile.username, "alice");
++  assert.equal(profile.superAdmin, true);
++
++  // 对外状态必须脱敏：没有令牌、没有密码、没有本机路径
++  const visible = JSON.stringify(auth.getState());
++  for (const forbidden of ["accessToken", "refreshToken", "Bearer", PASSWORD, lib.dataDir])
++    assert.equal(visible.includes(forbidden), false, `对外状态泄露了 ${forbidden}`);
++
++  // 刷新令牌必须加密存放（不能是明文列）
++  const row = lib.db.prepare("SELECT encrypted FROM app_secrets WHERE id='cloud.refreshToken'").get();
++  assert.ok(row, "刷新令牌应写入 SecretStore");
++  assert.equal(row.encrypted.includes("eyJ"), false, "密文里不应出现明文令牌");
++  assert.ok(JSON.parse(row.encrypted).version === 1, "应是 AES-GCM 加密信封");
++
++  const result = await auth.logout();
++  assert.equal(result.localLoggedOut, true);
++  assert.equal(result.cloudRevoked, true);
++  assert.equal(auth.getState().state, "logged-out");
++  assert.equal(lib.db.prepare("SELECT encrypted FROM app_secrets WHERE id='cloud.refreshToken'").get(), undefined);
++});
++
++test("激活：一次性凭证设置密码并登录", async (t) => {
++  const { auth, configure, cloud } = await setup(t);
++  await configure();
++  const pending = await cloud.enrollPending({ username: "carol", displayName: "卡罗尔", clientCert: cloud.clientCertA });
++  const state = await auth.activate({ activationToken: pending.activationToken, password: PASSWORD });
++  assert.equal(state.state, "logged-in");
++  assert.equal(state.username, "carol");
++  await assert.rejects(() => auth.activate({ activationToken: pending.activationToken, password: PASSWORD }), /凭据|无效|UNAUTHORIZED/);
++});
++
++test("到期后并发调用只触发一次刷新（single-flight）", async (t) => {
++  const { auth, configure, cloud, advance } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  const before = cloud.counts.refresh;
++  advance((1800 - 119) * 1000); // 剩余 < 120 秒 → 触发按需刷新
++  const results = await Promise.all([auth.me(), auth.me(), auth.me(), auth.me(), auth.me()]);
++  assert.equal(results.length, 5);
++  assert.equal(cloud.counts.refresh - before, 1, "并发调用只能发出一次刷新请求");
++  assert.equal(auth.getState().state, "logged-in");
++});
++
++test("刷新响应丢失：转为需重新登录，不无限重试旧令牌", async (t) => {
++  const { auth, configure, cloud, advance } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  const before = cloud.counts.refresh;
++  cloud.flags.dropRefreshResponse = true;
++  advance((1800 - 119) * 1000);
++  await assert.rejects(() => auth.me());
++  const after = cloud.counts.refresh;
++  assert.equal(after - before, 1, "只允许尝试一次刷新");
++  const state = auth.getState();
++  assert.equal(state.state, "needs-login");
++  assert.equal(state.needsLogin, true);
++  assert.ok(state.lastError?.code, "应记录脱敏错误码");
++  // 再次调用不应再打云端
++  await assert.rejects(() => auth.me());
++  assert.equal(cloud.counts.refresh, after, "状态不确定后不得继续重试旧令牌");
++});
++
++test("重启恢复：正常可续；上次刷新中断则要求重新登录", async (t) => {
++  const { auth, configure, lib, cloud } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++
++  // 正常重启：凭据仍在，首次调用通过刷新拿回 access
++  const restarted = await new CloudAuth(lib, { dataDir: lib.dataDir }).init();
++  const profile = await restarted.me();
++  assert.equal(profile.username, "alice");
++
++  // 模拟"刷新进行中崩溃"：状态文件留 refreshing=true
++  const statePath = path.join(lib.dataDir, "cloud-auth-state.json");
++  const persisted = JSON.parse(await fs.readFile(statePath, "utf8"));
++  await fs.writeFile(statePath, JSON.stringify({ ...persisted, refreshing: true }));
++  const crashed = await new CloudAuth(lib, { dataDir: lib.dataDir }).init();
++  assert.equal(crashed.getState().state, "needs-login");
++  assert.equal(crashed.getState().lastError.code, "REFRESH_INTERRUPTED");
++  await assert.rejects(() => crashed.me(), /尚未登录|需重新登录|NOT_LOGGED_IN/);
++  void cloud;
++});
++
++test("401 撤权：清除凭据并停止重试", async (t) => {
++  const { auth, configure, cloud } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  cloud.revokeAllSessions();
++  await assert.rejects(() => auth.me());
++  const state = auth.getState();
++  assert.equal(state.state, "needs-login");
++  assert.equal(state.username, null);
++  const tokenRows = (await fs.readdir(lib_dir(auth))).filter((f) => f.startsWith("cloud-auth"));
++  assert.ok(tokenRows.length >= 1);
++});
++
++test("429 限流：保留凭据、标记稍后重试，恢复后可继续", async (t) => {
++  const { auth, configure, cloud, advance } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  cloud.flags.rateLimitRefresh = true;
++  advance((1800 - 119) * 1000);
++  await assert.rejects(() => auth.me(), (e) => e.status === 429 || e.code === "RATE_LIMITED");
++  assert.equal(auth.getState().state, "rate-limited");
++  assert.ok(auth.getState().retryAfterMs > 0, "应暴露 retry-after");
++  cloud.flags.rateLimitRefresh = false;
++  const profile = await auth.me();
++  assert.equal(profile.username, "alice");
++  assert.equal(auth.getState().state, "logged-in");
++});
++
++test("证书失败：CA 不匹配或客户端证书不受信都必须失败", async (t) => {
++  const { auth, cloud } = await setup(t);
++  // 客户端信任错误的 CA → 校验服务端证书失败
++  await auth.configure({ origin: cloud.origin, caPath: cloud.otherCaCert, certPath: cloud.clientCertA, keyPath: cloud.clientKeyA });
++  await assert.rejects(
++    () => auth.login({ username: "alice", password: PASSWORD }),
++    (e) => e instanceof CloudAuthError && e.kind === "cert",
++  );
++  // 客户端证书由不受信 CA 签发 → 服务端拒绝握手
++  await auth.configure({ origin: cloud.origin, caPath: cloud.caCert, certPath: cloud.clientUntrustedCert, keyPath: cloud.clientUntrustedKey });
++  await assert.rejects(
++    () => auth.login({ username: "alice", password: PASSWORD }),
++    (e) => e instanceof CloudAuthError && (e.kind === "cert" || e.kind === "network"),
++  );
++  assert.notEqual(auth.getState().state, "logged-in");
++});
++
++test("账户切换：换设备证书后不复用前一个账户的凭据", async (t) => {
++  const { auth, configure, cloud, lib } = await setup(t);
++  await configure();
++  await auth.login({ username: "alice", password: PASSWORD });
++  assert.equal((await auth.me()).username, "alice");
++
++  await configure({ certPath: cloud.clientCertB, keyPath: cloud.clientKeyB });
++  assert.equal(auth.getState().state, "logged-out", "换证书应清空旧会话");
++  assert.equal(lib.db.prepare("SELECT encrypted FROM app_secrets WHERE id='cloud.refreshToken'").get(), undefined);
++  const state = await auth.login({ username: "bob", password: PASSWORD });
++  assert.equal(state.username, "bob");
++  assert.equal((await auth.me()).username, "bob");
++  assert.equal(cloud.counts.login, 2);
++});
++
++function lib_dir(auth) {
++  return auth.dataDir;
++}

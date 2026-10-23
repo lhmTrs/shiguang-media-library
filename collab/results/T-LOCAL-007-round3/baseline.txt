@@ -1,0 +1,24 @@
+date: 2026-10-22 15:41:48 CST
+node: v22.7.0
+npm: 10.8.2
+branch: main
+HEAD: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+--- git status --short ---
+ M scripts/package.mjs
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/main.tsx
+ M src/style.css
+?? collab/
+?? config/
+?? scripts/cloud-release-config.mjs
+?? server/cloud-auth.mjs
+?? server/cloud-release-config.mjs
+?? server/device-enrollment.mjs
+?? src/CloudAccount.tsx
+?? src/CloudConnectionSettings.tsx
+?? src/cloud-auth.ts
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+?? tests/device-enrollment-mock.mjs
+?? tests/device-enrollment.test.mjs

@@ -1,0 +1,336 @@
+diff --git a/server/audio-job-queue.mjs b/server/audio-job-queue.mjs
+--- a/server/audio-job-queue.mjs
++++ b/server/audio-job-queue.mjs
+@@ -96,24 +96,43 @@
+ 
+ function validateResolved(assetId, value) {
+   if (!value || typeof value !== "object" || Array.isArray(value)) fail("ASSET_NOT_FOUND");
+-  if (value.assetId !== assetId) fail("SOURCE_CHANGED");
+-  if (value.kind !== "music" && value.kind !== "sfx") fail("UNSUPPORTED_ASSET");
++  // 只读取一次并复制到本模块自有的基本类型快照；绝不把 resolver 返回的可变对象
++  // 当作已接受基线（否则外部原位改 generation 会同时改掉基线）。
++  const resolved = {
++    assetId: value.assetId,
++    kind: value.kind,
++    sourcePath: value.sourcePath,
++    rootPath: value.rootPath,
++    rootId: value.rootId,
++    online: value.online,
++    trashed: value.trashed,
++    retired: value.retired,
++    rootRetired: value.rootRetired,
++    busy: value.busy,
++    assetGeneration: value.assetGeneration,
++    libraryGeneration: value.libraryGeneration,
++    sourceGeneration: value.sourceGeneration,
++  };
++  if (resolved.assetId !== assetId) fail("SOURCE_CHANGED");
++  if (resolved.kind !== "music" && resolved.kind !== "sfx") fail("UNSUPPORTED_ASSET");
+   for (const key of ["sourcePath", "rootPath", "rootId"]) {
+-    if (typeof value[key] !== "string" || !value[key]) fail("SOURCE_CHANGED");
++    if (typeof resolved[key] !== "string" || !resolved[key]) fail("SOURCE_CHANGED");
+   }
+-  if (!path.isAbsolute(value.sourcePath) || !path.isAbsolute(value.rootPath)) fail("SOURCE_CHANGED");
++  if (!path.isAbsolute(resolved.sourcePath) || !path.isAbsolute(resolved.rootPath)) {
++    fail("SOURCE_CHANGED");
++  }
+   for (const key of ["online", "trashed", "retired", "rootRetired", "busy"]) {
+-    if (typeof value[key] !== "boolean") fail("SOURCE_CHANGED");
++    if (typeof resolved[key] !== "boolean") fail("SOURCE_CHANGED");
+   }
+   for (const key of ["assetGeneration", "libraryGeneration", "sourceGeneration"]) {
+-    if (!validToken(value[key])) fail("SOURCE_CHANGED");
++    if (!validToken(resolved[key])) fail("SOURCE_CHANGED");
+   }
+-  if (!value.online) fail("SOURCE_OFFLINE");
+-  if (value.trashed) fail("SOURCE_TRASHED");
+-  if (value.retired) fail("SOURCE_RETIRED");
+-  if (value.rootRetired) fail("ROOT_RETIRED");
+-  if (value.busy) fail("ASSET_BUSY");
+-  return value;
++  if (!resolved.online) fail("SOURCE_OFFLINE");
++  if (resolved.trashed) fail("SOURCE_TRASHED");
++  if (resolved.retired) fail("SOURCE_RETIRED");
++  if (resolved.rootRetired) fail("ROOT_RETIRED");
++  if (resolved.busy) fail("ASSET_BUSY");
++  return Object.freeze(resolved);
+ }
+ 
+ function sameResolved(a, b) {
+@@ -392,6 +411,7 @@
+       job.controller?.abort();
+     }, this.#wallDeadlineMs);
+     let outcome = null;
++    let cleanupError = null;
+     let leaseReleased = false;
+     try {
+       await this.#acquireLease();
+@@ -435,6 +455,14 @@
+         }
+       }
+     } catch (error) {
++      // createSnapshot 在返回前就清理失败时不会给 queue snapshot 对象；这一错误同样
++      // 表示本次任务目录未清理干净，必须进入不可释放租约的故障态，且优先于取消/超时。
++      if (
++        (error instanceof AudioSnapshotError || error instanceof AudioQueueError) &&
++        error.code === "CLEANUP_FAILED"
++      ) {
++        cleanupError = new AudioQueueError("CLEANUP_FAILED");
++      }
+       if (job.timedOut) outcome = new AudioQueueError("TIMEOUT");
+       else if (job.cancelRequested || signal.aborted) outcome = new AudioQueueError("CANCELLED");
+       else if (job.state === "running" && EXECUTOR_ERROR_CODES.has(error?.code)) {
+@@ -443,7 +471,6 @@
+     }
+ 
+     // 清理先于租约释放和终态公布；清理失败 fail-closed，保留租约与 busy。
+-    let cleanupError = null;
+     if (job.snapshot) {
+       try {
+         await job.snapshot.cleanup();
+diff --git a/server/audio-snapshot.mjs b/server/audio-snapshot.mjs
+--- a/server/audio-snapshot.mjs
++++ b/server/audio-snapshot.mjs
+@@ -263,7 +263,20 @@
+       // 复制中增长：早于后置 fstat 给出确定错误，避免继续多读。
+       if (bytes > opened.size) fail("SOURCE_CHANGED");
+       hash.update(buffer.subarray(0, bytesRead));
+-      await out.write(buffer, 0, bytesRead);
++      // FileHandle.write 允许短写；必须循环到本块全部落盘。零进度/越界立即受控失败，
++      // 不能把“已读入 buffer”当成“已写入副本”。
++      let written = 0;
++      while (written < bytesRead) {
++        const { bytesWritten } = await out.write(buffer, written, bytesRead - written);
++        if (
++          !Number.isInteger(bytesWritten) ||
++          bytesWritten <= 0 ||
++          bytesWritten > bytesRead - written
++        ) {
++          fail("SNAPSHOT_FAILED");
++        }
++        written += bytesWritten;
++      }
+       chunks += 1;
+       if (typeof hooks.afterChunk === "function") {
+         await hooks.afterChunk({ bytes, chunks, dir, filePath, sourcePath });
+@@ -271,6 +284,15 @@
+     }
+     checkAbort(signal);
+ 
++    // 成功前核对副本的实际字节数，避免“报告 bytes/hash 来自源读取、副本却缺失”。
++    let copyStat;
++    try {
++      copyStat = await out.stat();
++    } catch {
++      fail("SNAPSHOT_FAILED");
++    }
++    if (copyStat.size !== bytes) fail("SNAPSHOT_FAILED");
++
+     let after;
+     try {
+       after = await handle.stat();
+diff --git a/tests/audio-job-queue.test.mjs b/tests/audio-job-queue.test.mjs
+--- a/tests/audio-job-queue.test.mjs
++++ b/tests/audio-job-queue.test.mjs
+@@ -75,7 +75,8 @@
+   const resolveAsset = async (assetId) => {
+     stats.resolves += 1;
+     const asset = assets.get(assetId);
+-    return asset ? { ...asset } : null;
++    if (!asset) return null;
++    return options.reuseResolvedObject ? asset : { ...asset };
+   };
+   const execute = async (snapshot, context) => {
+     stats.active += 1;
+@@ -548,8 +549,89 @@
+   assert.equal((await h.queue.cancel(b.id)).state, "cancelled");
+   await h.queue.dispose();
+   assert.ok(await fs.lstat(h.lockPath), "dispose 也不静默释放未完成清理的租约");
++});
++
++test("创建阶段内部清理失败：failed CLEANUP_FAILED，保留租约/busy，后续任务不启动且 dispose 不假称清理", async (t) => {
++  const h = await harness(t);
++  h.hooks.snapshotHooks = {
++    afterChunk: async ({ dir }) => {
++      await fs.unlink(path.join(dir, ".owner.json"));
++      throw new Error("synthetic snapshot failure /private/tmp/secret");
++    },
++  };
++  await h.addAsset("a");
++  await h.addAsset("b");
++  const a = await h.queue.submit("a");
++  const failed = await waitState(h.queue, a.id, "failed");
++  assert.equal(failed.error.code, "CLEANUP_FAILED");
++  assert.equal(failed.error.message, "任务清理失败");
++  assert.equal(JSON.stringify(failed).includes(h.base), false, "摘要不含私人路径");
++  assert.ok(await fs.lstat(h.lockPath), "创建阶段清理失败必须保留租约");
++  assert.equal(h.queue.busy, true);
++  const residual = await jobDirs(h.jobsPath);
++  assert.equal(residual.length, 1, "只保留未清理的自有残留目录，不递归删未知内容");
++
++  const b = await h.queue.submit("b");
++  await delay(30);
++  assert.equal((await h.queue.get(b.id)).state, "queued", "故障后不得启动后续任务");
++  assert.equal(h.stats.executions.length, 0, "快照创建失败时执行器一次也不应被调用");
++  await h.queue.dispose();
++  assert.equal((await h.queue.get(b.id)).state, "cancelled");
++  assert.ok(await fs.lstat(h.lockPath), "dispose 不释放未完成清理的租约");
++  assert.equal((await jobDirs(h.jobsPath)).length, 1, "dispose 也不假称清理完成");
++});
++
++test("创建阶段清理失败优先于取消：failed CLEANUP_FAILED 且保留租约", async (t) => {
++  const reached = deferred();
++  const gate = deferred();
++  const h = await harness(t);
++  h.hooks.snapshotHooks = {
++    afterChunk: async ({ dir, chunks }) => {
++      if (chunks !== 1) return;
++      reached.resolve();
++      await gate.promise;
++      await fs.unlink(path.join(dir, ".owner.json"));
++      throw new Error("synthetic snapshot failure");
++    },
++  };
++  await h.addAsset("a");
++  const a = await h.queue.submit("a");
++  await reached.promise;
++  assert.equal((await h.queue.cancel(a.id)).state, "cancelling");
++  gate.resolve();
++  const failed = await waitState(h.queue, a.id, "failed");
++  assert.equal(failed.error.code, "CLEANUP_FAILED", "取消不能覆盖创建阶段清理失败");
++  assert.ok(await fs.lstat(h.lockPath));
++  assert.equal(h.queue.busy, true);
++  await h.queue.dispose();
++  assert.ok(await fs.lstat(h.lockPath), "dispose 也不释放");
+ });
+ 
++test("resolver 复用同一可变对象：原位改 generation/管理状态不能绕过已接受基线", async (t) => {
++  const h = await harness(t, { reuseResolvedObject: true });
++  const cases = [
++    ["libraryGeneration", 2, "SOURCE_CHANGED"],
++    ["assetGeneration", 2, "SOURCE_CHANGED"],
++    ["sourceGeneration", 2, "SOURCE_CHANGED"],
++    ["online", false, "SOURCE_OFFLINE"],
++    ["trashed", true, "SOURCE_TRASHED"],
++    ["retired", true, "SOURCE_RETIRED"],
++    ["rootRetired", true, "ROOT_RETIRED"],
++    ["busy", true, "ASSET_BUSY"],
++  ];
++  for (const [field, value, code] of cases) {
++    const id = `alias-${field}`;
++    const asset = await h.addAsset(id);
++    h.setExecutor(async () => {
++      asset[field] = value;
++      return { ok: true };
++    });
++    const job = await h.queue.submit(id);
++    const failed = await waitState(h.queue, job.id, "failed");
++    assert.equal(failed.error.code, code, `${field} -> ${code}`);
++  }
++});
++
+ test("busy 只读状态：排队/运行/持有租约时为真，构造与 get 不写锁", async (t) => {
+   const gate = deferred();
+   const h = await harness(t, {
+diff --git a/tests/audio-snapshot.test.mjs b/tests/audio-snapshot.test.mjs
+--- a/tests/audio-snapshot.test.mjs
++++ b/tests/audio-snapshot.test.mjs
+@@ -79,8 +79,98 @@
+   await assert.rejects(fs.lstat(snapshot.dir), /ENOENT/);
+   assert.equal(await fs.readFile(path.join(sibling, "keep.txt"), "utf8"), "keep");
+   await snapshot.cleanup(); // 幂等
++});
++
++test("短写：每块只落盘一半时循环写满，报告字节/hash 与副本一致", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "short.bin");
++  const content = crypto.randomBytes(128 * 1024 + 7);
++  await fs.writeFile(source, content);
++
++  const originalOpen = fs.open;
++  fs.open = async (...openArgs) => {
++    const handle = await originalOpen(...openArgs);
++    if (path.basename(String(openArgs[0])) === "source.bin") {
++      const originalWrite = handle.write.bind(handle);
++      handle.write = (buffer, offset, length, ...rest) =>
++        originalWrite(buffer, offset, Math.max(1, Math.floor(length / 2)), ...rest);
++    }
++    return handle;
++  };
++  t.after(() => {
++    fs.open = originalOpen;
++  });
++
++  const snapshot = await createSnapshot(args(base, root, source));
++  try {
++    const actual = await fs.readFile(snapshot.filePath);
++    assert.equal(actual.length, snapshot.bytes, "不得报告未实际写入的字节");
++    assert.equal(sha256(actual), snapshot.sha256, "摘要必须对应实际副本");
++    assert.deepEqual(actual, content);
++  } finally {
++    await snapshot.cleanup();
++  }
++});
++
++test("零进度写：受控 SNAPSHOT_FAILED 并清理自有目录", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "zero.bin");
++  await fs.writeFile(source, crypto.randomBytes(80 * 1024));
++
++  let injected = false;
++  const originalOpen = fs.open;
++  fs.open = async (...openArgs) => {
++    const handle = await originalOpen(...openArgs);
++    if (path.basename(String(openArgs[0])) === "source.bin") {
++      const originalWrite = handle.write.bind(handle);
++      handle.write = async (buffer, offset, length, ...rest) => {
++        if (!injected) {
++          injected = true;
++          return { bytesWritten: 0 };
++        }
++        return originalWrite(buffer, offset, length, ...rest);
++      };
++    }
++    return handle;
++  };
++  t.after(() => {
++    fs.open = originalOpen;
++  });
++
++  await expectCode(createSnapshot(args(base, root, source)), "SNAPSHOT_FAILED");
++  const left = await fs.readdir(path.join(base, "data", "audio-jobs")).catch(() => []);
++  assert.deepEqual(left, [], "零进度失败后不留下自有任务目录");
+ });
+ 
++test("成功前核对副本实际字节数：副本少 1 字节即 SNAPSHOT_FAILED", async (t) => {
++  const base = await tempBase(t);
++  const root = await makeRoot(base);
++  const source = path.join(root, "sizecheck.bin");
++  await fs.writeFile(source, crypto.randomBytes(96 * 1024));
++
++  const originalOpen = fs.open;
++  fs.open = async (...openArgs) => {
++    const handle = await originalOpen(...openArgs);
++    if (path.basename(String(openArgs[0])) === "source.bin") {
++      const originalStat = handle.stat.bind(handle);
++      handle.stat = async () => {
++        const stat = await originalStat();
++        return { size: Math.max(0, stat.size - 1) };
++      };
++    }
++    return handle;
++  };
++  t.after(() => {
++    fs.open = originalOpen;
++  });
++
++  await expectCode(createSnapshot(args(base, root, source)), "SNAPSHOT_FAILED");
++  const left = await fs.readdir(path.join(base, "data", "audio-jobs")).catch(() => []);
++  assert.deepEqual(left, []);
++});
++
+ test("空文件策略：允许 0 字节普通文件，hash 为 sha256(空)", async (t) => {
+   const base = await tempBase(t);
+   const root = await makeRoot(base);

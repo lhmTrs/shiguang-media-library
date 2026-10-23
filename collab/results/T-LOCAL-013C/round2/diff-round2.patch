@@ -1,0 +1,321 @@
+diff --git a/server/audio-engine.mjs b/server/audio-engine.mjs
+index 641772c..72c0423 100644
+--- a/server/audio-engine.mjs
++++ b/server/audio-engine.mjs
+@@ -82,6 +82,12 @@ const CODES = {
+   INVALID_CALLBACK: "ENGINE_INVALID_CALLBACK",
+ };
+ 
++/**
++ * callback 允许保留的固定运行码（只保留分类，不保留 message/status）；
++ * 其它 AudioEngineError 与普通异常一律折叠为 RUN_FAILED。
++ */
++const CALLBACK_ERROR_CODES = new Set([CODES.RUN_FAILED, CODES.CANCELLED]);
++
+ const MESSAGES = {
+   [CODES.UNSUPPORTED_PLATFORM]: "当前平台不支持音频引擎安装",
+   [CODES.CONFIRM_REQUIRED]: "需要明确确认后才能安装",
+@@ -390,7 +396,7 @@ export class AudioEngine {
+       try {
+         Object.defineProperty(signal, "signal", { value: signal, configurable: true });
+       } catch {}
+-      const result = await callback(descriptor, signal);
++      const result = await this.#invokeRunCallback(callback, descriptor, signal);
+       if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
+       return result;
+     } catch (error) {
+@@ -409,6 +415,22 @@ export class AudioEngine {
+     }
+   }
+ 
++  /**
++   * callback 错误边界：安装器内部错误（指针/路径/摘要/锁）仍按原固定码抛出；
++   * callback 自己的异常只允许列表内的 code，并用默认文案与默认 status 重建，
++   * 不透传 message/code/status，避免私有路径随错误外泄。
++   */
++  async #invokeRunCallback(callback, descriptor, signal) {
++    try {
++      return await callback(descriptor, signal);
++    } catch (error) {
++      if (isAudioEngineError(error) && CALLBACK_ERROR_CODES.has(error.code)) {
++        throw new AudioEngineError(error.code);
++      }
++      throw new AudioEngineError(CODES.RUN_FAILED);
++    }
++  }
++
+   /** 读取并校验运行所需的指针/marker/路径链；只做结构性校验，不 hash。 */
+   async #loadRunRecord() {
+     const release = this.release;
+@@ -442,11 +464,15 @@ export class AudioEngine {
+     if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
+ 
+     const binary = path.join(versionDir, pointer.binary);
+-    const binaryStat = await lstatOrNull(binary);
++    // 用 bigint lstat 一次性取回 dev/ino/size/mtime/ctime 身份；后续 open 后 fstat、
++    // hash 后路径 lstat 与重读记录都必须与该独立快照完全一致。只比 size 无法发现
++    // “rename 后写入同内容新 inode”的替换。
++    const binaryStat = await lstatOrNull(binary, { bigint: true });
+     if (!binaryStat || binaryStat.isSymbolicLink() || !binaryStat.isFile()) {
+       throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+     }
+-    if (binaryStat.size <= 0 || binaryStat.size > release.extractedMaxBytes) {
++    const binarySize = Number(binaryStat.size);
++    if (!Number.isSafeInteger(binarySize) || binarySize <= 0 || binarySize > release.extractedMaxBytes) {
+       throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+     }
+ 
+@@ -490,7 +516,7 @@ export class AudioEngine {
+       !Number.isSafeInteger(marker.binarySize) ||
+       marker.binarySize <= 0 ||
+       marker.binarySize !== pointer.binarySize ||
+-      marker.binarySize !== binaryStat.size
++      marker.binarySize !== binarySize
+     ) {
+       throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+     }
+@@ -507,6 +533,7 @@ export class AudioEngine {
+       binarySize: marker.binarySize,
+       generation: marker.generation,
+       binaryPath: binary,
++      binaryIdentity: statIdentity(binaryStat),
+       dir: pointer.dir,
+       binary: pointer.binary,
+     };
+@@ -567,6 +594,12 @@ export class AudioEngine {
+       if (before.size !== record.binarySize || before.size <= 0 || before.size > release.extractedMaxBytes) {
+         throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+       }
++      // 打开后的 fstat 必须与 #loadRunRecord 保存的独立身份一致：lstat 与 open 之间
++      // 被 rename 成同内容新 inode（或原位改动）时，dev/ino/mtime/ctime 会变化。
++      const openedIdentity = statIdentity(await handle.stat({ bigint: true }));
++      if (!sameFileIdentity(openedIdentity, record.binaryIdentity)) {
++        throw new AudioEngineError(CODES.INTEGRITY_FAILED);
++      }
+       const hashed = await hashOpenHandle(handle, {
+         before,
+         expectedSize: before.size,
+@@ -579,20 +612,21 @@ export class AudioEngine {
+       if (hashed.sha256 !== record.binarySha256) throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+ 
+       // 打开的文件句柄与路径必须仍指向同一个普通文件；期间被 rename/替换/原位修改都拒绝。
+-      const pathStat = await lstatOrNull(record.binaryPath);
+-      if (
+-        !pathStat ||
+-        pathStat.isSymbolicLink() ||
+-        !pathStat.isFile() ||
+-        pathStat.dev !== hashed.stat.dev ||
+-        pathStat.ino !== hashed.stat.ino ||
+-        pathStat.size !== hashed.stat.size
+-      ) {
++      const pathStat = await lstatOrNull(record.binaryPath, { bigint: true });
++      if (!pathStat || pathStat.isSymbolicLink() || !pathStat.isFile()) {
++        throw new AudioEngineError(CODES.INTEGRITY_FAILED);
++      }
++      if (!sameFileIdentity(statIdentity(pathStat), record.binaryIdentity)) {
++        throw new AudioEngineError(CODES.INTEGRITY_FAILED);
++      }
++      // hash 结束后句柄身份仍必须与打开前/加载时一致。
++      const finalIdentity = statIdentity(await handle.stat({ bigint: true }));
++      if (!sameFileIdentity(finalIdentity, record.binaryIdentity)) {
+         throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+       }
+       if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
+ 
+-      // hash 期间指针/marker 可能被替换；重新读取并要求 generation/摘要/路径完全一致。
++      // hash 期间指针/marker 可能被替换；重新读取并要求 generation/摘要/路径/身份完全一致。
+       const again = await this.#loadRunRecord();
+       if (
+         !again ||
+@@ -601,7 +635,8 @@ export class AudioEngine {
+         again.binarySha256 !== record.binarySha256 ||
+         again.binarySize !== record.binarySize ||
+         again.binaryPath !== record.binaryPath ||
+-        again.releaseSha256 !== record.releaseSha256
++        again.releaseSha256 !== record.releaseSha256 ||
++        !sameFileIdentity(again.binaryIdentity, record.binaryIdentity)
+       ) {
+         throw new AudioEngineError(CODES.INTEGRITY_FAILED);
+       }
+@@ -1513,14 +1548,41 @@ async function readSmallText(file, maxBytes) {
+   }
+ }
+ 
+-async function lstatOrNull(target) {
++async function lstatOrNull(target, options) {
+   try {
+-    return await fs.lstat(target);
++    return await fs.lstat(target, options);
+   } catch {
+     return null;
+   }
+ }
+ 
++/**
++ * 把 bigint stat 收敛为可比较的独立基本类型身份快照；不保存 fs.Stats 引用，
++ * 避免后续对象被复用/原地更新。mtimeNs/ctimeNs 用于发现同尺寸原位改写。
++ */
++function statIdentity(stat) {
++  if (!stat || typeof stat.dev !== "bigint") return null;
++  return Object.freeze({
++    dev: stat.dev.toString(),
++    ino: stat.ino.toString(),
++    size: Number(stat.size),
++    mtimeNs: stat.mtimeNs.toString(),
++    ctimeNs: stat.ctimeNs.toString(),
++  });
++}
++
++function sameFileIdentity(a, b) {
++  return (
++    !!a &&
++    !!b &&
++    a.dev === b.dev &&
++    a.ino === b.ino &&
++    a.size === b.size &&
++    a.mtimeNs === b.mtimeNs &&
++    a.ctimeNs === b.ctimeNs
++  );
++}
++
+ async function unlinkRegular(target) {
+   const stat = await lstatOrNull(target);
+   if (!stat) return;
+diff --git a/tests/audio-engine-runtime.test.mjs b/tests/audio-engine-runtime.test.mjs
+index 7bbde91..f92974d 100644
+--- a/tests/audio-engine-runtime.test.mjs
++++ b/tests/audio-engine-runtime.test.mjs
+@@ -15,7 +15,7 @@ import { execFile, spawn } from "node:child_process";
+ import { promisify } from "node:util";
+ import { once } from "node:events";
+ import { fileURLToPath, pathToFileURL } from "node:url";
+-import { AudioEngine } from "../server/audio-engine.mjs";
++import { AudioEngine, AudioEngineError } from "../server/audio-engine.mjs";
+ import {
+   delay,
+   exists,
+@@ -698,3 +698,124 @@ test("锁释放失败/坏 owner/未知条目 fail-closed：保留锁与未知内
+   assert.equal(exists(lockPath(dataDir)), true);
+   await cleanLock(dataDir);
+ });
++
++test("打开前同内容换 inode、同尺寸原位改写、换 FIFO 都在 callback 前受控拒绝", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { root, dataDir, engine } = await setup(t, archive);
++  await installOk(engine);
++  const paths = await installPaths(dataDir);
++  const open = fs.open;
++  t.after(() => {
++    fs.open = open;
++  });
++
++  // 1) #loadRunRecord 的 lstat 与真正的 open 之间，用 rename + 同内容新 inode 替换。
++  let swapped = false;
++  fs.open = async (file, ...args) => {
++    if (!swapped && file === paths.binary) {
++      swapped = true;
++      await fs.rename(paths.binary, paths.binary + ".old");
++      await fs.writeFile(paths.binary, BINARY, { mode: 0o755 });
++    }
++    return open(file, ...args);
++  };
++  let called = false;
++  await assert.rejects(
++    engine.withRunLease(async () => {
++      called = true;
++    }),
++    (error) => error.code === "ENGINE_INTEGRITY_FAILED",
++  );
++  assert.equal(swapped, true);
++  assert.equal(called, false, "同内容换 inode 后不得调用 callback");
++  assertLockReleased(dataDir);
++  fs.open = open;
++  await fs.rm(paths.binary + ".old", { force: true });
++  await engine.withRunLease(async () => {});
++  assertLockReleased(dataDir);
++
++  // 2) 同尺寸原位改写（内容仍是同一份字节，只有 mtime/ctime 变化）也必须拒绝。
++  let rewritten = false;
++  fs.open = async (file, ...args) => {
++    if (!rewritten && file === paths.binary) {
++      rewritten = true;
++      await delay(5);
++      fssync.writeFileSync(paths.binary, BINARY, { mode: 0o755 });
++    }
++    return open(file, ...args);
++  };
++  called = false;
++  await assert.rejects(
++    engine.withRunLease(async () => {
++      called = true;
++    }),
++    (error) => error.code === "ENGINE_INTEGRITY_FAILED",
++  );
++  assert.equal(rewritten, true);
++  assert.equal(called, false, "原位改写后不得调用 callback");
++  assertLockReleased(dataDir);
++  fs.open = open;
++  await engine.withRunLease(async () => {});
++  assertLockReleased(dataDir);
++
++  // 3) open 前把路径换成 FIFO：O_NONBLOCK 不挂起，fstat 非普通文件必须拒绝。
++  const savedBinary = path.join(root, "saved-before-open");
++  let fifo = false;
++  fs.open = async (file, ...args) => {
++    if (!fifo && file === paths.binary) {
++      fifo = true;
++      await fs.rename(paths.binary, savedBinary);
++      await execFileAsync("mkfifo", [paths.binary]);
++    }
++    return open(file, ...args);
++  };
++  called = false;
++  await assert.rejects(
++    engine.withRunLease(async () => {
++      called = true;
++    }),
++    (error) => error.code === "ENGINE_INTEGRITY_FAILED",
++  );
++  assert.equal(fifo, true);
++  assert.equal(called, false, "路径换 FIFO 后不得调用 callback");
++  assertLockReleased(dataDir);
++  fs.open = open;
++  await fs.rm(paths.binary);
++  await fs.rename(savedBinary, paths.binary);
++  await engine.withRunLease(async () => {});
++  assertLockReleased(dataDir);
++});
++
++test("callback 错误边界只保留允许列表固定码与默认文案，不泄露 message/status/路径", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  await installOk(engine);
++
++  const typed = new AudioEngineError("ENGINE_RUN_FAILED", "/private/synthetic/secret.wav", 418);
++  assert.equal(typed.message, "/private/synthetic/secret.wav", "旧错误构造器对外兼容");
++  assert.equal(typed.status, 418);
++
++  const cases = [
++    { name: "typed private path", thrower: () => { throw new AudioEngineError("ENGINE_RUN_FAILED", "/private/synthetic/secret.wav", 500); }, code: "ENGINE_RUN_FAILED" },
++    { name: "typed unknown code", thrower: async () => { throw new AudioEngineError("INTERNAL_SECRET_CODE", "/private/synthetic/secret.wav", 500); }, code: "ENGINE_RUN_FAILED" },
++    { name: "typed cancelled", thrower: () => { throw new AudioEngineError("ENGINE_CANCELLED", "/private/synthetic/secret.wav"); }, code: "ENGINE_CANCELLED" },
++    { name: "ordinary error", thrower: async () => { throw new Error("secret callback detail /private/synthetic/secret.wav"); }, code: "ENGINE_RUN_FAILED" },
++    { name: "non-error throw", thrower: () => { throw "secret string /private/synthetic/secret.wav"; }, code: "ENGINE_RUN_FAILED" },
++  ];
++  for (const item of cases) {
++    let caught = null;
++    try {
++      await engine.withRunLease(async () => item.thrower());
++    } catch (error) {
++      caught = error;
++    }
++    assert.equal(caught?.code, item.code, item.name);
++    assert.equal(caught?.message.includes("/private/"), false, `${item.name} 不得泄露路径`);
++    assert.equal(caught?.message.includes("secret"), false, `${item.name} 不得泄露原始文案`);
++    assert.equal(caught?.status, 400, `${item.name} 必须使用默认 status`);
++    assert.equal(caught?.message, item.code === "ENGINE_CANCELLED" ? "安装已取消" : "音频运行失败", item.name);
++    assertLockReleased(dataDir);
++    await engine.withRunLease(async () => {});
++    assertLockReleased(dataDir);
++  }
++});

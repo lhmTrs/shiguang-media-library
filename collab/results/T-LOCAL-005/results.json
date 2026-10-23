@@ -1,0 +1,19 @@
+{
+  "startedAt": "2026-10-22T05:38:41.556Z",
+  "browsers": [
+    {
+      "name": "chrome",
+      "ok": true,
+      "cloudRequests": 24,
+      "screenshots": 10
+    },
+    {
+      "name": "webkit",
+      "ok": true,
+      "cloudRequests": 24,
+      "screenshots": 10
+    }
+  ],
+  "errors": [],
+  "finishedAt": "2026-10-22T05:38:50.505Z"
+}

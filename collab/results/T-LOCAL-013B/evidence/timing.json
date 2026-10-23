@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-23T06:10:16.768Z",
+  "environment": {
+    "node": "v22.7.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "fixture": {
+    "bytes": 8388608,
+    "sha256": "04b23c492cac390fef13ce4bd3b278890b457e05944ec7a21d16468703d42d97",
+    "file": "synthetic 8MiB random buffer"
+  },
+  "hashMethod": "64KiB 读循环 + crypto.createHash('sha256') 同步更新，复制与 hash 同一条流",
+  "directSnapshot": {
+    "copyMs": 12.61,
+    "cleanupMs": 1.42,
+    "bytes": 8388608,
+    "sha256": "04b23c492cac390fef13ce4bd3b278890b457e05944ec7a21d16468703d42d97",
+    "shaMatches": true
+  },
+  "queue": {
+    "submitMs": [
+      0.75,
+      0.08,
+      0.14
+    ],
+    "endToEndMs": [
+      38.58,
+      37.88,
+      44.46
+    ],
+    "cancel": {
+      "issuedState": "cancelling",
+      "cancelToCancelledMs": 36.47
+    },
+    "maxConcurrent": 1,
+    "leftoverJobDirsAtEnd": 0,
+    "leasePresentAtEnd": false
+  },
+  "note": "合成 executor 的 25ms sleep 不是真实引擎性能；只证明队列/快照开销与单 worker 行为。"
+}

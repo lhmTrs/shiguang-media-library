@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "apiOrigin": "",
+  "enrollmentOrigin": "",
+  "serverCaPem": "",
+  "deviceCaPem": ""
+}

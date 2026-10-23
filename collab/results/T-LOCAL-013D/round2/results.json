@@ -1,0 +1,118 @@
+{
+  "ticket": "T-LOCAL-013D",
+  "round": 2,
+  "replyTo": "#0092",
+  "date": "2026-10-23",
+  "status": "delivered_pending_gpt_review",
+  "scope": {
+    "added": [
+      "collab/results/T-LOCAL-013D/round2/"
+    ],
+    "modified": [
+      "server/audio-result.mjs",
+      "tests/audio-result.test.mjs"
+    ],
+    "dependenciesChanged": false,
+    "productionChainWired": false,
+    "gptProbeModified": false,
+    "round1ArtifactsModified": false
+  },
+  "fix": {
+    "context": "own data descriptors only; accessors rejected without executing getters",
+    "parameters": "own data descriptor brief===true only; accessors rejected",
+    "reflection": "revoked Proxy / throwing traps / invalid descriptors -> fixed INVALID_CONTEXT",
+    "exportedFailure": "both exported functions always return fixed {ok:false,code,message}"
+  },
+  "tests": {
+    "audio-result": {
+      "command": "node --test tests/audio-result.test.mjs",
+      "pass": 37,
+      "fail": 0,
+      "skipped": 0,
+      "durationMs": 74.95,
+      "log": "evidence/round2-result-tests.log"
+    },
+    "audio-feature-flag": {
+      "command": "node --test tests/audio-feature-flag.test.mjs",
+      "pass": 3,
+      "fail": 0,
+      "skipped": 0,
+      "durationMs": 6568.53,
+      "log": "evidence/round2-freeze.log"
+    },
+    "gpt-probe-round1": {
+      "command": "node --test 拾光云端后台/collab/reviews/T-LOCAL-013D/probe-round1.mjs",
+      "pass": 2,
+      "fail": 0,
+      "skipped": 0,
+      "log": "evidence/round2-gpt-probe.log"
+    },
+    "local-adversarial-probe": {
+      "command": "node collab/results/T-LOCAL-013D/round2/probe-round2.mjs",
+      "checks": 35,
+      "fail": 0,
+      "log": "evidence/round2-local-probe.log"
+    },
+    "syntax": {
+      "command": "node --check server/audio-result.mjs tests/audio-result.test.mjs benchmark.mjs probe-round2.mjs; git diff --check",
+      "exit": 0,
+      "log": "evidence/round2-syntax.log"
+    },
+    "build": {
+      "command": "npm run build",
+      "exit": 0,
+      "note": "existing 503.25 kB chunk warning only",
+      "log": "evidence/round2-build.log"
+    }
+  },
+  "benchmark": {
+    "note": "synthetic JSON parsing/normalization/fingerprint; NOT real audio-analysis performance",
+    "largeFixtureBytes": 65536,
+    "small": {
+      "inputBytes": 179,
+      "outputBytes": 753,
+      "iterationsPerRound": 20000,
+      "rounds": 7,
+      "medianMsPerOp": 0.004478,
+      "meanMsPerOp": 0.00452,
+      "maxMsPerOp": 0.004754,
+      "opsPerSec": 221242
+    },
+    "near64KiB": {
+      "inputBytes": 65536,
+      "outputBytes": 5547,
+      "iterationsPerRound": 1000,
+      "rounds": 7,
+      "medianMsPerOp": 0.059999,
+      "meanMsPerOp": 0.060617,
+      "maxMsPerOp": 0.064079,
+      "opsPerSec": 16497
+    },
+    "fingerprint": {
+      "outputBytes": 478,
+      "iterationsPerRound": 50000,
+      "rounds": 7,
+      "medianMsPerOp": 0.002218,
+      "meanMsPerOp": 0.002221,
+      "maxMsPerOp": 0.002259,
+      "opsPerSec": 450276
+    }
+  },
+  "diff": {
+    "file": "diff-round2.patch",
+    "base": "round1 terminal state reconstructed from round1 diff.patch (hash verified)",
+    "hunks": 4,
+    "added": 176,
+    "removed": 15,
+    "appliesCleanly": true
+  },
+  "hashes": {
+    "server/audio-result.mjs": "69bf6eb9e419194ff7b46446de41322e38003a95f2808460811e0172f5c65f0f",
+    "tests/audio-result.test.mjs": "ace8ff7e89d7f0929d09dc2153ff47a5b64c085c9eef12bef1de3e1919d57cb2",
+    "diff-round2.patch": "ec33d6b9690525176c7e4453357e6a080fcc0be43000e2b4d2dc83dbfee4e609",
+    "probe-round2.mjs": "6d9d5b02c279a23a6b25da94bd77988b93d46c5f4762aaeb56dbf57b3a217f54",
+    "benchmark.mjs": "747c4b5532a3567a861fd600895bdd8be2e0c511f122adf93e22ac0106d49fe4",
+    "round1/server/audio-result.mjs": "1c014fd9c550a4a4a0d9100d9a28a7f6e85915ad2b2efd5da45daae6dc14b42a",
+    "round1/tests/audio-result.test.mjs": "2eef9c644f548e57955271a7ede7af87ca38759e0888f319105736559788c776"
+  }
+}

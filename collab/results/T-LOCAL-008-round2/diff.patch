@@ -1,0 +1,743 @@
+--- a/server/cloud-auth.mjs
++++ b/server/cloud-auth.mjs
+@@ -342,7 +342,7 @@
+    * /api/v1 的业务路径。令牌仍然只在 Node 内存里；mTLS 仍由 #tlsOptions 强制。
+    * 401 不在这里自动递归刷新（可能是设备/会话被撤销），由调用方清身份。
+    */
+-  async proxy(method, pathname, { body = null, bearer = true } = {}) {
++  async proxy(method, pathname, { body = null, bearer = true, epoch = this.epoch } = {}) {
+     if (typeof method !== "string" || !/^[A-Z]{3,7}$/.test(method))
+       throw new CloudAuthError("云端请求方法不合法", { kind: "config", code: "INVALID_REQUEST" });
+     if (
+@@ -352,7 +352,8 @@
+       /[\r\n]/.test(pathname)
+     )
+       throw new CloudAuthError("云端请求路径不合法", { kind: "config", code: "INVALID_REQUEST" });
+-    const epoch = this.epoch;
++    // 调用方可以固定入队时的代次；不能用“执行时最新”的会话顶替旧意图。
++    if (epoch !== this.epoch) throw this.#staleError();
+     const token = bearer ? await this.#access(epoch) : null;
+     if (epoch !== this.epoch) throw this.#staleError();
+     return this.#request(method, pathname, { body, bearer: token, epoch });
+@@ -362,8 +363,11 @@
+    * 云端已经判定当前会话失效（401、本人改密、撤销当前设备、密码重置成功）：
+    * 清掉本机保存的刷新令牌与登录态，但不删除设备证书/私钥，也不改连接配置。
+    */
+-  async forgetSession(reason = null) {
++  async forgetSession(reason = null, { epoch = null } = {}) {
+     this.#revokeOperation();
++    // 携带 epoch 的调用只允许清掉它自己绑定的那个会话；如果调用方已经切到
++    // 新登录/新配置，直接放弃，绝不能把新会话清掉。
++    if (epoch !== null && this.epoch !== epoch) return this.getState();
+     // 先占一个代次再排队；如果排队期间已有新登录/配置推进代次，
+     // 旧 401 的清理必须放弃，不能把新会话清掉。
+     const expected = this.epoch + 1;
+--- a/server/cloud-management.mjs
++++ b/server/cloud-management.mjs
+@@ -403,8 +403,17 @@
+     this.writeChain = Promise.resolve();
+   }
+ 
++  /**
++   * 写操作在**入队时**绑定认证代次；真正开始执行前再核对一次。
++   * 仅靠 #call 执行时读取 epoch 会让旧身份的排队写在新登录后拿到新 Bearer。
++   */
+   #write(task) {
+-    const run = this.writeChain.then(task, task);
++    const epoch = this.cloudAuth.epoch;
++    const start = () => {
++      if (this.cloudAuth.epoch !== epoch) throw new CloudManagementError("STALE", 409);
++      return task(epoch);
++    };
++    const run = this.writeChain.then(start, start);
+     this.writeChain = run.then(
+       () => undefined,
+       () => undefined,
+@@ -412,20 +421,34 @@
+     return run;
+   }
+ 
+-  async #call(routeName, { id: routeId = null, accountId = null, query = null, body = null } = {}) {
++  /** 写操作成功后的清会话只允许作用于它自己绑定的那个代次。 */
++  async #forgetBound(epoch, reason) {
++    if (this.cloudAuth.epoch !== epoch) throw new CloudManagementError("STALE", 409);
++    const state = await this.cloudAuth.forgetSession(reason, { epoch });
++    if (state.state === "logged-in") throw new CloudManagementError("STALE", 409);
++    return state;
++  }
++
++  async #call(routeName, { id: routeId = null, accountId = null, query = null, body = null, epoch = null } = {}) {
+     const route = ROUTES[routeName];
+     if (!route) throw new CloudManagementError("INVALID_REQUEST", 400);
+-    const epoch = this.cloudAuth.epoch;
++    // 写操作把入队代次传进来；读操作则在发起时绑定。两种情况都由此处固定，
++    // 不能等到 proxy 内部再取“最新”身份。
++    const bound = epoch ?? this.cloudAuth.epoch;
++    if (this.cloudAuth.epoch !== bound) throw new CloudManagementError("STALE", 409);
+     let raw;
+     try {
+       raw = await this.cloudAuth.proxy(route.method, route.path({ id: routeId, accountId, query }), {
+         body,
+         bearer: route.auth !== false,
++        epoch: bound,
+       });
+     } catch (error) {
+       // 401 时只清掉"发起这次请求时"的会话；用户已经开始的新登录不能被旧响应清掉。
+-      if (error?.status === 401 && route.auth !== false && this.cloudAuth.epoch === epoch) {
+-        await this.cloudAuth.forgetSession({ code: "UNAUTHORIZED", kind: "auth", message: "登录状态失效" }).catch(() => undefined);
++      if (error?.status === 401 && route.auth !== false && this.cloudAuth.epoch === bound) {
++        await this.cloudAuth
++          .forgetSession({ code: "UNAUTHORIZED", kind: "auth", message: "登录状态失效" }, { epoch: bound })
++          .catch(() => undefined);
+       }
+       const mapped = mapCloudError(error);
+       // 一侧 401 已经清掉会话后，同一批并发请求的 STALE 也统一收敛为"需重新登录"。
+@@ -434,7 +457,7 @@
+       throw mapped;
+     }
+     // 退出/换账户/换配置后，迟到的成功响应也不能进入新账户页面。
+-    if (this.cloudAuth.epoch !== epoch) {
++    if (this.cloudAuth.epoch !== bound) {
+       if (this.cloudAuth.getState().state !== "logged-in")
+         throw new CloudManagementError("UNAUTHORIZED", 401);
+       throw new CloudManagementError("STALE", 409);
+@@ -458,11 +481,15 @@
+ 
+   async revokeDevice(value) {
+     const deviceId = id(value, "设备 ID");
+-    return this.#write(async () => {
+-      await this.#call("revokeDevice", { id: deviceId });
++    return this.#write(async (epoch) => {
++      await this.#call("revokeDevice", { id: deviceId, epoch });
+       if (this.cloudAuth.getState().deviceId === deviceId) {
+-        await this.cloudAuth.forgetSession({ code: "UNAUTHORIZED", kind: "auth", message: "当前设备已撤销" });
+-        return { revoked: true, signedOut: true, state: this.cloudAuth.getState() };
++        const state = await this.#forgetBound(epoch, {
++          code: "UNAUTHORIZED",
++          kind: "auth",
++          message: "当前设备已撤销",
++        });
++        return { revoked: true, signedOut: true, state };
+       }
+       return { revoked: true, signedOut: false };
+     });
+@@ -472,10 +499,14 @@
+     const body = bodyOf(payload, ["currentPassword", "newPassword"]);
+     const currentPassword = text(body.currentPassword, { min: 1, max: 128, trim: false, name: "当前密码" });
+     const newPassword = password(body.newPassword, "新密码");
+-    return this.#write(async () => {
+-      await this.#call("changePassword", { body: { currentPassword, newPassword } });
+-      await this.cloudAuth.forgetSession({ code: "UNAUTHORIZED", kind: "auth", message: "密码已修改" });
+-      return { changed: true, state: this.cloudAuth.getState() };
++    return this.#write(async (epoch) => {
++      await this.#call("changePassword", { body: { currentPassword, newPassword }, epoch });
++      const state = await this.#forgetBound(epoch, {
++        code: "UNAUTHORIZED",
++        kind: "auth",
++        message: "密码已修改",
++      });
++      return { changed: true, state };
+     });
+   }
+ 
+@@ -486,10 +517,14 @@
+       invalid("重置码格式不合法");
+     const resetToken = body.resetToken.trim();
+     const newPassword = password(body.newPassword, "新密码");
+-    return this.#write(async () => {
+-      await this.#call("resetPassword", { body: { resetToken, newPassword } });
+-      await this.cloudAuth.forgetSession({ code: "UNAUTHORIZED", kind: "auth", message: "密码已重置" });
+-      return { reset: true, state: this.cloudAuth.getState() };
++    return this.#write(async (epoch) => {
++      await this.#call("resetPassword", { body: { resetToken, newPassword }, epoch });
++      const state = await this.#forgetBound(epoch, {
++        code: "UNAUTHORIZED",
++        kind: "auth",
++        message: "密码已重置",
++      });
++      return { reset: true, state };
+     });
+   }
+ 
+@@ -538,7 +573,9 @@
+     const initialLeaderAccountId = id(body.initialLeaderAccountId, "初始组长");
+     if (typeof body.requestId !== "string" || !/^[0-9a-fA-F-]{36}$/.test(body.requestId)) invalid("requestId 不合法");
+     const requestId = body.requestId.toLowerCase();
+-    return this.#write(() => this.#call("createGroup", { body: { name, initialLeaderAccountId, requestId } }));
++    return this.#write((epoch) =>
++      this.#call("createGroup", { body: { name, initialLeaderAccountId, requestId }, epoch }),
++    );
+   }
+ 
+   async renameGroup(groupId, payload) {
+@@ -546,7 +583,7 @@
+     const body = bodyOf(payload, ["name", "expectedVersion"]);
+     const name = text(body.name, { min: 1, max: 128, name: "小组名称" });
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() => this.#call("renameGroup", { id: gid, body: { name, expectedVersion } }));
++    return this.#write((epoch) => this.#call("renameGroup", { id: gid, body: { name, expectedVersion }, epoch }));
+   }
+ 
+   async addMember(groupId, payload) {
+@@ -554,8 +591,8 @@
+     const body = bodyOf(payload, ["accountId", "expectedVersion"]);
+     const accountId = id(body.accountId, "账户 ID");
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() =>
+-      this.#call("addGroupMember", { id: gid, body: { accountId, expectedVersion } }),
++    return this.#write((epoch) =>
++      this.#call("addGroupMember", { id: gid, body: { accountId, expectedVersion }, epoch }),
+     );
+   }
+ 
+@@ -564,8 +601,8 @@
+     const target = id(accountId, "账户 ID");
+     const body = bodyOf(payload, ["expectedVersion"]);
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() =>
+-      this.#call("removeGroupMember", { id: gid, accountId: target, body: { expectedVersion } }),
++    return this.#write((epoch) =>
++      this.#call("removeGroupMember", { id: gid, accountId: target, body: { expectedVersion }, epoch }),
+     );
+   }
+ 
+@@ -573,7 +610,7 @@
+     const gid = id(groupId, "小组 ID");
+     const body = bodyOf(payload, ["expectedVersion"]);
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() => this.#call("leaveGroup", { id: gid, body: { expectedVersion } }));
++    return this.#write((epoch) => this.#call("leaveGroup", { id: gid, body: { expectedVersion }, epoch }));
+   }
+ 
+   async transferLeader(groupId, payload) {
+@@ -581,8 +618,8 @@
+     const body = bodyOf(payload, ["accountId", "expectedVersion"]);
+     const accountId = id(body.accountId, "账户 ID");
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() =>
+-      this.#call("transferLeader", { id: gid, body: { accountId, expectedVersion } }),
++    return this.#write((epoch) =>
++      this.#call("transferLeader", { id: gid, body: { accountId, expectedVersion }, epoch }),
+     );
+   }
+ 
+@@ -591,8 +628,8 @@
+     const body = bodyOf(payload, ["enabled", "expectedVersion"]);
+     const enabled = bool(body.enabled, "enabled");
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+-    return this.#write(() =>
+-      this.#call("groupState", { id: gid, body: { enabled, expectedVersion } }),
++    return this.#write((epoch) =>
++      this.#call("groupState", { id: gid, body: { enabled, expectedVersion }, epoch }),
+     );
+   }
+ 
+@@ -613,16 +650,16 @@
+     const body = bodyOf(payload, ["username", "displayName"]);
+     const user = username(body.username);
+     const displayName = text(body.displayName, { min: 1, max: 128, name: "显示名" });
+-    return this.#write(() => this.#call("createAccount", { body: { username: user, displayName } }));
++    return this.#write((epoch) => this.#call("createAccount", { body: { username: user, displayName }, epoch }));
+   }
+ 
+   async issueOpeningCode(accountId) {
+     const target = id(accountId, "账户 ID");
+-    return this.#write(() => this.#call("openingCode", { id: target }));
++    return this.#write((epoch) => this.#call("openingCode", { id: target, epoch }));
+   }
+ 
+   async revokeOpeningCode(value) {
+-    return this.#write(() => this.#call("revokeOpeningCode", { id: id(value, "开通码 ID") }));
++    return this.#write((epoch) => this.#call("revokeOpeningCode", { id: id(value, "开通码 ID"), epoch }));
+   }
+ 
+   async setAccountState(accountId, payload) {
+@@ -631,10 +668,11 @@
+     const enabled = bool(body.enabled, "enabled");
+     const expectedSecurityVersion = integer(body.expectedSecurityVersion, { name: "expectedSecurityVersion" });
+     const emergency = body.emergency === undefined ? false : bool(body.emergency, "emergency");
+-    return this.#write(() =>
++    return this.#write((epoch) =>
+       this.#call("accountState", {
+         id: target,
+         body: { enabled, expectedSecurityVersion, emergency },
++        epoch,
+       }),
+     );
+   }
+@@ -649,10 +687,11 @@
+       trim: false,
+       name: "本人当前密码",
+     });
+-    return this.#write(() =>
++    return this.#write((epoch) =>
+       this.#call("passwordReset", {
+         id: target,
+         body: { expectedSecurityVersion, currentPassword },
++        epoch,
+       }),
+     );
+   }
+@@ -689,8 +728,8 @@
+     const name = text(body.name, { min: 1, max: 128, name: "角色名称" });
+     if (typeof body.scopeType !== "string" || !SCOPE_RE.test(body.scopeType)) invalid("scopeType 不合法");
+     const perms = permissions(body.permissions);
+-    return this.#write(() =>
+-      this.#call("createRole", { body: { code, name, scopeType: body.scopeType, permissions: perms } }),
++    return this.#write((epoch) =>
++      this.#call("createRole", { body: { code, name, scopeType: body.scopeType, permissions: perms }, epoch }),
+     );
+   }
+ 
+@@ -699,8 +738,8 @@
+     const body = bodyOf(payload, ["expectedVersion", "permissions"]);
+     const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+     const perms = permissions(body.permissions);
+-    return this.#write(() =>
+-      this.#call("updateRole", { id: rid, body: { expectedVersion, permissions: perms } }),
++    return this.#write((epoch) =>
++      this.#call("updateRole", { id: rid, body: { expectedVersion, permissions: perms }, epoch }),
+     );
+   }
+ 
+@@ -717,13 +756,13 @@
+     const groupId = body.groupId === undefined || body.groupId === null || body.groupId === ""
+       ? null
+       : id(body.groupId, "小组 ID");
+-    return this.#write(() =>
+-      this.#call("assignRole", { body: { accountId, roleId, ...(groupId ? { groupId } : {}) } }),
++    return this.#write((epoch) =>
++      this.#call("assignRole", { body: { accountId, roleId, ...(groupId ? { groupId } : {}) }, epoch }),
+     );
+   }
+ 
+   async revokeRole(value) {
+-    return this.#write(() => this.#call("revokeRole", { id: id(value, "授权 ID") }));
++    return this.#write((epoch) => this.#call("revokeRole", { id: id(value, "授权 ID"), epoch }));
+   }
+ 
+   // ── 审计 ────────────────────────────────────────────────────
+--- a/src/CloudWorkspace.tsx
++++ b/src/CloudWorkspace.tsx
+@@ -306,7 +306,8 @@
+       { id: "security", label: "个人安全" },
+       { id: "groups", label: "小组与成员" },
+     ];
+-    if (system.has("account:read")) list.push({ id: "accounts", label: "账户管理" });
++    if (system.has("account:read") || system.has("account:create"))
++      list.push({ id: "accounts", label: "账户管理" });
+     if (capabilities?.superAdmin) {
+       list.push({ id: "roles", label: "角色与授权" });
+       list.push({ id: "audit", label: "审计" });
+@@ -1241,7 +1242,7 @@
+   const [state, setState] = useState("");
+   const [offset, setOffset] = useState(0);
+   const [page, setPage] = useState<Page<Account>>({ items: [], total: 0, limit: PAGE_SIZE, offset: 0 });
+-  const [loading, setLoading] = useState(true);
++  const [loading, setLoading] = useState(false);
+   const [error, setError] = useState("");
+   const [success, setSuccess] = useState("");
+   const [secret, setSecret] = useState<{ title: string; code: string; expiresAt: string | null; openingId?: string } | null>(null);
+@@ -1253,6 +1254,7 @@
+   const [ownerPassword, setOwnerPassword] = useState("");
+   const [busy, setBusy] = useState(false);
+ 
++  const canRead = system.has("account:read");
+   const canCreate = system.has("account:create");
+   const canDisable = system.has("account:disable");
+   const isOwner = capabilities.superAdmin;
+@@ -1280,10 +1282,12 @@
+   );
+ 
+   useEffect(() => {
+-    void load(0);
++    // 只有 account:read 才请求全局账户列表；仅 account:create 不得为了显示表单
++    // 附带读取，也不把创建权限等同于读取权限。
++    if (canRead) void load(0);
+     // 初次进入按空条件读取；之后由“搜索”按钮显式触发，避免每次输入都打云端。
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, []);
++  }, [canRead]);
+ 
+   async function act(action: () => Promise<unknown>, done: string) {
+     setBusy(true);
+@@ -1291,7 +1295,7 @@
+     setSuccess("");
+     try {
+       await action();
+-      await load(offset);
++      if (canRead) await load(offset);
+       setSuccess(done);
+     } catch (failure) {
+       const text = onAuthFailure(failure);
+@@ -1321,7 +1325,7 @@
+       setNewDisplayName("");
+       setCreateOpen(false);
+       setSecret({ title: `@${opening.username} 的一次性开通码`, code: opening.openingCode, expiresAt: opening.expiresAt, openingId: opening.id });
+-      await load(0);
++      if (canRead) await load(0);
+       setSuccess("账户已创建（待激活）；开通码只显示这一次。");
+     } catch (failure) {
+       setError(onAuthFailure(failure));
+@@ -1362,39 +1366,43 @@
+   return (
+     <section className="cw-panel" aria-label="账户管理">
+       <div className="cw-toolbar">
+-        <form
+-          className="cw-search"
+-          onSubmit={(event) => {
+-            event.preventDefault();
+-            void load(0);
+-          }}
+-        >
+-          <label className="field">
+-            搜索用户名/显示名
+-            <input
+-              aria-label="搜索账户"
+-              value={query}
+-              maxLength={128}
+-              onChange={(event) => setQuery(event.target.value)}
+-            />
+-          </label>
+-          <label className="field">
+-            状态
+-            <select aria-label="账户状态筛选" value={state} onChange={(event) => setState(event.target.value)}>
+-              <option value="">全部</option>
+-              <option value="ACTIVE">启用</option>
+-              <option value="PENDING">待激活</option>
+-              <option value="DISABLED">停用</option>
+-            </select>
+-          </label>
+-          <button type="submit" className="plain" disabled={loading}>
+-            <Search size={15} /> 搜索
+-          </button>
+-        </form>
++        {canRead && (
++          <form
++            className="cw-search"
++            onSubmit={(event) => {
++              event.preventDefault();
++              void load(0);
++            }}
++          >
++            <label className="field">
++              搜索用户名/显示名
++              <input
++                aria-label="搜索账户"
++                value={query}
++                maxLength={128}
++                onChange={(event) => setQuery(event.target.value)}
++              />
++            </label>
++            <label className="field">
++              状态
++              <select aria-label="账户状态筛选" value={state} onChange={(event) => setState(event.target.value)}>
++                <option value="">全部</option>
++                <option value="ACTIVE">启用</option>
++                <option value="PENDING">待激活</option>
++                <option value="DISABLED">停用</option>
++              </select>
++            </label>
++            <button type="submit" className="plain" disabled={loading}>
++              <Search size={15} /> 搜索
++            </button>
++          </form>
++        )}
+         <div className="cw-actions">
+-          <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading}>
+-            <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
+-          </button>
++          {canRead && (
++            <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading}>
++              <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
++            </button>
++          )}
+           {canCreate && (
+             <button type="button" className="primary" onClick={() => setCreateOpen((open) => !open)}>
+               <Plus size={15} /> 创建待激活账户
+@@ -1543,9 +1551,10 @@
+         </div>
+       )}
+ 
+-      <div className="cw-card cw-list-card">
+-        <ul className="cw-list">
+-          {page.items.map((account) => (
++      {canRead ? (
++        <div className="cw-card cw-list-card">
++          <ul className="cw-list">
++            {page.items.map((account) => (
+             <li key={account.id} className="cw-row">
+               <div className="cw-row-main">
+                 <strong>
+@@ -1616,7 +1625,16 @@
+           {!page.items.length && !loading && <li className="cw-empty">没有匹配的账户。</li>}
+         </ul>
+         <Pager offset={offset} limit={PAGE_SIZE} total={page.total} onChange={(next) => void load(next)} />
+-      </div>
++        </div>
++      ) : (
++        <div className="cw-card cw-form">
++          <h2>仅创建账户</h2>
++          <p className="cw-hint">
++            当前角色只有创建待激活账户的权限，不会读取全局账户列表；创建后的一次性开通码只显示这一次。
++          </p>
++          {!canCreate && <p className="cw-hint">当前角色没有创建账户权限。</p>}
++        </div>
++      )}
+     </section>
+   );
+ }
+--- a/tests/cloud-management.test.mjs
++++ b/tests/cloud-management.test.mjs
+@@ -54,6 +54,39 @@
+   return false;
+ }
+ 
++/** 让第一笔云请求在真实响应后暂停，便于确定性地把后续写操作排进本地串行队列。 */
++function holdFirstProxy(auth) {
++  let release;
++  let reached;
++  const arrived = new Promise((resolve) => {
++    reached = resolve;
++  });
++  const gate = new Promise((resolve) => {
++    release = resolve;
++  });
++  const real = auth.proxy.bind(auth);
++  let first = true;
++  auth.proxy = async (...args) => {
++    const value = await real(...args);
++    if (first) {
++      first = false;
++      reached();
++      await gate;
++    }
++    return value;
++  };
++  return { arrived, release };
++}
++
++function configureWith(auth, cloud, cert) {
++  return auth.configure({
++    origin: cloud.origin,
++    caPath: cloud.caCert,
++    certPath: cert.cert,
++    keyPath: cert.key,
++  });
++}
++
+ test("profile 只暴露脱敏资料，路径固定为 /me、/me/capabilities、/me/devices", async (t) => {
+   const { cloud, mgmt, auth } = await setup(t);
+   const profile = await mgmt.profile();
+@@ -398,8 +431,156 @@
+   await auth.login({ username: "owner", password: "a brand new password" });
+   assert.equal(auth.getState().state, "logged-in");
+   assert.equal(cloud.state.accounts.get(cloud.ids.owner).password, "a brand new password");
++});
++
++test("排队写操作在入队时绑定代次：owner→admin 切换后旧写 STALE，不会用新身份执行", async (t) => {
++  const { cloud, auth, mgmt } = await setup(t);
++  const { arrived, release } = holdFirstProxy(auth);
++  const first = mgmt.createAccount({ username: "queue-first", displayName: "第一笔" });
++  await arrived;
++  // 第二笔已在本地排队，但用的是 owner 代次；随后切到 admin 证书并登录。
++  const second = mgmt.createAccount({ username: "queue-after-switch", displayName: "不得执行" });
++  await auth.logout();
++  await configureWith(auth, cloud, cloud.clientAdmin);
++  await auth.login({ username: "admin", password: PASSWORD });
++  const before = cloud.requests.length;
++  release();
++  const outcomes = await Promise.allSettled([first, second]);
++  assert.equal(outcomes[0].status, "rejected");
++  assert.equal(outcomes[1].status, "rejected");
++  assert.equal(outcomes[1].reason.code, "STALE");
++  assert.equal(
++    [...cloud.state.accounts.values()].some((item) => item.username === "queue-after-switch"),
++    false,
++    "旧身份排队的写不能落到新身份的云端",
++  );
++  const posts = cloud.requests
++    .slice(before)
++    .filter((item) => item.method === "POST" && item.path === "/api/v1/accounts");
++  assert.equal(posts.length, 0, "旧写开始前就应被 STALE 拦下，不能发云请求");
++  // 新身份之后的新写仍应正常执行，不能把整个队列卡死。
++  const fresh = await mgmt.createAccount({ username: "queue-admin-ok", displayName: "管理员新建" });
++  assert.equal(fresh.username, "queue-admin-ok");
+ });
+ 
++test("排队写绑定代次：同账户重新登录、仅退出、切换配置都会拦下未开始的旧写", async (t) => {
++  const { cloud, auth, mgmt } = await setup(t);
++
++  // 同账户重新登录：旧 JWT 已作废，旧排队写也不能借新登录执行。
++  {
++    const { arrived, release } = holdFirstProxy(auth);
++    const first = mgmt.createAccount({ username: "relogin-first", displayName: "第一笔" });
++    await arrived;
++    const second = mgmt.createAccount({ username: "relogin-old", displayName: "同账户重登" });
++    await auth.logout();
++    await auth.login({ username: "owner", password: PASSWORD });
++    const before = cloud.requests.length;
++    release();
++    await Promise.allSettled([first, second]);
++    const outcomes = await Promise.allSettled([second]);
++    assert.equal(outcomes[0].reason.code, "STALE");
++    assert.equal(
++      cloud.requests
++        .slice(before)
++        .filter((item) => item.method === "POST" && item.path === "/api/v1/accounts").length,
++      0,
++    );
++    assert.equal([...cloud.state.accounts.values()].some((item) => item.username === "relogin-old"), false);
++  }
++
++  // 仅退出不重登：旧排队写必须 STALE，且不发请求。
++  {
++    const { arrived, release } = holdFirstProxy(auth);
++    const first = mgmt.createAccount({ username: "logout-first", displayName: "第一笔" });
++    await arrived;
++    const second = mgmt.createAccount({ username: "logout-old", displayName: "退出后" });
++    await auth.logout();
++    const before = cloud.requests.length;
++    release();
++    await Promise.allSettled([first]);
++    await assert.rejects(second, (error) => error.code === "STALE");
++    assert.equal(
++      cloud.requests
++        .slice(before)
++        .filter((item) => item.method === "POST" && item.path === "/api/v1/accounts").length,
++      0,
++    );
++  }
++
++  // 只切换高级配置（不登录）：旧排队写同样不能继续。
++  await auth.login({ username: "owner", password: PASSWORD });
++  {
++    const { arrived, release } = holdFirstProxy(auth);
++    const first = mgmt.createAccount({ username: "config-first", displayName: "第一笔" });
++    await arrived;
++    const second = mgmt.createAccount({ username: "config-old", displayName: "切配置后" });
++    await configureWith(auth, cloud, cloud.clientAdmin);
++    const before = cloud.requests.length;
++    release();
++    await Promise.allSettled([first]);
++    await assert.rejects(second, (error) => error.code === "STALE");
++    assert.equal(
++      cloud.requests
++        .slice(before)
++        .filter((item) => item.method === "POST" && item.path === "/api/v1/accounts").length,
++      0,
++    );
++  }
++});
++
++test("旧改密任务的清会话不会覆盖排队期间的新登录", async (t) => {
++  const { auth, mgmt } = await setup(t);
++  let release;
++  let reached;
++  const entered = new Promise((resolve) => {
++    reached = resolve;
++  });
++  const gate = new Promise((resolve) => {
++    release = resolve;
++  });
++  const realForget = auth.forgetSession.bind(auth);
++  auth.forgetSession = async (reason, options) => {
++    reached();
++    await gate;
++    return realForget(reason, options);
++  };
++
++  const changing = mgmt.changePassword({
++    currentPassword: PASSWORD,
++    newPassword: "a brand new password",
++  });
++  await Promise.race([
++    entered,
++    changing.then(
++      () => {
++        throw new Error("changePassword 未进入清会话收尾");
++      },
++      (error) => {
++        throw error;
++      },
++    ),
++  ]);
++  // 云端已改密、旧任务正在收尾时，用户用新密码重新登录。
++  await auth.login({ username: "owner", password: "a brand new password" });
++  release();
++  await assert.rejects(changing, (error) => error.code === "STALE");
++  assert.equal(auth.getState().state, "logged-in", "旧任务的 forgetSession 不能清掉新会话");
++  assert.equal(auth.getState().username, "owner");
++});
++
++test("仅 account:create 的自定义角色可创建账户，但不能读取全局列表", async (t) => {
++  const { cloud, mgmt } = await setup(t, { as: "creator", cert: "clientCreator" });
++  await assert.rejects(() => mgmt.accounts({}), (error) => {
++    assert.equal(error.code, "FORBIDDEN");
++    assert.equal(error.status, 403);
++    return true;
++  });
++  const opening = await mgmt.createAccount({ username: "created.by.only", displayName: "仅创建" });
++  assert.equal(opening.username, "created.by.only");
++  assert.match(opening.openingCode, /^[A-Za-z0-9_-]{43}$/);
++  assert.equal([...cloud.state.accounts.values()].some((item) => item.username === "created.by.only"), true);
++});
++
+ test("管理方法不暴露任意路径：注入型 ID/查询被拒绝，且请求只落在固定路径", async (t) => {
+   const { cloud, mgmt } = await setup(t);
+   await assert.rejects(() => mgmt.group("../me"), (error) => error.code === "INVALID_REQUEST");
+--- a/tests/cloud-management-mock.mjs
++++ b/tests/cloud-management-mock.mjs
+@@ -66,6 +66,7 @@
+   const clientOwner2 = await makeCert(dir, "client-owner2", ca, { cn: "device-owner2", eku: "clientAuth" });
+   const clientReader = await makeCert(dir, "client-reader", ca, { cn: "device-reader", eku: "clientAuth" });
+   const clientMember = await makeCert(dir, "client-member", ca, { cn: "device-member", eku: "clientAuth" });
++  const clientCreator = await makeCert(dir, "client-creator", ca, { cn: "device-creator", eku: "clientAuth" });
+ 
+   const accounts = new Map(); // id -> account
+   const byName = new Map(); // username -> account
+@@ -137,12 +138,14 @@
+   const pending = addAccount({ username: "pending", displayName: "待激活小赵", state: "PENDING", password: null });
+   const disabled = addAccount({ username: "disabled", displayName: "已停用小陈", state: "DISABLED" });
+   const newbie = addAccount({ username: "newbie", displayName: "新组员小周" });
++  const creator = addAccount({ username: "creator", displayName: "创建员小周" });
+ 
+   const deviceOwner = addDevice(owner, { name: "owner 的验收机", certPem: await fs.readFile(clientOwner.crt, "utf8") });
+   addDevice(owner, { name: "owner 的备用机", certPem: await fs.readFile(clientOwner2.crt, "utf8") });
+   addDevice(admin, { name: "admin 的验收机", certPem: await fs.readFile(clientAdmin.crt, "utf8") });
+   addDevice(leader, { name: "组长的验收机", certPem: await fs.readFile(clientReader.crt, "utf8") });
+   addDevice(member, { name: "组员的验收机", certPem: await fs.readFile(clientMember.crt, "utf8") });
++  addDevice(creator, { name: "创建员的验收机", certPem: await fs.readFile(clientCreator.crt, "utf8") });
+ 
+   const adminRole = addRole({
+     code: "ADMINISTRATOR", name: "管理员", scopeType: "SYSTEM", builtIn: true,
+@@ -151,7 +154,12 @@
+   const memberRole = addRole({ code: "GROUP_MEMBER", name: "组员", scopeType: "GROUP", builtIn: true, permissions: [] });
+   const reviewer = addRole({ code: "MEDIA_REVIEWER", name: "音频审核员", scopeType: "GROUP", builtIn: false, permissions: ["media:review"] });
+   const emptyRole = addRole({ code: "EMPTY_HELPER", name: "空权限角色", scopeType: "GROUP", builtIn: false, permissions: [] });
++  const creatorRole = addRole({
++    code: "ACCOUNT_CREATOR", name: "仅创建账户", scopeType: "SYSTEM", builtIn: false,
++    permissions: ["account:create"],
++  });
+   assign(admin, adminRole, null, owner.id);
++  assign(creator, creatorRole, null, owner.id);
+ 
+   const groupA = addGroup({ name: "音频组", leader });
+   const groupB = addGroup({ name: "项目组", leader: admin });
+@@ -711,13 +719,14 @@
+     clientOwner2: { cert: clientOwner2.crt, key: clientOwner2.key },
+     clientReader: { cert: clientReader.crt, key: clientReader.key },
+     clientMember: { cert: clientMember.crt, key: clientMember.key },
++    clientCreator: { cert: clientCreator.crt, key: clientCreator.key },
+     password: PASSWORD,
+     ids: {
+       owner: owner.id, admin: admin.id, leader: leader.id, member: member.id,
+-      pending: pending.id, disabled: disabled.id, newbie: newbie.id,
++      pending: pending.id, disabled: disabled.id, newbie: newbie.id, creator: creator.id,
+       devices: { owner: deviceOwner.id },
+       groups: { a: groupA.id, b: groupB.id, c: groupC.id, d: groupD.id },
+-      roles: { admin: adminRole.id, member: memberRole.id, reviewer: reviewer.id, empty: emptyRole.id },
++      roles: { admin: adminRole.id, member: memberRole.id, reviewer: reviewer.id, empty: emptyRole.id, creator: creatorRole.id },
+     },
+     state: { accounts, groups, members, roles, assignments, openings, resetCodes, audits },
+     flags,

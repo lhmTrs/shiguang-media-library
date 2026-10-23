@@ -1,0 +1,13 @@
+{
+  "outcomes": [
+    {
+      "code": "STALE"
+    },
+    {
+      "code": "STALE"
+    }
+  ],
+  "newIdentity": "admin",
+  "queuedOldWriteCreatedAccount": false,
+  "reproduced": false
+}

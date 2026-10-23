@@ -1,0 +1,19 @@
+T-LOCAL-005 final status 2026-10-22 13:39:34 +0800
+branch: main
+HEAD: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/main.tsx
+ M src/style.css
+?? collab/
+?? server/cloud-auth.mjs
+?? src/CloudConnectionSettings.tsx
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+
+ scripts/qa.mjs   |   6 ++-
+ server/index.mjs |  11 +++++
+ src/main.tsx     |   8 ++++
+ src/style.css    | 132 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 154 insertions(+), 3 deletions(-)

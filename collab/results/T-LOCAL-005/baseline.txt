@@ -1,0 +1,15 @@
+T-LOCAL-005 baseline 2026-10-22 13:30:22 +0800
+branch: main
+HEAD: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+dirty:
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/style.css
+?? collab/
+?? server/cloud-auth.mjs
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+
+planned new: src/CloudConnectionSettings.tsx src/cloud-connection.css (or style.css), collab/results/T-LOCAL-005/*
+planned edit: src/main.tsx (settings render, api error fields), src/style.css (cloud form responsive), tests/cloud-auth-ui*.mjs or collab verify script
+overlap check: no planned edit to scripts/qa.mjs; existing T-LOCAL-001 patch preserved; no edits under 拾光云端后台

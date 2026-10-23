@@ -1,0 +1,65 @@
+{
+  "task": "T-LOCAL-013C",
+  "reply": "#0086",
+  "status": "delivered_pending_gpt_review",
+  "tests": {
+    "runtime": {
+      "file": "tests/audio-engine-runtime.test.mjs",
+      "pass": 7,
+      "fail": 0
+    },
+    "installer": {
+      "file": "tests/audio-engine-installer.test.mjs",
+      "pass": 20,
+      "fail": 0
+    },
+    "featureFlag": {
+      "file": "tests/audio-feature-flag.test.mjs",
+      "pass": 3,
+      "fail": 0
+    },
+    "build": "pass",
+    "syntax": "pass"
+  },
+  "benchmark": {
+    "binarySize": 8388608,
+    "archiveSize": 8391354,
+    "hashChunkBytes": 262144,
+    "installMs": 62.275417000000004,
+    "verifySamplesMs": [
+      5.112500000000011,
+      5.270125000000007,
+      4.526749999999993
+    ],
+    "verifyMedianMs": 5.112500000000011,
+    "eventLoopMaxGapMs": 1.0584160000000224,
+    "installBusy": true,
+    "installBusyMs": 0.07966699999997218,
+    "secondRunBusy": true,
+    "secondRunBusyMs": 0.012833000000000538,
+    "cancelCode": "ENGINE_CANCELLED",
+    "cancelToSettledMs": 0.49562499999996135,
+    "lockReleased": true,
+    "requests": 1,
+    "timingBoundaries": {
+      "verifyMs": "withRunLease call to descriptor delivery; includes lock acquisition, metadata/path checks and full 8MiB streaming SHA256; excludes callback",
+      "cancelToSettledMs": "AbortController.abort() to withRunLease rejection and lock removal; synthetic wait, not real analysis",
+      "contentionFailMs": "synchronous install() BUSY throw and second withRunLease BUSY rejection while first callback holds lock"
+    },
+    "note": "synthetic local loopback + 8MiB random file; not a real engine/analysis benchmark"
+  },
+  "hashes": {
+    "server/audio-engine.mjs": "b6f298cfba700266667c365a52f6739cf7a67a7939b462b029787aa806d69d52",
+    "tests/audio-engine-runtime.test.mjs": "b375946974979ff4d26e5775ceb4ab667e58dafdb87040df521a8eaed16b02be",
+    "collab/results/T-LOCAL-013C/diff.patch": "4a31aa852c5be18bb7e4fdcee74a5b8eb58b610db30849971b27b7d844cc689e"
+  },
+  "boundaries": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "productionServerAccessed": false,
+    "realEngineDownloadedOrRun": false,
+    "realMediaOrLibraryTouched": false,
+    "cloudProjectModified": false
+  }
+}

@@ -1,0 +1,3068 @@
+--- a/src/CloudWorkspace.tsx
++++ b/src/CloudWorkspace.tsx
+@@ -14,6 +14,7 @@
+   Search,
+   ShieldCheck,
+   Trash2,
++  Undo2,
+   UserMinus,
+   UserPlus,
+   X,
+@@ -112,6 +113,19 @@
+ 
+ const PAGE_SIZE = 20;
+ const RESERVED_ROLES = new Set(["SUPER_ADMIN", "GROUP_LEADER", "GROUP_MEMBER"]);
++const PERMISSION_GROUP_LABELS: Record<string, string> = {
++  account: "账户",
++  group: "小组",
++  media: "媒体",
++  role: "角色",
++  audit: "审计",
++  device: "设备",
++  system: "系统",
++};
++
++function permissionGroupLabel(prefix: string): string {
++  return PERMISSION_GROUP_LABELS[prefix] || prefix;
++}
+ 
+ function failureText(error: unknown): string {
+   const failure = error as CloudLastError;
+@@ -171,6 +185,7 @@
+         type="button"
+         className="plain"
+         aria-label="上一页"
++        title="上一页"
+         disabled={offset <= 0}
+         onClick={() => onChange(Math.max(0, offset - limit))}
+       >
+@@ -183,6 +198,7 @@
+         type="button"
+         className="plain"
+         aria-label="下一页"
++        title="下一页"
+         disabled={offset + limit >= total}
+         onClick={() => onChange(offset + limit)}
+       >
+@@ -221,7 +237,7 @@
+         <strong>
+           <KeyRound size={15} /> {title}
+         </strong>
+-        <button type="button" className="plain" aria-label="关闭一次性码" onClick={onDismiss}>
++        <button type="button" className="plain cw-icon-button" aria-label="关闭一次性码" title="关闭一次性码" onClick={onDismiss}>
+           <X size={15} />
+         </button>
+       </div>
+@@ -458,9 +474,9 @@
+ }) {
+   return (
+     <header className="cw-header">
+-      <button type="button" className="plain cw-back" onClick={onBack}>
++      <button type="button" className="plain cw-back" onClick={onBack} title="返回素材库" aria-label="返回素材库">
+         <ArrowLeft size={16} />
+-        返回素材库
++        <span className="cw-back-label">返回素材库</span>
+       </button>
+       <div className="cw-title">
+         <strong>{title}</strong>
+@@ -468,7 +484,7 @@
+       </div>
+       <div className="cw-header-actions">
+         {onRefresh && (
+-          <button type="button" className="plain" aria-label="刷新管理数据" onClick={onRefresh} disabled={busy}>
++          <button type="button" className="plain cw-icon-button" aria-label="刷新管理数据" title="刷新管理数据" onClick={onRefresh} disabled={busy}>
+             <RefreshCw size={16} className={busy ? "spin" : ""} />
+           </button>
+         )}
+@@ -561,106 +577,137 @@
+ 
+   return (
+     <section className="cw-panel" aria-label="个人安全">
+-      <div className="cw-card">
+-        <h2>本人资料</h2>
+-        <dl className="cw-facts">
+-          <div>
+-            <dt>用户名</dt>
+-            <dd>@{profile.me.username}</dd>
+-          </div>
+-          <div>
+-            <dt>显示名</dt>
+-            <dd>{profile.me.displayName || "—"}</dd>
+-          </div>
+-          <div>
+-            <dt>身份</dt>
+-            <dd>{profile.capabilities.superAdmin ? "超级管理员" : "普通账户"}</dd>
+-          </div>
+-        </dl>
++      <div className="cw-pagebar">
++        <div className="cw-pagebar-title">
++          <h2>个人安全</h2>
++          <p>本人资料、本机设备与密码；撤销当前设备或改密都会要求重新登录。</p>
++        </div>
++        <div className="cw-pagebar-actions">
++          <Badge kind="ok">
++            <ShieldCheck size={12} /> {profile.devices.filter((device) => device.state === "ACTIVE").length} 台有效设备
++          </Badge>
++        </div>
+       </div>
+ 
+-      <div className="cw-card">
+-        <h2>我的设备</h2>
+-        <p className="cw-hint">设备证书只保存在本机后台。撤销当前设备后需要管理员重新发开通码。</p>
+-        <ul className="cw-list">
+-          {profile.devices.map((device) => (
+-            <li key={device.id} className="cw-row">
+-              <div className="cw-row-main">
+-                <strong>{device.name || "未命名设备"}</strong>
+-                <span className="cw-meta">
+-                  {device.id === profile.me.deviceId && <Badge kind="ok">当前设备</Badge>}
+-                  <Badge kind={device.state === "ACTIVE" ? "ok" : device.state === "REVOKED" ? "danger" : "muted"}>
+-                    {stateText(device.state)}
+-                  </Badge>
+-                  <span>证书到期：{displayTime(device.certificateExpiresAt)}</span>
+-                  <span>最近使用：{displayTime(device.lastSeenAt)}</span>
+-                </span>
++      <div className="cw-security-grid">
++        <div className="cw-surface cw-security-main">
++          <section className="cw-subsection">
++            <div className="cw-subsection-head">
++              <h2>本人资料</h2>
++              <span>当前登录身份</span>
++            </div>
++            <dl className="cw-facts">
++              <div>
++                <dt>用户名</dt>
++                <dd>@{profile.me.username}</dd>
+               </div>
+-              {device.state !== "REVOKED" &&
+-                (confirmDevice === device.id ? (
+-                  <span className="cw-inline-confirm">
+-                    <span>{device.id === profile.me.deviceId ? "撤销当前设备会立即退出，确认？" : "确认撤销？"}</span>
+-                    <button type="button" className="plain danger" disabled={busy} onClick={() => void revoke(device)}>
+-                      确认撤销
+-                    </button>
+-                    <button type="button" className="plain" onClick={() => setConfirmDevice(null)}>
+-                      取消
+-                    </button>
+-                  </span>
+-                ) : (
+-                  <button type="button" className="plain" onClick={() => setConfirmDevice(device.id)}>
+-                    <Trash2 size={14} /> 撤销
+-                  </button>
+-                ))}
+-            </li>
+-          ))}
+-          {!profile.devices.length && <li className="cw-empty">没有设备记录。</li>}
+-        </ul>
+-      </div>
+-
+-      <div className="cw-card">
+-        <h2>修改密码</h2>
+-        <form className="cw-form" onSubmit={changePassword} aria-label="修改密码">
+-          <label className="field">
+-            当前密码
+-            <input
+-              aria-label="当前密码"
+-              type="password"
+-              autoComplete="current-password"
+-              value={currentPassword}
+-              disabled={busy}
+-              onChange={(event) => setCurrentPassword(event.target.value)}
+-            />
+-          </label>
+-          <label className="field">
+-            新密码
+-            <input
+-              aria-label="新密码"
+-              type="password"
+-              autoComplete="new-password"
+-              value={newPassword}
+-              disabled={busy}
+-              onChange={(event) => setNewPassword(event.target.value)}
+-            />
+-          </label>
+-          <label className="field">
+-            确认新密码
+-            <input
+-              aria-label="确认新密码"
+-              type="password"
+-              autoComplete="new-password"
+-              value={confirmPassword}
+-              disabled={busy}
+-              onChange={(event) => setConfirmPassword(event.target.value)}
+-            />
+-          </label>
+-          <p className="cw-hint">修改成功后全部设备会话撤销，需要用新密码重新登录；设备证书不会被删除。</p>
+-          <button type="submit" className="primary" disabled={busy}>
+-            {busy ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
+-            修改密码
+-          </button>
+-        </form>
+-        <Notice error={error} success={success} />
++              <div>
++                <dt>显示名</dt>
++                <dd>{profile.me.displayName || "—"}</dd>
++              </div>
++              <div>
++                <dt>身份</dt>
++                <dd>{profile.capabilities.superAdmin ? "超级管理员（唯一 owner）" : "普通账户"}</dd>
++              </div>
++            </dl>
++          </section>
++
++          <section className="cw-subsection">
++            <div className="cw-subsection-head">
++              <h2>我的设备</h2>
++              <span>{profile.devices.length} 条记录 · 证书只保存在本机后台</span>
++            </div>
++            <ul className="cw-list cw-device-list">
++              {profile.devices.map((device) => (
++                <li key={device.id} className="cw-row">
++                  <div className="cw-row-main">
++                    <strong>{device.name || "未命名设备"}</strong>
++                    <span className="cw-meta">
++                      {device.id === profile.me.deviceId && <Badge kind="ok">当前设备</Badge>}
++                      <Badge kind={device.state === "ACTIVE" ? "ok" : device.state === "REVOKED" ? "danger" : "muted"}>
++                        {stateText(device.state)}
++                      </Badge>
++                      <span>证书到期：{displayTime(device.certificateExpiresAt)}</span>
++                      <span>最近使用：{displayTime(device.lastSeenAt)}</span>
++                    </span>
++                  </div>
++                  {device.state !== "REVOKED" &&
++                    (confirmDevice === device.id ? (
++                      <span className="cw-inline-confirm">
++                        <span>{device.id === profile.me.deviceId ? "撤销当前设备会立即退出，确认？" : "确认撤销？"}</span>
++                        <button type="button" className="plain danger" disabled={busy} onClick={() => void revoke(device)}>
++                          确认撤销
++                        </button>
++                        <button type="button" className="plain" onClick={() => setConfirmDevice(null)}>
++                          取消
++                        </button>
++                      </span>
++                    ) : (
++                      <button type="button" className="plain" onClick={() => setConfirmDevice(device.id)}>
++                        <Trash2 size={13} /> 撤销
++                      </button>
++                    ))}
++                </li>
++              ))}
++              {!profile.devices.length && (
++                <li className="cw-empty">
++                  <strong>没有设备记录</strong>
++                  <span>设备证书只保存在本机后台。</span>
++                </li>
++              )}
++            </ul>
++          </section>
++        </div>
++
++        <div className="cw-surface cw-security-side">
++          <section className="cw-subsection">
++            <div className="cw-subsection-head">
++              <h2>修改密码</h2>
++              <span>至少 12 个字符</span>
++            </div>
++            <p className="cw-hint">修改成功后全部设备会话撤销，需要用新密码重新登录；设备证书不会被删除。</p>
++            <form className="cw-form" onSubmit={changePassword} aria-label="修改密码">
++              <label className="field">
++                当前密码
++                <input
++                  aria-label="当前密码"
++                  type="password"
++                  autoComplete="current-password"
++                  value={currentPassword}
++                  disabled={busy}
++                  onChange={(event) => setCurrentPassword(event.target.value)}
++                />
++              </label>
++              <label className="field">
++                新密码
++                <input
++                  aria-label="新密码"
++                  type="password"
++                  autoComplete="new-password"
++                  value={newPassword}
++                  disabled={busy}
++                  onChange={(event) => setNewPassword(event.target.value)}
++                />
++              </label>
++              <label className="field">
++                确认新密码
++                <input
++                  aria-label="确认新密码"
++                  type="password"
++                  autoComplete="new-password"
++                  value={confirmPassword}
++                  disabled={busy}
++                  onChange={(event) => setConfirmPassword(event.target.value)}
++                />
++              </label>
++              <button type="submit" className="primary" disabled={busy}>
++                {busy ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
++                修改密码
++              </button>
++            </form>
++            <Notice error={error} success={success} />
++          </section>
++        </div>
+       </div>
+     </section>
+   );
+@@ -868,74 +915,91 @@
+ 
+   return (
+     <section className="cw-panel" aria-label="小组与成员">
+-      <div className="cw-toolbar">
+-        {canAdminister && (
+-          <label className="cw-check">
+-            <input type="checkbox" checked={management} onChange={(event) => setManagement(event.target.checked)} />
+-            管理模式（含停用/待接管小组）
+-          </label>
+-        )}
+-        <div className="cw-actions">
+-          <button type="button" className="plain" onClick={() => void loadGroups()} disabled={loading}>
+-            <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
++      <div className="cw-pagebar">
++        <div className="cw-pagebar-title">
++          <h2>小组与成员</h2>
++          <p>
++            {groups.length} 个可见小组 · {canAdminister ? "可切换管理模式查看停用/待接管小组" : "仅显示你所属的小组"}
++          </p>
++        </div>
++        <div className="cw-pagebar-actions">
++          {canAdminister && (
++            <label className="cw-check cw-switch">
++              <input type="checkbox" checked={management} onChange={(event) => setManagement(event.target.checked)} />
++              管理模式（含停用/待接管小组）
++            </label>
++          )}
++          <button type="button" className="plain" onClick={() => void loadGroups()} disabled={loading} title="刷新小组列表">
++            <RefreshCw size={14} className={loading ? "spin" : ""} /> 刷新
+           </button>
+           {(system.has("group:create") || canAdminister) && (
+             <button type="button" className="primary" onClick={() => setCreateOpen((open) => !open)}>
+-              <Plus size={15} /> 创建小组
++              <Plus size={14} /> 创建小组
+             </button>
+           )}
+         </div>
+       </div>
+ 
+       {createOpen && (
+-        <form className="cw-card cw-form" onSubmit={submitCreate} aria-label="创建小组">
+-          <h2>创建小组</h2>
+-          <label className="field">
+-            小组名称
+-            <input
+-              aria-label="新小组名称"
+-              value={newGroupName}
+-              maxLength={128}
+-              onChange={(event) => setNewGroupName(event.target.value)}
+-            />
+-          </label>
+-          <label className="field">
+-            初始组长完整用户名
+-            <input
+-              aria-label="初始组长用户名"
+-              value={newLeaderName}
+-              spellCheck={false}
+-              onChange={(event) => setNewLeaderName(event.target.value)}
+-            />
+-          </label>
+-          <div className="cw-actions">
+-            <button type="button" className="plain" onClick={() => void searchLeader()}>
+-              <Search size={14} /> 精确查找
+-            </button>
+-            {newLeader && (
+-              <Badge kind="ok">
+-                <Check size={12} /> {newLeader.displayName} · @{newLeader.username}
+-              </Badge>
+-            )}
+-            <button type="submit" className="primary" disabled={loading}>
+-              创建
+-            </button>
+-            <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
+-              取消
+-            </button>
++        <form className="cw-inline-editor" onSubmit={submitCreate} aria-label="创建小组">
++          <div className="cw-inline-editor-head">
++            <h2>创建小组</h2>
++            <span>初始组长必须是已存在且启用的账户；创建者不会自动入组。</span>
+           </div>
+-          <p className="cw-hint">初始组长必须是已存在且启用的账户；创建者不会自动入组或获得管理权。</p>
++          <div className="cw-form-grid">
++            <label className="field">
++              小组名称
++              <input
++                aria-label="新小组名称"
++                value={newGroupName}
++                maxLength={128}
++                onChange={(event) => setNewGroupName(event.target.value)}
++              />
++            </label>
++            <label className="field">
++              初始组长完整用户名
++              <input
++                aria-label="初始组长用户名"
++                value={newLeaderName}
++                spellCheck={false}
++                onChange={(event) => setNewLeaderName(event.target.value)}
++              />
++            </label>
++          </div>
++          <div className="cw-inline-editor-foot">
++            <div className="cw-actions">
++              <button type="button" className="plain" onClick={() => void searchLeader()}>
++                <Search size={14} /> 精确查找
++              </button>
++              {newLeader && (
++                <Badge kind="ok">
++                  <Check size={12} /> {newLeader.displayName} · @{newLeader.username}
++                </Badge>
++              )}
++            </div>
++            <div className="cw-actions">
++              <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
++                取消
++              </button>
++              <button type="submit" className="primary" disabled={loading}>
++                创建
++              </button>
++            </div>
++          </div>
+         </form>
+       )}
+ 
+       <Notice error={error} success={success} />
+ 
+-      <div className="cw-split">
+-        <div className="cw-card cw-list-card">
+-          <h2>小组</h2>
++      <div className="cw-workbench cw-groups-workbench">
++        <aside className="cw-master" aria-label="小组列表">
++          <div className="cw-master-head">
++            <span>小组</span>
++            <span>{groups.length}</span>
++          </div>
+           {loading && !groups.length ? (
+             <p className="cw-loading">
+-              <LoaderCircle size={15} className="spin" /> 读取中…
++              <LoaderCircle size={14} className="spin" /> 读取中…
+             </p>
+           ) : (
+             <ul className="cw-list cw-select-list">
+@@ -953,25 +1017,36 @@
+                         <Badge kind={group.state === "ACTIVE" ? "ok" : group.state === "DISABLED" ? "danger" : "warn"}>
+                           {stateText(group.state)}
+                         </Badge>
+-                        {capabilities.groups.find((g) => g.groupId === group.id)?.leader && <Badge kind="ok">我是负责人</Badge>}
++                        {capabilities.groups.find((item) => item.groupId === group.id)?.leader && (
++                          <Badge kind="ok">我是负责人</Badge>
++                        )}
+                       </span>
+                     </span>
+-                    <ChevronRight size={15} />
++                    <ChevronRight size={14} />
+                   </button>
+                 </li>
+               ))}
+-              {!groups.length && <li className="cw-empty">没有可见的小组。</li>}
++              {!groups.length && (
++                <li className="cw-empty cw-empty-action">
++                  <strong>没有可见的小组</strong>
++                  <span>切换管理模式或等待被加入小组。</span>
++                </li>
++              )}
+             </ul>
+           )}
+-        </div>
+-
+-        <div className="cw-card cw-detail">
++        </aside>
++
++        <div className="cw-detail-pane cw-detail">
+           {!detail ? (
+-            <p className="cw-empty">选择左侧小组查看成员与操作。</p>
++            <div className="cw-empty-state">
++              <UserPlus size={22} />
++              <h2>选择一个小组成员</h2>
++              <p>从左侧选择小组，查看负责人、成员与可用的管理操作。</p>
++            </div>
+           ) : (
+             <>
+               <div className="cw-detail-head">
+-                <div>
++                <div className="cw-detail-title">
+                   <h2>{detail.name}</h2>
+                   <span className="cw-meta">
+                     <Badge kind={detail.state === "ACTIVE" ? "ok" : detail.state === "DISABLED" ? "danger" : "warn"}>
+@@ -1013,134 +1088,144 @@
+                 </span>
+               </div>
+ 
+-              {canRename && (
+-                <label className="field">
+-                  小组名称
+-                  <input aria-label="小组名称" value={rename} maxLength={128} onChange={(event) => setRename(event.target.value)} />
+-                </label>
+-              )}
+-
+-              {confirmState && (
+-                <div className="cw-confirm" role="alert">
+-                  <AlertTriangle size={16} />
+-                  <span>
+-                    {detail.state === "DISABLED"
+-                      ? "恢复后成员关系与既有角色保留，仍需有效负责人。确认恢复？"
+-                      : "停用不会删除成员或角色，但组内管理会暂停。确认停用？"}
+-                  </span>
+-                  <button
+-                    type="button"
+-                    className="plain"
+-                    onClick={() => {
+-                      setConfirmState(false);
+-                      void run(
+-                        () =>
+-                          request(`/cloud-management/groups/${detail.id}/state`, {
+-                            enabled: detail.state === "DISABLED",
+-                            expectedVersion: detail.version,
+-                          }),
+-                        detail.state === "DISABLED" ? "小组已恢复。" : "小组已停用。",
+-                      );
+-                    }}
+-                  >
+-                    确认
+-                  </button>
+-                  <button type="button" className="plain" onClick={() => setConfirmState(false)}>
+-                    取消
+-                  </button>
+-                </div>
+-              )}
+-
+-              <div className="cw-members">
+-                <h3>成员</h3>
+-                <ul className="cw-list">
+-                  {members.map((member) => (
+-                    <li key={member.accountId} className="cw-row">
+-                      <div className="cw-row-main">
+-                        <strong>{member.displayName || member.username || member.accountId}</strong>
+-                        <span className="cw-meta">
+-                          {member.username && <span>@{member.username}</span>}
+-                          {member.accountId === detail.leaderAccountId && <Badge kind="ok">负责人</Badge>}
+-                          <Badge kind={member.state === "ACTIVE" ? "ok" : "muted"}>{stateText(member.state)}</Badge>
+-                          {member.accountState && member.accountState !== "ACTIVE" && (
+-                            <Badge kind="danger">账户{stateText(member.accountState)}</Badge>
++              <div className="cw-detail-scroll">
++                {canRename && (
++                  <label className="field cw-detail-name">
++                    小组名称
++                    <input aria-label="小组名称" value={rename} maxLength={128} onChange={(event) => setRename(event.target.value)} />
++                  </label>
++                )}
++
++                {confirmState && (
++                  <div className="cw-confirm" role="alert">
++                    <AlertTriangle size={16} />
++                    <span>
++                      {detail.state === "DISABLED"
++                        ? "恢复后成员关系与既有角色保留，仍需有效负责人。确认恢复？"
++                        : "停用不会删除成员或角色，但组内管理会暂停。确认停用？"}
++                    </span>
++                    <button
++                      type="button"
++                      className="plain"
++                      onClick={() => {
++                        setConfirmState(false);
++                        void run(
++                          () =>
++                            request(`/cloud-management/groups/${detail.id}/state`, {
++                              enabled: detail.state === "DISABLED",
++                              expectedVersion: detail.version,
++                            }),
++                          detail.state === "DISABLED" ? "小组已恢复。" : "小组已停用。",
++                        );
++                      }}
++                    >
++                      确认
++                    </button>
++                    <button type="button" className="plain" onClick={() => setConfirmState(false)}>
++                      取消
++                    </button>
++                  </div>
++                )}
++
++                <div className="cw-members">
++                  <div className="cw-subsection-head">
++                    <h3>成员</h3>
++                    <span>{members.length} 人 · 负责人不能直接移除或退出</span>
++                  </div>
++                  <ul className="cw-list">
++                    {members.map((member) => (
++                      <li key={member.accountId} className="cw-row">
++                        <div className="cw-row-main">
++                          <strong>{member.displayName || member.username || member.accountId}</strong>
++                          <span className="cw-meta">
++                            {member.username && <span>@{member.username}</span>}
++                            {member.accountId === detail.leaderAccountId && <Badge kind="ok">负责人</Badge>}
++                            <Badge kind={member.state === "ACTIVE" ? "ok" : "muted"}>{stateText(member.state)}</Badge>
++                            {member.accountState && member.accountState !== "ACTIVE" && (
++                              <Badge kind="danger">账户{stateText(member.accountState)}</Badge>
++                            )}
++                          </span>
++                        </div>
++                        <span className="cw-actions">
++                          {canTransfer && member.accountId !== detail.leaderAccountId && (
++                            <button
++                              type="button"
++                              className="plain"
++                              onClick={() =>
++                                void run(
++                                  () =>
++                                    request(`/cloud-management/groups/${detail.id}/leader-transfers`, {
++                                      accountId: member.accountId,
++                                      expectedVersion: detail.version,
++                                    }),
++                                  "负责人已交接；原负责人仍是普通成员。",
++                                )
++                              }
++                            >
++                              设为负责人
++                            </button>
++                          )}
++                          {canManage && member.accountId !== detail.leaderAccountId && (
++                            confirmRemove === member.accountId ? (
++                              <span className="cw-inline-confirm">
++                                <button
++                                  type="button"
++                                  className="plain danger"
++                                  onClick={() =>
++                                    void run(
++                                      () =>
++                                        request(
++                                          `/cloud-management/groups/${detail.id}/members/${member.accountId}`,
++                                          { expectedVersion: detail.version },
++                                          "DELETE",
++                                        ),
++                                      "成员已移除；本组角色授权同时撤销。",
++                                    )
++                                  }
++                                >
++                                  确认移除
++                                </button>
++                                <button type="button" className="plain" onClick={() => setConfirmRemove(null)}>
++                                  取消
++                                </button>
++                              </span>
++                            ) : (
++                              <button type="button" className="plain" onClick={() => setConfirmRemove(member.accountId)}>
++                                <UserMinus size={13} /> 移除
++                              </button>
++                            )
+                           )}
+                         </span>
+-                      </div>
+-                      <span className="cw-actions">
+-                        {canTransfer && member.accountId !== detail.leaderAccountId && (
+-                          <button
+-                            type="button"
+-                            className="plain"
+-                            onClick={() =>
+-                              void run(
+-                                () =>
+-                                  request(`/cloud-management/groups/${detail.id}/leader-transfers`, {
+-                                    accountId: member.accountId,
+-                                    expectedVersion: detail.version,
+-                                  }),
+-                                "负责人已交接；原负责人仍是普通成员。",
+-                              )
+-                            }
+-                          >
+-                            设为负责人
+-                          </button>
+-                        )}
+-                        {canManage && member.accountId !== detail.leaderAccountId && (
+-                          confirmRemove === member.accountId ? (
+-                            <span className="cw-inline-confirm">
+-                              <button
+-                                type="button"
+-                                className="plain danger"
+-                                onClick={() =>
+-                                  void run(
+-                                    () =>
+-                                      request(
+-                                        `/cloud-management/groups/${detail.id}/members/${member.accountId}`,
+-                                        { expectedVersion: detail.version },
+-                                        "DELETE",
+-                                      ),
+-                                    "成员已移除；本组角色授权同时撤销。",
+-                                  )
+-                                }
+-                              >
+-                                确认移除
+-                              </button>
+-                              <button type="button" className="plain" onClick={() => setConfirmRemove(null)}>
+-                                取消
+-                              </button>
+-                            </span>
+-                          ) : (
+-                            <button type="button" className="plain" onClick={() => setConfirmRemove(member.accountId)}>
+-                              <UserMinus size={14} /> 移除
+-                            </button>
+-                          )
+-                        )}
+-                      </span>
+-                    </li>
+-                  ))}
+-                  {!members.length && <li className="cw-empty">没有有效成员。</li>}
+-                </ul>
+-
+-                {selfIsLeader ? (
+-                  <p className="cw-hint">你是本组负责人，不能直接退出；请先交接负责人。</p>
+-                ) : (
+-                  <button
+-                    type="button"
+-                    className="plain"
+-                    onClick={() =>
+-                      void run(
+-                        () =>
+-                          request(`/cloud-management/groups/${detail.id}/leave`, {
+-                            expectedVersion: detail.version,
+-                          }),
+-                        "已退出小组；本组角色授权同时撤销。",
+-                      )
+-                    }
+-                  >
+-                    退出本组
+-                  </button>
+-                )}
++                      </li>
++                    ))}
++                    {!members.length && (
++                      <li className="cw-empty">
++                        <strong>没有有效成员</strong>
++                        <span>可通过下方“添加成员”按完整用户名查找。</span>
++                      </li>
++                    )}
++                  </ul>
++
++                  {selfIsLeader ? (
++                    <p className="cw-hint">你是本组负责人，不能直接退出；请先交接负责人。</p>
++                  ) : (
++                    <button
++                      type="button"
++                      className="plain"
++                      onClick={() =>
++                        void run(
++                          () =>
++                            request(`/cloud-management/groups/${detail.id}/leave`, {
++                              expectedVersion: detail.version,
++                            }),
++                          "已退出小组；本组角色授权同时撤销。",
++                        )
++                      }
++                    >
++                      退出本组
++                    </button>
++                  )}
++                </div>
+ 
+                 {canManage && detail.state === "ACTIVE" && (
+                   <div className="cw-inline-form">
+@@ -1365,81 +1450,98 @@
+ 
+   return (
+     <section className="cw-panel" aria-label="账户管理">
+-      <div className="cw-toolbar">
+-        {canRead && (
+-          <form
+-            className="cw-search"
+-            onSubmit={(event) => {
+-              event.preventDefault();
+-              void load(0);
+-            }}
+-          >
+-            <label className="field">
+-              搜索用户名/显示名
+-              <input
+-                aria-label="搜索账户"
+-                value={query}
+-                maxLength={128}
+-                onChange={(event) => setQuery(event.target.value)}
+-              />
+-            </label>
+-            <label className="field">
+-              状态
+-              <select aria-label="账户状态筛选" value={state} onChange={(event) => setState(event.target.value)}>
+-                <option value="">全部</option>
+-                <option value="ACTIVE">启用</option>
+-                <option value="PENDING">待激活</option>
+-                <option value="DISABLED">停用</option>
+-              </select>
+-            </label>
+-            <button type="submit" className="plain" disabled={loading}>
+-              <Search size={15} /> 搜索
+-            </button>
+-          </form>
+-        )}
+-        <div className="cw-actions">
++      <div className="cw-pagebar">
++        <div className="cw-pagebar-title">
++          <h2>账户管理</h2>
++          <p>
++            {canRead
++              ? `${page.total} 个账户 · 第 ${Math.floor(offset / PAGE_SIZE) + 1} 页 · 停用/重置等敏感操作需二次确认`
++              : "当前角色仅可创建待激活账户，不读取全局列表"}
++          </p>
++        </div>
++        <div className="cw-pagebar-actions">
+           {canRead && (
+-            <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading}>
+-              <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
++            <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading} title="刷新账户列表">
++              <RefreshCw size={14} className={loading ? "spin" : ""} /> 刷新
+             </button>
+           )}
+           {canCreate && (
+             <button type="button" className="primary" onClick={() => setCreateOpen((open) => !open)}>
+-              <Plus size={15} /> 创建待激活账户
++              <Plus size={14} /> 创建待激活账户
+             </button>
+           )}
+         </div>
+       </div>
+ 
+-      {createOpen && (
+-        <form className="cw-card cw-form" onSubmit={createAccount} aria-label="创建待激活账户">
+-          <h2>创建待激活账户</h2>
++      {canRead && (
++        <form
++          className="cw-filterbar"
++          onSubmit={(event) => {
++            event.preventDefault();
++            void load(0);
++          }}
++        >
+           <label className="field">
+-            用户名
++            搜索用户名/显示名
+             <input
+-              aria-label="新账户用户名"
+-              autoComplete="off"
+-              spellCheck={false}
+-              value={newUsername}
+-              onChange={(event) => setNewUsername(event.target.value)}
++              aria-label="搜索账户"
++              value={query}
++              maxLength={128}
++              placeholder="输入用户名或显示名"
++              onChange={(event) => setQuery(event.target.value)}
+             />
+           </label>
+-          <label className="field">
+-            显示名
+-            <input
+-              aria-label="新账户显示名"
+-              maxLength={128}
+-              value={newDisplayName}
+-              onChange={(event) => setNewDisplayName(event.target.value)}
+-            />
++          <label className="field cw-field-narrow">
++            状态
++            <select aria-label="账户状态筛选" value={state} onChange={(event) => setState(event.target.value)}>
++              <option value="">全部</option>
++              <option value="ACTIVE">启用</option>
++              <option value="PENDING">待激活</option>
++              <option value="DISABLED">停用</option>
++            </select>
+           </label>
+-          <p className="cw-hint">用户名规范为小写字母/数字/点/横线/下划线，3–64 位。创建后不入组、不授予角色。</p>
+-          <div className="cw-actions">
++          <button type="submit" className="plain" disabled={loading}>
++            <Search size={14} /> 搜索
++          </button>
++          <span className="cw-filter-hint">搜索按云端现有权限范围返回，不缓存账户资料。</span>
++        </form>
++      )}
++
++      {createOpen && (
++        <form className="cw-inline-editor" onSubmit={createAccount} aria-label="创建待激活账户">
++          <div className="cw-inline-editor-head">
++            <h2>创建待激活账户</h2>
++            <span>创建后不入组、不授予角色；开通码只显示一次。</span>
++          </div>
++          <div className="cw-form-grid">
++            <label className="field">
++              用户名
++              <input
++                aria-label="新账户用户名"
++                autoComplete="off"
++                spellCheck={false}
++                placeholder="小写字母/数字/点/横线/下划线"
++                value={newUsername}
++                onChange={(event) => setNewUsername(event.target.value)}
++              />
++            </label>
++            <label className="field">
++              显示名
++              <input
++                aria-label="新账户显示名"
++                maxLength={128}
++                value={newDisplayName}
++                onChange={(event) => setNewDisplayName(event.target.value)}
++              />
++            </label>
++          </div>
++          <p className="cw-hint">用户名规范为小写字母/数字/点/横线/下划线，3–64 位。</p>
++          <div className="cw-inline-editor-foot">
++            <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
++              取消
++            </button>
+             <button type="submit" className="primary" disabled={busy}>
+               创建并签发开通码
+-            </button>
+-            <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
+-              取消
+             </button>
+           </div>
+         </form>
+@@ -1473,26 +1575,28 @@
+       )}
+ 
+       {resetFor && (
+-        <form className="cw-card cw-form" onSubmit={resetPassword} aria-label="签发密码重置码">
+-          <h2>为 @{resetFor.username} 签发重置码</h2>
++        <form className="cw-inline-editor" onSubmit={resetPassword} aria-label="签发密码重置码">
++          <div className="cw-inline-editor-head">
++            <h2>为 @{resetFor.username} 签发重置码</h2>
++            <span>只有唯一 owner 可以发起；重置码仅本次显示。</span>
++          </div>
+           <p className="cw-hint">
+-            只有唯一 owner 可以发起；目标必须是启用中的非 owner 账户。需要你本人当前密码确认，重置码仅本次显示。
++            目标必须是启用中的非 owner 账户。需要你本人当前密码确认；完成重置时撤销目标旧会话。
+           </p>
+-          <label className="field">
+-            我本人的当前密码
+-            <input
+-              aria-label="操作者当前密码"
+-              type="password"
+-              autoComplete="current-password"
+-              value={ownerPassword}
+-              disabled={busy}
+-              onChange={(event) => setOwnerPassword(event.target.value)}
+-            />
+-          </label>
+-          <div className="cw-actions">
+-            <button type="submit" className="primary" disabled={busy}>
+-              确认签发
+-            </button>
++          <div className="cw-form-grid">
++            <label className="field">
++              我本人的当前密码
++              <input
++                aria-label="操作者当前密码"
++                type="password"
++                autoComplete="current-password"
++                value={ownerPassword}
++                disabled={busy}
++                onChange={(event) => setOwnerPassword(event.target.value)}
++              />
++            </label>
++          </div>
++          <div className="cw-inline-editor-foot">
+             <button
+               type="button"
+               className="plain"
+@@ -1502,6 +1606,9 @@
+               }}
+             >
+               取消
++            </button>
++            <button type="submit" className="primary" disabled={busy}>
++              确认签发
+             </button>
+           </div>
+         </form>
+@@ -1552,82 +1659,91 @@
+       )}
+ 
+       {canRead ? (
+-        <div className="cw-card cw-list-card">
+-          <ul className="cw-list">
++        <div className="cw-surface cw-list-surface">
++          <div className="cw-list-caption">
++            <span>账户</span>
++            <span>共 {page.total} 条</span>
++          </div>
++          <ul className="cw-list cw-account-list">
+             {page.items.map((account) => (
+-            <li key={account.id} className="cw-row">
+-              <div className="cw-row-main">
+-                <strong>
+-                  {account.displayName || account.username} <span className="cw-username">@{account.username}</span>
+-                </strong>
+-                <span className="cw-meta">
+-                  <Badge kind={account.state === "ACTIVE" ? "ok" : account.state === "DISABLED" ? "danger" : "warn"}>
+-                    {stateText(account.state)}
+-                  </Badge>
+-                  {account.superAdmin && <Badge kind="warn">唯一 owner</Badge>}
+-                  <span>安全版本 {account.securityVersion}</span>
+-                  <span>创建于 {displayTime(account.createdAt)}</span>
++              <li key={account.id} className="cw-row">
++                <div className="cw-row-main">
++                  <strong>
++                    {account.displayName || account.username} <span className="cw-username">@{account.username}</span>
++                  </strong>
++                  <span className="cw-meta">
++                    <Badge kind={account.state === "ACTIVE" ? "ok" : account.state === "DISABLED" ? "danger" : "warn"}>
++                      {stateText(account.state)}
++                    </Badge>
++                    {account.superAdmin && <Badge kind="warn">唯一 owner</Badge>}
++                    <span>安全版本 {account.securityVersion}</span>
++                    <span>创建于 {displayTime(account.createdAt)}</span>
++                  </span>
++                </div>
++                <span className="cw-actions">
++                  {isOwner && !account.superAdmin && (
++                    <>
++                      {account.state === "ACTIVE" && (
++                        <button
++                          type="button"
++                          className="plain"
++                          disabled={busy}
++                          onClick={() => {
++                            setOwnerPassword("");
++                            setResetFor(account);
++                          }}
++                        >
++                          <KeyRound size={13} /> 重置码
++                        </button>
++                      )}
++                      {account.state !== "DISABLED" && (
++                        <button
++                          type="button"
++                          className="plain"
++                          disabled={busy}
++                          onClick={() =>
++                            void act(async () => {
++                              const opening = await guard(() =>
++                                request<Opening>(`/cloud-management/accounts/${account.id}/opening-codes`, {}),
++                              );
++                              setSecret({
++                                title: `@${opening.username} 的一次性开通码`,
++                                code: opening.openingCode,
++                                expiresAt: opening.expiresAt,
++                                openingId: opening.id,
++                              });
++                            }, "已签发新的设备开通码。")
++                          }
++                        >
++                          发开通码
++                        </button>
++                      )}
++                    </>
++                  )}
++                  {canDisable && !account.superAdmin && account.state !== "PENDING" && (
++                    <button
++                      type="button"
++                      className="plain"
++                      disabled={busy}
++                      onClick={() => setConfirmState({ account, enable: account.state !== "ACTIVE", emergency: false })}
++                    >
++                      {account.state === "ACTIVE" ? "停用" : "启用"}
++                    </button>
++                  )}
+                 </span>
+-              </div>
+-              <span className="cw-actions">
+-                {isOwner && !account.superAdmin && (
+-                  <>
+-                    {account.state === "ACTIVE" && (
+-                      <button
+-                        type="button"
+-                        className="plain"
+-                        disabled={busy}
+-                        onClick={() => {
+-                          setOwnerPassword("");
+-                          setResetFor(account);
+-                        }}
+-                      >
+-                        <KeyRound size={14} /> 重置码
+-                      </button>
+-                    )}
+-                    {account.state !== "DISABLED" && (
+-                      <button
+-                        type="button"
+-                        className="plain"
+-                        disabled={busy}
+-                        onClick={() =>
+-                          void act(async () => {
+-                            const opening = await guard(() =>
+-                              request<Opening>(`/cloud-management/accounts/${account.id}/opening-codes`, {}),
+-                            );
+-                            setSecret({
+-                              title: `@${opening.username} 的一次性开通码`,
+-                              code: opening.openingCode,
+-                              expiresAt: opening.expiresAt,
+-                              openingId: opening.id,
+-                            });
+-                          }, "已签发新的设备开通码。")
+-                        }
+-                      >
+-                        发开通码
+-                      </button>
+-                    )}
+-                  </>
+-                )}
+-                {canDisable && !account.superAdmin && account.state !== "PENDING" && (
+-                  <button
+-                    type="button"
+-                    className="plain"
+-                    disabled={busy}
+-                    onClick={() => setConfirmState({ account, enable: account.state !== "ACTIVE", emergency: false })}
+-                  >
+-                    {account.state === "ACTIVE" ? "停用" : "启用"}
+-                  </button>
+-                )}
+-              </span>
+-            </li>
+-          ))}
+-          {!page.items.length && !loading && <li className="cw-empty">没有匹配的账户。</li>}
+-        </ul>
+-        <Pager offset={offset} limit={PAGE_SIZE} total={page.total} onChange={(next) => void load(next)} />
++              </li>
++            ))}
++            {!page.items.length && !loading && (
++              <li className="cw-empty">
++                <strong>没有匹配的账户</strong>
++                <span>调整用户名/状态筛选后重新搜索。</span>
++              </li>
++            )}
++          </ul>
++          <Pager offset={offset} limit={PAGE_SIZE} total={page.total} onChange={(next) => void load(next)} />
+         </div>
+       ) : (
+-        <div className="cw-card cw-form">
++        <div className="cw-surface cw-only-create">
+           <h2>仅创建账户</h2>
+           <p className="cw-hint">
+             当前角色只有创建待激活账户的权限，不会读取全局账户列表；创建后的一次性开通码只显示这一次。
+@@ -1659,6 +1775,8 @@
+   const [error, setError] = useState("");
+   const [success, setSuccess] = useState("");
+   const [busy, setBusy] = useState(false);
++  const [view, setView] = useState<"roles" | "auth">("roles");
++  const [authLoading, setAuthLoading] = useState(false);
+   const [createOpen, setCreateOpen] = useState(false);
+   const [newCode, setNewCode] = useState("");
+   const [newName, setNewName] = useState("");
+@@ -1780,18 +1898,37 @@
+     }
+   }
+ 
++  const loadAuthAccounts = useCallback(
++    async (text: string) => {
++      setAuthLoading(true);
++      setError("");
++      try {
++        const params = new URLSearchParams({ limit: "20", offset: "0" });
++        if (text.trim()) params.set("query", text.trim());
++        const value = await guard(() => request<Page<Account>>(`/cloud-management/accounts?${params.toString()}`));
++        setAssignFor(value);
++        setAssignAccount(null);
++        setAssignments(null);
++      } catch (failure) {
++        setError(onAuthFailure(failure));
++        setAssignFor(null);
++      } finally {
++        setAuthLoading(false);
++      }
++    },
++    [guard, onAuthFailure, request],
++  );
++
+   async function searchAccounts(event: FormEvent) {
+     event.preventDefault();
+-    setError("");
+-    try {
+-      const params = new URLSearchParams({ limit: "20", offset: "0" });
+-      if (assignQuery.trim()) params.set("query", assignQuery.trim());
+-      const value = await guard(() => request<Page<Account>>(`/cloud-management/accounts?${params.toString()}`));
+-      setAssignFor(value);
+-    } catch (failure) {
+-      setError(onAuthFailure(failure));
+-    }
++    await loadAuthAccounts(assignQuery);
+   }
++
++  useEffect(() => {
++    // 首次进入“账户授权”时按空条件加载一次；失败后由用户点搜索/刷新，不自动轮询。
++    if (view === "auth") void loadAuthAccounts("");
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [view]);
+ 
+   async function loadAssignments(account: Account) {
+     setAssignAccount(account);
+@@ -1828,316 +1965,521 @@
+   }, [guard, request]);
+ 
+   const roleScope = role?.role.scopeType || "GROUP";
++  const roleBuiltIn = role?.role.builtIn || false;
++  const editablePermissions = useMemo(
++    () =>
++      permissions.filter(
++        (permission) => permission.scopeType === roleScope && (roleBuiltIn || permission.customAssignable),
++      ),
++    [permissions, roleBuiltIn, roleScope],
++  );
++  const permissionGroups = useMemo(() => {
++    const grouped = new Map<string, Permission[]>();
++    for (const permission of editablePermissions) {
++      const prefix = permission.code.split(":")[0] || "other";
++      grouped.set(prefix, [...(grouped.get(prefix) || []), permission]);
++    }
++    return [...grouped.entries()];
++  }, [editablePermissions]);
++  const dirty =
++    !!role &&
++    (editing.length !== role.permissions.length || editing.some((code) => !role.permissions.includes(code)));
++  const assignableRoles = roles.filter((item) => !RESERVED_ROLES.has(item.role.code));
++  const reservedRole = !!role && RESERVED_ROLES.has(role.role.code);
+ 
+   return (
+     <section className="cw-panel" aria-label="角色与授权">
+-      <div className="cw-toolbar">
+-        <div className="cw-actions">
+-          <button type="button" className="plain" onClick={() => void load()} disabled={loading}>
+-            <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
++      <div className="cw-pagebar">
++        <div className="cw-pagebar-title">
++          <h2>角色与授权</h2>
++          <p>
++            {view === "roles"
++              ? `${roles.length} 个角色 · ${roles.filter((item) => item.role.builtIn).length} 个内置身份 · 权限按现有范围编辑`
++              : `${assignFor?.total ?? 0} 个账户 · 按账户查看或调整授权`}
++          </p>
++        </div>
++        <div className="cw-pagebar-actions">
++          <button
++            type="button"
++            className="plain"
++            onClick={() => void (view === "roles" ? load() : loadAuthAccounts(assignQuery))}
++            disabled={loading || authLoading}
++            title="刷新角色与授权"
++          >
++            <RefreshCw size={14} className={loading || authLoading ? "spin" : ""} /> 刷新
+           </button>
+-          <button type="button" className="primary" onClick={() => setCreateOpen((open) => !open)}>
+-            <Plus size={15} /> 创建自定义角色
+-          </button>
++          {view === "roles" && (
++            <button type="button" className="primary" onClick={() => setCreateOpen((open) => !open)}>
++              <Plus size={14} /> 创建自定义角色
++            </button>
++          )}
+         </div>
+       </div>
++
++      <div className="cw-subtabs" aria-label="角色与授权视图">
++        <button
++          type="button"
++          aria-label="角色权限"
++          aria-pressed={view === "roles"}
++          className={view === "roles" ? "active" : ""}
++          onClick={() => {
++            setView("roles");
++            setError("");
++            setSuccess("");
++          }}
++        >
++          角色权限 <span className="cw-count">{roles.length}</span>
++        </button>
++        <button
++          type="button"
++          aria-label="账户授权"
++          aria-pressed={view === "auth"}
++          className={view === "auth" ? "active" : ""}
++          onClick={() => {
++            setView("auth");
++            setError("");
++            setSuccess("");
++          }}
++        >
++          账户授权
++        </button>
++      </div>
++
+       <Notice error={error} success={success} />
+ 
+       {createOpen && (
+-        <form className="cw-card cw-form" onSubmit={createRole} aria-label="创建自定义角色">
+-          <h2>创建自定义角色</h2>
+-          <label className="field">
+-            角色编码（大写字母/数字/下划线）
+-            <input aria-label="角色编码" value={newCode} spellCheck={false} onChange={(event) => setNewCode(event.target.value)} />
+-          </label>
+-          <label className="field">
+-            角色名称
+-            <input aria-label="角色名称" maxLength={128} value={newName} onChange={(event) => setNewName(event.target.value)} />
+-          </label>
+-          <label className="field">
+-            范围
+-            <select
+-              aria-label="角色范围"
+-              value={newScope}
+-              onChange={(event) => {
+-                setNewScope(event.target.value as "SYSTEM" | "GROUP");
+-                setNewPerms([]);
+-              }}
+-            >
+-              <option value="GROUP">GROUP（绑定具体小组）</option>
+-              <option value="SYSTEM">SYSTEM（全局）</option>
+-            </select>
+-          </label>
++        <form className="cw-inline-editor" onSubmit={createRole} aria-label="创建自定义角色">
++          <div className="cw-inline-editor-head">
++            <h2>创建自定义角色</h2>
++            <span>保留身份不可创建；创建后回到角色列表分配权限。</span>
++          </div>
++          <div className="cw-form-grid">
++            <label className="field">
++              角色编码（大写字母/数字/下划线）
++              <input aria-label="角色编码" value={newCode} spellCheck={false} onChange={(event) => setNewCode(event.target.value)} />
++            </label>
++            <label className="field">
++              角色名称
++              <input aria-label="角色名称" maxLength={128} value={newName} onChange={(event) => setNewName(event.target.value)} />
++            </label>
++            <label className="field">
++              范围
++              <select
++                aria-label="角色范围"
++                value={newScope}
++                onChange={(event) => {
++                  setNewScope(event.target.value as "SYSTEM" | "GROUP");
++                  setNewPerms([]);
++                }}
++              >
++                <option value="GROUP">GROUP（绑定具体小组）</option>
++                <option value="SYSTEM">SYSTEM（全局）</option>
++              </select>
++            </label>
++          </div>
+           <fieldset className="cw-perms">
+             <legend>可分配权限</legend>
+-            {catalogFor(newScope).map((permission) => (
+-              <label key={permission.code} className="cw-check">
+-                <input
+-                  type="checkbox"
+-                  checked={newPerms.includes(permission.code)}
+-                  onChange={(event) =>
+-                    setNewPerms((current) =>
+-                      event.target.checked ? [...current, permission.code] : current.filter((code) => code !== permission.code),
+-                    )
+-                  }
+-                />
+-                {permission.code}
+-              </label>
+-            ))}
++            <div className="cw-perm-grid">
++              {catalogFor(newScope).map((permission) => (
++                <label key={permission.code} className="cw-check">
++                  <input
++                    type="checkbox"
++                    checked={newPerms.includes(permission.code)}
++                    onChange={(event) =>
++                      setNewPerms((current) =>
++                        event.target.checked ? [...current, permission.code] : current.filter((code) => code !== permission.code),
++                      )
++                    }
++                  />
++                  {permission.code}
++                </label>
++              ))}
++            </div>
+           </fieldset>
+-          <div className="cw-actions">
++          <div className="cw-inline-editor-foot">
++            <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
++              取消
++            </button>
+             <button type="submit" className="primary" disabled={busy}>
+               创建
+-            </button>
+-            <button type="button" className="plain" onClick={() => setCreateOpen(false)}>
+-              取消
+             </button>
+           </div>
+         </form>
+       )}
+ 
+-      <div className="cw-split">
+-        <div className="cw-card cw-list-card">
+-          <h2>角色</h2>
+-          <ul className="cw-list cw-select-list">
+-            {roles.map((item) => (
+-              <li key={item.role.id}>
+-                <button
+-                  type="button"
+-                  className={selectedRole === item.role.id ? "active" : ""}
+-                  onClick={() => setSelectedRole(item.role.id)}
+-                >
+-                  <span className="cw-row-main">
+-                    <strong>{item.role.name}</strong>
++      {view === "roles" ? (
++        <div className="cw-workbench cw-roles-workbench">
++          <aside className="cw-master" aria-label="角色列表">
++            <div className="cw-master-head">
++              <span>角色</span>
++              <span>{roles.length}</span>
++            </div>
++            {loading && !roles.length ? (
++              <p className="cw-loading">
++                <LoaderCircle size={14} className="spin" /> 读取中…
++              </p>
++            ) : (
++              <ul className="cw-list cw-select-list">
++                {roles.map((item) => (
++                  <li key={item.role.id}>
++                    <button
++                      type="button"
++                      className={selectedRole === item.role.id ? "active" : ""}
++                      aria-current={selectedRole === item.role.id ? "true" : undefined}
++                      onClick={() => setSelectedRole(item.role.id)}
++                    >
++                      <span className="cw-row-main">
++                        <strong>{item.role.name}</strong>
++                        <span className="cw-meta">
++                          <span>{item.role.code}</span>
++                          <Badge kind={item.role.scopeType === "SYSTEM" ? "warn" : "muted"}>{item.role.scopeType}</Badge>
++                          {item.role.builtIn && <Badge kind="muted">内置</Badge>}
++                          <span>v{item.role.version}</span>
++                        </span>
++                      </span>
++                      <ChevronRight size={14} />
++                    </button>
++                  </li>
++                ))}
++                {!roles.length && (
++                  <li className="cw-empty cw-empty-action">
++                    <strong>暂无角色</strong>
++                    <span>创建自定义角色后即可分配权限。</span>
++                    <button type="button" className="plain" onClick={() => setCreateOpen(true)}>
++                      <Plus size={13} /> 新建角色
++                    </button>
++                  </li>
++                )}
++              </ul>
++            )}
++          </aside>
++
++          <div className="cw-detail-pane cw-detail">
++            {!role ? (
++              <div className="cw-empty-state">
++                <ShieldCheck size={22} />
++                <h2>{roles.length ? "选择一个角色" : "还没有角色"}</h2>
++                <p>
++                  {roles.length
++                    ? "从左侧选择角色，查看权限分组、版本与受影响的授权。"
++                    : "创建自定义角色后即可分配权限；唯一 owner / 组长身份为保留关系，不在此编辑。"}
++                </p>
++                {!roles.length && !loading && (
++                  <button type="button" className="primary" onClick={() => setCreateOpen(true)}>
++                    <Plus size={14} /> 创建自定义角色
++                  </button>
++                )}
++              </div>
++            ) : (
++              <>
++                <div className="cw-detail-head">
++                  <div className="cw-detail-title">
++                    <h2>{role.role.name}</h2>
+                     <span className="cw-meta">
+-                      <span>{item.role.code}</span>
+-                      <Badge kind={item.role.scopeType === "SYSTEM" ? "warn" : "muted"}>{item.role.scopeType}</Badge>
+-                      {item.role.builtIn && <Badge kind="muted">内置</Badge>}
+-                      <span>v{item.role.version}</span>
++                      <span>{role.role.code}</span>
++                      <Badge kind={role.role.scopeType === "SYSTEM" ? "warn" : "muted"}>{role.role.scopeType}</Badge>
++                      {role.role.builtIn && <Badge kind="muted">内置</Badge>}
++                      <span>版本 v{role.role.version}</span>
+                     </span>
+-                  </span>
+-                  <ChevronRight size={15} />
+-                </button>
+-              </li>
+-            ))}
+-            {!roles.length && !loading && <li className="cw-empty">没有角色。</li>}
+-          </ul>
+-        </div>
+-
+-        <div className="cw-card cw-detail">
+-          {!role ? (
+-            <p className="cw-empty">选择角色查看权限与影响。</p>
+-          ) : (
+-            <>
+-              <div className="cw-detail-head">
+-                <div>
+-                  <h2>{role.role.name}</h2>
+-                  <span className="cw-meta">
+-                    <span>{role.role.code}</span>
+-                    <Badge kind={role.role.scopeType === "SYSTEM" ? "warn" : "muted"}>{role.role.scopeType}</Badge>
+-                    <span>版本 v{role.role.version}</span>
++                  </div>
++                  <span className="cw-detail-badges">
++                    <Badge kind={impact?.totalAssignments ? "warn" : "muted"}>
++                      影响 {impact ? impact.totalAssignments : "…"} 条授权
++                    </Badge>
+                   </span>
+                 </div>
+-                <span className="cw-actions">
+-                  <Badge kind={impact?.totalAssignments ? "warn" : "muted"}>
+-                    影响 {impact ? impact.totalAssignments : "…"} 条授权
+-                  </Badge>
+-                </span>
++
++                {reservedRole ? (
++                  <p className="cw-hint cw-notice-line">
++                    保留身份不通过普通角色分配或编辑；组长权限从小组负责人关系派生。
++                  </p>
++                ) : (
++                  <>
++                    <div className="cw-detail-scroll">
++                      <div className="cw-perm-groups">
++                        {permissionGroups.map(([prefix, items]) => (
++                          <section className="cw-perm-group" key={prefix} aria-label={`${permissionGroupLabel(prefix)}权限`}>
++                            <h3>
++                              {permissionGroupLabel(prefix)} <span>{items.length}</span>
++                            </h3>
++                            <div className="cw-perm-grid">
++                              {items.map((permission) => (
++                                <label key={permission.code} className="cw-check">
++                                  <input
++                                    type="checkbox"
++                                    checked={editing.includes(permission.code)}
++                                    onChange={(event) =>
++                                      setEditing((current) =>
++                                        event.target.checked
++                                          ? [...current, permission.code]
++                                          : current.filter((code) => code !== permission.code),
++                                      )
++                                    }
++                                  />
++                                  {permission.code}
++                                </label>
++                              ))}
++                            </div>
++                          </section>
++                        ))}
++                        {!permissionGroups.length && <p className="cw-empty">该范围没有可编辑权限。</p>}
++                      </div>
++
++                      {impact && (
++                        <section className="cw-impact">
++                          <h3>
++                            授权影响 <span>前 {impact.assignments.length} 条 / 共 {impact.totalAssignments} 条</span>
++                          </h3>
++                          <ul className="cw-list">
++                            {impact.assignments.map((assignment) => (
++                              <li key={assignment.id} className="cw-row">
++                                <span className="cw-row-main">
++                                  <strong>{assignment.accountId}</strong>
++                                  <span className="cw-meta">
++                                    <span>{assignment.scopeType}</span>
++                                    {assignment.groupId && <span>小组 {assignment.groupId}</span>}
++                                    <span>由 {assignment.grantedBy || "—"} 授予</span>
++                                  </span>
++                                </span>
++                              </li>
++                            ))}
++                            {!impact.assignments.length && <li className="cw-empty">该角色目前没有授权记录。</li>}
++                          </ul>
++                        </section>
++                      )}
++                    </div>
++
++                    <div className="cw-detail-foot">
++                      <span className="cw-hint">保存前请核对影响范围；版本冲突时不会自动覆盖。</span>
++                      <div className="cw-actions">
++                        <button
++                          type="button"
++                          className="plain"
++                          disabled={!dirty || busy}
++                          onClick={() => setEditing(role.permissions)}
++                        >
++                          <Undo2 size={13} /> 撤销更改
++                        </button>
++                        <button type="button" className="primary" disabled={!dirty || busy} onClick={() => void savePermissions()}>
++                          <Save size={14} /> 保存权限
++                        </button>
++                      </div>
++                    </div>
++                  </>
++                )}
++              </>
++            )}
++          </div>
++        </div>
++      ) : (
++        <div className="cw-auth">
++          <form className="cw-filterbar" onSubmit={searchAccounts}>
++            <label className="field">
++              搜索账户（用户名/显示名）
++              <input
++                aria-label="授权账户搜索"
++                value={assignQuery}
++                maxLength={128}
++                placeholder="输入完整用户名或显示名"
++                onChange={(event) => setAssignQuery(event.target.value)}
++              />
++            </label>
++            <button type="submit" className="plain" disabled={authLoading}>
++              <Search size={14} /> 搜索
++            </button>
++            <span className="cw-filter-hint">仅可分配非保留角色；GROUP 角色需要指定具体小组。</span>
++          </form>
++
++          <div className="cw-workbench cw-auth-workbench">
++            <aside className="cw-master" aria-label="账户授权列表">
++              <div className="cw-master-head">
++                <span>账户</span>
++                <span>{assignFor?.total ?? "—"}</span>
+               </div>
+-
+-              {["SUPER_ADMIN", "GROUP_LEADER", "GROUP_MEMBER"].includes(role.role.code) ? (
+-                <p className="cw-hint">保留身份不通过普通角色分配或编辑；组长权限从小组负责人关系派生。</p>
+-              ) : (
++              {authLoading && !assignFor ? (
++                <p className="cw-loading">
++                  <LoaderCircle size={14} className="spin" /> 读取中…
++                </p>
++              ) : assignFor ? (
+                 <>
+-                  <fieldset className="cw-perms">
+-                    <legend>权限（仅同范围、可分配项）</legend>
+-                    {catalogFor(role.role.scopeType, role.role.builtIn).map((permission) => (
+-                      <label key={permission.code} className="cw-check">
+-                        <input
+-                          type="checkbox"
+-                          checked={editing.includes(permission.code)}
+-                          onChange={(event) =>
+-                            setEditing((current) =>
+-                              event.target.checked
+-                                ? [...current, permission.code]
+-                                : current.filter((code) => code !== permission.code),
+-                            )
+-                          }
+-                        />
+-                        {permission.code}
+-                      </label>
++                  <ul className="cw-list cw-select-list">
++                    {assignFor.items.map((account) => (
++                      <li key={account.id}>
++                        <button
++                          type="button"
++                          className={assignAccount?.id === account.id ? "active" : ""}
++                          aria-current={assignAccount?.id === account.id ? "true" : undefined}
++                          onClick={() => void loadAssignments(account)}
++                        >
++                          <span className="cw-row-main">
++                            <strong>{account.displayName || account.username}</strong>
++                            <span className="cw-meta">
++                              <span>@{account.username}</span>
++                              <Badge kind={account.state === "ACTIVE" ? "ok" : "danger"}>{stateText(account.state)}</Badge>
++                            </span>
++                          </span>
++                          <ChevronRight size={14} />
++                        </button>
++                      </li>
+                     ))}
+-                  </fieldset>
+-                  <div className="cw-actions">
+-                    <button type="button" className="primary" disabled={busy} onClick={() => void savePermissions()}>
+-                      <Save size={14} /> 保存权限
+-                    </button>
+-                    <span className="cw-hint">保存前请核对影响范围；版本冲突时不会自动覆盖。</span>
+-                  </div>
+-                  {impact && (
+-                    <div className="cw-impact">
+-                      <h3>影响预览（前 {impact.assignments.length} 条）</h3>
+-                      <ul className="cw-list">
+-                        {impact.assignments.map((assignment) => (
+-                          <li key={assignment.id} className="cw-row">
+-                            <span className="cw-row-main">
+-                              <strong>{assignment.accountId}</strong>
+-                              <span className="cw-meta">
+-                                <span>{assignment.scopeType}</span>
+-                                {assignment.groupId && <span>小组 {assignment.groupId}</span>}
+-                                <span>由 {assignment.grantedBy || "—"} 授予</span>
+-                              </span>
+-                            </span>
+-                          </li>
+-                        ))}
+-                        {!impact.assignments.length && <li className="cw-empty">该角色目前没有授权记录。</li>}
+-                      </ul>
++                  </ul>
++                  {!assignFor.items.length && (
++                    <div className="cw-empty cw-empty-action">
++                      <strong>没有匹配账户</strong>
++                      <span>试试完整用户名或显示名；不会伪造账户数据。</span>
+                     </div>
+                   )}
+                 </>
++              ) : (
++                <div className="cw-empty cw-empty-action">
++                  <strong>无法读取账户</strong>
++                  <span>检查权限或重新搜索。</span>
++                </div>
+               )}
+-            </>
+-          )}
++            </aside>
++
++            <div className="cw-detail-pane cw-detail">
++              {!assignAccount ? (
++                <div className="cw-empty-state">
++                  <UserPlus size={22} />
++                  <h2>选择一个账户</h2>
++                  <p>从左侧选择账户，查看当前角色授权并新增或撤销授权。</p>
++                </div>
++              ) : (
++                <>
++                  <div className="cw-detail-head">
++                    <div className="cw-detail-title">
++                      <h2>{assignAccount.displayName || assignAccount.username}</h2>
++                      <span className="cw-meta">
++                        <span>@{assignAccount.username}</span>
++                        <Badge kind={assignAccount.state === "ACTIVE" ? "ok" : "danger"}>{stateText(assignAccount.state)}</Badge>
++                      </span>
++                    </div>
++                    <span className="cw-detail-badges">
++                      <Badge kind="muted">安全版本 {assignAccount.securityVersion}</Badge>
++                    </span>
++                  </div>
++
++                  <div className="cw-detail-scroll">
++                    <section className="cw-assign-section">
++                      <h3>
++                        当前授权 <span>{assignments?.total ?? "…"}</span>
++                      </h3>
++                      <ul className="cw-list">
++                        {(assignments?.items || []).map((assignment) => (
++                          <li key={assignment.id} className="cw-row">
++                            <span className="cw-row-main">
++                              <strong>
++                                {roles.find((item) => item.role.id === assignment.roleId)?.role.name || assignment.roleId}
++                              </strong>
++                              <span className="cw-meta">
++                                <Badge kind={assignment.scopeType === "SYSTEM" ? "warn" : "muted"}>{assignment.scopeType}</Badge>
++                                {assignment.groupId && (
++                                  <span>小组 {groups.find((group) => group.id === assignment.groupId)?.name || assignment.groupId}</span>
++                                )}
++                              </span>
++                            </span>
++                            <button
++                              type="button"
++                              className="plain danger"
++                              disabled={busy}
++                              onClick={() =>
++                                void (async () => {
++                                  setBusy(true);
++                                  setError("");
++                                  try {
++                                    await guard(() =>
++                                      request(`/cloud-management/role-assignments/${assignment.id}`, undefined, "DELETE"),
++                                    );
++                                    await loadAssignments(assignAccount);
++                                    setSuccess("授权已撤销；重新入组不会恢复旧角色。");
++                                  } catch (failure) {
++                                    setError(onAuthFailure(failure));
++                                  } finally {
++                                    setBusy(false);
++                                  }
++                                })()
++                              }
++                            >
++                              撤销
++                            </button>
++                          </li>
++                        ))}
++                        {!assignments?.items.length && <li className="cw-empty">该账户没有有效授权。</li>}
++                      </ul>
++                    </section>
++
++                    <section className="cw-assign-section">
++                      <h3>新增授权</h3>
++                      <div className="cw-inline-form">
++                        <label className="field">
++                          角色
++                          <select aria-label="要授予的角色" value={assignRoleId} onChange={(event) => setAssignRoleId(event.target.value)}>
++                            {assignableRoles.map((item) => (
++                              <option key={item.role.id} value={item.role.id}>
++                                {item.role.name}（{item.role.code}）
++                              </option>
++                            ))}
++                          </select>
++                        </label>
++                        {roles.find((item) => item.role.id === assignRoleId)?.role.scopeType === "GROUP" && (
++                          <label className="field">
++                            小组
++                            <select aria-label="授予的小组" value={assignGroupId} onChange={(event) => setAssignGroupId(event.target.value)}>
++                              <option value="">选择小组</option>
++                              {groups.map((group) => (
++                                <option key={group.id} value={group.id}>
++                                  {group.name}
++                                </option>
++                              ))}
++                            </select>
++                          </label>
++                        )}
++                        <button
++                          type="button"
++                          className="primary"
++                          disabled={busy || !assignRoleId}
++                          onClick={() =>
++                            void (async () => {
++                              const selected = roles.find((item) => item.role.id === assignRoleId);
++                              if (!selected) return;
++                              if (selected.role.scopeType === "GROUP" && !assignGroupId) {
++                                setError("GROUP 角色必须选择具体小组，且目标必须是该组有效成员。");
++                                return;
++                              }
++                              setBusy(true);
++                              setError("");
++                              setSuccess("");
++                              try {
++                                await guard(() =>
++                                  request("/cloud-management/role-assignments", {
++                                    accountId: assignAccount.id,
++                                    roleId: assignRoleId,
++                                    groupId: selected.role.scopeType === "GROUP" ? assignGroupId : null,
++                                  }),
++                                );
++                                await loadAssignments(assignAccount);
++                                setSuccess("授权已提交。");
++                              } catch (failure) {
++                                setError(onAuthFailure(failure));
++                              } finally {
++                                setBusy(false);
++                              }
++                            })()
++                          }
++                        >
++                          <UserPlus size={14} /> 授予
++                        </button>
++                      </div>
++                      <p className="cw-hint">GROUP 角色只能授予该组有效成员；组长身份不是可分配角色。</p>
++                    </section>
++                  </div>
++                </>
++              )}
++            </div>
++          </div>
+         </div>
+-      </div>
+-
+-      <div className="cw-card">
+-        <h2>账户授权</h2>
+-        <form className="cw-search" onSubmit={searchAccounts}>
+-          <label className="field">
+-            搜索账户（用户名/显示名）
+-            <input aria-label="授权账户搜索" value={assignQuery} onChange={(event) => setAssignQuery(event.target.value)} />
+-          </label>
+-          <button type="submit" className="plain">
+-            <Search size={14} /> 搜索
+-          </button>
+-        </form>
+-        {assignFor && (
+-          <ul className="cw-list cw-select-list">
+-            {assignFor.items.map((account) => (
+-              <li key={account.id}>
+-                <button type="button" className={assignAccount?.id === account.id ? "active" : ""} onClick={() => void loadAssignments(account)}>
+-                  <span className="cw-row-main">
+-                    <strong>{account.displayName || account.username}</strong>
+-                    <span className="cw-meta">
+-                      <span>@{account.username}</span>
+-                      <Badge kind={account.state === "ACTIVE" ? "ok" : "danger"}>{stateText(account.state)}</Badge>
+-                    </span>
+-                  </span>
+-                  <ChevronRight size={15} />
+-                </button>
+-              </li>
+-            ))}
+-            {!assignFor.items.length && <li className="cw-empty">没有匹配账户。</li>}
+-          </ul>
+-        )}
+-
+-        {assignAccount && (
+-          <div className="cw-assign">
+-            <h3>@{assignAccount.username} 的当前授权</h3>
+-            <ul className="cw-list">
+-              {(assignments?.items || []).map((assignment) => (
+-                <li key={assignment.id} className="cw-row">
+-                  <span className="cw-row-main">
+-                    <strong>{roles.find((item) => item.role.id === assignment.roleId)?.role.name || assignment.roleId}</strong>
+-                    <span className="cw-meta">
+-                      <Badge kind={assignment.scopeType === "SYSTEM" ? "warn" : "muted"}>{assignment.scopeType}</Badge>
+-                      {assignment.groupId && <span>小组 {groups.find((g) => g.id === assignment.groupId)?.name || assignment.groupId}</span>}
+-                    </span>
+-                  </span>
+-                  <button
+-                    type="button"
+-                    className="plain danger"
+-                    disabled={busy}
+-                    onClick={() =>
+-                      void (async () => {
+-                        setBusy(true);
+-                        setError("");
+-                        try {
+-                          await guard(() => request(`/cloud-management/role-assignments/${assignment.id}`, undefined, "DELETE"));
+-                          await loadAssignments(assignAccount);
+-                          setSuccess("授权已撤销；重新入组不会恢复旧角色。");
+-                        } catch (failure) {
+-                          setError(onAuthFailure(failure));
+-                        } finally {
+-                          setBusy(false);
+-                        }
+-                      })()
+-                    }
+-                  >
+-                    撤销
+-                  </button>
+-                </li>
+-              ))}
+-              {!assignments?.items.length && <li className="cw-empty">该账户没有有效授权。</li>}
+-            </ul>
+-
+-            <div className="cw-inline-form">
+-              <label className="field">
+-                角色
+-                <select aria-label="要授予的角色" value={assignRoleId} onChange={(event) => setAssignRoleId(event.target.value)}>
+-                  {roles
+-                    .filter((item) => !RESERVED_ROLES.has(item.role.code))
+-                    .map((item) => (
+-                      <option key={item.role.id} value={item.role.id}>
+-                        {item.role.name}（{item.role.code}）
+-                      </option>
+-                    ))}
+-                </select>
+-              </label>
+-              {roles.find((item) => item.role.id === assignRoleId)?.role.scopeType === "GROUP" && (
+-                <label className="field">
+-                  小组
+-                  <select aria-label="授予的小组" value={assignGroupId} onChange={(event) => setAssignGroupId(event.target.value)}>
+-                    <option value="">选择小组</option>
+-                    {groups.map((group) => (
+-                      <option key={group.id} value={group.id}>
+-                        {group.name}
+-                      </option>
+-                    ))}
+-                  </select>
+-                </label>
+-              )}
+-              <button
+-                type="button"
+-                className="primary"
+-                disabled={busy || !assignRoleId}
+-                onClick={() =>
+-                  void (async () => {
+-                    const selected = roles.find((item) => item.role.id === assignRoleId);
+-                    if (!selected) return;
+-                    if (selected.role.scopeType === "GROUP" && !assignGroupId) {
+-                      setError("GROUP 角色必须选择具体小组，且目标必须是该组有效成员。");
+-                      return;
+-                    }
+-                    setBusy(true);
+-                    setError("");
+-                    setSuccess("");
+-                    try {
+-                      await guard(() =>
+-                        request("/cloud-management/role-assignments", {
+-                          accountId: assignAccount.id,
+-                          roleId: assignRoleId,
+-                          groupId: selected.role.scopeType === "GROUP" ? assignGroupId : null,
+-                        }),
+-                      );
+-                      await loadAssignments(assignAccount);
+-                      setSuccess("授权已提交。");
+-                    } catch (failure) {
+-                      setError(onAuthFailure(failure));
+-                    } finally {
+-                      setBusy(false);
+-                    }
+-                  })()
+-                }
+-              >
+-                <UserPlus size={14} /> 授予
+-              </button>
+-            </div>
+-            <p className="cw-hint">GROUP 角色只能授予该组有效成员；组长身份不是可分配角色。</p>
+-          </div>
+-        )}
+-      </div>
++      )}
+     </section>
+   );
+ }
+@@ -2181,15 +2523,24 @@
+ 
+   return (
+     <section className="cw-panel" aria-label="审计">
+-      <div className="cw-toolbar">
+-        <p className="cw-hint">只读脱敏摘要；不提供数据库操作或原始请求内容。</p>
+-        <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading}>
+-          <RefreshCw size={15} className={loading ? "spin" : ""} /> 刷新
+-        </button>
++      <div className="cw-pagebar">
++        <div className="cw-pagebar-title">
++          <h2>审计</h2>
++          <p>只读脱敏摘要 · {page.total} 条记录 · 不提供数据库操作或原始请求内容</p>
++        </div>
++        <div className="cw-pagebar-actions">
++          <button type="button" className="plain" onClick={() => void load(offset)} disabled={loading} title="刷新审计记录">
++            <RefreshCw size={14} className={loading ? "spin" : ""} /> 刷新
++          </button>
++        </div>
+       </div>
+       <Notice error={error} />
+-      <div className="cw-card cw-list-card">
+-        <ul className="cw-list">
++      <div className="cw-surface cw-list-surface">
++        <div className="cw-list-caption">
++          <span>事件</span>
++          <span>最近优先</span>
++        </div>
++        <ul className="cw-list cw-audit-list">
+           {page.items.map((event) => (
+             <li key={event.id} className="cw-row">
+               <div className="cw-row-main">
+@@ -2202,7 +2553,12 @@
+               </div>
+             </li>
+           ))}
+-          {!page.items.length && !loading && <li className="cw-empty">暂无审计记录。</li>}
++          {!page.items.length && !loading && (
++            <li className="cw-empty">
++              <strong>暂无审计记录</strong>
++              <span>有管理写操作后会在这里留下脱敏摘要。</span>
++            </li>
++          )}
+         </ul>
+         <Pager offset={offset} limit={PAGE_SIZE} total={page.total} onChange={(next) => void load(next)} />
+       </div>
+--- a/src/style.css
++++ b/src/style.css
+@@ -4221,94 +4221,539 @@
+   .login-secondary { justify-content: flex-start; }
+ }
+ 
+-/* T-LOCAL-008 账户与小组管理工作区 */
+-.cloud-workspace { min-height: 100vh; background: var(--c-f7f9fa); color: var(--c-24292c); display: flex; flex-direction: column; }
+-.cw-header { position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 12px; padding: 11px 20px; background: #fff; border-bottom: 1px solid var(--line); min-width: 0; }
+-.cw-back { flex: 0 0 auto; }
+-.cw-title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+-.cw-title strong { font-size: 15px; overflow-wrap: anywhere; }
+-.cw-title span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+-.cw-header-actions { flex: 0 0 auto; display: flex; gap: 8px; }
+-.cw-body { width: 100%; max-width: 1180px; margin: 0 auto; padding: 16px 20px 40px; min-width: 0; }
+-.cw-tabs { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 14px; scrollbar-width: thin; }
+-.cw-tabs button { white-space: nowrap; padding: 9px 12px; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); flex: 0 0 auto; }
+-.cw-tabs button.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
++/* T-LOCAL-010 云端管理工作台：紧凑主从布局，沿用主题 token，不引入新框架 */
++.cloud-workspace {
++  min-height: 100vh;
++  background: var(--c-f7f9fa);
++  color: var(--c-24292c);
++  display: flex;
++  flex-direction: column;
++}
++.cw-header {
++  position: sticky;
++  top: 0;
++  z-index: 6;
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  min-height: 52px;
++  padding: 0 20px;
++  background: var(--c-fff);
++  border-bottom: 1px solid var(--line);
++  min-width: 0;
++}
++.cw-back {
++  flex: 0 0 auto;
++  gap: 5px;
++  padding: 5px 7px;
++  border-color: transparent;
++  background: transparent;
++  color: var(--muted);
++  font-size: 11.5px;
++  border-radius: 5px;
++}
++.cw-back:hover { background: var(--c-f1f5f1); }
++.cw-title { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 1 1 auto; }
++.cw-title strong { font-size: 14px; line-height: 1.35; font-weight: 650; overflow-wrap: anywhere; }
++.cw-title span {
++  color: var(--muted);
++  font-size: 10.5px;
++  line-height: 1.35;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++.cw-header-actions { flex: 0 0 auto; display: flex; gap: 6px; }
++.cw-icon-button { width: 30px; height: 30px; padding: 0; flex: none; }
++
++.cw-body { width: 100%; max-width: 1440px; margin: 0 auto; padding: 0 24px 48px; min-width: 0; }
++.cw-tabs {
++  display: flex;
++  gap: 0;
++  overflow-x: auto;
++  background: var(--c-fff);
++  border-bottom: 1px solid var(--line);
++  margin: 0 -24px 18px;
++  padding: 0 24px;
++  scrollbar-width: thin;
++}
++.cw-tabs button {
++  white-space: nowrap;
++  padding: 10px 12px;
++  border-bottom: 2px solid transparent;
++  border-radius: 0;
++  color: var(--muted);
++  flex: 0 0 auto;
++  font-size: 12px;
++}
++.cw-tabs button:hover { color: var(--c-24292c); background: var(--c-f7f9fa); }
++.cw-tabs button.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; background: transparent; }
++
+ .cw-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+-.cw-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 15px; min-width: 0; }
+-.cw-card h2 { margin: 0 0 10px; font-size: 14px; }
+-.cw-card h3 { margin: 14px 0 8px; font-size: 12px; color: var(--c-303934); }
+-.cw-split { display: grid; grid-template-columns: minmax(210px, 290px) minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; }
++
++.cw-pagebar {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 10px 14px;
++  flex-wrap: wrap;
++  padding: 2px 0 10px;
++  border-bottom: 1px solid var(--line);
++}
++.cw-pagebar-title { flex: 1 1 320px; min-width: 0; }
++.cw-pagebar-title h2 { margin: 0; font-size: 17px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; }
++.cw-pagebar-title p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
++.cw-pagebar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
++.cw-pagebar-actions .plain,
++.cw-pagebar-actions .primary { min-height: 28px; padding: 4px 9px; font-size: 11.5px; }
++
++.cw-subtabs {
++  display: inline-flex;
++  align-self: flex-start;
++  gap: 2px;
++  padding: 2px;
++  background: var(--c-f0f4f3);
++  border: 1px solid var(--line);
++  border-radius: 7px;
++}
++.cw-subtabs button { gap: 6px; padding: 4px 10px; min-height: 26px; border-radius: 5px; color: var(--muted); font-size: 11.5px; }
++.cw-subtabs button:hover { color: var(--c-24292c); }
++.cw-subtabs button.active { background: var(--c-fff); color: var(--c-24292c); font-weight: 600; box-shadow: 0 1px 2px var(--c-2032291c); }
++.cw-count {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  min-width: 16px;
++  padding: 0 4px;
++  border-radius: 999px;
++  background: var(--c-edf3ef);
++  color: var(--muted);
++  font-size: 9.5px;
++  line-height: 16px;
++}
++
++.cw-error,
++.cw-success {
++  margin: 0;
++  padding: 8px 10px;
++  border-radius: 5px;
++  font-size: 11.5px;
++  line-height: 1.5;
++  overflow-wrap: anywhere;
++}
++.cw-error { background: var(--c-fbefea); color: var(--c-ad4d44); }
++.cw-success { background: var(--c-edf3ef); color: var(--c-356451); }
++
++.cw-surface,
++.cw-workbench { background: var(--c-fff); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
++.cw-workbench { display: grid; grid-template-columns: 266px minmax(0, 1fr); overflow: hidden; }
++.cw-auth-workbench { grid-template-columns: 270px minmax(0, 1fr); }
++.cw-groups-workbench { grid-template-columns: 246px minmax(0, 1fr); }
++.cw-master { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); background: var(--c-fafcfb); }
++.cw-master-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  padding: 8px 12px;
++  border-bottom: 1px solid var(--line);
++  background: var(--c-f0f4f3);
++  color: var(--muted);
++  font-size: 10px;
++  letter-spacing: 0.04em;
++  text-transform: uppercase;
++}
++.cw-master .cw-list { padding: 6px; overflow: auto; max-height: min(62vh, 560px); }
++.cw-detail-pane { padding: 12px 14px 10px; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
++.cw-detail-head {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 8px 12px;
++  flex-wrap: wrap;
++  padding-bottom: 9px;
++  border-bottom: 1px solid var(--line);
++  min-width: 0;
++}
++.cw-detail-title { min-width: 0; flex: 1 1 260px; }
++.cw-detail-title h2 { margin: 0 0 3px; font-size: 15px; line-height: 1.3; font-weight: 650; overflow-wrap: anywhere; }
++.cw-detail-badges { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; flex: 0 0 auto; padding-top: 2px; }
++.cw-detail-scroll { padding: 10px 1px 2px; min-width: 0; overflow: auto; max-height: min(60vh, 560px); }
++.cw-detail-foot {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px 12px;
++  flex-wrap: wrap;
++  margin-top: 8px;
++  padding-top: 9px;
++  border-top: 1px solid var(--line);
++}
++.cw-detail-foot .cw-hint { flex: 1 1 250px; margin: 0; }
++
+ .cw-list { list-style: none; margin: 0; padding: 0; min-width: 0; }
+-.cw-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 9px 0; border-top: 1px solid var(--line); min-width: 0; flex-wrap: wrap; }
+-.cw-list > .cw-row:first-child, .cw-list > li:first-child .cw-row { border-top: 0; }
+-.cw-row-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 180px; }
+-.cw-row-main strong { font-size: 12.5px; overflow-wrap: anywhere; }
+-.cw-username { color: var(--muted); font-weight: 400; }
+-.cw-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; color: var(--muted); font-size: 11px; min-width: 0; }
++.cw-row {
++  display: flex;
++  gap: 8px 10px;
++  align-items: center;
++  justify-content: space-between;
++  padding: 7px 3px;
++  border-top: 1px solid var(--line);
++  min-width: 0;
++  flex-wrap: wrap;
++}
++.cw-list > .cw-row:first-child,
++.cw-list > li:first-child .cw-row { border-top: 0; }
++.cw-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 210px; }
++.cw-row-main strong { font-size: 12.5px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
++.cw-username { color: var(--muted); font-weight: 400; font-size: 11px; }
++.cw-meta {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 3px 9px;
++  align-items: center;
++  color: var(--muted);
++  font-size: 10.5px;
++  line-height: 1.45;
++  min-width: 0;
++}
+ .cw-meta > span { overflow-wrap: anywhere; }
+-.cw-badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 999px; font-size: 10px; line-height: 1.6; background: var(--c-edf3ef); color: var(--c-356451); white-space: nowrap; }
++.cw-badge {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  max-width: 100%;
++  padding: 0 6px;
++  border-radius: 4px;
++  font-size: 9.5px;
++  font-weight: 500;
++  line-height: 17px;
++  background: var(--c-edf3ef);
++  color: var(--c-356451);
++  white-space: nowrap;
++}
+ .cw-badge.warn { background: var(--c-fbefea); color: var(--c-ad4d44); }
+-.cw-badge.danger { background: #fdecec; color: #a3322b; }
+-.cw-badge.muted { background: var(--c-edf3ef); color: var(--muted); }
+-.cw-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+-.cw-actions .plain, .cw-actions .primary { padding: 5px 8px; font-size: 11.5px; }
+-.cw-toolbar { display: flex; gap: 10px; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; }
+-.cw-search { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+-.cw-search .field { min-width: 150px; }
+-.cw-form { display: flex; flex-direction: column; gap: 9px; }
+-.cw-form .field { max-width: 440px; }
+-.cw-form .field input, .cw-form .field select { width: 100%; }
+-.cw-inline-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
+-.cw-inline-form .field { min-width: 150px; flex: 1 1 180px; }
+-.cw-hint { margin: 4px 0; color: var(--muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+-.cw-error { margin: 6px 0; padding: 8px 10px; border-radius: 8px; background: #fdecec; color: #a3322b; font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+-.cw-success { margin: 6px 0; padding: 8px 10px; border-radius: 8px; background: var(--c-edf3ef); color: var(--c-356451); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+-.cw-loading { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+-.cw-empty { padding: 14px 0; color: var(--muted); font-size: 11.5px; border-top: 1px solid var(--line); }
+-.cw-pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 10px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+-.cw-pager button { padding: 3px 6px; }
+-.cw-signed-out { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 70px 16px; color: var(--c-303934); }
++.cw-badge.danger { background: var(--c-fbefea); color: var(--c-b94f49); }
++.cw-badge.muted { background: var(--c-f0f4f3); color: var(--muted); }
++
++.cw-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
++.cw-panel .plain,
++.cw-panel .primary { min-height: 27px; padding: 4px 8px; font-size: 11.5px; border-radius: 5px; }
++.cw-panel .plain svg,
++.cw-panel .primary svg { flex: none; }
++.cw-panel .plain.danger {
++  color: var(--c-b94f49);
++  border-color: var(--c-b94f49);
++  background: transparent;
++}
++.cw-panel .plain.danger:hover { background: var(--c-fbefea); }
++
++.cw-select-list > li > button {
++  display: flex;
++  width: 100%;
++  align-items: center;
++  justify-content: space-between;
++  gap: 6px;
++  padding: 7px 8px;
++  border-radius: 5px;
++  text-align: left;
++  min-width: 0;
++}
++.cw-select-list > li > button:hover { background: var(--c-f1f5f1); }
++.cw-select-list > li > button.active { background: var(--c-edf3ef); box-shadow: inset 2px 0 0 var(--green); }
++.cw-select-list > li > button > svg { flex: none; color: var(--muted); }
++.cw-select-list .cw-row-main { flex: 1 1 auto; }
++.cw-select-list .cw-row-main strong { font-size: 12px; }
++
++.cw-filterbar {
++  display: flex;
++  align-items: flex-end;
++  gap: 8px;
++  flex-wrap: wrap;
++  padding: 8px 12px;
++  background: var(--c-fff);
++  border: 1px solid var(--line);
++  border-radius: 8px;
++}
++.cw-filterbar .field {
++  display: flex;
++  flex-direction: column;
++  gap: 3px;
++  margin: 0;
++  min-width: 180px;
++  flex: 0 1 240px;
++  color: var(--muted);
++  font-size: 10px;
++}
++.cw-filterbar .field input,
++.cw-filterbar .field select { height: 30px; padding: 4px 8px; font-size: 12px; width: 100%; }
++.cw-filterbar .cw-field-narrow { flex: 0 0 110px; min-width: 110px; }
++.cw-filterbar .plain { min-height: 30px; }
++.cw-filter-hint { flex: 1 1 210px; align-self: center; color: var(--muted); font-size: 10px; line-height: 1.4; text-align: right; overflow-wrap: anywhere; }
++
++.cw-form { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
++.cw-form .field { display: flex; flex-direction: column; gap: 3px; margin: 0; max-width: 100%; color: var(--muted); font-size: 10px; }
++.cw-form .field input { width: 100%; height: 30px; padding: 4px 8px; font-size: 12px; }
++.cw-form .primary { align-self: flex-start; }
++.cw-form-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
++  gap: 8px 12px;
++  align-items: start;
++  min-width: 0;
++}
++.cw-form-grid .field { display: flex; flex-direction: column; gap: 3px; margin: 0; color: var(--muted); font-size: 10px; min-width: 0; }
++.cw-form-grid .field input,
++.cw-form-grid .field select { width: 100%; height: 30px; padding: 4px 8px; font-size: 12px; }
++
++.cw-inline-editor {
++  display: flex;
++  flex-direction: column;
++  gap: 9px;
++  padding: 11px 12px;
++  background: var(--c-fff);
++  border: 1px solid var(--line);
++  border-left: 2px solid var(--green);
++  border-radius: 6px;
++  min-width: 0;
++}
++.cw-inline-editor-head { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 10px; flex-wrap: wrap; }
++.cw-inline-editor-head h2 { margin: 0; font-size: 13px; }
++.cw-inline-editor-head > span { color: var(--muted); font-size: 10px; line-height: 1.45; }
++.cw-inline-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
++
++.cw-inline-form { display: flex; gap: 7px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; min-width: 0; }
++.cw-inline-form .field {
++  display: flex;
++  flex-direction: column;
++  gap: 3px;
++  margin: 0;
++  min-width: 150px;
++  flex: 1 1 170px;
++  color: var(--muted);
++  font-size: 10px;
++}
++.cw-inline-form .field input,
++.cw-inline-form .field select { height: 30px; padding: 4px 8px; font-size: 12px; width: 100%; }
++
++.cw-perms { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 10px; margin: 0; min-width: 0; }
++.cw-perms legend { padding: 0 4px; color: var(--muted); font-size: 10px; }
++.cw-perm-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 20px; min-width: 0; }
++.cw-perm-group { min-width: 0; }
++.cw-perm-group h3 {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  margin: 0 0 5px;
++  padding-bottom: 4px;
++  border-bottom: 1px dashed var(--line);
++  font-size: 11px;
++  font-weight: 600;
++  color: var(--c-303934);
++}
++.cw-perm-group h3 span { margin-left: auto; color: var(--muted); font-size: 9.5px; font-weight: 400; }
++.cw-perm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(188px, 1fr)); gap: 1px 14px; min-width: 0; }
++.cw-check {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  padding: 3px 2px;
++  min-width: 0;
++  color: var(--c-303934);
++  font-size: 11px;
++  line-height: 1.4;
++  overflow-wrap: anywhere;
++}
++.cw-check input { margin: 0; flex: none; }
++.cw-switch { font-size: 10.5px; color: var(--muted); padding: 0 2px; white-space: normal; text-align: left; }
++
++.cw-impact { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); }
++.cw-impact h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 4px; font-size: 11.5px; }
++.cw-impact h3 span { color: var(--muted); font-size: 9.5px; font-weight: 400; }
++.cw-impact .cw-row { padding: 5px 3px; }
++.cw-assign-section { padding: 8px 0; border-top: 1px solid var(--line); }
++.cw-assign-section:first-child { border-top: 0; padding-top: 0; }
++.cw-assign-section h3 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 5px; font-size: 11.5px; }
++.cw-assign-section h3 span { color: var(--muted); font-size: 9.5px; font-weight: 400; }
++
++.cw-security-grid {
++  display: grid;
++  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
++  gap: 12px;
++  align-items: start;
++  min-width: 0;
++}
++.cw-surface.cw-security-main,
++.cw-surface.cw-security-side { padding: 0 14px; }
++.cw-subsection { padding: 11px 0; border-top: 1px solid var(--line); }
++.cw-subsection:first-child { border-top: 0; }
++.cw-subsection-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 10px; margin-bottom: 8px; flex-wrap: wrap; }
++.cw-subsection-head h2 { margin: 0; font-size: 13px; }
++.cw-subsection-head h3 { margin: 0; font-size: 12px; }
++.cw-subsection-head > span { color: var(--muted); font-size: 10px; line-height: 1.4; text-align: right; }
++.cw-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 18px; margin: 0; }
++.cw-facts dt { color: var(--muted); font-size: 10px; margin-bottom: 2px; }
++.cw-facts dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
++.cw-members { margin-top: 4px; }
++
++.cw-list-surface { padding: 0 12px 8px; }
++.cw-list-caption {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  margin: 0 -12px;
++  padding: 8px 12px;
++  border-bottom: 1px solid var(--line);
++  background: var(--c-f0f4f3);
++  color: var(--muted);
++  font-size: 9.5px;
++  letter-spacing: 0.04em;
++  text-transform: uppercase;
++}
++.cw-list-surface .cw-row { padding: 8px 2px; }
++.cw-account-list .cw-row:hover,
++.cw-device-list .cw-row:hover,
++.cw-audit-list .cw-row:hover { background: var(--c-f7f9fa); }
++.cw-pager {
++  display: flex;
++  align-items: center;
++  justify-content: flex-end;
++  gap: 8px;
++  padding: 8px 0 2px;
++  border-top: 1px solid var(--line);
++  color: var(--muted);
++  font-size: 10.5px;
++  flex-wrap: wrap;
++}
++.cw-pager button { width: 26px; height: 26px; padding: 0; }
++
++.cw-loading { display: flex; align-items: center; gap: 6px; padding: 12px; color: var(--muted); font-size: 11.5px; }
++.cw-hint { margin: 3px 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; overflow-wrap: anywhere; }
++.cw-notice-line { padding: 8px 10px; background: var(--c-f0f4f3); border-radius: 5px; }
++.cw-detail-name { max-width: 420px; margin: 0 0 8px; }
++.cw-select-list > li.cw-empty-action > button { width: auto; justify-content: flex-start; }
++
++.cw-empty {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  padding: 10px 4px;
++  border-top: 1px solid var(--line);
++  color: var(--muted);
++  font-size: 10.5px;
++  line-height: 1.5;
++}
++.cw-empty strong { color: var(--c-303934); font-size: 11.5px; font-weight: 600; }
++.cw-empty-action { align-items: flex-start; gap: 4px; padding: 12px; }
++.cw-empty-action .plain { margin-top: 4px; }
++.cw-empty-state {
++  display: flex;
++  flex-direction: column;
++  align-items: flex-start;
++  gap: 6px;
++  padding: 26px 6px;
++  max-width: 440px;
++  color: var(--muted);
++}
++.cw-empty-state svg { color: var(--c-759c89); }
++.cw-empty-state h2 { margin: 0; font-size: 14px; color: var(--c-24292c); }
++.cw-empty-state p { margin: 0; font-size: 11.5px; line-height: 1.55; }
++.cw-empty-state .primary { margin-top: 4px; min-height: 30px; padding: 6px 11px; }
++
++.cw-inline-confirm { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 10.5px; color: var(--c-b94f49); }
++.cw-confirm {
++  display: flex;
++  gap: 8px;
++  align-items: center;
++  flex-wrap: wrap;
++  padding: 8px 10px;
++  border-left: 3px solid var(--c-b94f49);
++  border-radius: 5px;
++  background: var(--c-fbefea);
++  color: var(--c-ad4d44);
++  font-size: 11.5px;
++  line-height: 1.5;
++}
++.cw-confirm svg { flex: none; }
++.cw-confirm > span { flex: 1 1 240px; min-width: 0; }
++
++.cw-secret {
++  border: 1px solid var(--c-fbf1dc);
++  border-left: 3px solid var(--c-b48e41);
++  background: var(--c-fbf1dc);
++  border-radius: 6px;
++  padding: 9px 11px;
++}
++.cw-secret-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
++.cw-secret-head strong { display: inline-flex; align-items: center; gap: 5px; color: var(--c-b48e41); font-size: 11.5px; }
++.cw-secret code {
++  display: block;
++  margin: 6px 0;
++  padding: 6px 8px;
++  border: 1px dashed var(--c-b48e41);
++  border-radius: 4px;
++  background: var(--c-fff);
++  color: var(--c-24292c);
++  font-size: 11.5px;
++  overflow-wrap: anywhere;
++  user-select: all;
++}
++.cw-secret-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--c-b48e41); font-size: 10px; }
++.cw-secret-foot > div { display: flex; gap: 6px; flex-wrap: wrap; }
++
++.cw-only-create { padding: 14px; max-width: 560px; }
++.cw-only-create h2 { margin: 0 0 6px; font-size: 14px; }
++
++.cw-signed-out { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; min-height: 58vh; padding: 48px 16px; color: var(--c-303934); }
+ .cw-signed-out h2 { margin: 4px 0 0; font-size: 17px; }
+ .cw-signed-out p { margin: 0; max-width: 460px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+-.cw-select-list > li > button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border-radius: 8px; text-align: left; }
+-.cw-select-list > li > button:hover { background: var(--c-f7f9fa); }
+-.cw-select-list > li > button.active { background: var(--c-edf3ef); }
+-.cw-detail { min-width: 0; }
+-.cw-detail-head { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; min-width: 0; }
+-.cw-detail-head h2 { margin: 0 0 4px; }
+-.cw-inline-confirm { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: #a3322b; }
+-.cw-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 9px 11px; border-radius: 9px; background: var(--c-fbefea); color: #8a3a33; font-size: 11.5px; line-height: 1.5; }
+-.cw-confirm span { flex: 1 1 220px; min-width: 0; }
+-.cw-facts { display: flex; flex-wrap: wrap; gap: 12px 26px; margin: 0; }
+-.cw-facts div { min-width: 120px; }
+-.cw-facts dt { color: var(--muted); font-size: 10.5px; margin-bottom: 2px; }
+-.cw-facts dd { margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+-.cw-perms { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px 11px; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 7px 14px; min-width: 0; }
+-.cw-perms legend { padding: 0 5px; color: var(--muted); font-size: 10.5px; }
+-.cw-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--c-303934); }
+-.cw-check input { margin: 0; }
+-.cw-secret { border: 1px solid #e8c98d; background: #fffaf0; border-radius: 10px; padding: 11px 12px; }
+-.cw-secret-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+-.cw-secret-head strong { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #8a5a12; }
+-.cw-secret code { display: block; margin: 8px 0; padding: 8px 9px; background: #fff; border: 1px dashed #e8c98d; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+-.cw-secret-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: #8a5a12; font-size: 10.5px; }
+-.cw-secret-foot > div { display: flex; gap: 6px; flex-wrap: wrap; }
+-.cw-impact { margin-top: 8px; }
+-.cw-assign { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+-.cw-header .plain, .cw-toolbar .plain, .cw-toolbar .primary { padding: 6px 9px; font-size: 11.5px; }
++
+ .login-notice { margin: 12px 0 0; color: var(--c-356451); font-size: 12px; line-height: 1.55; }
+ 
+-@media (max-width: 820px) {
+-  .cw-split { grid-template-columns: minmax(0, 1fr); }
+-  .cw-body { padding: 12px 12px 30px; }
+-  .cw-header { padding: 9px 12px; flex-wrap: wrap; }
+-  .cw-header .cw-title { order: 3; flex-basis: 100%; }
+-}
+-@media (max-width: 480px) {
+-  .cw-card { padding: 12px; }
+-  .cw-row { align-items: flex-start; }
+-  .cw-actions { width: 100%; }
+-  .cw-actions .plain, .cw-actions .primary { flex: 0 1 auto; }
+-  .cw-detail-head .cw-actions { width: 100%; }
++@media (max-width: 1080px) {
++  .cw-security-grid { grid-template-columns: minmax(0, 1fr); }
++  .cw-security-side { max-width: none; }
++}
++@media (max-width: 900px) {
++  .cw-workbench,
++  .cw-auth-workbench,
++  .cw-groups-workbench { grid-template-columns: minmax(0, 1fr); }
++  .cw-master { border-right: 0; border-bottom: 1px solid var(--line); }
++  .cw-master .cw-list { max-height: 300px; }
++  .cw-detail-scroll { max-height: none; }
++  .cw-body { padding: 0 16px 36px; }
++  .cw-tabs { margin: 0 -16px 16px; padding: 0 16px; }
++}
++@media (max-width: 680px) {
++  .cw-back-label { display: none; }
++  .cw-back { width: 30px; height: 30px; padding: 0; }
++  .cw-header { padding: 0 12px; gap: 7px; }
++  .cw-title span { font-size: 10px; }
++  .cw-body { padding: 0 12px 30px; }
++  .cw-tabs { margin: 0 -12px 14px; padding: 0 12px; }
++  .cw-tabs button { padding: 9px 10px; }
++  .cw-pagebar-title h2 { font-size: 16px; }
++  .cw-pagebar-actions { width: 100%; }
++  .cw-pagebar-actions .plain,
++  .cw-pagebar-actions .primary { flex: 1 1 auto; justify-content: center; }
++  .cw-filterbar .field { flex: 1 1 100%; min-width: 0; }
++  .cw-filterbar .cw-field-narrow { flex: 1 1 100%; }
++  .cw-filterbar .plain { flex: 1 1 auto; justify-content: center; }
++  .cw-filter-hint { flex-basis: 100%; text-align: left; }
++  .cw-account-list .cw-actions { width: 100%; justify-content: flex-start; }
++  .cw-detail-pane { padding: 10px 10px 8px; }
++  .cw-detail-head { gap: 6px; }
++  .cw-detail-badges { padding-top: 0; }
++  .cw-perm-grid { grid-template-columns: minmax(0, 1fr); }
++  .cw-list-surface { padding: 0 9px 6px; }
++  .cw-list-caption { margin: 0 -9px; padding-inline: 9px; }
++  .cw-subsection-head > span { text-align: left; }
++  .cw-inline-editor { padding: 10px; }
++  .cw-inline-editor-foot { align-items: stretch; }
++  .cw-inline-editor-foot .cw-actions { flex: 1 1 auto; }
++  .cw-inline-editor-foot .cw-actions .plain,
++  .cw-inline-editor-foot .cw-actions .primary { flex: 1 1 auto; justify-content: center; }
++  .cw-confirm > span { flex-basis: 100%; }
+   .cw-secret-foot { flex-direction: column; align-items: flex-start; }
+ }
+--- /dev/null
++++ b/collab/results/T-LOCAL-010/verify-ui.mjs
+@@ -0,0 +1,391 @@
++/**
++ * T-LOCAL-010 隔离 UI 验收：云端管理工作台改版。
++ *
++ * 真实本地服务 + 一次性 HTTPS/mTLS 管理 mock + 临时 MEDIA_DATA_DIR。
++ * 覆盖角色主从/权限分组/空状态/保存与撤销、账户搜索与危险操作确认、
++ * 账户授权、小组、个人安全、审计；1920×1080 / 1280×800 / 390×844、
++ * 浅色/深色、横向溢出与行内文本/按钮重叠检查。只调用 mock，不连正式云端。
++ *
++ * 运行：node collab/results/T-LOCAL-010/verify-ui.mjs
++ */
++import assert from "node:assert/strict";
++import fs from "node:fs/promises";
++import net from "node:net";
++import os from "node:os";
++import path from "node:path";
++import { spawn } from "node:child_process";
++import { once } from "node:events";
++import { fileURLToPath } from "node:url";
++import { chromium, expect } from "@playwright/test";
++import { startManagementCloud } from "../../../tests/cloud-management-mock.mjs";
++
++const PASSWORD = "correct horse battery staple";
++const HERE = path.dirname(fileURLToPath(import.meta.url));
++const PROJECT = path.resolve(HERE, "../../..");
++const OUT = path.join(HERE, "screenshots");
++const result = { startedAt: new Date().toISOString(), checks: [], screenshots: [], errors: [] };
++
++await fs.mkdir(OUT, { recursive: true });
++const dataDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sg-t10-ui-")));
++
++function note(label, detail = "") {
++  result.checks.push({ label, detail, at: new Date().toISOString() });
++}
++
++async function freePort() {
++  const server = net.createServer();
++  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
++  const port = server.address().port;
++  await new Promise((resolve) => server.close(resolve));
++  return port;
++}
++
++async function startServer() {
++  const port = await freePort();
++  const child = spawn(process.execPath, ["server/index.mjs"], {
++    cwd: PROJECT,
++    env: {
++      ...process.env,
++      NODE_ENV: "production",
++      MEDIA_DATA_DIR: dataDir,
++      MEDIA_SKIP_IMPORT: "1",
++      MEDIA_SKIP_RECONCILE: "1",
++      MEDIA_NO_WATCH: "1",
++      PORT: String(port),
++    },
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++  let logs = "";
++  child.stdout.setEncoding("utf8").on("data", (chunk) => (logs += chunk));
++  child.stderr.setEncoding("utf8").on("data", (chunk) => (logs += chunk));
++  const deadline = Date.now() + 25_000;
++  while (Date.now() < deadline) {
++    const match = logs.match(/拾光素材库 (http:\/\/127\.0\.0\.1:\d+)/);
++    if (match) return { child, url: match[1], logs: () => logs };
++    if (child.exitCode !== null) throw new Error(`服务提前退出：\n${logs}`);
++    await new Promise((resolve) => setTimeout(resolve, 60));
++  }
++  child.kill("SIGKILL");
++  throw new Error(`服务启动超时：\n${logs}`);
++}
++
++async function stopServer(server) {
++  if (server.child.exitCode === null) {
++    server.child.kill("SIGTERM");
++    await Promise.race([once(server.child, "exit"), new Promise((resolve) => setTimeout(resolve, 4000))]);
++    if (server.child.exitCode === null) server.child.kill("SIGKILL");
++  }
++}
++
++async function cloudLogin(server, cloud) {
++  const sessionResponse = await fetch(`${server.url}/api/session`);
++  const setCookie = sessionResponse.headers.getSetCookie?.()[0] || sessionResponse.headers.get("set-cookie");
++  const cookie = String(setCookie || "").split(";")[0];
++  const session = await sessionResponse.json();
++  assert.ok(cookie && session.token, "本地会话创建失败");
++  const headers = { "content-type": "application/json", cookie, "x-local-token": session.token };
++  let response = await fetch(`${server.url}/api/cloud-auth/config`, {
++    method: "POST",
++    headers,
++    body: JSON.stringify({
++      origin: cloud.origin,
++      caPath: cloud.caCert,
++      certPath: cloud.clientOwner.cert,
++      keyPath: cloud.clientOwner.key,
++    }),
++  });
++  assert.equal(response.status, 200, await response.text());
++  response = await fetch(`${server.url}/api/cloud-auth/login`, {
++    method: "POST",
++    headers,
++    body: JSON.stringify({ username: "owner", password: PASSWORD }),
++  });
++  assert.equal(response.status, 200, await response.text());
++}
++
++async function noOverflow(page, label) {
++  const metrics = await page.evaluate(() => ({
++    document: document.documentElement.scrollWidth - innerWidth,
++    body: document.body.scrollWidth - innerWidth,
++    panels: [...document.querySelectorAll(".cw-panel, .cw-workbench, .cw-surface")].map(
++      (node) => node.scrollWidth - node.clientWidth,
++    ),
++  }));
++  assert.ok(metrics.document <= 1, `${label}: 页面横向溢出 ${metrics.document}px`);
++  assert.ok(metrics.body <= 1, `${label}: body 横向溢出 ${metrics.body}px`);
++  assert.ok(metrics.panels.every((value) => value <= 1), `${label}: 管理面板内部横向溢出 ${metrics.panels.join(",")}`);
++  note(`overflow:${label}`, JSON.stringify(metrics));
++}
++
++async function noClippedControls(page, label) {
++  const clipped = await page.evaluate(() =>
++    [...document.querySelectorAll(".cw-panel button, .cw-panel .cw-badge")]
++      .filter((node) => {
++        const style = getComputedStyle(node);
++        if (style.display === "none" || style.visibility === "hidden") return false;
++        const box = node.getBoundingClientRect();
++        if (box.width <= 0 || box.height <= 0) return false;
++        return node.scrollWidth > node.clientWidth + 2;
++      })
++      .map((node) => `${node.tagName}:${(node.textContent || "").trim().slice(0, 40)}`),
++  );
++  assert.deepEqual(clipped, [], `${label}: 文本/按钮被裁剪 ${clipped.join(" | ")}`);
++  note(`clipped:${label}`);
++}
++
++async function noRowOverlap(page, label) {
++  const overlaps = await page.evaluate(() => {
++    const bad = [];
++    for (const row of document.querySelectorAll(".cw-row")) {
++      const main = row.querySelector(".cw-row-main");
++      const actions = row.querySelector(".cw-actions, .cw-inline-confirm");
++      if (!main || !actions) continue;
++      const a = main.getBoundingClientRect();
++      const b = actions.getBoundingClientRect();
++      const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
++      const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
++      if (ix > 1 && iy > 1) bad.push((row.textContent || "").trim().slice(0, 48));
++    }
++    return bad;
++  });
++  assert.deepEqual(overlaps, [], `${label}: 行内文本与操作重叠 ${overlaps.join(" | ")}`);
++  note(`row-overlap:${label}`);
++}
++
++async function openWorkspace(page) {
++  await expect(page.locator(".account-button.signed-in")).toBeVisible({ timeout: 15_000 });
++  await page.locator(".account-entry > .account-button").click();
++  await expect(page.getByRole("menu", { name: "账户菜单" })).toBeVisible();
++  await page.getByRole("menuitem", { name: "账户与小组", exact: true }).click();
++  await expect(page).toHaveURL(/#\/account$/);
++  await expect(page.locator(".cw-title strong", { hasText: "账户与小组" })).toBeVisible();
++  await expect(page.locator(".cw-tabs")).toBeVisible();
++  await page.getByRole("button", { name: "角色与授权", exact: true }).click();
++  await expect(page.locator(".cw-panel[aria-label='角色与授权']")).toBeVisible();
++}
++
++async function shot(page, name, label) {
++  const file = path.join(OUT, `${name}.png`);
++  await page.screenshot({ path: file, animations: "disabled" });
++  result.screenshots.push({ name, label, file });
++}
++
++async function setViewport(page, width, height) {
++  await page.setViewportSize({ width, height });
++  await page.waitForTimeout(120);
++}
++
++const cloud = await startManagementCloud();
++const server = await startServer();
++const browser = await chromium.launch({
++  headless: true,
++  executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
++});
++const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
++const page = await context.newPage();
++const pageErrors = [];
++page.on("pageerror", (error) => pageErrors.push(String(error.message || error)));
++
++try {
++  await cloudLogin(server, cloud);
++  await context.addInitScript(() => {
++    localStorage.setItem("shiguang.pageSize", "20");
++    localStorage.setItem("shiguang.refreshSeconds", "0");
++  });
++  await page.goto(server.url);
++  await expect(page.locator(".asset-row")).toHaveCount(0);
++  await openWorkspace(page);
++
++  // ---------- 角色：有数据 / 权限分组 / 三种尺寸 ----------
++  await expect(page.locator(".cw-select-list button", { hasText: "音频审核员" })).toBeVisible();
++  await expect(page.locator(".cw-detail h2")).toContainText("管理员");
++  const groupsVisible = await page.locator(".cw-perm-group h3").allTextContents();
++  assert.ok(groupsVisible.some((text) => text.includes("账户")), `权限未按语义分组：${groupsVisible.join(",")}`);
++  assert.ok(groupsVisible.some((text) => text.includes("小组")), `权限未按语义分组：${groupsVisible.join(",")}`);
++  assert.equal(await page.getByRole("button", { name: "撤销更改" }).isDisabled(), true, "未修改时撤销应禁用");
++  for (const [width, height] of [[1920, 1080], [1280, 800], [390, 844]]) {
++    await setViewport(page, width, height);
++    await noOverflow(page, `roles-${width}`);
++    await noClippedControls(page, `roles-${width}`);
++    await noRowOverlap(page, `roles-${width}`);
++    await shot(page, `roles-data-${width}x${height}`, `角色与授权 · 有数据 · ${width}×${height}`);
++  }
++
++  // ---------- 角色空状态（拦截 mock，仅用于截图） ----------
++  await setViewport(page, 1280, 800);
++  await page.route("**/api/cloud-management/roles**", (route) =>
++    route.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
++  );
++  await page.locator(".cw-pagebar").getByRole("button", { name: "刷新" }).click();
++  await expect(page.locator(".cw-empty-state h2")).toContainText("还没有角色");
++  await expect(page.locator(".cw-master")).toContainText("暂无角色");
++  await setViewport(page, 1920, 1080);
++  await noOverflow(page, "roles-empty-1920");
++  await shot(page, "roles-empty-1920x1080", "角色与授权 · 空状态 · 1920×1080");
++  await setViewport(page, 1280, 800);
++  await noOverflow(page, "roles-empty-1280");
++  await shot(page, "roles-empty-1280x800", "角色与授权 · 空状态 · 1280×800");
++  await setViewport(page, 390, 844);
++  await noOverflow(page, "roles-empty-390");
++  await shot(page, "roles-empty-390x844", "角色与授权 · 空状态 · 390×844");
++  await page.unroute("**/api/cloud-management/roles**");
++  await setViewport(page, 1280, 800);
++  await page.locator(".cw-pagebar").getByRole("button", { name: "刷新" }).click();
++  await expect(page.locator(".cw-select-list button", { hasText: "音频审核员" })).toBeVisible();
++
++  // ---------- 权限保存 / 取消 ----------
++  await page.locator(".cw-select-list button", { hasText: "音频审核员" }).click();
++  await expect(page.locator(".cw-detail h2")).toContainText("音频审核员");
++  const manage = page.getByLabel("group:member:manage", { exact: true });
++  const save = page.getByRole("button", { name: "保存权限" });
++  const cancel = page.getByRole("button", { name: "撤销更改" });
++  await expect(manage).not.toBeChecked();
++  await manage.check();
++  await expect(save).toBeEnabled();
++  await cancel.click();
++  await expect(manage).not.toBeChecked();
++  await expect(save).toBeDisabled();
++  note("role-cancel", "撤销更改后回到原权限，保存重新禁用");
++  await manage.check();
++  await save.click();
++  await expect(page.locator(".cw-success")).toContainText("角色权限已更新");
++  await expect(manage).toBeChecked();
++  note("role-save", "权限保存成功，勾选状态保留");
++
++  // ---------- 深色主题 ----------
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "dark";
++  });
++  await page.waitForTimeout(150);
++  await noOverflow(page, "roles-dark-1280");
++  await shot(page, "roles-dark-1280x800", "角色与授权 · 深色主题 · 1280×800");
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "forest";
++  });
++
++  // ---------- 账户授权 ----------
++  await page.getByRole("button", { name: "账户授权", exact: true }).click();
++  await expect(page.locator(".cw-auth-workbench .cw-select-list button").first()).toBeVisible();
++  await expect(page.locator(".cw-detail")).toContainText("选择一个账户");
++  await setViewport(page, 1920, 1080);
++  await noOverflow(page, "roles-auth-1920");
++  await shot(page, "roles-auth-1920x1080", "账户授权 · 账户列表 · 1920×1080");
++  await setViewport(page, 1280, 800);
++  await noOverflow(page, "roles-auth-1280");
++  await shot(page, "roles-auth-1280x800", "账户授权 · 账户列表 · 1280×800");
++  await page.getByLabel("授权账户搜索").fill("member");
++  await page.locator(".cw-filterbar").getByRole("button", { name: "搜索" }).click();
++  const authMember = page.locator(".cw-auth-workbench .cw-select-list button", { hasText: "@member" });
++  await expect(authMember).toBeVisible();
++  await authMember.click();
++  await expect(page.locator(".cw-detail")).toContainText("@member");
++  await expect(page.locator(".cw-assign-section").first()).toBeVisible();
++  await noOverflow(page, "roles-auth-member-1280");
++  await noClippedControls(page, "roles-auth-member-1280");
++  await shot(page, "roles-auth-member-1280x800", "账户授权 · 选中账户与授权明细 · 1280×800");
++  await setViewport(page, 390, 844);
++  await noOverflow(page, "roles-auth-390");
++  await shot(page, "roles-auth-390x844", "账户授权 · 390×844");
++
++  // ---------- 账户管理：搜索 / 危险操作确认 ----------
++  await setViewport(page, 1280, 800);
++  await page.getByRole("button", { name: "账户管理", exact: true }).click();
++  await expect(page.locator(".cw-account-list .cw-row").first()).toBeVisible();
++  await noOverflow(page, "accounts-1280");
++  await noClippedControls(page, "accounts-1280");
++  await noRowOverlap(page, "accounts-1280");
++  await shot(page, "accounts-1280x800", "账户管理 · 账户列表 · 1280×800");
++  await page.getByLabel("搜索账户").fill("member");
++  await page.locator(".cw-filterbar").getByRole("button", { name: "搜索" }).click();
++  const memberRow = page.locator(".cw-account-list .cw-row", { hasText: "@member" });
++  await expect(memberRow).toBeVisible();
++  await memberRow.getByRole("button", { name: "停用" }).click();
++  await expect(page.locator(".cw-confirm")).toBeVisible();
++  await expect(page.locator(".cw-confirm")).toContainText("确认停用 @member");
++  await page.locator(".cw-confirm").getByRole("button", { name: "取消" }).click();
++  await expect(page.locator(".cw-confirm")).toHaveCount(0);
++  await expect(memberRow).toContainText("启用");
++  note("account-disable-cancel", "取消停用后账户状态未变");
++  await memberRow.getByRole("button", { name: "停用" }).click();
++  await page.locator(".cw-confirm").getByRole("button", { name: "确认" }).click();
++  await expect(page.locator(".cw-success")).toContainText("账户已停用");
++  await expect(memberRow).toContainText("停用");
++  note("account-disable-confirm", "确认后账户停用");
++  await setViewport(page, 390, 844);
++  await noOverflow(page, "accounts-390");
++  await noClippedControls(page, "accounts-390");
++  await noRowOverlap(page, "accounts-390");
++  await shot(page, "accounts-390x844", "账户管理 · 390×844");
++
++  // ---------- 小组：危险操作确认 ----------
++  await setViewport(page, 1280, 800);
++  await page.getByRole("button", { name: "小组与成员", exact: true }).click();
++  await page.getByLabel("管理模式（含停用/待接管小组）").check();
++  await expect(page.locator(".cw-groups-workbench .cw-select-list button").first()).toBeVisible();
++  await noOverflow(page, "groups-1280");
++  await noClippedControls(page, "groups-1280");
++  await noRowOverlap(page, "groups-1280");
++  await shot(page, "groups-1280x800", "小组与成员 · 1280×800");
++  if (await page.getByRole("button", { name: "停用小组" }).count()) {
++    await page.getByRole("button", { name: "停用小组" }).click();
++    await expect(page.locator(".cw-confirm")).toBeVisible();
++    await page.locator(".cw-confirm").getByRole("button", { name: "取消" }).click();
++    await expect(page.locator(".cw-confirm")).toHaveCount(0);
++    note("group-disable-cancel", "取消停用小组后未提交");
++  }
++
++  // ---------- 个人安全：浅色 / 深色 / 窄屏 ----------
++  await page.getByRole("button", { name: "个人安全", exact: true }).click();
++  await expect(page.getByRole("region", { name: "个人安全" })).toBeVisible();
++  await noOverflow(page, "security-1280");
++  await noRowOverlap(page, "security-1280");
++  await shot(page, "security-1280x800", "个人安全 · 1280×800");
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "dark";
++  });
++  await page.waitForTimeout(150);
++  await noOverflow(page, "security-dark-1280");
++  await shot(page, "security-dark-1280x800", "个人安全 · 深色主题 · 1280×800");
++  await page.evaluate(() => {
++    document.documentElement.dataset.theme = "forest";
++  });
++  await setViewport(page, 390, 844);
++  await noOverflow(page, "security-390");
++  await noClippedControls(page, "security-390");
++  await shot(page, "security-390x844", "个人安全 · 390×844");
++
++  // ---------- 审计 ----------
++  await setViewport(page, 1280, 800);
++  await page.getByRole("button", { name: "审计", exact: true }).click();
++  await expect(page.locator(".cw-panel[aria-label='审计']")).toBeVisible();
++  await noOverflow(page, "audit-1280");
++  await noClippedControls(page, "audit-1280");
++  await shot(page, "audit-1280x800", "审计 · 1280×800");
++
++  // ---------- 全部主区域在 390 宽逐页复查横向溢出 ----------
++  await setViewport(page, 390, 844);
++  for (const tab of ["个人安全", "小组与成员", "账户管理", "角色与授权", "审计"]) {
++    await page.getByRole("button", { name: tab, exact: true }).click();
++    await page.waitForTimeout(250);
++    await noOverflow(page, `all-tabs-390:${tab}`);
++    await noClippedControls(page, `all-tabs-390:${tab}`);
++  }
++
++  assert.deepEqual(pageErrors, [], `页面异常：${pageErrors.join("; ")}`);
++  note("page-errors", "none");
++} catch (error) {
++  result.errors.push(String(error?.stack || error));
++  throw error;
++} finally {
++  await fs.writeFile(
++    path.join(HERE, "ui-results.json"),
++    JSON.stringify({ ...result, finishedAt: new Date().toISOString() }, null, 2) + "\n",
++  );
++  await context.close().catch(() => undefined);
++  await browser.close();
++  await cloud.close();
++  await stopServer(server);
++  await fs.rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
++}
++
++console.log(JSON.stringify({ checks: result.checks.length, screenshots: result.screenshots.length, errors: result.errors }, null, 2));

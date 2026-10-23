@@ -1,0 +1,687 @@
+--- a/server/audio-engine.mjs
++++ b/server/audio-engine.mjs
+@@ -15,6 +15,7 @@
+ import https from "node:https";
+ import crypto from "node:crypto";
+ import { createGunzip } from "node:zlib";
++import { Transform } from "node:stream";
+ import { pipeline } from "node:stream/promises";
+ import { fileURLToPath } from "node:url";
+ import tar from "tar-stream";
+@@ -22,6 +23,14 @@
+ const HERE = path.dirname(fileURLToPath(import.meta.url));
+ const DEFAULT_CA_FILE = path.join(HERE, "audio-engine-ca.pem");
+ const MiB = 1024 * 1024;
++/** 安装器私有临时目录前缀；只有同时通过 owner 标记校验的同前缀目录才可清理。 */
++const TMP_JOB_PREFIX = "audio-installer-job-";
++const TMP_OWNER_FILE = ".owner.json";
++const TMP_OWNER_KIND = "shiguang-audio-installer";
++/** 标记/锁 owner 等本机元数据文件的有界读取上限。 */
++const MAX_METADATA_BYTES = 4 * 1024;
++/** tar 头/PAX/GNU 元数据/padding 的小额固定预算，超过 extractedMaxBytes 后仍受此上限约束。 */
++const TAR_METADATA_ALLOWANCE = 64 * 1024;
+ 
+ /** 应用内固定发布描述；生产路径不允许环境变量/浏览器覆盖。 */
+ export const ENGINE_RELEASE = Object.freeze({
+@@ -114,6 +123,13 @@
+     if (!Number.isSafeInteger(merged[key]) || merged[key] <= 0) throw new Error(`发布描述 ${key} 无效`);
+   }
+   if (merged.size > merged.archiveMaxBytes) throw new Error("发布描述大小超过归档上限");
++  const tarCeiling = merged.extractedMaxBytes + TAR_METADATA_ALLOWANCE;
++  if (!Number.isSafeInteger(tarCeiling)) throw new Error("发布描述展开上限过大");
++  if (merged.tarMaxBytes === undefined) merged.tarMaxBytes = tarCeiling;
++  else merged.tarMaxBytes = Math.min(merged.tarMaxBytes, tarCeiling);
++  if (!Number.isSafeInteger(merged.tarMaxBytes) || merged.tarMaxBytes <= merged.extractedMaxBytes) {
++    throw new Error("发布描述 tarMaxBytes 无效");
++  }
+   return Object.freeze(merged);
+ }
+ 
+@@ -157,9 +173,9 @@
+     return this.#installedInfo()?.version ?? null;
+   }
+ 
+-  /** 分析器内部使用的二进制路径；不通过 HTTP 暴露。 */
++  /** 分析器内部使用的二进制路径；未通过可信链校验时返回 null，不提供越界路径。 */
+   get binaryPath() {
+-    return this.#installedInfo()?.binaryPath ?? path.join(this.engineRoot, this.release.binary);
++    return this.#installedInfo()?.binaryPath ?? null;
+   }
+ 
+   status() {
+@@ -283,8 +299,9 @@
+       await this.#checkDiskSpace();
+ 
+       this.#setJobState("downloading");
+-      tmpDir = await fs.mkdtemp(path.join(this.tmpRoot, "job-"));
++      tmpDir = await fs.mkdtemp(path.join(this.tmpRoot, TMP_JOB_PREFIX));
+       await fs.chmod(tmpDir, 0o700);
++      await this.#writeTmpOwner(tmpDir, jobId);
+       const archive = path.join(tmpDir, "release.tar.gz");
+       const downloaded = await this.#download(archive);
+       this._abort = null;
+@@ -388,12 +405,32 @@
+   }
+ 
+   async #cleanOwnedTmp() {
+-    const entries = await fs.readdir(this.tmpRoot).catch(() => []);
++    // engines/.tmp 可能与其它引擎/任务共享。只处理本安装器前缀的私有任务目录，
++    // 且必须同时满足：非链接目录 + owner 标记格式有效 + 记录进程已死。
++    // 未知目录、无标记目录、仍存活的进程目录一律保留（fail-closed）。
++    const entries = await fs.readdir(this.tmpRoot, { withFileTypes: true }).catch(() => []);
+     for (const entry of entries) {
+-      await fs.rm(path.join(this.tmpRoot, entry), { recursive: true, force: true }).catch(() => {});
++      if (!entry.name.startsWith(TMP_JOB_PREFIX)) continue;
++      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
++      const dir = path.join(this.tmpRoot, entry.name);
++      const owner = await readTmpOwner(dir);
++      if (!owner) continue;
++      if (isProcessAlive(owner.pid)) continue;
++      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+     }
+   }
+ 
++  async #writeTmpOwner(dir, jobId) {
++    const owner = {
++      kind: TMP_OWNER_KIND,
++      pid: process.pid,
++      jobId,
++      token: crypto.randomBytes(16).toString("hex"),
++      startedAt: new Date().toISOString(),
++    };
++    await fs.writeFile(path.join(dir, TMP_OWNER_FILE), JSON.stringify(owner), { mode: 0o600, flag: "wx" });
++  }
++
+   #download(dest) {
+     const release = this.release;
+     const url = new URL(release.url);
+@@ -514,11 +551,23 @@
+   #extract(archive, staging) {
+     const release = this.release;
+     const allowed = new Set([release.binary]);
++    const tarLimit = release.tarMaxBytes;
+ 
+     return new Promise((resolve, reject) => {
+       const extractor = tar.extract();
+       const read = fssync.createReadStream(archive);
+       const gunzip = createGunzip();
++      // tar-stream 在触发 entry 之前会先缓冲 PAX/GNU 扩展头；只在 entry 回调里统计
++      // header.size 会漏掉这些元数据。这里在 gunzip 之后、parser 之前按“解压后的
++      // tar 总字节数”设硬上限，包含头/元数据/padding，并只给固定的小额开销。
++      let tarBytes = 0;
++      const counter = new Transform({
++        transform(chunk, _encoding, callback) {
++          tarBytes += chunk.length;
++          if (tarBytes > tarLimit) return callback(new AudioEngineError(CODES.ARCHIVE_TOO_LARGE));
++          callback(null, chunk);
++        },
++      });
+       const seen = new Set();
+       let count = 0;
+       let expanded = 0;
+@@ -527,6 +576,7 @@
+       const fail = (code) => {
+         if (failed) return;
+         failed = true;
++        counter.destroy();
+         gunzip.destroy();
+         extractor.destroy();
+         read.destroy();
+@@ -592,8 +642,16 @@
+       });
+       extractor.on("error", () => fail(CODES.ARCHIVE_INVALID));
+       gunzip.on("error", () => fail(CODES.ARCHIVE_INVALID));
++      counter.on("error", () => fail(CODES.ARCHIVE_TOO_LARGE));
+       read.on("error", () => fail(CODES.ARCHIVE_INVALID));
+-      read.pipe(gunzip).pipe(extractor);
++      read.pipe(gunzip).pipe(counter).pipe(extractor);
++      if (this.hooks.extracting) {
++        try {
++          this.hooks.extracting({ tarLimit });
++        } catch {
++          fail(CODES.INSTALL_FAILED);
++        }
++      }
+     });
+   }
+ 
+@@ -642,88 +700,110 @@
+   }
+ 
+   async #ensureVersionsDir() {
++    if (!(await this.#isTrustedDir(this.enginesRoot)) || !(await this.#isTrustedDir(this.engineRoot))) {
++      throw new AudioEngineError(CODES.UNSAFE_TARGET);
++    }
+     await fs.mkdir(this.versionsRoot, { recursive: true, mode: 0o700 }).catch((error) => {
+       if (error.code !== "EEXIST") throw error;
+     });
+-    const stat = await fs.lstat(this.versionsRoot);
+-    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new AudioEngineError(CODES.UNSAFE_TARGET);
++    if (!(await this.#isTrustedDir(this.versionsRoot))) throw new AudioEngineError(CODES.UNSAFE_TARGET);
+     return this.versionsRoot;
+   }
+ 
++  async #isTrustedDir(target) {
++    const stat = await lstatOrNull(target);
++    return !!stat && !stat.isSymbolicLink() && stat.isDirectory();
++  }
++
+   #installedInfo() {
+     const release = this.release;
+-    const rootStat = lstatOrNullSync(this.engineRoot);
+-    if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) return null;
++    // 从 dataDir 往下的每一级祖先都必须是真实目录，不能只检查最终 binary。
++    if (!trustedDirSync(this.enginesRoot) || !trustedDirSync(this.engineRoot)) return null;
+ 
+     const pointerPath = path.join(this.engineRoot, "current.json");
+     const pointerStat = lstatOrNullSync(pointerPath);
+-    if (pointerStat && !pointerStat.isSymbolicLink() && pointerStat.isFile()) {
+-      try {
+-        const pointer = JSON.parse(fssync.readFileSync(pointerPath, "utf8"));
+-        if (
+-          typeof pointer.dir !== "string" ||
+-          !/^[A-Za-z0-9._-]+$/.test(pointer.dir) ||
+-          pointer.binary !== release.binary
+-        ) {
+-          return null;
+-        }
+-        const dir = path.join(this.versionsRoot, pointer.dir);
+-        const dirStat = lstatOrNullSync(dir);
+-        if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
+-        const binary = path.join(dir, pointer.binary);
+-        const binaryStat = lstatOrNullSync(binary);
+-        if (!binaryStat || binaryStat.isSymbolicLink() || !binaryStat.isFile()) return null;
+-        const markerPath = path.join(dir, ".installed.json");
+-        const markerStat = lstatOrNullSync(markerPath);
+-        if (!markerStat || markerStat.isSymbolicLink() || !markerStat.isFile()) return null;
+-        const marker = JSON.parse(fssync.readFileSync(markerPath, "utf8"));
+-        if (
+-          marker.version !== pointer.version ||
+-          marker.releaseSha256 !== pointer.releaseSha256 ||
+-          marker.binary !== pointer.binary
+-        ) {
+-          return null;
+-        }
+-        if (binaryStat.size <= 0) return null;
+-        return {
+-          version: marker.version,
+-          releaseSha256: marker.releaseSha256,
+-          size: binaryStat.size,
+-          binaryPath: binary,
+-          legacy: false,
+-        };
+-      } catch {
++    if (pointerStat) {
++      // 指针存在就必须可信；损坏/链接/超限一律视为未安装，不静默回退到 legacy。
++      if (pointerStat.isSymbolicLink() || !pointerStat.isFile() || pointerStat.size > MAX_METADATA_BYTES) return null;
++      const pointer = readSmallJsonSync(pointerPath, MAX_METADATA_BYTES);
++      if (!pointer || typeof pointer !== "object") return null;
++      if (
++        !isSafeDirName(pointer.dir) ||
++        pointer.binary !== release.binary ||
++        typeof pointer.version !== "string" ||
++        pointer.version.length === 0 ||
++        pointer.version.length > 128 ||
++        typeof pointer.releaseSha256 !== "string" ||
++        !/^[0-9a-f]{64}$/.test(pointer.releaseSha256)
++      ) {
+         return null;
+       }
++      if (!trustedDirSync(this.versionsRoot)) return null;
++      const dir = path.join(this.versionsRoot, pointer.dir);
++      if (!trustedDirSync(dir)) return null;
++      const binary = path.join(dir, pointer.binary);
++      const binaryStat = lstatOrNullSync(binary);
++      if (!binaryStat || binaryStat.isSymbolicLink() || !binaryStat.isFile()) return null;
++      if (binaryStat.size <= 0 || binaryStat.size > release.extractedMaxBytes) return null;
++      const markerPath = path.join(dir, ".installed.json");
++      const markerStat = lstatOrNullSync(markerPath);
++      if (!markerStat || markerStat.isSymbolicLink() || !markerStat.isFile() || markerStat.size > MAX_METADATA_BYTES) {
++        return null;
++      }
++      const marker = readSmallJsonSync(markerPath, MAX_METADATA_BYTES);
++      if (!marker || typeof marker !== "object") return null;
++      if (
++        marker.version !== pointer.version ||
++        marker.releaseSha256 !== pointer.releaseSha256 ||
++        marker.binary !== pointer.binary
++      ) {
++        return null;
++      }
++      return {
++        version: marker.version,
++        releaseSha256: marker.releaseSha256,
++        size: binaryStat.size,
++        binaryPath: binary,
++        legacy: false,
++      };
+     }
+ 
+-    // 兼容旧版平铺安装：只有标记存在且 hash 与当前可信发布一致才算可信。
++    // 兼容旧版平铺安装：只有标记存在、非链接且有界读取、hash 与当前可信发布一致才算可信。
++    // 若存在 versionsRoot，也同样要求它是真实目录，不能借未使用的旧路径绕过信任链。
++    const legacyVersionsStat = lstatOrNullSync(this.versionsRoot);
++    if (legacyVersionsStat && (legacyVersionsStat.isSymbolicLink() || !legacyVersionsStat.isDirectory())) return null;
+     const legacyBinary = path.join(this.engineRoot, release.binary);
+     const legacyStat = lstatOrNullSync(legacyBinary);
+     if (!legacyStat || legacyStat.isSymbolicLink() || !legacyStat.isFile()) return null;
+-    try {
+-      const marker = JSON.parse(fssync.readFileSync(path.join(this.engineRoot, ".installed.json"), "utf8"));
+-      if (marker.sha256 !== release.sha256 || typeof marker.version !== "string") return null;
+-      return {
+-        version: marker.version,
+-        releaseSha256: marker.sha256,
+-        size: legacyStat.size,
+-        binaryPath: legacyBinary,
+-        legacy: true,
+-      };
+-    } catch {
++    if (legacyStat.size <= 0 || legacyStat.size > release.extractedMaxBytes) return null;
++    const markerPath = path.join(this.engineRoot, ".installed.json");
++    const markerStat = lstatOrNullSync(markerPath);
++    if (!markerStat || markerStat.isSymbolicLink() || !markerStat.isFile() || markerStat.size > MAX_METADATA_BYTES) {
++      return null;
++    }
++    const marker = readSmallJsonSync(markerPath, MAX_METADATA_BYTES);
++    if (!marker || typeof marker !== "object") return null;
++    if (marker.sha256 !== release.sha256 || typeof marker.version !== "string" || marker.version.length === 0) {
+       return null;
+     }
++    if (marker.binary !== undefined && marker.binary !== release.binary) return null;
++    return {
++      version: marker.version,
++      releaseSha256: marker.sha256,
++      size: legacyStat.size,
++      binaryPath: legacyBinary,
++      legacy: true,
++    };
+   }
+ 
+   #peekLockBusy() {
+-    try {
+-      const raw = fssync.readFileSync(path.join(this.lockRoot, "owner.json"), "utf8");
+-      const owner = JSON.parse(raw);
+-      return isProcessAlive(owner?.pid);
+-    } catch {
+-      return false;
+-    }
++    const stat = lstatOrNullSync(this.lockRoot);
++    if (!stat) return false;
++    if (stat.isSymbolicLink() || !stat.isDirectory()) return true;
++    const owner = readLockOwnerSync(this.lockRoot);
++    // 没有可验证 owner 的锁一律视为占用（fail-closed），不再按目录年龄盲删。
++    if (!owner) return true;
++    return isProcessAlive(owner.pid);
+   }
+ 
+   async #acquireLock(jobId) {
+@@ -734,33 +814,45 @@
+       token,
+       startedAt: new Date().toISOString(),
+     };
+-    for (let attempt = 0; attempt < 3; attempt += 1) {
+-      try {
+-        await fs.mkdir(this.lockRoot, { mode: 0o700 });
+-        await fs.writeFile(path.join(this.lockRoot, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+-        return { token };
+-      } catch (error) {
+-        if (error.code !== "EEXIST") throw new AudioEngineError(CODES.LOCK_FAILED);
+-        const other = await readLockOwner(this.lockRoot);
+-        if (other && isProcessAlive(other.pid)) throw new AudioEngineError(CODES.BUSY);
+-        if (!other) {
+-          // 可能是另一个进程刚 mkdir、还没写 owner；短时间内的无主锁按 BUSY 处理，
+-          // 只有确认锁目录已存在一段时间后才按崩溃残留回收，避免误删活锁。
+-          const stat = await fs.stat(this.lockRoot).catch(() => null);
+-          const age = stat ? Date.now() - stat.mtimeMs : 0;
+-          if (age < 2000) throw new AudioEngineError(CODES.BUSY);
+-        }
+-        const stale = `${this.lockRoot}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
++    // 先在私有目录写完整 owner，再原子 rename 成锁目录：锁一旦可见就带 owner，
++    // 消除“mkdir 后、写 owner 前”的无主窗口。
++    const creating = path.join(this.enginesRoot, `.audio-install.lock.creating-${process.pid}-${token}`);
++    try {
++      await fs.mkdir(creating, { mode: 0o700 });
++      await fs.writeFile(path.join(creating, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
++      for (let attempt = 0; attempt < 3; attempt += 1) {
+         try {
+-          await fs.rename(this.lockRoot, stale);
+-        } catch (renameError) {
+-          if (renameError.code === "ENOENT") continue;
+-          throw new AudioEngineError(CODES.LOCK_FAILED);
++          await fs.rename(creating, this.lockRoot);
++          return { token };
++        } catch (error) {
++          if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
++            throw new AudioEngineError(CODES.LOCK_FAILED);
++          }
++          const lockStat = await lstatOrNull(this.lockRoot);
++          if (!lockStat || lockStat.isSymbolicLink() || !lockStat.isDirectory()) {
++            throw new AudioEngineError(CODES.BUSY);
++          }
++          const other = await readLockOwner(this.lockRoot);
++          if (!other || isProcessAlive(other.pid)) throw new AudioEngineError(CODES.BUSY);
++          // 回收前再读一次并核对 token，尽量缩小与新建锁的竞争窗口。
++          const confirm = await readLockOwner(this.lockRoot);
++          if (!confirm || confirm.token !== other.token || isProcessAlive(confirm.pid)) {
++            throw new AudioEngineError(CODES.BUSY);
++          }
++          const stale = `${this.lockRoot}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
++          try {
++            await fs.rename(this.lockRoot, stale);
++          } catch (renameError) {
++            if (renameError.code === "ENOENT") continue;
++            throw new AudioEngineError(CODES.LOCK_FAILED);
++          }
++          await fs.rm(stale, { recursive: true, force: true }).catch(() => {});
+         }
+-        await fs.rm(stale, { recursive: true, force: true }).catch(() => {});
+       }
++      throw new AudioEngineError(CODES.LOCK_FAILED);
++    } finally {
++      await fs.rm(creating, { recursive: true, force: true }).catch(() => {});
+     }
+-    throw new AudioEngineError(CODES.LOCK_FAILED);
+   }
+ 
+   async #releaseLock(lock) {
+@@ -800,6 +892,11 @@
+   return String(value).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "engine";
+ }
+ 
++function isSafeDirName(value) {
++  return typeof value === "string" && value.length > 0 && value.length <= 128 && /^[A-Za-z0-9._-]+$/.test(value)
++    && value !== "." && value !== "..";
++}
++
+ function normalizeError(error, cancelled) {
+   if (cancelled) return new AudioEngineError(CODES.CANCELLED);
+   if (isAudioEngineError(error)) return error;
+@@ -822,6 +919,94 @@
+   }
+ }
+ 
++/** 可信目录：存在、非符号链接、且本身是目录。 */
++function trustedDirSync(target) {
++  const stat = lstatOrNullSync(target);
++  return !!stat && !stat.isSymbolicLink() && stat.isDirectory();
++}
++
++/** 只读打开并校验普通文件；O_NOFOLLOW 避免 lstat 后目标被换成链接。 */
++function readSmallTextSync(file, maxBytes) {
++  let fd;
++  try {
++    const flags = fssync.constants.O_RDONLY | (fssync.constants.O_NOFOLLOW || 0) | (fssync.constants.O_NONBLOCK || 0);
++    fd = fssync.openSync(file, flags);
++    const stat = fssync.fstatSync(fd);
++    if (!stat.isFile() || stat.size < 0 || stat.size > maxBytes) return null;
++    const buffer = Buffer.alloc(stat.size);
++    let offset = 0;
++    while (offset < stat.size) {
++      const read = fssync.readSync(fd, buffer, offset, stat.size - offset, offset);
++      if (read <= 0) return null;
++      offset += read;
++    }
++    return buffer.toString("utf8");
++  } catch {
++    return null;
++  } finally {
++    if (fd !== undefined) {
++      try {
++        fssync.closeSync(fd);
++      } catch {}
++    }
++  }
++}
++
++function readSmallJsonSync(file, maxBytes = MAX_METADATA_BYTES) {
++  try {
++    const raw = readSmallTextSync(file, maxBytes);
++    if (raw === null) return null;
++    const parsed = JSON.parse(raw);
++    return parsed && typeof parsed === "object" ? parsed : null;
++  } catch {
++    return null;
++  }
++}
++
++/** 安装器私有临时任务的归属标记；格式不完整时视为未知目录，保留不删。 */
++function readTmpOwner(dir) {
++  const owner = readSmallJsonSync(path.join(dir, TMP_OWNER_FILE));
++  if (!owner) return null;
++  if (owner.kind !== TMP_OWNER_KIND) return null;
++  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) return null;
++  if (typeof owner.token !== "string" || !/^[0-9a-f]{32}$/.test(owner.token)) return null;
++  if (typeof owner.jobId !== "string" || owner.jobId.length === 0) return null;
++  return owner;
++}
++
++function readLockOwnerSync(lockRoot) {
++  return sanitizeLockOwner(readSmallJsonSync(path.join(lockRoot, "owner.json")));
++}
++
++function sanitizeLockOwner(owner) {
++  if (!owner) return null;
++  if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0) return null;
++  if (typeof owner?.token !== "string" || owner.token.length === 0 || owner.token.length > 128) return null;
++  return owner;
++}
++
++async function readSmallText(file, maxBytes) {
++  let handle;
++  try {
++    const flags = fssync.constants.O_RDONLY | (fssync.constants.O_NOFOLLOW || 0) | (fssync.constants.O_NONBLOCK || 0);
++    handle = await fs.open(file, flags);
++    const stat = await handle.stat();
++    if (!stat.isFile() || stat.size < 0 || stat.size > maxBytes) return null;
++    const buffer = Buffer.alloc(stat.size);
++    let offset = 0;
++    while (offset < stat.size) {
++      const { bytesRead } = await handle.read(buffer, offset, stat.size - offset, offset);
++      if (bytesRead <= 0) return null;
++      offset += bytesRead;
++    }
++    return buffer.toString("utf8");
++  } catch {
++    return null;
++  } finally {
++    if (handle) await handle.close().catch(() => {});
++  }
++}
++
+ async function lstatOrNull(target) {
+   try {
+     return await fs.lstat(target);
+@@ -838,11 +1023,10 @@
+ }
+ 
+ async function readLockOwner(lockRoot) {
++  const raw = await readSmallText(path.join(lockRoot, "owner.json"), MAX_METADATA_BYTES);
++  if (raw === null) return null;
+   try {
+-    const raw = await fs.readFile(path.join(lockRoot, "owner.json"), "utf8");
+-    const owner = JSON.parse(raw);
+-    if (!Number.isSafeInteger(owner?.pid) || typeof owner?.token !== "string") return null;
+-    return owner;
++    return sanitizeLockOwner(JSON.parse(raw));
+   } catch {
+     return null;
+   }
+--- a/tests/audio-engine-installer.test.mjs
++++ b/tests/audio-engine-installer.test.mjs
+@@ -348,6 +348,31 @@
+   assert.equal(status.installed, false);
+   assertClean(dataDir);
+   assert.equal(exists(path.join(dataDir, "engines/audio/current.json")), false);
++});
++
++test("取消解包流量：销毁 gunzip/parser 流并清理自有临时目录", async (t) => {
++  const archive = await makeTar([
++    { name: "audio-analyze", data: BINARY, pax: { gname: "x".repeat(64 * 1024) } },
++  ]);
++  let signal;
++  const started = new Promise((resolve) => {
++    signal = resolve;
++  });
++  const { dataDir, engine } = await setup(t, archive, {
++    hooks: {
++      extracting() {
++        signal();
++        void engine.cancel();
++      },
++    },
++  });
++  engine.install({ confirm: true });
++  await started;
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "cancelled", JSON.stringify(status));
++  assert.equal(status.job.error.code, "ENGINE_CANCELLED", JSON.stringify(status));
++  assert.equal(status.installed, false);
++  assertClean(dataDir);
+ });
+ 
+ test("恶意归档：类型/路径/重复/PAX/过长/超量/条目数都被拒绝且不越界写", async (t) => {
+@@ -556,6 +581,144 @@
+   assertClean(dataDir);
+ });
+ 
++test("无 owner 锁超过 2 秒仍 fail-closed，不按时间盲删", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  const lock = path.join(dataDir, "engines", ".audio-install.lock");
++  await fs.mkdir(lock, { recursive: true });
++  await delay(2100);
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
++  );
++  assert.equal(exists(lock), true, "无 owner 的锁不得被时间策略删除");
++  await fs.rm(lock, { recursive: true, force: true });
++});
++
++test("共享 .tmp：只清理本安装器已死任务，未知/活跃/非自有内容保留", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  const tmp = path.join(dataDir, "engines", ".tmp");
++  const unrelated = path.join(tmp, "unrelated-task", "keep.txt");
++  await fs.mkdir(path.dirname(unrelated), { recursive: true });
++  await fs.writeFile(unrelated, "must survive");
++
++  const owner = (pid, token) => ({
++    kind: "shiguang-audio-installer",
++    pid,
++    jobId: `job-${token}`,
++    token,
++    startedAt: new Date().toISOString(),
++  });
++  const live = path.join(tmp, "audio-installer-job-live");
++  await fs.mkdir(live);
++  await fs.writeFile(path.join(live, ".owner.json"), JSON.stringify(owner(process.pid, "a".repeat(32))));
++  await fs.writeFile(path.join(live, "keep.txt"), "live task");
++  const dead = path.join(tmp, "audio-installer-job-dead");
++  await fs.mkdir(dead);
++  await fs.writeFile(path.join(dead, ".owner.json"), JSON.stringify(owner(2147483647, "b".repeat(32))));
++  await fs.writeFile(path.join(dead, "stale.txt"), "dead task");
++  // 同前缀但没有合法 owner 标记的目录也必须保留（fail-closed）。
++  const unmarked = path.join(tmp, "audio-installer-job-unmarked");
++  await fs.mkdir(unmarked);
++  await fs.writeFile(path.join(unmarked, "keep.txt"), "unknown");
++
++  engine.install({ confirm: true });
++  const status = await waitForJob(engine);
++  assert.equal(status.job.state, "installed", JSON.stringify(status));
++  assert.equal(await fs.readFile(unrelated, "utf8"), "must survive");
++  assert.equal(await fs.readFile(path.join(live, "keep.txt"), "utf8"), "live task");
++  assert.equal(await fs.readFile(path.join(unmarked, "keep.txt"), "utf8"), "unknown");
++  assert.equal(exists(dead), false, "已死且归属明确的私有任务目录应被回收");
++
++  await engine.uninstall();
++  assert.equal(await fs.readFile(unrelated, "utf8"), "must survive");
++  assert.equal(exists(live), true);
++  assert.equal(exists(unmarked), true);
++});
++
++test("状态信任链：versions/engineRoot/enginesRoot 或 legacy marker 为链接时一律未安装", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  engine.install({ confirm: true });
++  assert.equal((await waitForJob(engine)).installed, true);
++  const engineRoot = path.join(dataDir, "engines", "audio");
++  const versions = path.join(engineRoot, "versions");
++  const outside = await tempDir(t);
++
++  const expectNotInstalled = () => {
++    const status = engine.status();
++    assert.equal(status.installed, false, JSON.stringify(status));
++    assert.equal(status.version, null);
++    assert.equal(engine.version, null);
++    assert.equal(engine.binaryPath, null, "未通过可信链时不得给出分析器路径");
++  };
++
++  const movedVersions = path.join(outside, "versions");
++  await fs.rename(versions, movedVersions);
++  await fs.symlink(movedVersions, versions);
++  expectNotInstalled();
++  await fs.rm(versions);
++  await fs.rename(movedVersions, versions);
++
++  const movedEngine = path.join(outside, "audio");
++  await fs.rename(engineRoot, movedEngine);
++  await fs.symlink(movedEngine, engineRoot);
++  expectNotInstalled();
++  await fs.rm(engineRoot);
++  await fs.rename(movedEngine, engineRoot);
++
++  const movedEngines = path.join(outside, "engines");
++  await fs.rename(path.join(dataDir, "engines"), movedEngines);
++  await fs.symlink(movedEngines, path.join(dataDir, "engines"));
++  expectNotInstalled();
++  await fs.rm(path.join(dataDir, "engines"));
++  await fs.rename(movedEngines, path.join(dataDir, "engines"));
++
++  // legacy 路径：平铺 binary + marker；marker 为链接时必须拒绝，且不得越界读取。
++  await fs.rm(path.join(engineRoot, "current.json"));
++  await fs.copyFile(
++    path.join(engineRoot, "versions", fssync.readdirSync(path.join(engineRoot, "versions"))[0], "audio-analyze"),
++    path.join(engineRoot, "audio-analyze"),
++  );
++  const outsideMarker = path.join(outside, "legacy-marker.json");
++  await fs.writeFile(outsideMarker, JSON.stringify({ version: "legacy", sha256: engine.release.sha256 }));
++  await fs.symlink(outsideMarker, path.join(engineRoot, ".installed.json"));
++  expectNotInstalled();
++  await fs.rm(path.join(engineRoot, ".installed.json"));
++  await fs.writeFile(path.join(engineRoot, ".installed.json"), "x".repeat(5000));
++  expectNotInstalled();
++});
++
++test("tar 元数据预算：PAX 膨胀与多个扩展头在 parser 前被总量上限拦截", async (t) => {
++  const oversizedPax = await makeTar([
++    { name: "audio-analyze", data: BINARY, pax: { gname: "x".repeat(2 * 1024 * 1024) } },
++  ]);
++  {
++    const { dataDir, engine } = await setup(t, oversizedPax, { release: { extractedMaxBytes: 64 * 1024 } });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error", JSON.stringify(status));
++    assert.equal(status.job.error.code, "ENGINE_ARCHIVE_TOO_LARGE", JSON.stringify(status));
++    assert.equal(status.installed, false);
++    assertClean(dataDir);
++  }
++
++  const multiplePax = await makeTar([
++    { name: "audio-analyze", data: BINARY, pax: { gname: "x".repeat(100 * 1024) } },
++    { name: "audio-analyze", data: BINARY, pax: { gname: "y".repeat(100 * 1024) } },
++  ]);
++  {
++    const { dataDir, engine } = await setup(t, multiplePax, { release: { extractedMaxBytes: 64 * 1024 } });
++    engine.install({ confirm: true });
++    const status = await waitForJob(engine);
++    assert.equal(status.job.state, "error", JSON.stringify(status));
++    assert.equal(status.job.error.code, "ENGINE_ARCHIVE_TOO_LARGE", JSON.stringify(status));
++    assert.equal(status.installed, false);
++    assertClean(dataDir);
++  }
++});
++
+ test("两个进程同时安装：一个成功，另一个明确 BUSY", async (t) => {
+   const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
+   const base = await tempDir(t);

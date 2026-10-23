@@ -1,0 +1,177 @@
+--- a/server/audio-engine.mjs
++++ b/server/audio-engine.mjs
+@@ -73,7 +73,7 @@
+ const MESSAGES = {
+   [CODES.UNSUPPORTED_PLATFORM]: "当前平台不支持音频引擎安装",
+   [CODES.CONFIRM_REQUIRED]: "需要明确确认后才能安装",
+-  [CODES.BUSY]: "安装器正忙，请稍后重试",
++  [CODES.BUSY]: "安装器正忙；若已确认没有安装/卸载进程，请按维护说明清理残留安装锁",
+   [CODES.DISK_SPACE_LOW]: "磁盘空间不足",
+   [CODES.HTTP_STATUS]: "下载服务器响应异常",
+   [CODES.CONTENT_ENCODING]: "下载响应包含不支持的压缩编码",
+@@ -797,13 +797,9 @@
+   }
+ 
+   #peekLockBusy() {
+-    const stat = lstatOrNullSync(this.lockRoot);
+-    if (!stat) return false;
+-    if (stat.isSymbolicLink() || !stat.isDirectory()) return true;
+-    const owner = readLockOwnerSync(this.lockRoot);
+-    // 没有可验证 owner 的锁一律视为占用（fail-closed），不再按目录年龄盲删。
+-    if (!owner) return true;
+-    return isProcessAlive(owner.pid);
++    // 保守策略：锁目录只要存在就视为占用，不在运行期自动回收。
++    // 死锁清理改为显式维护；这样不存在“先判死、再被新持锁者换入、最后无条件 rename 搬走活锁”的竞态。
++    return lstatOrNullSync(this.lockRoot) !== null;
+   }
+ 
+   async #acquireLock(jobId) {
+@@ -820,36 +816,19 @@
+     try {
+       await fs.mkdir(creating, { mode: 0o700 });
+       await fs.writeFile(path.join(creating, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+-      for (let attempt = 0; attempt < 3; attempt += 1) {
+-        try {
+-          await fs.rename(creating, this.lockRoot);
+-          return { token };
+-        } catch (error) {
+-          if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
+-            throw new AudioEngineError(CODES.LOCK_FAILED);
+-          }
+-          const lockStat = await lstatOrNull(this.lockRoot);
+-          if (!lockStat || lockStat.isSymbolicLink() || !lockStat.isDirectory()) {
+-            throw new AudioEngineError(CODES.BUSY);
+-          }
+-          const other = await readLockOwner(this.lockRoot);
+-          if (!other || isProcessAlive(other.pid)) throw new AudioEngineError(CODES.BUSY);
+-          // 回收前再读一次并核对 token，尽量缩小与新建锁的竞争窗口。
+-          const confirm = await readLockOwner(this.lockRoot);
+-          if (!confirm || confirm.token !== other.token || isProcessAlive(confirm.pid)) {
+-            throw new AudioEngineError(CODES.BUSY);
+-          }
+-          const stale = `${this.lockRoot}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+-          try {
+-            await fs.rename(this.lockRoot, stale);
+-          } catch (renameError) {
+-            if (renameError.code === "ENOENT") continue;
+-            throw new AudioEngineError(CODES.LOCK_FAILED);
+-          }
+-          await fs.rm(stale, { recursive: true, force: true }).catch(() => {});
++      try {
++        await fs.rename(creating, this.lockRoot);
++        return { token };
++      } catch (error) {
++        if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
++          // 任意已存在的锁一律 BUSY：包括无 owner、owner 不可校验、owner 进程已死。
++          // 自动回收需要“条件删除”，而 rename(lockRoot, stale) 不是条件原子操作：
++          // 两个回收者交错时会搬走并删除另一进程刚建立的活锁。这里选择 fail-closed，
++          // 由维护者在确认无安装/卸载进程后手动清理残留目录，再重新安装。
++          throw new AudioEngineError(CODES.BUSY);
+         }
++        throw new AudioEngineError(CODES.LOCK_FAILED);
+       }
+-      throw new AudioEngineError(CODES.LOCK_FAILED);
+     } finally {
+       await fs.rm(creating, { recursive: true, force: true }).catch(() => {});
+     }
+@@ -974,10 +953,6 @@
+   return owner;
+ }
+ 
+-function readLockOwnerSync(lockRoot) {
+-  return sanitizeLockOwner(readSmallJsonSync(path.join(lockRoot, "owner.json")));
+-}
+-
+ function sanitizeLockOwner(owner) {
+   if (!owner) return null;
+   if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0) return null;
+--- a/tests/audio-engine-installer.test.mjs
++++ b/tests/audio-engine-installer.test.mjs
+@@ -554,7 +554,7 @@
+   assert.equal(removed.installed, false);
+ });
+ 
+-test("跨进程锁：活锁 BUSY、死进程锁可恢复，不无条件删锁", async (t) => {
++test("跨进程锁：活锁与死进程残留锁均 BUSY，原样保留，维护清理后可安装", async (t) => {
+   const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
+   const { dataDir, engine } = await setup(t, archive);
+   const lock = path.join(dataDir, "engines", ".audio-install.lock");
+@@ -568,19 +568,78 @@
+     () => engine.install({ confirm: true }),
+     (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
+   );
++  assert.equal(exists(lock), true, "活锁必须保留");
+   await fs.rm(lock, { recursive: true, force: true });
+ 
++  // 死 owner 不再被运行期自动回收：保守 fail-closed，保留原锁等待维护者确认后清理。
+   await fs.mkdir(lock);
+   await fs.writeFile(
+     path.join(lock, "owner.json"),
+     JSON.stringify({ pid: 2147483647, token: "dead", jobId: "dead", startedAt: new Date().toISOString() }),
++  );
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
++  );
++  assert.equal(exists(lock), true, "死进程残留锁不得被自动删除");
++  assert.deepEqual(
++    fssync.readdirSync(path.join(dataDir, "engines")).filter((name) => name.includes(".stale-")),
++    [],
++    "不得产生 stale 搬移目录",
++  );
++  assert.equal(
++    JSON.parse(await fs.readFile(path.join(lock, "owner.json"), "utf8")).token,
++    "dead",
++    "残留锁 owner 必须原样保留",
+   );
++  await fs.rm(lock, { recursive: true, force: true });
++
++  // 仅在维护者显式清理后，同一实例才能继续安装，证明锁释放/重入路径未被破坏。
+   engine.install({ confirm: true });
+   const status = await waitForJob(engine);
+   assert.equal(status.job.state, "installed", JSON.stringify(status));
+   assertClean(dataDir);
+ });
+ 
++test("锁恢复竞态回归：死锁被换入活 owner 后，本进程不得 rename/删除活锁", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, engine } = await setup(t, archive);
++  const lock = path.join(dataDir, "engines", ".audio-install.lock");
++  await fs.mkdir(path.join(dataDir, "engines"), { recursive: true });
++  await fs.mkdir(lock);
++  await fs.writeFile(
++    path.join(lock, "owner.json"),
++    JSON.stringify({ pid: 2147483647, token: "dead-owner", jobId: "dead", startedAt: new Date().toISOString() }),
++  );
++
++  // 模拟另一进程在回收者“判定已死”之后用新活锁替换：回收者若仍 rename(lockRoot, stale)，
++  // 就会把新活锁搬走。新实现必须在任何 rename 之前保守 BUSY，绝不搬移/删除已存在的锁。
++  const rename = fs.rename;
++  let staleAttempt = null;
++  fs.rename = async (from, to) => {
++    if (from === lock && String(to).includes(".stale-")) staleAttempt = { from, to };
++    return rename(from, to);
++  };
++  t.after(() => { fs.rename = rename; });
++
++  // 另一进程先原子换入自己的活锁（这里直接模拟换入完成后的状态）。
++  await rename(lock, path.join(dataDir, "replacement-backup"));
++  await fs.mkdir(lock);
++  await fs.writeFile(
++    path.join(lock, "owner.json"),
++    JSON.stringify({ pid: process.pid, token: "replacement-live-owner", jobId: "live", startedAt: new Date().toISOString() }),
++  );
++
++  assert.throws(
++    () => engine.install({ confirm: true }),
++    (error) => error instanceof AudioEngineError && error.code === "ENGINE_BUSY",
++  );
++  assert.equal(staleAttempt, null, "不得尝试 stale rename");
++  const owner = JSON.parse(await fs.readFile(path.join(lock, "owner.json"), "utf8"));
++  assert.equal(owner.token, "replacement-live-owner", "替换后的活 owner 必须保留");
++  await fs.rm(lock, { recursive: true, force: true });
++});
++
+ test("无 owner 锁超过 2 秒仍 fail-closed，不按时间盲删", async (t) => {
+   const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
+   const { dataDir, engine } = await setup(t, archive);

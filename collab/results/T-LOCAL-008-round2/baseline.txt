@@ -1,0 +1,34 @@
+date: 2026-10-22 16:49:15
+branch: main
+head: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+headSubject: Import DaVinci Resolve timelines and track per-asset usage
+dirty (git status --porcelain):
+ M scripts/package.mjs
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/main.tsx
+ M src/style.css
+?? collab/
+?? config/
+?? scripts/cloud-release-config.mjs
+?? server/cloud-auth.mjs
+?? server/cloud-management.mjs
+?? server/cloud-release-config.mjs
+?? server/device-enrollment.mjs
+?? src/CloudAccount.tsx
+?? src/CloudConnectionSettings.tsx
+?? src/CloudWorkspace.tsx
+?? src/cloud-auth.ts
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+?? tests/cloud-management-mock.mjs
+?? tests/cloud-management.test.mjs
+?? tests/device-enrollment-mock.mjs
+?? tests/device-enrollment.test.mjs
+
+T-LOCAL-008 round2 本轮实际改动文件（相对 round1 交付态）:
+server/cloud-auth.mjs
+server/cloud-management.mjs
+src/CloudWorkspace.tsx
+tests/cloud-management.test.mjs
+tests/cloud-management-mock.mjs

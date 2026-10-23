@@ -1,0 +1,129 @@
+{
+  "startedAt": "2026-10-23T01:03:06.022Z",
+  "checks": [
+    {
+      "label": "真实主页面请求数",
+      "detail": "首屏 1，空闲 +0，显式刷新 +1，双刷 +1，切页签 +0；角色页组列表预取 0，进入账户授权后 1；就绪 343ms",
+      "at": "2026-10-23T01:03:14.280Z"
+    },
+    {
+      "label": "构建隔离夹具 legacy",
+      "detail": "vite build 退出 0",
+      "at": "2026-10-23T01:03:15.210Z"
+    },
+    {
+      "label": "构建隔离夹具 current",
+      "detail": "vite build 退出 0",
+      "at": "2026-10-23T01:03:15.895Z"
+    },
+    {
+      "label": "父级重渲染夹具",
+      "detail": "2 秒内父级重渲染 10 次：修复前 profile 2→12（+10，云请求 30，握手 0）；修复后 1→1（+0，云请求 0，握手 0）",
+      "at": "2026-10-23T01:03:20.745Z"
+    },
+    {
+      "label": "后端连接池基准",
+      "detail": "5 轮×3 请求：agent:false 15 次握手/46ms；受控池 3 次握手/12ms；随后 20 次顺序 me 0 次握手/10ms",
+      "at": "2026-10-23T01:03:20.873Z"
+    },
+    {
+      "label": "空闲 socket 回收",
+      "detail": "250ms 注入计时器：空闲池清零、计时器清零，下一次请求重新握手；生产默认 30s",
+      "at": "2026-10-23T01:03:21.183Z"
+    },
+    {
+      "label": "403 权限竞态",
+      "detail": "旧 profile 在途（累计 2）→ 403 → 强制新请求（累计 3）；放行旧响应后仍停在 3，旧权限未回填",
+      "at": "2026-10-23T01:03:22.392Z"
+    },
+    {
+      "label": "写后刷新竞态",
+      "detail": "写前 profile 在途（累计 2）→ 保存名称 → 写后强制新 profile（累计 3）；放行旧响应后仍为 3",
+      "at": "2026-10-23T01:03:23.951Z"
+    }
+  ],
+  "metrics": {
+    "realApp": {
+      "readyMs": 343,
+      "afterReady": 1,
+      "afterIdle": 1,
+      "afterRefresh": 2,
+      "afterDouble": 3,
+      "afterTabs": 3,
+      "groupsBeforeAuth": 0,
+      "groupsAfterAuth": 1,
+      "total": 3
+    },
+    "parentRerenderHarness": [
+      {
+        "mode": "legacy",
+        "readyMs": 315,
+        "initial": 2,
+        "after": 12,
+        "delta": 10,
+        "cloudRequests": 30,
+        "handshakes": 0
+      },
+      {
+        "mode": "current",
+        "readyMs": 328,
+        "initial": 1,
+        "after": 1,
+        "delta": 0,
+        "cloudRequests": 0,
+        "handshakes": 0
+      }
+    ],
+    "backendBenchmark": {
+      "rounds": 5,
+      "requestsPerRound": 3,
+      "legacyAgentFalse": {
+        "handshakes": 15,
+        "totalMs": 46,
+        "avgRoundMs": 9
+      },
+      "controlledKeepAlive": {
+        "handshakes": 3,
+        "totalMs": 12,
+        "avgRoundMs": 2
+      },
+      "sequential20": {
+        "handshakes": 0,
+        "totalMs": 10,
+        "pool": {
+          "configured": true,
+          "generations": 2,
+          "activeSockets": 0,
+          "freeSockets": 3,
+          "maxSockets": 4,
+          "maxFreeSockets": 4,
+          "idleSocketMs": 30000,
+          "idleTimers": 3
+        }
+      }
+    },
+    "idleSocketReclaim": {
+      "configuredIdleMs": 250,
+      "productionIdleMs": 30000,
+      "handshakeAfterReclaim": 1,
+      "coreFreeSocketTimeoutSupported": false
+    },
+    "profile403Race": {
+      "initial": 1,
+      "whileHeld": 3,
+      "afterRelease": 3,
+      "superAdminRestored": true
+    },
+    "profileWriteReload": {
+      "initial": 1,
+      "whileHeld": 3,
+      "afterRelease": 3
+    }
+  },
+  "screenshots": [
+    "screenshots/account-1280x800.png"
+  ],
+  "errors": [],
+  "ok": true,
+  "finishedAt": "2026-10-23T01:03:23.957Z"
+}

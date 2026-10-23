@@ -1,0 +1,7 @@
+date: 2026-10-22 15:55 CST
+branch: main
+HEAD: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+workspace: uncommitted; T-LOCAL-001/002/003/005/006/007 与 CLOUD-001 既有改动原样保留
+round3 changed: server/device-enrollment.mjs, tests/device-enrollment.test.mjs
+result: npm test 169/169; enrollment 22/22; cloud-auth 19/19; build exit 0; UI chromium/webkit PASS; GPT probe mismatch 0 / staleCommit false
+boundaries: no commit/push/deploy; no cloud project edits; no real cloud/account/media; release enabled=false; max cert 90d

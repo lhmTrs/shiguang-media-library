@@ -1,0 +1,23 @@
+ M scripts/package.mjs
+ M scripts/qa.mjs
+ M server/index.mjs
+ M src/main.tsx
+ M src/style.css
+?? collab/
+?? config/
+?? scripts/cloud-release-config.mjs
+?? server/cloud-auth.mjs
+?? server/cloud-management.mjs
+?? server/cloud-release-config.mjs
+?? server/device-enrollment.mjs
+?? src/CloudAccount.tsx
+?? src/CloudConnectionSettings.tsx
+?? src/CloudWorkspace.tsx
+?? src/cloud-auth.ts
+?? tests/cloud-auth-mock.mjs
+?? tests/cloud-auth.test.mjs
+?? tests/cloud-management-mock.mjs
+?? tests/cloud-management.test.mjs
+?? tests/cloud-release.test.mjs
+?? tests/device-enrollment-mock.mjs
+?? tests/device-enrollment.test.mjs

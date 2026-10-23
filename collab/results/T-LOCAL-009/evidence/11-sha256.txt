@@ -1,0 +1,4 @@
+449eff358c2d64a40745505c8b4cfbc7b2d3bacf910249b298ef6184d9beebf1  config/cloud-release.json
+6cb3975a29e084ed5f3a937bd3da119b0bb2015bb6a6a4d8964c8281ade104ad  tests/cloud-release.test.mjs
+2ad67de860125e0c491219c1aa5b9b6b79416305bec62b79e4f95163cca52f27  config/README.md
+42426327997baa9f62206414b472dc0d83b2cd3e855cba54345b34fcad9fcd0b  collab/results/T-LOCAL-009/diff.patch

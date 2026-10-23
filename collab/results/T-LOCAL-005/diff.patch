@@ -1,0 +1,706 @@
+diff --git a/src/main.tsx b/src/main.tsx
+index 9e096c5..901065f 100644
+--- a/src/main.tsx
++++ b/src/main.tsx
+@@ -64,6 +64,7 @@ import { DuplicateAudioManager } from "./DuplicateAudioManager";
+ import { QuickCategoryDialog } from "./QuickCategoryDialog";
+ import { TagManager } from "./TagManager";
+ import { OpenAISettings } from "./OpenAISettings";
++import { CloudConnectionSettings } from "./CloudConnectionSettings";
+ import { MusicAnalysisPanel } from "./MusicAnalysisPanel";
+ import { AssetEditDialog } from "./AssetEditDialog";
+ import { CategoryFilter } from "./CategoryFilter";
+@@ -222,6 +223,12 @@ async function api<T = unknown>(
+   if (!r.ok)
+     throw Object.assign(Error(result.error || "请求失败"), {
+       diagnostic: result.diagnostic,
++      // 云端认证只回固定公开码；保留状态码与冷却时间用于区分 401/429/证书/离线。
++      code: result.code,
++      kind: result.kind,
++      status: r.status,
++      retryAfterMs: result.retryAfterMs,
++      requestId: result.requestId,
+     });
+   if ((method || (body ? "POST" : "GET")).toUpperCase() !== "GET") clearTagFacetCache();
+   return result;
+@@ -2961,6 +2968,7 @@ function App() {
+               {modal === "settings" && (
+                 <>
+                   <OpenAISettings request={api} />
++                  <CloudConnectionSettings request={api} />
+                   <section className="database-settings">
+                     <div className="database-heading">
+                       <h3>
+diff --git a/src/style.css b/src/style.css
+index e67aef4..4697da3 100644
+--- a/src/style.css
++++ b/src/style.css
+@@ -1988,6 +1988,124 @@ dd {
+   font-size: 12px;
+   margin: 10px 0;
+ }
++.cloud-settings {
++  padding-bottom: 24px;
++  margin-bottom: 22px;
++  border-bottom: 1px solid var(--line);
++}
++.cloud-description {
++  margin: 0 0 14px;
++  line-height: 1.65;
++  overflow-wrap: anywhere;
++}
++.cloud-loading {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  margin: 8px 0 12px;
++}
++.cloud-summary {
++  grid-template-columns: 96px minmax(0, 1fr);
++  margin: 4px 0 18px;
++}
++.cloud-last-error {
++  color: var(--c-ad4d44);
++  font-size: 12px;
++  line-height: 1.55;
++  margin: 0 0 14px;
++  overflow-wrap: anywhere;
++}
++.cloud-config-grid {
++  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
++  margin-bottom: 0;
++}
++.cloud-wide {
++  grid-column: 1 / -1;
++}
++.cloud-actions {
++  align-items: center;
++  margin-top: 12px;
++}
++.cloud-actions .muted {
++  flex: 1 1 240px;
++  line-height: 1.55;
++}
++.cloud-account-heading {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 12px;
++  flex-wrap: wrap;
++  margin: 6px 0 10px;
++}
++.cloud-account-heading h4 {
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  margin: 0;
++  font-size: 13px;
++  color: var(--c-43554c);
++}
++.cloud-account-heading h4 svg {
++  color: var(--c-527e66);
++}
++.cloud-ready-note {
++  font-size: 11px;
++  color: var(--c-527e66);
++}
++.cloud-account-grid {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
++  gap: 14px;
++}
++.cloud-panel {
++  min-width: 0;
++  padding: 14px;
++  border: 1px solid var(--line);
++  border-radius: 6px;
++  background: var(--c-f8faf9);
++}
++.cloud-panel > strong {
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  font-size: 12px;
++  color: var(--c-43554c);
++}
++.cloud-panel > p {
++  line-height: 1.55;
++  margin: 8px 0 4px;
++}
++.cloud-panel .field {
++  margin: 10px 0;
++}
++.cloud-panel button {
++  width: 100%;
++}
++.cloud-notice {
++  justify-content: flex-start;
++  margin: 12px 0 0;
++}
++@media (max-width: 600px) {
++  .cloud-config-grid {
++    grid-template-columns: minmax(0, 1fr);
++  }
++  .cloud-wide {
++    grid-column: auto;
++  }
++  .cloud-account-grid {
++    grid-template-columns: minmax(0, 1fr);
++  }
++  .cloud-summary {
++    grid-template-columns: 80px minmax(0, 1fr);
++  }
++  .cloud-actions {
++    align-items: stretch;
++  }
++  .cloud-actions button {
++    width: 100%;
++  }
++}
+ @media (max-width: 600px) {
+   .active-filter-bar {
+     margin-left: 16px;
+diff --git a/src/CloudConnectionSettings.tsx b/src/CloudConnectionSettings.tsx
+new file mode 100644
+index 0000000..afee8ae
+--- /dev/null
++++ b/src/CloudConnectionSettings.tsx
+@@ -0,0 +1,538 @@
++import { useEffect, useRef, useState, type FormEvent } from "react";
++import {
++  Cloud,
++  CloudOff,
++  KeyRound,
++  LoaderCircle,
++  LogIn,
++  LogOut,
++  Save,
++  ShieldCheck,
++} from "lucide-react";
++import type { LocalRequest } from "./OpenAISettings";
++
++/**
++ * T-LOCAL-005：本地云端连接与认证设置入口。
++ *
++ * 边界：
++ * - 只调用既有 /api/cloud-auth/*；令牌、密码、P12 口令与本机证书路径都不进前端持久化。
++ * - 证书路径只写不回显；提交成功后清空路径/口令输入，状态只显示脱敏摘要。
++ * - 激活码与密码只存在于当前表单内存，提交后立即清空（成功或失败都清空）。
++ * - 任何按钮处理中都会禁用全部动作，防止重复提交。
++ */
++type CloudLastError = {
++  code?: string | null;
++  kind?: string | null;
++  status?: number | null;
++  message?: string | null;
++  retryAfterMs?: number | null;
++};
++
++export type CloudAuthView = {
++  configured: boolean;
++  originHost: string | null;
++  hasCA: boolean;
++  hasClientCertificate: boolean;
++  state: string;
++  username: string | null;
++  displayName: string | null;
++  accountId: string | null;
++  deviceId: string | null;
++  sessionId: string | null;
++  refreshExpiresAt: string | null;
++  accessExpiresInMs: number | null;
++  needsLogin: boolean;
++  lastError: CloudLastError | null;
++  retryAfterMs: number | null;
++};
++
++type LogoutResult = {
++  localLoggedOut: boolean;
++  cloudRevoked: boolean;
++  error: CloudLastError | null;
++  state: CloudAuthView;
++};
++
++type Busy = "config" | "activate" | "login" | "logout" | null;
++
++const STATE_LABELS: Record<string, string> = {
++  unconfigured: "未配置",
++  "logged-out": "已保存，未连接",
++  "logged-in": "已连接",
++  "needs-login": "需重新登录",
++  "rate-limited": "限流冷却",
++  "cert-error": "证书错误",
++  "cloud-unreachable": "云端不可达",
++  refreshing: "正在刷新登录状态",
++};
++
++const STATE_TONES: Record<string, string> = {
++  "logged-in": "ready",
++  "needs-login": "error",
++  "rate-limited": "error",
++  "cert-error": "error",
++  "cloud-unreachable": "error",
++};
++
++const seconds = (ms: unknown) => Math.max(1, Math.ceil((Number(ms) || 0) / 1000));
++
++/** 浏览器侧只展示固定文案；不拼接原始响应、异常栈或本机路径。 */
++function describeFailure(failure: CloudLastError | null | undefined): string {
++  if (!failure) return "云端认证操作失败";
++  const code = String(failure.code || "");
++  const kind = String(failure.kind || "");
++  if (code === "RATE_LIMITED" || failure.status === 429)
++    return `请求过于频繁，请 ${seconds(failure.retryAfterMs)} 秒后重试`;
++  if (code === "UNAUTHORIZED" || code === "NOT_LOGGED_IN" || failure.status === 401)
++    return "登录状态无效或凭据已失效，请重新登录";
++  if (code === "CERT_FILE_UNREADABLE") return "无法读取证书文件，请重新核对本机路径";
++  if (code === "P12_PASSPHRASE_MISSING") return "缺少 P12 口令，请重新填写设备证书口令";
++  if (code === "STORAGE_ERROR") return "本地云端配置保存失败，请检查数据目录权限";
++  if (code === "INTERNAL") return "云端认证操作失败，请稍后重试";
++  if (code === "STALE") return "操作已被更新的请求取代，请重试";
++  if (kind === "cert" || code === "CERT_INVALID" || code === "ERR_TLS_CERT_ALTNAME_INVALID")
++    return "证书或主机名校验失败，请检查云端地址、CA 与设备证书";
++  if (kind === "network") return "无法连接云端服务，请检查网络或云端地址";
++  if (kind === "timeout") return "云端请求超时，请稍后重试";
++  if (kind === "config") return "云端连接配置不完整，请检查必填项";
++  if (kind === "auth") return "登录状态无效，请重新登录";
++  return failure.message || "云端认证操作失败";
++}
++
++function stateLabel(view: CloudAuthView): string {
++  if (!view.configured) return STATE_LABELS.unconfigured;
++  return STATE_LABELS[view.state] || "状态未知";
++}
++
++function stateDescription(view: CloudAuthView): string {
++  if (!view.configured) return "默认不连接云端，原本地素材管理照常可用。";
++  switch (view.state) {
++    case "logged-in":
++      return "已登录云端；云端令牌和私钥只保存在本机后端，浏览器只看到脱敏状态。";
++    case "needs-login":
++      return "登录或刷新已失效，请重新登录；本地素材管理不受影响。";
++    case "rate-limited":
++      return `云端正在限流，约 ${seconds(view.retryAfterMs)} 秒后可重试；不会自动并发重试。`;
++    case "cert-error":
++      return "证书或主机名校验失败，配置尚未连接；请检查 CA、设备证书和云端地址。";
++    case "cloud-unreachable":
++      return "当前无法连接云端，配置已保留；本地素材管理照常可用。";
++    case "refreshing":
++      return "正在向云端刷新登录状态，请稍候。";
++    default:
++      return "连接配置已保存，但尚未登录云端；保存配置不等于连接成功。";
++  }
++}
++
++function displayAccount(view: CloudAuthView): string {
++  if (!view.username) return "未登录";
++  return view.displayName ? `${view.displayName} · ${view.username}` : view.username;
++}
++
++function displayTime(value: string | null): string {
++  if (!value) return "—";
++  const date = new Date(value);
++  if (Number.isNaN(date.getTime())) return "—";
++  return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
++}
++
++export function CloudConnectionSettings({ request }: { request: LocalRequest }) {
++  const [view, setView] = useState<CloudAuthView | null>(null);
++  const [loadError, setLoadError] = useState("");
++  const [loading, setLoading] = useState(true);
++  const [busy, setBusy] = useState<Busy>(null);
++  const [error, setError] = useState("");
++  const [notice, setNotice] = useState("");
++  const lock = useRef(false);
++
++  const [config, setConfig] = useState({
++    origin: "",
++    caPath: "",
++    certPath: "",
++    keyPath: "",
++    p12Path: "",
++    p12Password: "",
++  });
++  const [activation, setActivation] = useState({ activationToken: "", password: "" });
++  const [login, setLogin] = useState({ username: "", password: "" });
++
++  async function readStatus(): Promise<CloudAuthView> {
++    const next = await request<CloudAuthView>("/cloud-auth/status");
++    setView(next);
++    setLoadError("");
++    return next;
++  }
++
++  useEffect(() => {
++    let live = true;
++    request<CloudAuthView>("/cloud-auth/status")
++      .then((next) => {
++        if (!live) return;
++        setView(next);
++        setLoadError("");
++      })
++      .catch((e) => {
++        if (live) setLoadError(describeFailure(e as CloudLastError));
++      })
++      .finally(() => {
++        if (live) setLoading(false);
++      });
++    return () => {
++      live = false;
++    };
++  }, []);
++
++  /** 串行动作 + 全局禁用；失败后静默补读状态，让 state/冷却/上次错误保持真实。 */
++  async function withLock<T>(kind: Exclude<Busy, null>, action: () => Promise<T>): Promise<T | undefined> {
++    if (lock.current) return undefined;
++    lock.current = true;
++    setBusy(kind);
++    setError("");
++    setNotice("");
++    try {
++      return await action();
++    } catch (e) {
++      setError(describeFailure(e as CloudLastError));
++      void readStatus().catch(() => undefined);
++      return undefined;
++    } finally {
++      lock.current = false;
++      setBusy(null);
++    }
++  }
++
++  function saveConfig(event: FormEvent) {
++    event.preventDefault();
++    if (lock.current) return;
++    const origin = config.origin.trim();
++    const hasPem = !!(config.certPath.trim() || config.keyPath.trim());
++    const hasP12 = !!config.p12Path.trim();
++    const payload = {
++      ...(origin ? { origin } : {}),
++      ...(config.caPath.trim() ? { caPath: config.caPath } : {}),
++      ...(config.certPath.trim() ? { certPath: config.certPath } : {}),
++      ...(config.keyPath.trim() ? { keyPath: config.keyPath } : {}),
++      ...(config.p12Path.trim() ? { p12Path: config.p12Path } : {}),
++      ...(config.p12Password ? { p12Password: config.p12Password } : {}),
++      // P12 优先于 PEM；显式切换时清掉另一侧，避免旧证书永远压住新选择。
++      ...(hasP12 ? { certPath: "", keyPath: "" } : hasPem ? { p12Path: "" } : {}),
++    };
++    // 口令在请求发出前立即离开表单内存；路径等结果返回后清空，失败时保留方便修正。
++    setConfig((prev) => ({ ...prev, p12Password: "" }));
++    void (async () => {
++      const result = await withLock("config", () => request<CloudAuthView>("/cloud-auth/config", payload));
++      if (!result) return;
++      // 路径只写不回显；失败时保留本次输入，方便直接修正。
++      setConfig((prev) => ({
++        ...prev,
++        caPath: "",
++        certPath: "",
++        keyPath: "",
++        p12Path: "",
++        p12Password: "",
++      }));
++      setView(result);
++      setNotice(
++        result.state === "logged-in"
++          ? "连接配置已保存；当前仍保持已登录"
++          : "连接配置已保存（尚未连接云端，需激活或登录）",
++      );
++    })();
++  }
++
++  function submitActivation(event: FormEvent) {
++    event.preventDefault();
++    if (lock.current) return;
++    const activationToken = activation.activationToken;
++    const password = activation.password;
++    // 激活码与密码提交即离开表单内存，不等待响应。
++    setActivation({ activationToken: "", password: "" });
++    void (async () => {
++      const result = await withLock("activate", () =>
++        request<CloudAuthView>("/cloud-auth/activate", { activationToken, password }),
++      );
++      if (!result) return;
++      setView(result);
++      setNotice(result.state === "logged-in" ? "设备已激活并登录云端" : "激活请求已完成");
++    })();
++  }
++
++  function submitLogin(event: FormEvent) {
++    event.preventDefault();
++    if (lock.current) return;
++    const username = login.username;
++    const password = login.password;
++    // 密码提交即离开表单内存，不等待响应；失败后需重新输入。
++    setLogin((prev) => ({ ...prev, password: "" }));
++    void (async () => {
++      const result = await withLock("login", () =>
++        request<CloudAuthView>("/cloud-auth/login", { username, password }),
++      );
++      if (!result) return;
++      setView(result);
++      setNotice(result.state === "logged-in" ? "已连接云端并登录" : "登录请求已完成");
++    })();
++  }
++
++  function submitLogout() {
++    if (lock.current) return;
++    void (async () => {
++      const result = await withLock("logout", () => request<LogoutResult>("/cloud-auth/logout", {}));
++      if (!result) return;
++      setView(result.state);
++      if (result.cloudRevoked) {
++        setNotice("已退出，云端会话已撤销");
++      } else {
++        setNotice(
++          `本地已退出；云端撤销未确认（${describeFailure(result.error)}），请稍后重试或确认网络`,
++        );
++      }
++    })();
++  }
++
++  const disabled = !!busy;
++  const configured = !!view?.configured;
++  const tone = view ? STATE_TONES[view.state] || "" : "";
++  const label = view ? stateLabel(view) : "读取中";
++  const description = view ? stateDescription(view) : "正在读取本机云端认证状态…";
++  const summaryError = view?.lastError && !error ? describeFailure(view.lastError) : "";
++
++  return (
++    <section className="cloud-settings" aria-labelledby="cloud-settings-title">
++      <div className="database-heading">
++        <h3 id="cloud-settings-title">
++          <Cloud size={18} />
++          云端连接
++        </h3>
++        <span className={"database-status " + tone} role="status" aria-live="polite">
++          {label}
++        </span>
++      </div>
++      <p className="muted cloud-description">
++        {description}
++        已保存的本机证书路径不会回显；留空表示沿用已保存的配置。
++      </p>
++
++      {loading && (
++        <p className="muted cloud-loading" role="status">
++          <LoaderCircle size={14} className="spin" />
++          正在读取云端连接状态…
++        </p>
++      )}
++      {loadError && (
++        <p className="database-error" role="alert">
++          {loadError}
++        </p>
++      )}
++
++      {view && (
++        <dl className="database-summary cloud-summary" aria-label="云端连接摘要">
++          <dt>云端地址</dt>
++          <dd>{view.originHost || "未配置"}</dd>
++          <dt>CA 证书</dt>
++          <dd>{view.hasCA ? "已保存" : "未保存"}</dd>
++          <dt>设备证书</dt>
++          <dd>{view.hasClientCertificate ? "已保存" : "未保存"}</dd>
++          <dt>当前账户</dt>
++          <dd>{displayAccount(view)}</dd>
++          <dt>会话期限</dt>
++          <dd>{displayTime(view.refreshExpiresAt)}</dd>
++        </dl>
++      )}
++
++      {summaryError && (
++        <p className="cloud-last-error" role="status">
++          上次错误：{summaryError}
++        </p>
++      )}
++
++      <form className="cloud-form" onSubmit={saveConfig} aria-label="云端连接配置">
++        <div className="database-form cloud-config-grid">
++          <label className="field cloud-wide">
++            云端地址（HTTPS）
++            <input
++              aria-label="云端地址（HTTPS）"
++              type="url"
++              inputMode="url"
++              autoComplete="off"
++              spellCheck={false}
++              placeholder={view?.originHost ? "留空沿用已保存地址" : "https://cloud.example:8443"}
++              value={config.origin}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, origin: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            云端 CA 证书路径
++            <input
++              aria-label="云端 CA 证书路径"
++              autoComplete="off"
++              spellCheck={false}
++              placeholder={view?.hasCA ? "已保存，留空沿用" : "本机 CA 证书路径"}
++              value={config.caPath}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, caPath: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            设备证书路径（PEM）
++            <input
++              aria-label="设备证书路径（PEM）"
++              autoComplete="off"
++              spellCheck={false}
++              placeholder={view?.hasClientCertificate ? "已保存，留空沿用" : "client.crt"}
++              value={config.certPath}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, certPath: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            设备私钥路径（PEM）
++            <input
++              aria-label="设备私钥路径（PEM）"
++              autoComplete="off"
++              spellCheck={false}
++              placeholder="client.key"
++              value={config.keyPath}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, keyPath: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            设备证书路径（P12）
++            <input
++              aria-label="设备证书路径（P12）"
++              autoComplete="off"
++              spellCheck={false}
++              placeholder="client.p12（与 PEM 二选一）"
++              value={config.p12Path}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, p12Path: e.target.value })}
++            />
++          </label>
++          <label className="field cloud-wide">
++            P12 口令（仅本机保存，不回显）
++            <input
++              aria-label="P12 口令（仅本机保存，不回显）"
++              type="password"
++              autoComplete="new-password"
++              placeholder="使用 P12 时填写；留空沿用已保存口令"
++              value={config.p12Password}
++              disabled={disabled}
++              onChange={(e) => setConfig({ ...config, p12Password: e.target.value })}
++            />
++          </label>
++        </div>
++        <div className="database-actions cloud-actions">
++          <button className="primary" type="submit" disabled={disabled}>
++            {busy === "config" ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
++            {busy === "config" ? "保存中…" : "保存连接配置"}
++          </button>
++          <span className="muted">保存只会写入本机配置，不会自动登录或连接云端。</span>
++        </div>
++      </form>
++
++      <div className="cloud-account-heading">
++        <h4>
++          <ShieldCheck size={16} />
++          激活、登录与退出
++        </h4>
++        <span className={configured ? "cloud-ready-note" : "cloud-ready-note muted"}>
++          {configured ? "使用已保存的设备证书" : "请先保存连接配置"}
++        </span>
++      </div>
++
++      <div className="cloud-account-grid">
++        <form className="cloud-panel" onSubmit={submitActivation} aria-label="本人激活">
++          <strong>
++            <KeyRound size={15} />
++            本人激活
++          </strong>
++          <p className="muted">一次性激活凭证仅用于当前设备证书；密码至少 12 个字符。</p>
++          <label className="field">
++            激活凭证
++            <input
++              aria-label="激活凭证"
++              autoComplete="off"
++              spellCheck={false}
++              value={activation.activationToken}
++              disabled={disabled}
++              onChange={(e) => setActivation({ ...activation, activationToken: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            设置密码（至少 12 个字符）
++            <input
++              aria-label="激活设置密码"
++              type="password"
++              autoComplete="new-password"
++              value={activation.password}
++              disabled={disabled}
++              onChange={(e) => setActivation({ ...activation, password: e.target.value })}
++            />
++          </label>
++          <button type="submit" disabled={disabled || !configured}>
++            {busy === "activate" ? <LoaderCircle size={15} className="spin" /> : <KeyRound size={15} />}
++            {busy === "activate" ? "激活中…" : "激活设备"}
++          </button>
++        </form>
++
++        <form className="cloud-panel" onSubmit={submitLogin} aria-label="云端登录">
++          <strong>
++            <LogIn size={15} />
++            登录云端
++          </strong>
++          <p className="muted">使用当前设备证书登录；浏览器不会保存密码或云端令牌。</p>
++          <label className="field">
++            用户名
++            <input
++              aria-label="云端用户名"
++              autoComplete="username"
++              spellCheck={false}
++              value={login.username}
++              disabled={disabled}
++              onChange={(e) => setLogin({ ...login, username: e.target.value })}
++            />
++          </label>
++          <label className="field">
++            密码
++            <input
++              aria-label="云端密码"
++              type="password"
++              autoComplete="current-password"
++              value={login.password}
++              disabled={disabled}
++              onChange={(e) => setLogin({ ...login, password: e.target.value })}
++            />
++          </label>
++          <button type="submit" disabled={disabled || !configured}>
++            {busy === "login" ? <LoaderCircle size={15} className="spin" /> : <LogIn size={15} />}
++            {busy === "login" ? "登录中…" : "登录"}
++          </button>
++        </form>
++      </div>
++
++      <div className="database-actions cloud-actions">
++        <button type="button" disabled={disabled || !configured} onClick={submitLogout}>
++          {busy === "logout" ? <LoaderCircle size={15} className="spin" /> : <LogOut size={15} />}
++          {busy === "logout" ? "退出中…" : "退出登录"}
++        </button>
++        <span className="muted">
++          退出会先清理本地凭据；若云端不可达，会明确显示“本地已退出、云端撤销未确认”。
++        </span>
++      </div>
++
++      {error && (
++        <p className="database-error" role="alert">
++          {error}
++        </p>
++      )}
++      {notice && (
++        <p className="category-notice cloud-notice" role="status">
++          <CloudOff size={14} />
++          {notice}
++        </p>
++      )}
++    </section>
++  );
++}

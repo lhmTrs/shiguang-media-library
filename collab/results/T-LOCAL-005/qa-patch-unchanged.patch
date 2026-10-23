@@ -1,0 +1,24 @@
+diff --git a/scripts/qa.mjs b/scripts/qa.mjs
+index dcd8857..744d70f 100644
+--- a/scripts/qa.mjs
++++ b/scripts/qa.mjs
+@@ -202,7 +202,9 @@ async function verify(browserType, name, options) {
+         const rows = await response.json();
+         await route.fulfill({ json: rows.map(row => ({ ...row, revision: Number(row.revision || 0) + revision })) });
+       });
+-      await polling.route("**/api/assets?*", async route => {
++      // 列表请求有两类：普通模式 /api/assets?…、系列分组模式 /api/asset-series?…
++      // 只拦前者会让"自动刷新"用例在系列模式下永远数到 0（本轮 T-LOCAL-001 的根因）。
++      await polling.route(/\/api\/(?:assets|asset-series)\?/, async route => {
+         assetRequests++;
+         if (holdAssets) await assetsGate;
+         await route.continue();
+@@ -421,7 +423,7 @@ async function verify(browserType, name, options) {
+     await page.getByLabel("显示完整操作", { exact: true }).uncheck(); await page.keyboard.press("Escape");
+     await expect(page.getByRole("group", { name: "显示设置", exact: true })).toHaveCount(0);
+     await navigation.getByRole("button", { name: "分类管理", exact: true }).click();
+-    await expect(page.getByRole("heading", { name: "文件夹", exact: true })).toBeVisible();
++    await expect(page.getByRole("heading", { name: "分类管理", exact: true })).toBeVisible();
+     await page.getByRole("button", { name: "选择文件夹：音效 测试", exact: true }).click();
+     await expect(page.locator(".folder-asset")).toHaveCount(2);
+     await page.getByRole("region", { name: "真实文件夹浏览", exact: true }).getByRole("button", { name: /^转场/ }).click();

@@ -1,0 +1,3473 @@
+[
+  {
+    "label": "default",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 1070,
+      "bottom": 309,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "default",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 910,
+      "bottom": 309,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "default",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 227,
+      "right": 994,
+      "bottom": 261,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {}
+  },
+  {
+    "label": "default",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 374,
+      "bottom": 403,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 336.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {}
+  },
+  {
+    "label": "default",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 304,
+      "bottom": 403,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 377.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {}
+  },
+  {
+    "label": "search-tags",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 317,
+      "right": 1070,
+      "bottom": 351,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 317.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 325,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 317.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 318,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 1070,
+        "bottom": 303,
+        "width": 824,
+        "height": 30,
+        "scrollWidth": 824,
+        "clientWidth": 824,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "search-tags",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 346,
+      "right": 910,
+      "bottom": 380,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 346.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 354,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 346.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 347,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 910,
+        "bottom": 332,
+        "width": 664,
+        "height": 59,
+        "scrollWidth": 664,
+        "clientWidth": 664,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "search-tags",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 269,
+      "right": 994,
+      "bottom": 303,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 269.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 277,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 269.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 270,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 220,
+        "top": 225,
+        "right": 994,
+        "bottom": 255,
+        "width": 774,
+        "height": 30,
+        "scrollWidth": 774,
+        "clientWidth": 774,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "search-tags",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 411,
+      "right": 374,
+      "bottom": 510,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 436,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 443.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 477,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 477.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 304,
+        "right": 374,
+        "bottom": 399,
+        "width": 358,
+        "height": 95,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "search-tags",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 418,
+      "right": 304,
+      "bottom": 517,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 443,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 491.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 484,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 484.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 304,
+        "right": 304,
+        "bottom": 406,
+        "width": 288,
+        "height": 102,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "tag-menu-open",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 317,
+      "right": 1070,
+      "bottom": 351,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 317.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 325,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 317.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 318,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".tag-rule-panel": {
+        "tag": "div",
+        "cls": "tag-rule-panel",
+        "text": "同时包含任意包含排除同时包含环境自然最近使用自然环境全部标签使用频率优先自然1环境1风声1清空标签条",
+        "left": 662,
+        "top": 267,
+        "right": 1022,
+        "bottom": 661,
+        "width": 360,
+        "height": 394,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 1070,
+        "bottom": 303,
+        "width": 824,
+        "height": 30,
+        "scrollWidth": 824,
+        "clientWidth": 824,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "category-menu-open",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 317,
+      "right": 1070,
+      "bottom": 351,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 317.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 325,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 317.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 318,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".category-filter-menu": {
+        "tag": "div",
+        "cls": "category-filter-menu",
+        "text": "全部分类音效 测试_待确认1",
+        "left": 236,
+        "top": 268,
+        "right": 654,
+        "bottom": 350,
+        "width": 418,
+        "height": 82,
+        "scrollWidth": 416,
+        "clientWidth": 416,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 1070,
+        "bottom": 303,
+        "width": 824,
+        "height": 30,
+        "scrollWidth": 824,
+        "clientWidth": 824,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "tag-menu-open",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 346,
+      "right": 910,
+      "bottom": 380,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 346.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 354,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 346.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 347,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": false
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".tag-rule-panel": {
+        "tag": "div",
+        "cls": "tag-rule-panel",
+        "text": "同时包含任意包含排除同时包含环境自然最近使用自然环境全部标签使用频率优先自然1环境1风声1清空标签条",
+        "left": 582,
+        "top": 267,
+        "right": 942,
+        "bottom": 661,
+        "width": 360,
+        "height": 394,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 910,
+        "bottom": 332,
+        "width": 664,
+        "height": 59,
+        "scrollWidth": 664,
+        "clientWidth": 664,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "category-menu-open",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 346,
+      "right": 910,
+      "bottom": 380,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 346.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 354,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 346.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 347,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".category-filter-menu": {
+        "tag": "div",
+        "cls": "category-filter-menu",
+        "text": "全部分类音效 测试_待确认1",
+        "left": 236,
+        "top": 268,
+        "right": 574,
+        "bottom": 350,
+        "width": 338,
+        "height": 82,
+        "scrollWidth": 336,
+        "clientWidth": 336,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 246,
+        "top": 273,
+        "right": 910,
+        "bottom": 332,
+        "width": 664,
+        "height": 59,
+        "scrollWidth": 664,
+        "clientWidth": 664,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "tag-menu-open",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 494,
+      "right": 994,
+      "bottom": 528,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 494.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 502,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 494.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 495,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".tag-rule-panel": {
+        "tag": "div",
+        "cls": "tag-rule-panel",
+        "text": "同时包含任意包含排除同时包含环境自然最近使用自然环境全部标签使用频率优先自然1环境1风声1清空标签条",
+        "left": 611,
+        "top": 267,
+        "right": 971,
+        "bottom": 661,
+        "width": 360,
+        "height": 394,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 210,
+        "top": 273,
+        "right": 1004,
+        "bottom": 438,
+        "width": 794,
+        "height": 165,
+        "scrollWidth": 794,
+        "clientWidth": 794,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 220,
+        "top": 450,
+        "right": 994,
+        "bottom": 480,
+        "width": 774,
+        "height": 30,
+        "scrollWidth": 774,
+        "clientWidth": 774,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "category-menu-open",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 494,
+      "right": 994,
+      "bottom": 528,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 494.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 502,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 494.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 495,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".category-filter-menu": {
+        "tag": "div",
+        "cls": "category-filter-menu",
+        "text": "全部分类音效 测试_待确认1",
+        "left": 210,
+        "top": 268,
+        "right": 603,
+        "bottom": 350,
+        "width": 393,
+        "height": 82,
+        "scrollWidth": 391,
+        "clientWidth": 391,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 210,
+        "top": 273,
+        "right": 1004,
+        "bottom": 438,
+        "width": 794,
+        "height": 165,
+        "scrollWidth": 794,
+        "clientWidth": 794,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 220,
+        "top": 450,
+        "right": 994,
+        "bottom": 480,
+        "width": 774,
+        "height": 30,
+        "scrollWidth": 774,
+        "clientWidth": 774,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "tag-menu-open",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 664,
+      "right": 374,
+      "bottom": 763,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 689,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 696.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 730,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 730.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".tag-rule-panel": {
+        "tag": "div",
+        "cls": "tag-rule-panel",
+        "text": "同时包含任意包含排除同时包含环境自然最近使用自然环境全部标签使用频率优先自然1环境1风声1清空标签条",
+        "left": 16,
+        "top": 346,
+        "right": 374,
+        "bottom": 740,
+        "width": 358,
+        "height": 394,
+        "scrollWidth": 356,
+        "clientWidth": 356,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 374,
+        "bottom": 545,
+        "width": 358,
+        "height": 193,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 557,
+        "right": 374,
+        "bottom": 652,
+        "width": 358,
+        "height": 95,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "category-menu-open",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 664,
+      "right": 374,
+      "bottom": 763,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 689,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 696.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 730,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 730.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".category-filter-menu": {
+        "tag": "div",
+        "cls": "category-filter-menu",
+        "text": "全部分类音效 测试_待确认1",
+        "left": 16,
+        "top": 347,
+        "right": 256,
+        "bottom": 429,
+        "width": 240,
+        "height": 82,
+        "scrollWidth": 238,
+        "clientWidth": 238,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 374,
+        "bottom": 545,
+        "width": 358,
+        "height": 193,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 557,
+        "right": 374,
+        "bottom": 652,
+        "width": 358,
+        "height": 95,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "tag-menu-open",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 671,
+      "right": 304,
+      "bottom": 770,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 696,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 744.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 737,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 737.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".tag-rule-panel": {
+        "tag": "div",
+        "cls": "tag-rule-panel",
+        "text": "同时包含任意包含排除同时包含环境自然最近使用自然环境全部标签使用频率优先自然1环境1风声1清空标签条",
+        "left": 16,
+        "top": 346,
+        "right": 304,
+        "bottom": 740,
+        "width": 288,
+        "height": 394,
+        "scrollWidth": 286,
+        "clientWidth": 286,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 304,
+        "bottom": 545,
+        "width": 288,
+        "height": 193,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 557,
+        "right": 304,
+        "bottom": 659,
+        "width": 288,
+        "height": 102,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "category-menu-open",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "1 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 671,
+      "right": 304,
+      "bottom": 770,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 696,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 744.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 737,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 737.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".category-filter-menu": {
+        "tag": "div",
+        "cls": "category-filter-menu",
+        "text": "全部分类音效 测试_待确认1",
+        "left": 16,
+        "top": 347,
+        "right": 256,
+        "bottom": 429,
+        "width": 240,
+        "height": 82,
+        "scrollWidth": 238,
+        "clientWidth": 238,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 304,
+        "bottom": 545,
+        "width": 288,
+        "height": 193,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      },
+      ".active-filter-bar": {
+        "tag": "div",
+        "cls": "active-filter-bar",
+        "text": "同时风声测试环境自然包含：环境包含：自然重置筛选",
+        "left": 16,
+        "top": 557,
+        "right": 304,
+        "bottom": 659,
+        "width": 288,
+        "height": 102,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "batch-bar",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 1070,
+      "bottom": 309,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 324,
+        "right": 1100,
+        "bottom": 373,
+        "width": 884,
+        "height": 49,
+        "scrollWidth": 884,
+        "clientWidth": 884,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "batch-bar",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 910,
+      "bottom": 309,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details ",
+        "text": "素材详情未选择素材",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 324,
+        "right": 940,
+        "bottom": 373,
+        "width": 724,
+        "height": 49,
+        "scrollWidth": 724,
+        "clientWidth": 724,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "batch-bar",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 227,
+      "right": 994,
+      "bottom": 261,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 190,
+        "top": 276,
+        "right": 1024,
+        "bottom": 325,
+        "width": 834,
+        "height": 49,
+        "scrollWidth": 834,
+        "clientWidth": 834,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "batch-bar",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 374,
+      "bottom": 403,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 336.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 390,
+        "bottom": 461,
+        "width": 390,
+        "height": 45,
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "batch-bar",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 304,
+      "bottom": 403,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 377.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 320,
+        "bottom": 457,
+        "width": 320,
+        "height": 41,
+        "scrollWidth": 320,
+        "clientWidth": 320,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-open",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 1070,
+      "bottom": 309,
+      "width": 824,
+      "height": 34,
+      "scrollWidth": 824,
+      "clientWidth": 824
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 658.4,
+        "right": 785,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 795,
+        "right": 952,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 962,
+        "right": 1028,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1038,
+        "right": 1070,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details has-selection",
+        "text": "素材详情音效 / WAV文件存在风声 测试.wavWAV00:00 / 00:03当前项目未选择项目",
+        "left": 1100,
+        "top": 72,
+        "right": 1440,
+        "bottom": 892,
+        "width": 340,
+        "height": 820,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 324,
+        "right": 1100,
+        "bottom": 373,
+        "width": 884,
+        "height": 49,
+        "scrollWidth": 884,
+        "clientWidth": 884,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-open",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 275,
+      "right": 910,
+      "bottom": 309,
+      "width": 664,
+      "height": 34,
+      "scrollWidth": 664,
+      "clientWidth": 664
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 498.4,
+        "right": 625,
+        "top": 275.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 635,
+        "right": 792,
+        "top": 283,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 802,
+        "right": 868,
+        "top": 275.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 878,
+        "right": 910,
+        "top": 276,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details has-selection",
+        "text": "素材详情音效 / WAV文件存在风声 测试.wavWAV00:00 / 00:03当前项目未选择项目",
+        "left": 940,
+        "top": 72,
+        "right": 1280,
+        "bottom": 792,
+        "width": 340,
+        "height": 720,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 324,
+        "right": 940,
+        "bottom": 373,
+        "width": 724,
+        "height": 49,
+        "scrollWidth": 724,
+        "clientWidth": 724,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-open",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 227,
+      "right": 994,
+      "bottom": 261,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": false
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details has-selection",
+        "text": "素材详情音效 / WAV文件存在风声 测试.wavWAV00:00 / 00:03当前项目未选择项目",
+        "left": 684,
+        "top": 72,
+        "right": 1024,
+        "bottom": 760,
+        "width": 340,
+        "height": 688,
+        "scrollWidth": 339,
+        "clientWidth": 339,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 190,
+        "top": 276,
+        "right": 1024,
+        "bottom": 325,
+        "width": 834,
+        "height": 49,
+        "scrollWidth": 834,
+        "clientWidth": 834,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-open",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 374,
+      "bottom": 403,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 336.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": false
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details has-selection",
+        "text": "素材详情音效 / WAV文件存在风声 测试.wavWAV00:00 / 00:03当前项目未选择项目",
+        "left": 0,
+        "top": 83,
+        "right": 390,
+        "bottom": 836,
+        "width": 390,
+        "height": 753,
+        "scrollWidth": 389,
+        "clientWidth": 389,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 390,
+        "bottom": 461,
+        "width": 390,
+        "height": 45,
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-open",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 304,
+      "bottom": 403,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 377.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": false
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": false
+      }
+    ],
+    "boxes": {
+      "#asset-details": {
+        "tag": "aside",
+        "cls": "details has-selection",
+        "text": "素材详情音效 / WAV文件存在风声 测试.wavWAV00:00 / 00:03当前项目未选择项目",
+        "left": 0,
+        "top": 83,
+        "right": 320,
+        "bottom": 836,
+        "width": 320,
+        "height": 753,
+        "scrollWidth": 319,
+        "clientWidth": 319,
+        "inViewport": true
+      },
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 320,
+        "bottom": 457,
+        "width": 320,
+        "height": 41,
+        "scrollWidth": 320,
+        "clientWidth": 320,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-closed",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 227,
+      "right": 1410,
+      "bottom": 261,
+      "width": 1164,
+      "height": 34,
+      "scrollWidth": 1164,
+      "clientWidth": 1164
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 998.4,
+        "right": 1125,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 1135,
+        "right": 1292,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 1302,
+        "right": 1368,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1378,
+        "right": 1410,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 276,
+        "right": 1440,
+        "bottom": 325,
+        "width": 1224,
+        "height": 49,
+        "scrollWidth": 1224,
+        "clientWidth": 1224,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-closed",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 227,
+      "right": 1250,
+      "bottom": 261,
+      "width": 1004,
+      "height": 34,
+      "scrollWidth": 1004,
+      "clientWidth": 1004
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 838.4,
+        "right": 965,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 975,
+        "right": 1132,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 1142,
+        "right": 1208,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1218,
+        "right": 1250,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 276,
+        "right": 1280,
+        "bottom": 325,
+        "width": 1064,
+        "height": 49,
+        "scrollWidth": 1064,
+        "clientWidth": 1064,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-closed",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 227,
+      "right": 994,
+      "bottom": 261,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 227.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 235,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 227.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 228,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 190,
+        "top": 276,
+        "right": 1024,
+        "bottom": 325,
+        "width": 834,
+        "height": 49,
+        "scrollWidth": 834,
+        "clientWidth": 834,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-closed",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 374,
+      "bottom": 403,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 336.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 390,
+        "bottom": 461,
+        "width": 390,
+        "height": 45,
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "details-closed",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 304,
+      "right": 304,
+      "bottom": 403,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 329,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 377.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 370,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 370.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 416,
+        "right": 320,
+        "bottom": 457,
+        "width": 320,
+        "height": 41,
+        "scrollWidth": 320,
+        "clientWidth": 320,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "advanced-filters",
+    "width": 1440,
+    "vw": 1440,
+    "docScrollWidth": 1440,
+    "bodyScrollWidth": 1440,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 354,
+      "right": 1410,
+      "bottom": 388,
+      "width": 1164,
+      "height": 34,
+      "scrollWidth": 1164,
+      "clientWidth": 1164
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 998.4,
+        "right": 1125,
+        "top": 354.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 1135,
+        "right": 1292,
+        "top": 362,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 1302,
+        "right": 1368,
+        "top": 354.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1378,
+        "right": 1410,
+        "top": 355,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 403,
+        "right": 1440,
+        "bottom": 452,
+        "width": 1224,
+        "height": 49,
+        "scrollWidth": 1224,
+        "clientWidth": 1224,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 236,
+        "top": 225,
+        "right": 1420,
+        "bottom": 340,
+        "width": 1184,
+        "height": 115,
+        "scrollWidth": 1184,
+        "clientWidth": 1184,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "advanced-filters",
+    "width": 1280,
+    "vw": 1280,
+    "docScrollWidth": 1280,
+    "bodyScrollWidth": 1280,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 246,
+      "top": 354,
+      "right": 1250,
+      "bottom": 388,
+      "width": 1004,
+      "height": 34,
+      "scrollWidth": 1004,
+      "clientWidth": 1004
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 838.4,
+        "right": 965,
+        "top": 354.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 975,
+        "right": 1132,
+        "top": 362,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 1142,
+        "right": 1208,
+        "top": 354.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 1218,
+        "right": 1250,
+        "top": 355,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 216,
+        "top": 403,
+        "right": 1280,
+        "bottom": 452,
+        "width": 1064,
+        "height": 49,
+        "scrollWidth": 1064,
+        "clientWidth": 1064,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 236,
+        "top": 225,
+        "right": 1260,
+        "bottom": 340,
+        "width": 1024,
+        "height": 115,
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "advanced-filters",
+    "width": 1024,
+    "vw": 1024,
+    "docScrollWidth": 1024,
+    "bodyScrollWidth": 1024,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 220,
+      "top": 452,
+      "right": 994,
+      "bottom": 486,
+      "width": 774,
+      "height": 34,
+      "scrollWidth": 774,
+      "clientWidth": 774
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 582.4,
+        "right": 709,
+        "top": 452.5,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 719,
+        "right": 876,
+        "top": 460,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 886,
+        "right": 952,
+        "top": 452.5,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 962,
+        "right": 994,
+        "top": 453,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 190,
+        "top": 501,
+        "right": 1024,
+        "bottom": 550,
+        "width": 834,
+        "height": 49,
+        "scrollWidth": 834,
+        "clientWidth": 834,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 210,
+        "top": 273,
+        "right": 1004,
+        "bottom": 438,
+        "width": 794,
+        "height": 165,
+        "scrollWidth": 794,
+        "clientWidth": 794,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "advanced-filters",
+    "width": 390,
+    "vw": 390,
+    "docScrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 557,
+      "right": 374,
+      "bottom": 656,
+      "width": 358,
+      "height": 99,
+      "scrollWidth": 358,
+      "clientWidth": 358
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 80.4,
+        "right": 207,
+        "top": 582,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 217,
+        "right": 374,
+        "top": 589.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 266,
+        "right": 332,
+        "top": 623,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 342,
+        "right": 374,
+        "top": 623.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 669,
+        "right": 390,
+        "bottom": 714,
+        "width": 390,
+        "height": 45,
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 374,
+        "bottom": 545,
+        "width": 358,
+        "height": 193,
+        "scrollWidth": 358,
+        "clientWidth": 358,
+        "inViewport": true
+      }
+    }
+  },
+  {
+    "label": "advanced-filters",
+    "width": 320,
+    "vw": 320,
+    "docScrollWidth": 320,
+    "bodyScrollWidth": 320,
+    "toolbar": {
+      "tag": "div",
+      "cls": "content-toolbar",
+      "text": "5 条结果平铺同系列分组名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间",
+      "left": 16,
+      "top": 557,
+      "right": 304,
+      "bottom": 656,
+      "width": 288,
+      "height": 99,
+      "scrollWidth": 288,
+      "clientWidth": 288
+    },
+    "overflow": [],
+    "overlappingControls": [],
+    "controls": [
+      {
+        "text": "平铺同系列分组",
+        "left": 177.4,
+        "right": 304,
+        "top": 582,
+        "width": 126.6,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "名称排序访达次数：从多到少项目使用次数：从多到少最近修改创建时间最新创建时间最早拍摄时间最新拍摄时间",
+        "left": 29,
+        "right": 186,
+        "top": 630.5,
+        "width": 157,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "segmented",
+        "left": 196,
+        "right": 262,
+        "top": 623,
+        "width": 66,
+        "inViewport": true,
+        "hitOk": true
+      },
+      {
+        "text": "toolbar-popover",
+        "left": 272,
+        "right": 304,
+        "top": 623.5,
+        "width": 32,
+        "inViewport": true,
+        "hitOk": true
+      }
+    ],
+    "boxes": {
+      ".batch-bar": {
+        "tag": "div",
+        "cls": "batch-bar",
+        "text": "已选 2 项取消选择",
+        "left": 0,
+        "top": 669,
+        "right": 320,
+        "bottom": 710,
+        "width": 320,
+        "height": 41,
+        "scrollWidth": 320,
+        "clientWidth": 320,
+        "inViewport": true
+      },
+      ".advanced-filters": {
+        "tag": "div",
+        "cls": "advanced-filters",
+        "text": "全部目录全部格式HEICJPGMP3MP4WAV全部时长少于10秒10秒至1分钟超过1分钟时长未读取",
+        "left": 16,
+        "top": 352,
+        "right": 304,
+        "bottom": 545,
+        "width": 288,
+        "height": 193,
+        "scrollWidth": 288,
+        "clientWidth": 288,
+        "inViewport": true
+      }
+    }
+  }
+]

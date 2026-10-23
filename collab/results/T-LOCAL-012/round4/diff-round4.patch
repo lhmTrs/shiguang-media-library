@@ -1,0 +1,107 @@
+--- a/server/audio-engine.mjs
++++ b/server/audio-engine.mjs
+@@ -810,28 +810,32 @@
+       token,
+       startedAt: new Date().toISOString(),
+     };
+-    // 先在私有目录写完整 owner，再原子 rename 成锁目录：锁一旦可见就带 owner，
+-    // 消除“mkdir 后、写 owner 前”的无主窗口。
+-    const creating = path.join(this.enginesRoot, `.audio-install.lock.creating-${process.pid}-${token}`);
++    // 用排他 mkdir 直接抢锁：POSIX 的 rename(creating, lockRoot) 会静默覆盖已存在的空目录，
++    // “同步 peek 之后、rename 之前”新出现的空锁会被覆盖。mkdir 不会覆盖任何已存在路径，
++    // EEXIST 即 BUSY，因此不存在“覆盖别人锁”的窗口。
++    // 代价是 mkdir 成功到写 owner 之间有一个极短的无 owner 窗口：此间竞争者只会看到锁存在
++    // 并 fail-closed BUSY，不会删除/搬走它；本进程写 owner 失败时只清理自己刚建的空锁。
+     try {
+-      await fs.mkdir(creating, { mode: 0o700 });
+-      await fs.writeFile(path.join(creating, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+-      try {
+-        await fs.rename(creating, this.lockRoot);
+-        return { token };
+-      } catch (error) {
+-        if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
+-          // 任意已存在的锁一律 BUSY：包括无 owner、owner 不可校验、owner 进程已死。
+-          // 自动回收需要“条件删除”，而 rename(lockRoot, stale) 不是条件原子操作：
+-          // 两个回收者交错时会搬走并删除另一进程刚建立的活锁。这里选择 fail-closed，
+-          // 由维护者在确认无安装/卸载进程后手动清理残留目录，再重新安装。
+-          throw new AudioEngineError(CODES.BUSY);
+-        }
+-        throw new AudioEngineError(CODES.LOCK_FAILED);
++      await fs.mkdir(this.lockRoot, { mode: 0o700 });
++    } catch (error) {
++      if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error.code)) {
++        // 任意已存在的锁一律 BUSY：包括无 owner、owner 不可校验、owner 进程已死。
++        // 不做自动回收、不 rename/删除已存在锁；由维护者在确认无安装/卸载进程后手动清理。
++        throw new AudioEngineError(CODES.BUSY);
+       }
+-    } finally {
+-      await fs.rm(creating, { recursive: true, force: true }).catch(() => {});
++      throw new AudioEngineError(CODES.LOCK_FAILED);
+     }
++    try {
++      await fs.writeFile(path.join(this.lockRoot, "owner.json"), JSON.stringify(owner), {
++        mode: 0o600,
++        flag: "wx",
++      });
++      return { token };
++    } catch {
++      // 只回收本进程刚建立、仍无 owner 的空锁；owner 已存在或目录已被替换则原样保留。
++      await removeEmptyLockDir(this.lockRoot).catch(() => {});
++      throw new AudioEngineError(CODES.LOCK_FAILED);
++    }
+   }
+ 
+   async #releaseLock(lock) {
+@@ -1007,6 +1011,14 @@
+   }
+ }
+ 
++/** 仅删除“刚由本进程 mkdir、且仍无 owner.json”的空锁目录；其它情况一律保留。 */
++async function removeEmptyLockDir(lockRoot) {
++  const stat = await lstatOrNull(lockRoot);
++  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return;
++  if ((await lstatOrNull(path.join(lockRoot, "owner.json"))) !== null) return;
++  await fs.rmdir(lockRoot).catch(() => {});
++}
++
+ function isProcessAlive(pid) {
+   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+   try {
+--- a/tests/audio-engine-installer.test.mjs
++++ b/tests/audio-engine-installer.test.mjs
+@@ -654,6 +654,35 @@
+   await fs.rm(lock, { recursive: true, force: true });
+ });
+ 
++test("锁获取竞态回归：同步 peek 后新出现的空锁必须保留并 BUSY，零下载", async (t) => {
++  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
++  const { dataDir, server, engine } = await setup(t, archive);
++  const lock = path.join(dataDir, "engines", ".audio-install.lock");
++  const mkdir = fs.mkdir;
++  let injected = false;
++  let beforeIno;
++  // 在“同步 peek 已通过、异步获取锁”的窗口注入一个无 owner 的空锁。
++  // 旧实现的 rename(creating, lockRoot) 会静默覆盖它；排他 mkdir 必须得到 EEXIST。
++  fs.mkdir = async (target, options) => {
++    if (!injected && target === lock) {
++      injected = true;
++      await mkdir(lock);
++      beforeIno = (await fs.lstat(lock)).ino;
++    }
++    return mkdir(target, options);
++  };
++  t.after(() => { fs.mkdir = mkdir; });
++
++  engine.install({ confirm: true });
++  const status = await waitForJob(engine);
++  assert.equal(injected, true, "竞态注入点必须命中");
++  assert.equal(status.job.state, "error", JSON.stringify(status));
++  assert.equal(status.job.error.code, "ENGINE_BUSY", JSON.stringify(status));
++  assert.equal((await fs.lstat(lock)).ino, beforeIno, "已出现的空锁 inode 必须原样保留");
++  assert.equal(server.counts.requests, 0, "拿到 BUSY 前不得发起下载");
++  await fs.rm(lock, { recursive: true, force: true });
++});
++
+ test("共享 .tmp：只清理本安装器已死任务，未知/活跃/非自有内容保留", async (t) => {
+   const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
+   const { dataDir, engine } = await setup(t, archive);

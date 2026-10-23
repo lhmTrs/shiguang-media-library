@@ -1,0 +1,94 @@
+{
+  "ticket": "T-LOCAL-007",
+  "round": 3,
+  "generatedAt": "2026-10-22T15:45:00+08:00",
+  "baseline": {
+    "branch": "main",
+    "head": "2c15663a3b9b606f96220c0c3e26c5b7e3684c2e"
+  },
+  "fixes": {
+    "pathLenDirection": {
+      "file": "server/device-enrollment.mjs",
+      "description": "countCaBelow 改为从本证书向叶端统计非 self-issued 中间 CA；锚在/不在响应链使用同一路径结论。",
+      "regressions": [
+        "root(pathLen0) -> intermediate -> leaf，带根拒绝",
+        "root(pathLen0) -> intermediate -> leaf，不带根拒绝",
+        "root(2) -> parent(1) -> child(0) -> leaf，带/不带根均接受",
+        "root(2) -> parent(0) -> child(5) -> leaf，带/不带根均拒绝"
+      ]
+    },
+    "metadataCommitCancellation": {
+      "file": "server/device-enrollment.mjs",
+      "description": "最终元数据先写唯一暂存文件，再在串行提交链中异步 rename；rename 后复核操作身份，失活则按代次回滚到提交前值并返回 STALE。",
+      "guarantees": [
+        "取消落在 rename 期间：磁盘和内存均恢复为 activated=false",
+        "旧提交只清理自己的暂存文件，不回滚/覆盖后一笔提交",
+        "提交点之后的 pending 清理改为同步，避免已提交却返回 STALE 的窗口"
+      ]
+    }
+  },
+  "tests": {
+    "all": {
+      "passed": 169,
+      "failed": 0,
+      "skipped": 0,
+      "log": "tests-all.log"
+    },
+    "deviceEnrollment": {
+      "passed": 22,
+      "failed": 0,
+      "log": "tests-enroll.log"
+    },
+    "cloudAuth": {
+      "passed": 19,
+      "failed": 0,
+      "log": "tests-auth.log"
+    },
+    "build": {
+      "exitCode": 0,
+      "log": "build.log"
+    },
+    "diffCheck": {
+      "exitCode": 0,
+      "log": "diff-check.log"
+    }
+  },
+  "ui": {
+    "chromium": {
+      "passed": true,
+      "screenshots": 11
+    },
+    "webkit": {
+      "passed": true,
+      "screenshots": 11
+    },
+    "pageErrors": [],
+    "log": "test-ui.log",
+    "results": "ui-results.json"
+  },
+  "independentProbe": {
+    "script": "GPT collab/reviews/T-LOCAL-007-round2/probes.mjs（未改动，在 /tmp 按原相对路径复制执行）",
+    "pathLenMismatches": 0,
+    "staleCommit": false,
+    "retry": "session=true",
+    "results": "gpt-probe-results.json",
+    "log": "gpt-probe.log"
+  },
+  "beforeFixEvidence": [
+    "before-fix-pathlen.log",
+    "before-fix-rename-gate.log",
+    "before-fix-staging-gate.log"
+  ],
+  "boundaries": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "cloudProjectModified": false,
+    "realCloudOrAccountUsed": false,
+    "systemTrustInstalled": false,
+    "realMediaUsed": false,
+    "qaLocal001PatchTouched": false,
+    "releaseConfigEnabled": false,
+    "maxCertificateDays": 90
+  }
+}

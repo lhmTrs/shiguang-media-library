@@ -1,0 +1,35 @@
+{
+  "generatedAt": "2026-10-23T05:22:02.138Z",
+  "node": "v22.7.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "runs": {
+    "success": {
+      "samples": 8,
+      "metric": "durationMs",
+      "minMs": 48,
+      "medianMs": 50,
+      "maxMs": 55,
+      "rssMaxKb": null,
+      "note": "RSS 为 libproc 短采样软监督，不是 RLIMIT_AS 硬内存隔离"
+    },
+    "cancel": {
+      "samples": 5,
+      "metric": "cancelToCloseMs",
+      "minMs": 1,
+      "medianMs": 1,
+      "maxMs": 1,
+      "rssMaxKb": 41600,
+      "note": "RSS 为 libproc 短采样软监督，不是 RLIMIT_AS 硬内存隔离"
+    },
+    "timeout": {
+      "samples": 3,
+      "metric": "durationMs",
+      "minMs": 505,
+      "medianMs": 505,
+      "maxMs": 506,
+      "rssMaxKb": 41104,
+      "note": "RSS 为 libproc 短采样软监督，不是 RLIMIT_AS 硬内存隔离"
+    }
+  }
+}

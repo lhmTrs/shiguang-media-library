@@ -1,0 +1,151 @@
+--- a/collab/results/T-LOCAL-013A/executor.mjs
++++ b/collab/results/T-LOCAL-013A/executor.mjs
+@@ -116,20 +116,25 @@
+         windowsHide: true,
+       });
+       pgid = child.pid;
+-      if (!Number.isSafeInteger(pgid) || pgid <= 0) throw new ExecutorError("SPAWN_FAILED", "no pid");
+ 
+-      spec.onSpawn?.({ pid: pgid, jobDir, workDir, homeDir, tmpDir });
+-
++      // 必须在任何可能抛错/回调之前挂上 error/close：
++      // ENOENT/EACCES 的 'error' 是下一个 tick 异步发出的，晚挂监听会变成未处理事件并终止宿主。
++      // closePromise 只在 'close' 时 resolve；'error' 只记录 spawnError，失败路径也真正等到 close。
+       const closePromise = new Promise((resolve) => {
+         child.once("close", (code, signal) => resolve({ code, signal }));
+         child.once("error", (error) => {
+           spawnError = error;
+-          resolve({ code: null, signal: null });
+         });
+       });
+ 
+       const requestTermination = (reason) => {
+         if (termination) return;
++        if (!Number.isSafeInteger(pgid) || pgid <= 0) {
++          // 进程未建立（spawn 失败）：没有可终止的组，等 'close' 收尾即可。
++          termination = reason;
++          terminationAt = nowMs();
++          return;
++        }
+         termination = reason;
+         terminationAt = nowMs();
+         killGroup(pgid, "SIGTERM");
+@@ -139,6 +144,7 @@
+         if (typeof killTimer.unref === "function") killTimer.unref();
+       };
+ 
++      // 先挂输出/超时，再执行外部 onSpawn：回调抛错时也已有完整清理链路。
+       timeoutTimer = setTimeout(() => requestTermination("timeout"), timeoutMs);
+       onAbort = () => requestTermination("cancelled");
+       if (spec.signal) {
+@@ -147,18 +153,18 @@
+         // 清理在 finally 里通过 removeEventListener 完成（保留引用）。
+       }
+ 
+-      child.stdout.on("data", (chunk) => {
++      child.stdout?.on("data", (chunk) => {
+         stdoutBytes += chunk.length;
+         stdoutChunks = appendBounded(stdoutChunks, chunk, stdoutLimit);
+         if (stdoutBytes > stdoutLimit) requestTermination("stdout-limit");
+       });
+-      child.stderr.on("data", (chunk) => {
++      child.stderr?.on("data", (chunk) => {
+         stderrBytes += chunk.length;
+         stderrChunks = appendBounded(stderrChunks, chunk, stderrLimit);
+         if (stderrBytes > stderrLimit) requestTermination("stderr-limit");
+       });
+ 
+-      if (this.rssHelper) {
++      if (this.rssHelper && Number.isSafeInteger(pgid) && pgid > 0) {
+         rssTimer = setInterval(() => {
+           if (!child || child.exitCode !== null || child.signalCode !== null) return;
+           execFileAsync(this.rssHelper, [String(pgid)], { timeout: 500 })
+@@ -174,7 +180,23 @@
+       }
+       if (rssTimer && typeof rssTimer.unref === "function") rssTimer.unref();
+ 
++      if (!Number.isSafeInteger(pgid) || pgid <= 0) {
++        // spawn 失败（pid 未建立）：不在这里 throw，交给 close 后的 classify 归一为 spawn-error。
++      } else {
++        try {
++          spec.onSpawn?.({ pid: pgid, jobDir, workDir, homeDir, tmpDir });
++        } catch {
++          // 外部回调异常也走受控失败：终止进程组、等 close，再抛固定码；finally 仍清理租约/临时目录。
++          requestTermination("on-spawn-failed");
++          await closePromise;
++          throw new ExecutorError("SPAWN_CALLBACK_FAILED", "onSpawn callback failed");
++        }
++      }
++
+       const closed = await closePromise;
++      if ((!Number.isSafeInteger(pgid) || pgid <= 0) && !spawnError) {
++        spawnError = new Error("spawn failed without pid");
++      }
+       closedAt = nowMs();
+       exitCode = closed.code;
+       exitSignal = closed.signal;
+@@ -210,7 +232,7 @@
+         rssSamples,
+         groupReaped: leftoverPids.length === 0,
+         leftoverPids,
+-        pid: pgid,
++        pid: Number.isSafeInteger(pgid) && pgid > 0 ? pgid : null,
+       };
+       return result;
+     } finally {
+--- a/collab/results/T-LOCAL-013A/tests/executor.test.mjs
++++ b/collab/results/T-LOCAL-013A/tests/executor.test.mjs
+@@ -233,6 +233,53 @@
+   assert.equal(second.exitCode, 0);
+ });
+ 
++test("spawn ENOENT/EACCES：受控 spawn-error，等 close 并清理租约/任务目录，不死宿主", async (t) => {
++  const { root, dataDir, executor } = await setup(t);
++  const missing = path.join(root, "missing-command");
++  const notExecutable = path.join(root, "not-executable");
++  await fs.writeFile(notExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
++  await fs.chmod(notExecutable, 0o644);
++
++  for (const command of [missing, notExecutable]) {
++    const result = await executor.run({ command, timeoutMs: 300 });
++    assert.equal(result.state, "spawn-error", JSON.stringify(result));
++    assert.equal(result.groupReaped, true);
++    assert.equal(fssync.existsSync(path.join(dataDir, ".audio-executor.lock")), false, "失败后租约必须释放");
++    const jobsRoot = path.join(dataDir, "executor-jobs");
++    assert.equal(
++      fssync.existsSync(jobsRoot) ? fssync.readdirSync(jobsRoot).length : 0,
++      0,
++      "失败后任务临时目录必须清理",
++    );
++  }
++
++  // 失败不得污染同进程的下一任务。
++  const next = await executor.run(baseRun("success"));
++  assert.equal(next.state, "success", JSON.stringify(next));
++});
++
++test("onSpawn 回调异常：受控 SPAWN_CALLBACK_FAILED，等 close、清理租约，下一任务可执行", async (t) => {
++  const { dataDir, executor } = await setup(t);
++  await assert.rejects(
++    () => executor.run(baseRun("success", {
++      onSpawn: () => {
++        throw new Error("synthetic onSpawn failure");
++      },
++    })),
++    (error) => error instanceof ExecutorError && error.code === "SPAWN_CALLBACK_FAILED",
++  );
++  assert.equal(fssync.existsSync(path.join(dataDir, ".audio-executor.lock")), false, "回调异常后租约必须释放");
++  const jobsRoot = path.join(dataDir, "executor-jobs");
++  assert.equal(
++    fssync.existsSync(jobsRoot) ? fssync.readdirSync(jobsRoot).length : 0,
++    0,
++    "回调异常后任务临时目录必须清理",
++  );
++
++  const next = await executor.run(baseRun("success"));
++  assert.equal(next.state, "success", JSON.stringify(next));
++});
++
+ test("shell:false：参数中的 shell 元字符按字面传递，且拒绝相对命令", async (t) => {
+   const { executor } = await setup(t);
+   const result = await executor.run({

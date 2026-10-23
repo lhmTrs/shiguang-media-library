@@ -1,0 +1,92 @@
+{
+  "ticket": "T-LOCAL-013D",
+  "replyTo": "#0090",
+  "date": "2026-10-23",
+  "status": "delivered_pending_gpt_review",
+  "scope": {
+    "added": [
+      "server/audio-result.mjs",
+      "tests/audio-result.test.mjs",
+      "collab/results/T-LOCAL-013D/"
+    ],
+    "modified": [],
+    "dependenciesChanged": false,
+    "productionChainWired": false
+  },
+  "tests": {
+    "audio-result": {
+      "command": "node --test tests/audio-result.test.mjs",
+      "pass": 33,
+      "fail": 0,
+      "skipped": 0,
+      "log": "logs/result-tests.log"
+    },
+    "audio-feature-flag": {
+      "command": "node --test tests/audio-feature-flag.test.mjs",
+      "pass": 3,
+      "fail": 0,
+      "skipped": 0,
+      "log": "logs/feature-flag.log"
+    },
+    "syntax": {
+      "command": "node --check server/audio-result.mjs; node --check tests/audio-result.test.mjs; node --check collab/results/T-LOCAL-013D/benchmark.mjs; git diff --check",
+      "exit": 0,
+      "log": "logs/syntax.log"
+    },
+    "build": {
+      "command": "npm run build",
+      "exit": 0,
+      "note": "existing 503.25 kB chunk warning only",
+      "log": "logs/build.log"
+    }
+  },
+  "benchmark": {
+    "note": "synthetic JSON parsing/normalization/fingerprint; NOT real audio-analysis performance",
+    "largeFixtureBytes": 65536,
+    "small": {
+      "inputBytes": 179,
+      "outputBytes": 753,
+      "iterationsPerRound": 20000,
+      "rounds": 7,
+      "medianMsPerOp": 0.003982,
+      "meanMsPerOp": 0.004021,
+      "maxMsPerOp": 0.004255,
+      "opsPerSec": 248704
+    },
+    "near64KiB": {
+      "inputBytes": 65536,
+      "outputBytes": 5547,
+      "iterationsPerRound": 1000,
+      "rounds": 7,
+      "medianMsPerOp": 0.058967,
+      "meanMsPerOp": 0.05986,
+      "maxMsPerOp": 0.061848,
+      "opsPerSec": 16706
+    },
+    "fingerprint": {
+      "outputBytes": 478,
+      "iterationsPerRound": 50000,
+      "rounds": 7,
+      "medianMsPerOp": 0.001767,
+      "meanMsPerOp": 0.001773,
+      "maxMsPerOp": 0.001795,
+      "opsPerSec": 564106
+    }
+  },
+  "hashes": {
+    "server/audio-result.mjs": "1c014fd9c550a4a4a0d9100d9a28a7f6e85915ad2b2efd5da45daae6dc14b42a",
+    "tests/audio-result.test.mjs": "2eef9c644f548e57955271a7ede7af87ca38759e0888f319105736559788c776",
+    "benchmark.mjs": "747c4b5532a3567a861fd600895bdd8be2e0c511f122adf93e22ac0106d49fe4",
+    "diff.patch": "30aeaf4b5827e3b386542834865766a41d00c7177a2b32bcf29e9efb9cbd5dec"
+  },
+  "boundaries": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "realEngineRun": false,
+    "realAudioUsed": false,
+    "realLibraryOrServerTouched": false,
+    "cloudBackendModified": false,
+    "qaTLocal001PatchTouched": false
+  }
+}

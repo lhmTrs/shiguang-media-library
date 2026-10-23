@@ -1,0 +1,14 @@
+project: 素材管理器
+head: 2c15663a3b9b606f96220c0c3e26c5b7e3684c2e
+pre-T10 baseline reconstruction:
+  git archive HEAD -> /tmp/t10-base
+  patch -p1 < collab/results/T-LOCAL-008/diff.patch
+  patch -p1 < collab/results/T-LOCAL-008-round2/diff.patch
+pre-T10 line counts:
+  src/CloudWorkspace.tsx 2211
+  src/style.css 4314
+current line counts:
+  src/CloudWorkspace.tsx 2567
+  src/style.css 4759
+before screenshots: screenshots/before/*.png
+after screenshots: screenshots/*.png

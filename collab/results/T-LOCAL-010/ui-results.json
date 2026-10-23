@@ -1,0 +1,349 @@
+{
+  "startedAt": "2026-10-22T14:08:32.158Z",
+  "checks": [
+    {
+      "label": "overflow:roles-1920",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:34.521Z"
+    },
+    {
+      "label": "clipped:roles-1920",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.523Z"
+    },
+    {
+      "label": "row-overlap:roles-1920",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.523Z"
+    },
+    {
+      "label": "overflow:roles-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:34.756Z"
+    },
+    {
+      "label": "clipped:roles-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.757Z"
+    },
+    {
+      "label": "row-overlap:roles-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.758Z"
+    },
+    {
+      "label": "overflow:roles-390",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:34.969Z"
+    },
+    {
+      "label": "clipped:roles-390",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.970Z"
+    },
+    {
+      "label": "row-overlap:roles-390",
+      "detail": "",
+      "at": "2026-10-22T14:08:34.971Z"
+    },
+    {
+      "label": "overflow:roles-empty-1920",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:35.474Z"
+    },
+    {
+      "label": "overflow:roles-empty-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:35.683Z"
+    },
+    {
+      "label": "overflow:roles-empty-390",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:35.921Z"
+    },
+    {
+      "label": "role-cancel",
+      "detail": "撤销更改后回到原权限，保存重新禁用",
+      "at": "2026-10-22T14:08:36.649Z"
+    },
+    {
+      "label": "role-save",
+      "detail": "权限保存成功，勾选状态保留",
+      "at": "2026-10-22T14:08:36.973Z"
+    },
+    {
+      "label": "overflow:roles-dark-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:37.134Z"
+    },
+    {
+      "label": "overflow:roles-auth-1920",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:37.455Z"
+    },
+    {
+      "label": "overflow:roles-auth-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:37.681Z"
+    },
+    {
+      "label": "overflow:roles-auth-member-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:38.051Z"
+    },
+    {
+      "label": "clipped:roles-auth-member-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:38.052Z"
+    },
+    {
+      "label": "overflow:roles-auth-390",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:38.320Z"
+    },
+    {
+      "label": "overflow:accounts-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:38.767Z"
+    },
+    {
+      "label": "clipped:accounts-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:38.768Z"
+    },
+    {
+      "label": "row-overlap:accounts-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:38.769Z"
+    },
+    {
+      "label": "account-disable-cancel",
+      "detail": "取消停用后账户状态未变",
+      "at": "2026-10-22T14:08:39.393Z"
+    },
+    {
+      "label": "account-disable-confirm",
+      "detail": "确认后账户停用",
+      "at": "2026-10-22T14:08:39.717Z"
+    },
+    {
+      "label": "overflow:accounts-390",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:39.855Z"
+    },
+    {
+      "label": "clipped:accounts-390",
+      "detail": "",
+      "at": "2026-10-22T14:08:39.857Z"
+    },
+    {
+      "label": "row-overlap:accounts-390",
+      "detail": "",
+      "at": "2026-10-22T14:08:39.859Z"
+    },
+    {
+      "label": "overflow:groups-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:40.371Z"
+    },
+    {
+      "label": "clipped:groups-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:40.371Z"
+    },
+    {
+      "label": "row-overlap:groups-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:40.372Z"
+    },
+    {
+      "label": "group-disable-cancel",
+      "detail": "取消停用小组后未提交",
+      "at": "2026-10-22T14:08:40.679Z"
+    },
+    {
+      "label": "overflow:security-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0,0]}",
+      "at": "2026-10-22T14:08:40.823Z"
+    },
+    {
+      "label": "row-overlap:security-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:40.824Z"
+    },
+    {
+      "label": "overflow:security-dark-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0,0]}",
+      "at": "2026-10-22T14:08:41.104Z"
+    },
+    {
+      "label": "overflow:security-390",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0,0]}",
+      "at": "2026-10-22T14:08:41.366Z"
+    },
+    {
+      "label": "clipped:security-390",
+      "detail": "",
+      "at": "2026-10-22T14:08:41.368Z"
+    },
+    {
+      "label": "overflow:audit-1280",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:41.765Z"
+    },
+    {
+      "label": "clipped:audit-1280",
+      "detail": "",
+      "at": "2026-10-22T14:08:41.766Z"
+    },
+    {
+      "label": "overflow:all-tabs-390:个人安全",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0,0]}",
+      "at": "2026-10-22T14:08:42.365Z"
+    },
+    {
+      "label": "clipped:all-tabs-390:个人安全",
+      "detail": "",
+      "at": "2026-10-22T14:08:42.368Z"
+    },
+    {
+      "label": "overflow:all-tabs-390:小组与成员",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:42.743Z"
+    },
+    {
+      "label": "clipped:all-tabs-390:小组与成员",
+      "detail": "",
+      "at": "2026-10-22T14:08:42.747Z"
+    },
+    {
+      "label": "overflow:all-tabs-390:账户管理",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:43.074Z"
+    },
+    {
+      "label": "clipped:all-tabs-390:账户管理",
+      "detail": "",
+      "at": "2026-10-22T14:08:43.076Z"
+    },
+    {
+      "label": "overflow:all-tabs-390:角色与授权",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:43.383Z"
+    },
+    {
+      "label": "clipped:all-tabs-390:角色与授权",
+      "detail": "",
+      "at": "2026-10-22T14:08:43.386Z"
+    },
+    {
+      "label": "overflow:all-tabs-390:审计",
+      "detail": "{\"document\":0,\"body\":0,\"panels\":[0,0]}",
+      "at": "2026-10-22T14:08:43.697Z"
+    },
+    {
+      "label": "clipped:all-tabs-390:审计",
+      "detail": "",
+      "at": "2026-10-22T14:08:43.699Z"
+    },
+    {
+      "label": "page-errors",
+      "detail": "none",
+      "at": "2026-10-22T14:08:43.699Z"
+    }
+  ],
+  "screenshots": [
+    {
+      "name": "roles-data-1920x1080",
+      "label": "角色与授权 · 有数据 · 1920×1080",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-data-1920x1080.png"
+    },
+    {
+      "name": "roles-data-1280x800",
+      "label": "角色与授权 · 有数据 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-data-1280x800.png"
+    },
+    {
+      "name": "roles-data-390x844",
+      "label": "角色与授权 · 有数据 · 390×844",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-data-390x844.png"
+    },
+    {
+      "name": "roles-empty-1920x1080",
+      "label": "角色与授权 · 空状态 · 1920×1080",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-empty-1920x1080.png"
+    },
+    {
+      "name": "roles-empty-1280x800",
+      "label": "角色与授权 · 空状态 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-empty-1280x800.png"
+    },
+    {
+      "name": "roles-empty-390x844",
+      "label": "角色与授权 · 空状态 · 390×844",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-empty-390x844.png"
+    },
+    {
+      "name": "roles-dark-1280x800",
+      "label": "角色与授权 · 深色主题 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-dark-1280x800.png"
+    },
+    {
+      "name": "roles-auth-1920x1080",
+      "label": "账户授权 · 账户列表 · 1920×1080",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-auth-1920x1080.png"
+    },
+    {
+      "name": "roles-auth-1280x800",
+      "label": "账户授权 · 账户列表 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-auth-1280x800.png"
+    },
+    {
+      "name": "roles-auth-member-1280x800",
+      "label": "账户授权 · 选中账户与授权明细 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-auth-member-1280x800.png"
+    },
+    {
+      "name": "roles-auth-390x844",
+      "label": "账户授权 · 390×844",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/roles-auth-390x844.png"
+    },
+    {
+      "name": "accounts-1280x800",
+      "label": "账户管理 · 账户列表 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/accounts-1280x800.png"
+    },
+    {
+      "name": "accounts-390x844",
+      "label": "账户管理 · 390×844",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/accounts-390x844.png"
+    },
+    {
+      "name": "groups-1280x800",
+      "label": "小组与成员 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/groups-1280x800.png"
+    },
+    {
+      "name": "security-1280x800",
+      "label": "个人安全 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/security-1280x800.png"
+    },
+    {
+      "name": "security-dark-1280x800",
+      "label": "个人安全 · 深色主题 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/security-dark-1280x800.png"
+    },
+    {
+      "name": "security-390x844",
+      "label": "个人安全 · 390×844",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/security-390x844.png"
+    },
+    {
+      "name": "audit-1280x800",
+      "label": "审计 · 1280×800",
+      "file": "/Users/luohongming/Desktop/作业/素材管理器/collab/results/T-LOCAL-010/screenshots/audit-1280x800.png"
+    }
+  ],
+  "errors": [],
+  "finishedAt": "2026-10-22T14:08:43.699Z"
+}
