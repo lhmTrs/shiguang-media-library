@@ -2835,18 +2835,27 @@ function App() {
                             <button
                               className="plain"
                               disabled={busy}
-                              title="仅在该目录名下已无素材索引时可用"
+                              title="备份并移除目录的管理记录，不删除原文件"
                               onClick={() =>
                                 void run(async () => {
-                                  if (!window.confirm(`彻底删除「${r.name}」的登记记录？\n\n只删除登记与索引记录，不会删除任何文件；该目录名下必须已无素材索引，否则会被拒绝。`)) return;
-                                  await api("/roots/" + r.id, {}, "DELETE");
+                                  const preview = await api("/roots/" + r.id + "/removal-preview", {}) as { confirmation: string; assets: number; favorites: number; tagged: number; notes: number; projectLinks: number; timelines: number; invalidatedImports: number };
+                                  if (!window.confirm(`移除「${r.name}」的管理记录？\n\n素材索引：${preview.assets} 条\n含标签：${preview.tagged} 条 · 备注：${preview.notes} 条 · 收藏：${preview.favorites} 条\n项目关联：${preview.projectLinks} 条 · 时间线：${preview.timelines} 条\n\n将先备份元数据，再清理上述管理记录。项目和时间线本身保留，对应引用变为未匹配；涉及的旧导入将不能撤销（${preview.invalidatedImports} 条）。\n\n硬盘上的原文件不会删除。确认继续？`)) return;
+                                  const result = await api("/roots/" + r.id, { confirmation: preview.confirmation }, "DELETE") as { removedAssets: number; backup: string };
                                   await loadAllRoots();
-                                  setNotice("已彻底删除该目录的登记");
+                                  setSelected(prev => prev?.root_id === r.id ? null : prev);
+                                  if (playing?.root_id === r.id) { pauseAudition(); setPlaying(null); }
+                                  setEditingAsset(prev => prev?.root_id === r.id ? null : prev);
+                                  setChecked(new Set());
+                                  setRootFilter(prev => prev.filter(id => id !== r.id));
+                                  setPage(1);
+                                  setEditRevision(n => n + 1);
+                                  await refresh();
+                                  setNotice(`已移除 ${result.removedAssets} 条管理记录，原文件未删除。元数据备份：${result.backup}`);
                                 })
                               }
                             >
                               <Trash2 size={15} />
-                              彻底删除
+                              移除管理记录
                             </button>
                           </>
                         ) : (

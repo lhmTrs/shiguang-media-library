@@ -282,7 +282,7 @@ export class Library {
     const r = this.rootById(rootId);
     if (!r.retired) throw Error("请先注销该目录，再彻底删除");
     const n = this.db.prepare("SELECT COUNT(*) n FROM assets WHERE root_id=?").get(rootId).n;
-    if (n) throw Error(`该目录下仍有 ${n} 条素材索引，请先在「失效素材/目录」里清理索引后再删除`);
+    if (n) throw Error(`该目录下仍有 ${n} 条素材索引，请使用目录管理中的「移除管理记录」，预览并确认清理`);
     this.db.prepare("DELETE FROM roots WHERE id=?").run(rootId);
     return { removed: true, id: rootId };
   }

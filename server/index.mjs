@@ -18,6 +18,7 @@ import { DeviceEnrollment } from "./device-enrollment.mjs";
 import { Tags } from "./tags.mjs";
 import { MusicAnalysis } from "./music-analysis.mjs";
 import { MissingFiles } from "./missing-files.mjs";
+import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
@@ -96,6 +97,7 @@ const deviceEnrollment = await new DeviceEnrollment(lib, { dataDir, cloudAuth, r
 const cloudManagement = new CloudManagement(lib, { cloudAuth });
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
+const rootRemoval = new RootRemoval(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || missingFiles.active || cacheJobs.size > 0);
 for (const a of lib.db
   .prepare(
     "SELECT id FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0 AND " + lib.activeAssetScope(),
@@ -165,6 +167,7 @@ app.use("/api", (req, res, next) => {
 });
 app.get("/api/stats", (req, res) => res.json(lib.stats()));
 app.use("/api", (req, res, next) => {
+  if (rootRemoval.active && req.method !== "GET") return res.status(423).json({ error: "正在备份并移除目录管理记录，请稍后修改素材" });
   if (req.method !== "GET" && [...lib.jobs.values()].some(j => j.type === "duplicate-cleanup" && j.status === "running")) return res.status(423).json({ error: "正在校验或清理重复音频，请稍后修改素材" });
   next();
 });
@@ -338,8 +341,13 @@ app.post("/api/roots/:id/restore", asyncRoute(async (req, res) => {
   void reconcileWatcher?.refresh();
   res.json({ root, job: lib.scan(root.id) });
 }));
-// 彻底删除：只允许"已注销且名下没有素材"的根
-app.delete("/api/roots/:id", asyncRoute(async (req, res) => res.json(lib.deleteRoot(req.params.id))));
+app.post("/api/roots/:id/removal-preview", (req, res) => res.json(rootRemoval.preview(req.params.id, req.headers.cookie)));
+// Explicitly confirmed metadata removal; original files are never deleted.
+app.delete("/api/roots/:id", asyncRoute(async (req, res) => {
+  const result = await rootRemoval.execute(req.params.id, req.body.confirmation, req.headers.cookie);
+  void reconcileWatcher?.refresh();
+  res.json(result);
+}));
 // 对账：把外部（访达/脚本/GPT）整理过的文件重新认领回原素材 id，而不是当成新素材
 app.get("/api/reconcile", (req, res) =>
   res.json({
