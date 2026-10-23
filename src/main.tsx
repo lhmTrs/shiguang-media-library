@@ -64,6 +64,10 @@ import { DuplicateAudioManager } from "./DuplicateAudioManager";
 import { QuickCategoryDialog } from "./QuickCategoryDialog";
 import { TagManager } from "./TagManager";
 import { OpenAISettings } from "./OpenAISettings";
+import { CloudConnectionSettings } from "./CloudConnectionSettings";
+import { AccountEntry, CloudLoginPage } from "./CloudAccount";
+import { CloudWorkspace } from "./CloudWorkspace";
+import { useCloudAuth } from "./cloud-auth";
 import { MusicAnalysisPanel } from "./MusicAnalysisPanel";
 import { AssetEditDialog } from "./AssetEditDialog";
 import { CategoryFilter } from "./CategoryFilter";
@@ -211,17 +215,26 @@ async function api<T = unknown>(
   body?: unknown,
   method?: string,
 ): Promise<T> {
+  const verb = method || (body ? "POST" : "GET");
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  // 非 GET 一律带本机会话令牌，包括没有请求体的 DELETE。
+  if (verb.toUpperCase() !== "GET") headers["X-Local-Token"] = token;
   const r = await fetch("/api" + url, {
-    method: method || (body ? "POST" : "GET"),
-    headers: body
-      ? { "Content-Type": "application/json", "X-Local-Token": token }
-      : {},
+    method: verb,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const result = await r.json();
   if (!r.ok)
     throw Object.assign(Error(result.error || "请求失败"), {
       diagnostic: result.diagnostic,
+      // 云端认证只回固定公开码；保留状态码与冷却时间用于区分 401/429/证书/离线。
+      code: result.code,
+      kind: result.kind,
+      status: r.status,
+      retryAfterMs: result.retryAfterMs,
+      requestId: result.requestId,
     });
   if ((method || (body ? "POST" : "GET")).toUpperCase() !== "GET") clearTagFacetCache();
   return result;
@@ -337,6 +350,63 @@ function Wave({ asset }: { asset: Asset }) {
   );
 }
 function App() {
+  const cloudAuth = useCloudAuth(api);
+  const cloudAuthRef = useRef(cloudAuth);
+  cloudAuthRef.current = cloudAuth;
+  const [loginOpen, setLoginOpen] = useState(() => location.hash === "#/login");
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => location.hash === "#/account");
+  const loginClosing = useRef(false);
+  useEffect(() => {
+    const sync = () => {
+      const next = location.hash === "#/login";
+      setLoginOpen(next);
+      setWorkspaceOpen(location.hash === "#/account");
+      if (!next) loginClosing.current = false;
+    };
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+  const closeLogin = useCallback(() => {
+    if (loginClosing.current) return;
+    loginClosing.current = true;
+    cloudAuthRef.current.invalidate();
+    if (history.state?.shiguangLogin) {
+      history.back();
+    } else if (location.hash === "#/login") {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    setLoginOpen(false);
+  }, []);
+  const openLogin = useCallback(() => {
+    loginClosing.current = false;
+    cloudAuthRef.current.invalidate();
+    setModal(null);
+    setMobileNav(false);
+    setWorkspaceOpen(false);
+    if (location.hash !== "#/login") {
+      history.pushState({ shiguangLogin: true }, "", "#/login");
+    }
+    // 可能刚从高级设置保存过配置；进入登录页前校准共享状态。
+    void cloudAuthRef.current.readStatus().catch(() => undefined);
+    setLoginOpen(true);
+  }, []);
+  const closeWorkspace = useCallback(() => {
+    cloudAuthRef.current.invalidate();
+    if (history.state?.shiguangWorkspace) {
+      history.back();
+    } else if (location.hash === "#/account") {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    setWorkspaceOpen(false);
+  }, []);
+  const openWorkspace = useCallback(() => {
+    setModal(null);
+    setMobileNav(false);
+    if (location.hash !== "#/account") {
+      history.pushState({ shiguangWorkspace: true }, "", "#/account");
+    }
+    setWorkspaceOpen(true);
+  }, []);
   const [ready, setReady] = useState(false),
     [stats, setStats] = useState<Stats>({
       total: 0,
@@ -1325,6 +1395,29 @@ function App() {
   function resizeDetails(clientX: number) {
     setDetailsWidth(Math.max(280, Math.min(600, window.innerWidth - 80, window.innerWidth - clientX)));
   }
+  if (loginOpen) {
+    return (
+      <CloudLoginPage
+        auth={cloudAuth}
+        onBack={closeLogin}
+        onAdvanced={() => {
+          closeLogin();
+          setModal("settings");
+        }}
+      />
+    );
+  }
+  if (workspaceOpen) {
+    return (
+      <CloudWorkspace
+        auth={cloudAuth}
+        request={api}
+        onBack={closeWorkspace}
+        onLogin={openLogin}
+        onNotice={setNotice}
+      />
+    );
+  }
   return (
     <div className={"app" + (navCollapsed ? " nav-collapsed" : "") + (detailsHidden ? " details-hidden" : "")} style={{ "--details-width": `${detailsWidth}px`, "--player-height": `${playerHeight}px`, "--inspector-top": `${topbarHeight}px` } as React.CSSProperties}>
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
@@ -1438,10 +1531,11 @@ function App() {
             </span>
           )}
           <label className="current-project"><FolderKanban size={16}/><select aria-label="当前项目" value={activeProject} disabled={busy} onChange={e => setActiveProject(e.target.value)}><option value="">选择项目</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-          <button className="primary" onClick={() => void openModal("folders")}>
+          <button className="primary add-root-button" aria-label="添加素材目录" onClick={() => void openModal("folders")}>
             <FolderPlus size={17} />
-            添加素材目录
+            <span className="add-root-label">添加素材目录</span>
           </button>
+          <AccountEntry auth={cloudAuth} onLogin={openLogin} onWorkspace={openWorkspace} onNotice={setNotice} />
         </header>
         {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
@@ -2961,6 +3055,10 @@ function App() {
               {modal === "settings" && (
                 <>
                   <OpenAISettings request={api} />
+                  <details className="cloud-advanced">
+                    <summary>高级云端设置（诊断 / 配置）</summary>
+                    <CloudConnectionSettings request={api} onChanged={() => void cloudAuth.readStatus().catch(() => undefined)} />
+                  </details>
                   <section className="database-settings">
                     <div className="database-heading">
                       <h3>

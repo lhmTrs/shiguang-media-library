@@ -18,6 +18,8 @@ backups/
 *.db
 *.sql
 *.pem
+# 公开 CA 随 Git 检出/分享包一致提供；只精确放行这一份证书，不取消其它 *.pem 忽略规则。
+!server/audio-engine-ca.pem
 *.key
 mysql-connection.json
 SHARE_PACKAGE.json

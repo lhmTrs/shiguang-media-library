@@ -8,6 +8,13 @@ import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
 import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
 import { MysqlStorage } from "./mysql.mjs";
+import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
+import { AudioEngine, isAudioEngineError } from "./audio-engine.mjs";
+import { AudioAnalysis } from "./audio-analysis.mjs";
+import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
+import { CloudManagement, cloudManagementErrorHandler } from "./cloud-management.mjs";
+import { loadReleaseConfig } from "./cloud-release-config.mjs";
+import { DeviceEnrollment } from "./device-enrollment.mjs";
 import { Tags } from "./tags.mjs";
 import { MusicAnalysis } from "./music-analysis.mjs";
 import { MissingFiles } from "./missing-files.mjs";
@@ -64,6 +71,29 @@ const projects = new Projects(lib).init();
 const metadataBatches = new MetadataBatches(lib).init();
 const folderBrowser = new FolderBrowser(lib);
 const musicAnalysis = await new MusicAnalysis(lib).init();
+// 云端认证适配：令牌/私钥只在本进程，浏览器只拿到脱敏状态（T-LOCAL-CLOUD-001）
+const cloudAuth = await new CloudAuth(lib, { dataDir }).init();
+
+// 音频分析：默认关闭，只有运维显式设置 SHIGUANG_AUDIO_ANALYSIS=1 才按需创建实例。
+// 默认启动不建表、不联网、不下载、不 spawn；HTTP 不能改这个开关。
+const audioEnabled = audioFeatureEnabled();
+let audioEngine = null;
+let audioAnalysis = null;
+function audioFeature() {
+  if (!audioEnabled) return null;
+  if (!audioAnalysis) {
+    audioEngine = new AudioEngine(dataDir);
+    audioAnalysis = new AudioAnalysis(lib, audioEngine);
+  }
+  return { engine: audioEngine, analysis: audioAnalysis };
+}
+// 内置发行配置只含公共地址/CA；原始仓库默认未启用，未就绪时普通用户只看到提示。
+const releaseConfig = await loadReleaseConfig(
+  process.env.SHIGUANG_CLOUD_RELEASE_CONFIG || path.join(project, "config/cloud-release.json"),
+);
+const deviceEnrollment = await new DeviceEnrollment(lib, { dataDir, cloudAuth, release: releaseConfig }).init();
+// T-LOCAL-008：管理接口固定白名单适配；浏览器不能直接决定云端 URL/方法/头。
+const cloudManagement = new CloudManagement(lib, { cloudAuth });
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
 for (const a of lib.db
@@ -148,6 +178,118 @@ app.use("/api", (req, res, next) => {
   next();
 });
 app.get("/api/mysql", (req, res) => res.json(mysqlStorage.publicState()));
+app.get("/api/cloud-auth/status", (req, res) =>
+  res.json({ ...cloudAuth.getState(), enrollment: deviceEnrollment.getStatus() }),
+);
+app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => {
+  deviceEnrollment.cancel();
+  res.json(await cloudAuth.configure(req.body));
+}));
+app.post("/api/cloud-auth/enroll", asyncRoute(async (req, res) => res.json(await deviceEnrollment.enroll(req.body))));
+app.post("/api/cloud-auth/activate", asyncRoute(async (req, res) => {
+  deviceEnrollment.cancel();
+  res.json(await cloudAuth.activate(req.body));
+}));
+app.post("/api/cloud-auth/login", asyncRoute(async (req, res) => {
+  deviceEnrollment.cancel();
+  res.json(await cloudAuth.login(req.body));
+}));
+app.post("/api/cloud-auth/logout", asyncRoute(async (req, res) => {
+  deviceEnrollment.cancel();
+  res.json(await cloudAuth.logout());
+}));
+
+// 音频分析引擎：默认关闭（503 AUDIO_FEATURE_DISABLED），启用后按需下载/卸载；分析结果存本地 asset_audio
+app.get("/api/audio-engine/status", (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  res.json(audio.engine.status());
+});
+function rejectAudioEngine(res, error) {
+  const code = isAudioEngineError(error) ? error.code : "ENGINE_INSTALL_FAILED";
+  const message = isAudioEngineError(error) ? error.message : "安装失败";
+  const status = isAudioEngineError(error) ? error.status : 400;
+  return res.status(status).json({ error: message, code });
+}
+app.post("/api/audio-engine/install", asyncRoute(async (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  try {
+    res.json(audio.engine.install({ confirm: req.body?.confirm === true }));
+  } catch (error) {
+    return rejectAudioEngine(res, error);
+  }
+}));
+app.post("/api/audio-engine/cancel", asyncRoute(async (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  try {
+    res.json(await audio.engine.cancel());
+  } catch (error) {
+    return rejectAudioEngine(res, error);
+  }
+}));
+app.delete("/api/audio-engine", asyncRoute(async (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  try {
+    res.json(await audio.engine.uninstall());
+  } catch (error) {
+    return rejectAudioEngine(res, error);
+  }
+}));
+app.get("/api/assets/:id/audio", asyncRoute(async (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  res.json(audio.analysis.get(req.params.id));
+}));
+app.post("/api/assets/:id/analyze-audio", asyncRoute(async (req, res) => {
+  const audio = audioFeature();
+  if (!audio) return rejectAudioFeature(res);
+  try {
+    res.json(await audio.analysis.analyze(req.params.id, { force: req.body?.force === true }));
+  } catch (e) {
+    if (e.code === "ENGINE_NOT_INSTALLED") return res.status(409).json({ error: "音频分析引擎未安装", code: e.code });
+    if (e.code === "NOT_FOUND") return res.status(404).json({ error: e.message, code: e.code });
+    return res.status(400).json({ error: e.message, code: e.code || "ANALYZE_FAILED" });
+  }
+}));
+// T-LOCAL-008：账户/小组/授权的本地固定路由。浏览器只给业务参数，方法/云端路径/头均由 Node 固定。
+app.get("/api/cloud-management/profile", asyncRoute(async (req, res) => res.json(await cloudManagement.profile())));
+app.delete("/api/cloud-management/devices/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.revokeDevice(req.params.id))));
+app.post("/api/cloud-management/password", asyncRoute(async (req, res) => res.json(await cloudManagement.changePassword(req.body))));
+app.post("/api/cloud-management/reset-password", asyncRoute(async (req, res) => res.json(await cloudManagement.resetPassword(req.body))));
+app.get("/api/cloud-management/groups", asyncRoute(async (req, res) => res.json(await cloudManagement.groups(req.query))));
+app.get("/api/cloud-management/groups/:id/members", asyncRoute(async (req, res) => res.json(await cloudManagement.members(req.params.id, req.query))));
+app.get("/api/cloud-management/groups/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.group(req.params.id))));
+app.post("/api/cloud-management/groups", asyncRoute(async (req, res) => res.json(await cloudManagement.createGroup(req.body))));
+app.put("/api/cloud-management/groups/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.renameGroup(req.params.id, req.body))));
+app.post("/api/cloud-management/groups/:id/members", asyncRoute(async (req, res) => res.json(await cloudManagement.addMember(req.params.id, req.body))));
+app.delete("/api/cloud-management/groups/:id/members/:accountId", asyncRoute(async (req, res) => res.json(await cloudManagement.removeMember(req.params.id, req.params.accountId, req.body))));
+app.post("/api/cloud-management/groups/:id/leave", asyncRoute(async (req, res) => res.json(await cloudManagement.leaveGroup(req.params.id, req.body))));
+app.post("/api/cloud-management/groups/:id/leader-transfers", asyncRoute(async (req, res) => res.json(await cloudManagement.transferLeader(req.params.id, req.body))));
+app.post("/api/cloud-management/groups/:id/state", asyncRoute(async (req, res) => res.json(await cloudManagement.setGroupState(req.params.id, req.body))));
+app.get("/api/cloud-management/accounts", asyncRoute(async (req, res) => res.json(await cloudManagement.accounts(req.query))));
+app.get("/api/cloud-management/accounts/:id/role-assignments", asyncRoute(async (req, res) => res.json(await cloudManagement.roleAssignments(req.params.id, req.query))));
+app.get("/api/cloud-management/accounts/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.account(req.params.id))));
+app.post("/api/cloud-management/accounts", asyncRoute(async (req, res) => res.json(await cloudManagement.createAccount(req.body))));
+app.post("/api/cloud-management/accounts/:id/opening-codes", asyncRoute(async (req, res) => res.json(await cloudManagement.issueOpeningCode(req.params.id))));
+app.delete("/api/cloud-management/opening-codes/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.revokeOpeningCode(req.params.id))));
+app.post("/api/cloud-management/accounts/:id/state", asyncRoute(async (req, res) => res.json(await cloudManagement.setAccountState(req.params.id, req.body))));
+app.post("/api/cloud-management/accounts/:id/password-reset", asyncRoute(async (req, res) => res.json(await cloudManagement.resetAccountPassword(req.params.id, req.body))));
+app.get("/api/cloud-management/candidates", asyncRoute(async (req, res) => res.json(await cloudManagement.candidates(req.query))));
+app.get("/api/cloud-management/permissions", asyncRoute(async (req, res) => res.json(await cloudManagement.permissions())));
+app.get("/api/cloud-management/roles", asyncRoute(async (req, res) => res.json(await cloudManagement.roles(req.query))));
+app.get("/api/cloud-management/roles/:id/impact", asyncRoute(async (req, res) => res.json(await cloudManagement.roleImpact(req.params.id, req.query))));
+app.post("/api/cloud-management/roles", asyncRoute(async (req, res) => res.json(await cloudManagement.createRole(req.body))));
+app.put("/api/cloud-management/roles/:id/permissions", asyncRoute(async (req, res) => res.json(await cloudManagement.updateRolePermissions(req.params.id, req.body))));
+app.get("/api/cloud-management/audit-events", asyncRoute(async (req, res) => res.json(await cloudManagement.auditEvents(req.query))));
+app.post("/api/cloud-management/role-assignments", asyncRoute(async (req, res) => res.json(await cloudManagement.assignRole(req.body))));
+app.delete("/api/cloud-management/role-assignments/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.revokeRole(req.params.id))));
+app.use("/api/cloud-management", cloudManagementErrorHandler);
+// 只回脱敏错误码与提示：不回云端原始 message，不记录令牌/请求体/本机路径；
+// 末端兜住所有异常（不只是 CloudAuthError），避免原生文件/TLS 错误落进通用 error.message 处理器。
+app.use("/api/cloud-auth", cloudAuthErrorHandler);
 app.post(
   "/api/mysql/test",
   asyncRoute(async (req, res) => res.json(await mysqlStorage.test(req.body))),
