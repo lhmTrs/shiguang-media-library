@@ -285,6 +285,7 @@ test("设备目录不可写时失败且不写 CloudAuth 配置", async (t) => {
   );
   assert.equal(await fs.readFile(auth.configPath, "utf8").catch(() => null), null);
   assert.deepEqual(JSON.parse(JSON.stringify(enrollment.getStatus())).ready, true);
+  assert.equal(enrollment.getStatus().recoverySupported, true);
 });
 
 test("证书过期与错误 device CA 都被拒绝", async (t) => {
@@ -529,10 +530,124 @@ const snapshotDeviceFiles = async (enrollment) => ({
   pending: await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null),
 });
 
+test("恢复须明确确认且云端撤销后才整体备份，本地数据库与素材记录不变", async (t) => {
+  const { mock, enrollment, lib, auth } = await setup(t);
+  const media = path.join(lib.dataDir, "synthetic-preserved.bin");
+  await fs.writeFile(media, "synthetic media sentinel");
+  lib.db.prepare("INSERT INTO assets(id,path,name,category,tags,note) VALUES(?,?,?,?,?,?)")
+    .run("recovery-sentinel", media, "synthetic-preserved.bin", "synthetic-category", '["synthetic-tag"]', "preserved note");
+  const assetBefore = lib.db.prepare("SELECT * FROM assets WHERE id=?").get("recovery-sentinel");
+  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "recovery-device" });
+  const deviceId = enrollment.getStatus().deviceId;
+  const before = await snapshotDeviceFiles(enrollment);
+  const sentinel = lib.db.prepare("SELECT COUNT(*) AS n FROM assets").get();
+  await assert.rejects(enrollment.recover({ deviceId }), error => error.code === "DEVICE_RECOVERY_CONFIRM_REQUIRED");
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId: "other" }), error => error.code === "DEVICE_RECOVERY_CONFIRM_REQUIRED");
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }), error => error.code === "DEVICE_NOT_REVOKED");
+  assert.deepEqual(await snapshotDeviceFiles(enrollment), before);
+  mock.state.revokedDevices.add(deviceId);
+  const result = await enrollment.recover({ confirm: true, deviceId });
+  assert.equal(result.recovered, true);
+  assert.equal(result.state.configured, false);
+  assert.equal(result.state.enrollment.deviceId, null);
+  assert.equal(await fs.stat(enrollment.deviceDir).catch(() => null), null);
+  const backups = await fs.readdir(path.join(lib.dataDir, "backups"));
+  assert.equal(backups.length, 1);
+  const backup = path.join(lib.dataDir, "backups", backups[0]);
+  assert.equal((await fs.stat(backup)).mode & 0o777, 0o700);
+  assert.equal(await fs.readFile(path.join(backup, "device-key.pem"), "utf8"), before.key);
+  for (const name of await fs.readdir(backup)) assert.equal((await fs.stat(path.join(backup, name))).mode & 0o777, 0o600);
+  assert.deepEqual(lib.db.prepare("SELECT COUNT(*) AS n FROM assets").get(), sentinel);
+  assert.deepEqual(lib.db.prepare("SELECT * FROM assets WHERE id=?").get("recovery-sentinel"), assetBefore);
+  assert.equal(await fs.readFile(media, "utf8"), "synthetic media sentinel");
+  assert.equal(JSON.parse(await fs.readFile(auth.configPath, "utf8")), null);
+  assert.ok(mock.state.recoveryCalls.every(call => call.authorization === null), "恢复检查不得携带旧 Bearer");
+  const next = await enrollment.enroll({ openingCode: "B".repeat(43), password: PASSWORD, deviceName: "new-device" });
+  assert.equal(next.session, true);
+  assert.notEqual(next.enrollment.deviceId, deviceId);
+  assert.notEqual(await fs.readFile(enrollment.keyPath, "utf8"), before.key);
+});
+
+test("恢复拒绝符号链接、不明材料、身份变化及手工配置，原材料不动", async (t) => {
+  const { mock, enrollment, auth } = await setup(t);
+  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "unsafe-device" });
+  const deviceId = enrollment.getStatus().deviceId;
+  mock.state.revokedDevices.add(deviceId);
+  const before = await snapshotDeviceFiles(enrollment);
+  const unknown = path.join(enrollment.deviceDir, "unexpected.txt");
+  await fs.writeFile(unknown, "synthetic");
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }), error => error.code === "DEVICE_RECOVERY_UNSAFE");
+  await fs.rm(unknown);
+  const backupPath = path.join(auth.dataDir, "backups");
+  await fs.rm(backupPath, { recursive: true });
+  await fs.symlink(enrollment.deviceDir, backupPath);
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }), error => error.code === "DEVICE_RECOVERY_UNSAFE");
+  await fs.rm(backupPath);
+  await auth.configure({ origin: mock.enrollmentOrigin });
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }), error => error.code === "DEVICE_RECOVERY_UNSAFE");
+  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), before.key);
+  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8"), before.pending);
+});
+
+test("恢复等待云端时取消或并发开通不能清理旧材料", async (t) => {
+  const { mock, enrollment } = await setup(t);
+  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "cancel-recovery" });
+  const deviceId = enrollment.getStatus().deviceId;
+  const before = await snapshotDeviceFiles(enrollment);
+  mock.state.revokedDevices.add(deviceId);
+  mock.state.recoveryDelayMs = 100;
+  const pending = enrollment.recover({ confirm: true, deviceId });
+  const rejected = assert.rejects(pending, error => error.code === "STALE");
+  await assert.rejects(enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "cancel-recovery" }), error => error.code === "DEVICE_RECOVERY_BUSY");
+  for (let attempt = 0; attempt < 400 && !mock.state.recoveryCalls.length; attempt++) await sleep(5);
+  assert.equal(mock.state.recoveryCalls.length, 1);
+  enrollment.cancel();
+  await rejected;
+  assert.deepEqual(await snapshotDeviceFiles(enrollment), before);
+});
+
+test("云端不可达时不动材料；配置已清空的中断恢复仍须重新向云端确认", async (t) => {
+  const { mock, enrollment, auth } = await setup(t);
+  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "interrupted-recovery" });
+  const deviceId = enrollment.getStatus().deviceId;
+  const before = await snapshotDeviceFiles(enrollment);
+  mock.state.revokedDevices.add(deviceId);
+  mock.state.recoveryFailure = { status: 503, code: "INTERNAL" };
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }));
+  assert.deepEqual(await snapshotDeviceFiles(enrollment), before);
+  mock.state.recoveryFailure = null;
+  // Simulate restart after the durable detach, before the directory rename.
+  await fs.writeFile(auth.configPath, "null\n");
+  await auth.init();
+  const recovered = await enrollment.recover({ confirm: true, deviceId });
+  assert.equal(recovered.recovered, true);
+  assert.equal(mock.state.recoveryCalls.length, 2);
+  assert.ok(before.key);
+});
+
+test("备份提交失败后保留旧材料且不显示成功，可重新核实云端并重试", async (t) => {
+  const { mock, enrollment, auth } = await setup(t);
+  await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "archive-failure" });
+  const deviceId = enrollment.getStatus().deviceId;
+  mock.state.revokedDevices.add(deviceId);
+  const before = await snapshotDeviceFiles(enrollment);
+  const reset = auth.resetRevokedEnrollment.bind(auth);
+  auth.resetRevokedEnrollment = (args, options) => reset({ ...args, archive: () => { throw new Error("synthetic archive failure"); } }, options);
+  await assert.rejects(enrollment.recover({ confirm: true, deviceId }), error => error.code === "DEVICE_RECOVERY_UNSAFE");
+  assert.equal(enrollment.getStatus().deviceId, deviceId);
+  assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), before.key);
+  assert.equal(await fs.readFile(enrollment.pendingPath, "utf8"), before.pending);
+  assert.equal(auth.getState().configured, false);
+  auth.resetRevokedEnrollment = reset;
+  assert.equal((await enrollment.recover({ confirm: true, deviceId })).recovered, true);
+  assert.equal(mock.state.recoveryCalls.length, 2);
+});
+
 test("未激活时改设备名/换码不覆盖原密钥，原码原名仍可恢复", async (t) => {
   const { mock, enrollment } = await setup(t);
   const first = await enrollment.enroll({ openingCode: CODE, password: "short", deviceName: "original-device" });
   assert.equal(first.activationPending, true);
+  assert.equal(enrollment.getStatus().activationPending, true);
   const keyBefore = await fs.readFile(enrollment.keyPath, "utf8");
   const before = await snapshotDeviceFiles(enrollment);
 
@@ -549,9 +664,23 @@ test("未激活时改设备名/换码不覆盖原密钥，原码原名仍可恢�
 
   const retry = await enrollment.enroll({ openingCode: CODE, password: PASSWORD, deviceName: "original-device" });
   assert.equal(retry.session, true);
+  assert.equal(enrollment.getStatus().activationPending, false);
   assert.equal(await fs.readFile(enrollment.keyPath, "utf8"), keyBefore, "原码原名必须复用原私钥");
   assert.equal(mock.state.redeemCalls.length, 2, "不一致重试不得发兑换请求");
   assert.equal(await fs.readFile(enrollment.pendingPath, "utf8").catch(() => null), null);
+});
+
+test("开通密码超过 UTF-8 字节上限时在兑换或创建密钥前拒绝", async (t) => {
+  const { mock, enrollment } = await setup(t);
+  const before = await snapshotDeviceFiles(enrollment);
+  for (const password of ["", "a".repeat(73), "中".repeat(25)]) {
+    await assert.rejects(
+      enrollment.enroll({ openingCode: CODE, password, deviceName: "password-check-device" }),
+      (error) => error.code === "ENROLLMENT_PASSWORD_INVALID",
+    );
+  }
+  assert.equal(mock.state.redeemCalls.length, 0);
+  assert.deepEqual(await snapshotDeviceFiles(enrollment), before);
 });
 
 test("pending 记录损坏/缺失时 fail closed，保留 key/cert/config 且恢复记录后可续做", async (t) => {

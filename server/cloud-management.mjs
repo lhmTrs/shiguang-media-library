@@ -348,6 +348,8 @@ const ROUTES = {
     parse: (v) => sanitizePage(v, sanitizeAccount),
   },
   account: { method: "GET", path: ({ id }) => `/accounts/${id}`, parse: sanitizeAccount },
+  accountDevices: { method: "GET", path: ({ id, query }) => `/accounts/${id}/devices${qs(query)}`, parse: (v) => sanitizePage(v, sanitizeDevice) },
+  revokeAccountDevice: { method: "POST", path: ({ id, accountId }) => `/accounts/${accountId}/devices/${id}/revoke`, parse: sanitizeScalar },
   createAccount: { method: "POST", path: () => "/accounts", parse: sanitizeOpening },
   openingCode: { method: "POST", path: ({ id }) => `/accounts/${id}/device-opening-codes`, parse: sanitizeOpening },
   revokeOpeningCode: { method: "DELETE", path: ({ id }) => `/device-opening-codes/${id}`, parse: sanitizeScalar },
@@ -644,6 +646,27 @@ export class CloudManagement {
 
   async account(value) {
     return this.#call("account", { id: id(value, "账户 ID") });
+  }
+
+  async accountDevices(accountId, query = {}) {
+    const target = id(accountId, "账户 ID");
+    const params = page(query);
+    const deviceId = query.deviceId ? id(query.deviceId, "设备 ID") : "";
+    return this.#call("accountDevices", { id: target, query: { ...params, deviceId } });
+  }
+
+  async revokeAccountDevice(accountId, deviceId, payload) {
+    const target = id(accountId, "账户 ID");
+    const device = id(deviceId, "设备 ID");
+    const body = bodyOf(payload, ["expectedSecurityVersion", "expectedState", "currentPassword"]);
+    const expectedSecurityVersion = integer(body.expectedSecurityVersion);
+    if (!["PENDING", "ACTIVE", "REVOKED"].includes(body.expectedState)) invalid();
+    const currentPassword = text(body.currentPassword, { min: 1, max: 128, trim: false, name: "管理员密码" });
+    if (Buffer.byteLength(currentPassword, "utf8") > 72) invalid();
+    return this.#write(epoch => this.#call("revokeAccountDevice", {
+      id: device, accountId: target, epoch,
+      body: { expectedSecurityVersion, expectedState: body.expectedState, currentPassword },
+    }));
   }
 
   async createAccount(payload) {

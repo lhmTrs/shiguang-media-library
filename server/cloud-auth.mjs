@@ -427,6 +427,41 @@ export class CloudAuth {
     });
   }
 
+  /** Fixed mTLS-only recovery check; no Bearer or browser-supplied destination. */
+  async resetRevokedEnrollment({ deviceId, config, archive }, { operation } = {}) {
+    this.#assertOperation(operation);
+    this.#invalidate();
+    return this.#withControl(async () => {
+      this.#assertOperation(operation);
+      const previous = this.config;
+      if (previous && ["origin", "caPath", "certPath", "keyPath", "p12Path"].some(key => (previous[key] || null) !== (config[key] || null)))
+        throw new CloudAuthError("当前连接不属于本机自动开通，已停止恢复", { code: "DEVICE_RECOVERY_UNSAFE", kind: "config", status: 409 });
+      const epoch = this.epoch;
+      let detached = false;
+      try {
+        // A crash after detaching leaves the original directory intact. Its own pinned
+        // configuration may be used again solely to re-check revocation, never to log in.
+        this.config = config;
+        const proof = await this.#request("POST", "/auth/device-recovery", { body: { deviceId }, epoch });
+        this.#assertOperation(operation);
+        if (epoch !== this.epoch) throw this.#staleError();
+        if (proof?.deviceId !== deviceId || proof?.revoked !== true)
+          throw new CloudAuthError("云端未确认设备已撤销，原材料保持不变", { code: "DEVICE_NOT_REVOKED", kind: "cloud", status: 409 });
+        await this.#writeJson(this.configPath, null);
+        detached = true;
+        this.config = null;
+        await this.#clear("unconfigured", null, epoch);
+        this.#assertOperation(operation);
+        if (epoch + 1 !== this.epoch) throw this.#staleError();
+        // Synchronous atomic directory rename: cancellation cannot interleave with it.
+        archive();
+        return this.getState();
+      } finally {
+        if (!detached) this.config = previous;
+      }
+    });
+  }
+
   async refresh() {
     if (this.inflightRefresh) return this.inflightRefresh.promise;
     const epoch = this.epoch;

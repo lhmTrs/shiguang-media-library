@@ -8,12 +8,14 @@ import {
   LogIn,
   LogOut,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   UserRound,
   UsersRound,
 } from "lucide-react";
 import {
   describeFailure,
+  enrollmentRecovery,
   stateLabel,
   type CloudAuthController,
   type CloudLastError,
@@ -161,6 +163,7 @@ export function CloudLoginPage({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [autoMode, setAutoMode] = useState(false);
+  const [recoverConfirm, setRecoverConfirm] = useState(false);
   const lock = useRef(false);
 
   // 没有设备证书时登录不可用；首次在本机使用直接引导到「开通本机」。
@@ -168,6 +171,8 @@ export function CloudLoginPage({
   const enrollmentReady = auth.view?.enrollment?.ready === true;
   const disabled = !!auth.busy || lock.current;
   const sessionReady = auth.view?.state === "logged-in";
+  const recoveryId = auth.view?.enrollment?.deviceId;
+  const recoveryAvailable = auth.view?.enrollment?.recoverySupported === true && !!recoveryId;
 
   // 已有有效会话时直接回主界面，避免登录页循环。
   useEffect(() => {
@@ -178,7 +183,7 @@ export function CloudLoginPage({
   useEffect(() => {
     if (autoMode || !auth.view || auth.loading) return;
     setAutoMode(true);
-    if (!configured && enrollmentReady) setMode("enroll");
+    if (enrollmentReady && (!configured || auth.view.enrollment?.activationPending)) setMode("enroll");
   }, [autoMode, auth.view, auth.loading, configured, enrollmentReady]);
 
   async function submitLogin(event: FormEvent) {
@@ -217,6 +222,10 @@ export function CloudLoginPage({
       setError("请输入开通码和账户密码");
       return;
     }
+    if (new TextEncoder().encode(enrollPassword).length > 72) {
+      setError(describeFailure({ code: "ENROLLMENT_PASSWORD_INVALID" }, "login"));
+      return;
+    }
     lock.current = true;
     setError("");
     const submittedCode = openingCode.trim();
@@ -228,12 +237,9 @@ export function CloudLoginPage({
     try {
       const result = await auth.enroll(submittedCode, submittedPassword, submittedName);
       if (result.session) return;
-      setMode("login");
-      setError(
-        result.activationPending
-          ? "设备已开通，但自动激活未完成；请用原开通码重试，或联系管理员。"
-          : "设备已开通，但自动登录未完成；请用账户密码登录。",
-      );
+      const recovery = enrollmentRecovery(result);
+      setMode(recovery.mode);
+      setError(recovery.message);
     } catch (failure) {
       setError(describeFailure(failure as CloudLastError, "login"));
       setOpeningCode("");
@@ -285,6 +291,28 @@ export function CloudLoginPage({
   function retryStatus() {
     setError("");
     void auth.readStatus().catch((failure) => setError(describeFailure(failure as CloudLastError, "login")));
+  }
+
+  async function recoverDevice() {
+    const deviceId = auth.view?.enrollment?.deviceId;
+    if (!recoveryAvailable || !deviceId || !recoverConfirm || lock.current || auth.busy) return;
+    lock.current = true;
+    setError("");
+    setNotice("");
+    setOpeningCode("");
+    setEnrollPassword("");
+    setPassword("");
+    try {
+      await auth.recoverDevice(deviceId);
+      setRecoverConfirm(false);
+      setDeviceName("");
+      setMode("enroll");
+      setNotice("旧设备材料已安全备份，本地素材未改动。请使用管理员新签发的开通码重新开通。");
+    } catch (failure) {
+      setError(describeFailure(failure as CloudLastError, "login"));
+    } finally {
+      lock.current = false;
+    }
   }
 
   return (
@@ -426,7 +454,7 @@ export function CloudLoginPage({
                 {auth.busy === "enroll" ? "正在开通…" : "开通并登录"}
               </button>
               <p className="login-footnote">
-                新账户的密码将在此设置；已激活账户请填写现有密码。设备私钥只保存在本机后台，浏览器不会拿到证书或开通码。
+                新账户密码至少 12 个字符，且不超过 72 个 UTF-8 字节；已激活账户请填写现有密码。重试未完成的激活时，请保持原开通码和原设备名称。
               </p>
             </form>
           ) : (
@@ -483,6 +511,34 @@ export function CloudLoginPage({
             <p className="login-error" role="alert">
               {error}
             </p>
+          )}
+          {!sessionReady && (
+            <details className="login-recovery">
+              <summary><ShieldCheck size={15} /><span>设备与开通恢复</span><ChevronDown size={14} /></summary>
+              {auth.loading ? <p role="status">正在读取本机设备状态…</p> : !auth.view || auth.loadError ? (
+                <p role="alert">本机设备状态读取失败，尚不能确认恢复条件；旧材料未改动。</p>
+              ) : auth.view.enrollment?.recoverySupported !== true ? (
+                <p role="alert">当前后台未声明支持设备恢复。请确认前后端为配套版本并重启本机后台；旧材料未改动。</p>
+              ) : !recoveryId ? (
+                <p role="status">未读取到本机已登记的设备 ID。首次使用可直接开通；若此前开通过或仍报记录冲突，请联系管理员检查本机记录，勿手动删除材料。</p>
+              ) : null}
+              {recoveryAvailable && !auth.loadError && !auth.loading && <>
+              <dl><div><dt>本机设备 ID</dt><dd><code>{recoveryId}</code></dd></div>
+              {auth.view?.enrollment?.lastSessionErrorCode && <div><dt>上次错误码</dt><dd>{auth.view.enrollment.lastSessionErrorCode}</dd></div>}</dl>
+              <p>需先由超级管理员撤销此设备。</p>
+              <label>
+                <input type="checkbox" checked={recoverConfirm} disabled={disabled} onChange={event => setRecoverConfirm(event.target.checked)} />
+                确认备份旧设备材料，保留本地素材
+              </label>
+              <button type="button" className="plain" disabled={disabled || !recoverConfirm} onClick={() => void recoverDevice()}>
+                {auth.busy === "recover" ? <LoaderCircle size={14} className="spin" /> : <RotateCcw size={14} />}
+                重新开通本机
+              </button>
+              </>}
+              <button type="button" className="plain" disabled={disabled || auth.loading} onClick={retryStatus}>
+                <RefreshCw size={14} />重新读取设备状态
+              </button>
+            </details>
           )}
           <div className="login-secondary">
             {mode === "login" ? (

@@ -13,7 +13,7 @@
  *     迟到的配置、激活/登录与最终元数据提交都不能复活旧配置。
  */
 import crypto from "node:crypto";
-import { rmSync } from "node:fs";
+import { rmSync, lstatSync, readdirSync, readFileSync, mkdirSync, chmodSync, renameSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import https from "node:https";
 import net from "node:net";
@@ -385,6 +385,7 @@ export class DeviceEnrollment {
     const release = this.release || {};
     const state = this.cloudAuth.getState();
     return {
+      recoverySupported: true,
       ready: Boolean(release.usable),
       enabled: Boolean(release.enabled),
       configured: state.hasClientCertificate === true,
@@ -392,6 +393,8 @@ export class DeviceEnrollment {
       username: this.metadata?.username || null,
       certificateExpiresAt: this.metadata?.certificateExpiresAt || null,
       activated: this.metadata?.activated === true,
+      activationPending: this.metadata?.needsActivation === true && this.metadata?.activated !== true,
+      lastSessionErrorCode: /^[A-Z][A-Z0-9_]{1,63}$/.test(this.metadata?.lastSessionError || "") ? this.metadata.lastSessionError : null,
       message: release.usable ? null : release.errors?.[0] || (release.missing ? "当前版本未内置云端发行配置" : "云端发行配置不可用"),
     };
   }
@@ -403,11 +406,69 @@ export class DeviceEnrollment {
     this.cancelToken?.cancel?.abort();
   }
 
+  async recover({ confirm, deviceId } = {}) {
+    if (confirm !== true || typeof deviceId !== "string" || deviceId !== this.metadata?.deviceId)
+      throw fail("DEVICE_RECOVERY_CONFIRM_REQUIRED", "请确认需要重新开通的本机设备", { kind: "config", status: 409 });
+    if (this.inflight) throw fail("DEVICE_RECOVERY_BUSY", "本机开通操作正在进行", { kind: "config", status: 409 });
+    if (!this.release?.usable) throw fail("ENROLLMENT_UNAVAILABLE", "本机自动开通未就绪", { kind: "config", status: 503 });
+    const operation = this.cloudAuth.beginOperation();
+    this.operation = operation;
+    this.recovering = true;
+    this.cancelRequested = false;
+    const run = async () => {
+      try {
+        const backups = path.join(this.dataDir, "backups");
+        const backup = path.join(backups, `cloud-enroll-reset-${crypto.randomUUID()}`);
+        const validate = () => {
+          const root = realpathSync(this.dataDir);
+          for (const dir of [this.deviceDir, backups]) {
+            if (!lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink() || path.dirname(realpathSync(dir)) !== root)
+              throw new Error("unsafe recovery directory");
+          }
+          const allowed = new Set([PENDING_FILE, METADATA_FILE, KEY_FILE, CERT_FILE, SERVER_CA_FILE]);
+          for (const name of readdirSync(this.deviceDir)) {
+            const file = path.join(this.deviceDir, name);
+            const stat = lstatSync(file);
+            if (!allowed.has(name) || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_RESPONSE_BYTES)
+              throw new Error("unsafe recovery material");
+          }
+          if (JSON.parse(readFileSync(this.metadataPath, "utf8")).deviceId !== deviceId)
+            throw new Error("device identity changed");
+        };
+        try { mkdirSync(backups, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+        validate();
+        await this.cloudAuth.resetRevokedEnrollment({
+          deviceId,
+          config: { origin: this.release.apiOrigin, caPath: this.serverCaPath, certPath: this.certPath, keyPath: this.keyPath, p12Path: null },
+          archive: () => {
+            validate();
+            chmodSync(backups, 0o700);
+            chmodSync(this.deviceDir, 0o700);
+            for (const name of readdirSync(this.deviceDir)) chmodSync(path.join(this.deviceDir, name), 0o600);
+            renameSync(this.deviceDir, backup);
+            this.metadata = null;
+          },
+        }, { operation });
+        return { recovered: true, state: { ...this.cloudAuth.getState(), enrollment: this.getStatus() } };
+      } catch (error) {
+        throw error instanceof CloudAuthError ? error : fail("DEVICE_RECOVERY_UNSAFE", "本机材料未完成安全备份，已停止恢复；请联系管理员", { kind: "config", status: 409 });
+      }
+    };
+    this.inflight = run().finally(() => {
+      this.cloudAuth.endOperation(operation);
+      if (this.operation === operation) this.operation = null;
+      this.recovering = false;
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
   async enroll({ openingCode, password, deviceName } = {}) {
+    if (this.recovering) throw fail("DEVICE_RECOVERY_BUSY", "本机设备恢复正在进行", { kind: "config", status: 409 });
     const code = normalizeOpeningCode(openingCode);
     if (!code) throw fail("INVALID_REQUEST", "开通码格式不正确", { kind: "config", status: 400 });
-    if (typeof password !== "string" || password.length < 1 || password.length > 512)
-      throw fail("INVALID_REQUEST", "请输入账户密码", { kind: "config", status: 400 });
+    if (typeof password !== "string" || password.length < 1 || Buffer.byteLength(password, "utf8") > 72)
+      throw fail("ENROLLMENT_PASSWORD_INVALID", "账户密码不能为空且不能超过 72 个 UTF-8 字节", { kind: "config", status: 400 });
     const name = normalizeDeviceName(deviceName);
     if (!name) throw fail("INVALID_REQUEST", "设备名称不合法", { kind: "config", status: 400 });
 

@@ -94,6 +94,10 @@ export async function startEnrollmentMock({ san = "IP:127.0.0.1,DNS:localhost" }
     truncateNext: false,
     noLengthNext: false,
     closed: false,
+    revokedDevices: new Set(),
+    recoveryCalls: [],
+    recoveryDelayMs: 0,
+    recoveryFailure: null,
   };
   const deviceCounter = { n: 0 };
 
@@ -252,6 +256,14 @@ export async function startEnrollmentMock({ san = "IP:127.0.0.1,DNS:localhost" }
         }
       }
       const account = state.accounts.get(binding.username || "alice");
+      if (req.url === "/api/v1/auth/device-recovery") {
+        state.recoveryCalls.push({ deviceId: body.deviceId, authorization: req.headers.authorization || null });
+        if (state.recoveryDelayMs) await new Promise(resolve => setTimeout(resolve, state.recoveryDelayMs));
+        if (state.recoveryFailure) return json(res, state.recoveryFailure.status, { code: state.recoveryFailure.code });
+        if (body.deviceId !== deviceId) return json(res, 401, { code: "UNAUTHORIZED" });
+        if (!state.revokedDevices.has(deviceId)) return json(res, 409, { code: "DEVICE_NOT_REVOKED" });
+        return json(res, 200, { code: "OK", data: { deviceId, revoked: true } });
+      }
       if (req.url === "/api/v1/auth/activate") {
         if (!binding.activationToken || body.activationToken !== binding.activationToken)
           return json(res, 401, { code: "UNAUTHORIZED" });

@@ -19,6 +19,36 @@ import { startManagementCloud } from "./cloud-management-mock.mjs";
 
 const PASSWORD = "correct horse battery staple";
 
+test("管理员设备适配只发固定路由与允许字段，并过滤云端敏感扩展", async () => {
+  const calls = [];
+  const cloudAuth = {
+    epoch: 0,
+    getState: () => ({ state: "logged-in" }),
+    proxy: async (method, route, options) => {
+      calls.push({ method, route, options });
+      if (method === "POST") return null;
+      return { items: [{ id: "device-one", name: "Synthetic", state: "PENDING", certificateFingerprint: "private", token: "private" }], total: 1, limit: 20, offset: 0 };
+    },
+  };
+  const mgmt = new CloudManagement({}, { cloudAuth });
+  const page = await mgmt.accountDevices("account-one", { deviceId: "device-one", limit: 20 });
+  assert.equal(page.items[0].id, "device-one");
+  assert.equal("certificateFingerprint" in page.items[0], false);
+  assert.equal("token" in page.items[0], false);
+  assert.equal(calls[0].route, "/accounts/account-one/devices?limit=20&offset=0&deviceId=device-one");
+  await mgmt.revokeAccountDevice("account-one", "device-one", { currentPassword: PASSWORD, expectedState: "PENDING", expectedSecurityVersion: 0 });
+  assert.equal(calls[1].method, "POST");
+  assert.equal(calls[1].route, "/accounts/account-one/devices/device-one/revoke");
+  assert.deepEqual(calls[1].options.body, { currentPassword: PASSWORD, expectedState: "PENDING", expectedSecurityVersion: 0 });
+  for (const payload of [
+    { currentPassword: PASSWORD, expectedState: "PENDING", expectedSecurityVersion: 0, superAdmin: true },
+    { currentPassword: PASSWORD, expectedState: "UNKNOWN", expectedSecurityVersion: 0 },
+    { currentPassword: PASSWORD, expectedState: "ACTIVE", expectedSecurityVersion: -1 },
+  ]) await assert.rejects(mgmt.revokeAccountDevice("account-one", "device-one", payload), error => error.code === "INVALID_REQUEST");
+  await assert.rejects(mgmt.accountDevices("../escape", {}), error => error.code === "INVALID_REQUEST");
+  assert.equal(calls.length, 2);
+});
+
 async function setup(t, { as = "owner", cert = "clientOwner" } = {}) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "shiguang-management-")));
   const lib = await new Library(path.join(base, "data")).init();

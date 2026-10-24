@@ -8,6 +8,7 @@ import {
   Copy,
   KeyRound,
   LoaderCircle,
+  Monitor,
   Plus,
   RefreshCw,
   Save,
@@ -1368,6 +1369,108 @@ function GroupsPanel({
   );
 }
 
+function AccountDevices({ account, request, guard, onAuthFailure, onClose }: {
+  account: Account;
+  request: LocalRequest;
+  guard: <T>(task: () => Promise<T>) => Promise<T>;
+  onAuthFailure: (failure: unknown) => string;
+  onClose: () => void;
+}) {
+  const [page, setPage] = useState<Page<Device> | null>(null);
+  const [readFailure, setReadFailure] = useState<{ message: string; detail: string } | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [current, setCurrent] = useState(account);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Device | null>(null);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  async function load(offset = 0) {
+    setBusy(true);
+    setError("");
+    setReadFailure(null);
+    setPage(null);
+    setSelected(null);
+    setPassword("");
+    try {
+      const fresh = await guard(() => request<Account>(`/cloud-management/accounts/${account.id}`));
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+      if (query.trim()) params.set("deviceId", query.trim());
+      const result = await guard(() => request<Page<Device>>(`/cloud-management/accounts/${account.id}/devices?${params}`));
+      setCurrent(fresh);
+      setPage(result);
+    } catch (failure) {
+      const info = failure as CloudLastError;
+      const code = /^[A-Z][A-Z0-9_]{1,63}$/.test(info?.code || "") ? info.code : "";
+      const status = typeof info?.status === "number" && info.status >= 400 && info.status <= 599 ? `HTTP ${info.status}` : "";
+      setReadFailure({ message: onAuthFailure(failure), detail: [status, code].filter(Boolean).join(" · ") });
+    }
+    finally { setBusy(false); }
+  }
+  useEffect(() => { void load(); }, [account.id]);
+  async function revoke(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || busy || !password) return;
+    const target = selected;
+    const currentPassword = password;
+    setPassword("");
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      await guard(() => request(`/cloud-management/accounts/${account.id}/devices/${target.id}/revoke`, {
+        currentPassword, expectedSecurityVersion: current.securityVersion, expectedState: target.state,
+      }));
+      await load(page?.offset || 0);
+      setSuccess("设备已撤销，账户及素材已保留。用户可在原电脑重新开通。");
+    } catch (failure) { setError(onAuthFailure(failure)); }
+    finally { setBusy(false); }
+  }
+  return (
+    <dialog ref={dialog} className="cw-device-dialog" aria-label="账户设备管理" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
+      <header className="cw-device-head">
+        <span className="cw-device-symbol"><Monitor size={21} /></span>
+        <div><h2>设备管理</h2><p>{account.displayName || account.username} <span>@{account.username}</span></p></div>
+        <button type="button" className="plain cw-device-icon" aria-label="关闭设备管理" title="关闭设备管理" disabled={busy} onClick={onClose}><X size={18} /></button>
+      </header>
+      <form className="cw-device-toolbar" onSubmit={event => { event.preventDefault(); void load(); }}>
+        <div className="cw-device-search"><Search size={16} /><input aria-label="精确查找设备 ID" value={query} maxLength={64} disabled={busy} onChange={event => setQuery(event.target.value)} placeholder="输入完整设备 ID" /></div>
+        <button type="submit" className="plain" disabled={busy}>查询</button>
+        <button type="button" className="plain cw-device-icon" aria-label="刷新设备列表" title="刷新设备列表" disabled={busy} onClick={() => void load(page?.offset || 0)}><RefreshCw size={16} className={busy ? "spin" : ""} /></button>
+      </form>
+      <div className="cw-device-scroll" aria-busy={busy}>
+        <Notice error={error} success={success} />
+        {readFailure ? <div className="cw-device-state" role="alert">
+          <span className="cw-device-state-icon"><AlertTriangle size={26} /></span>
+          <h3>设备列表暂不可用</h3><p>{readFailure.message}</p>
+          {readFailure.detail && <code>{readFailure.detail}</code>}
+          <button type="button" className="plain" disabled={busy} onClick={() => void load()}><RefreshCw size={14} />重新读取</button>
+        </div> : !page ? <div className="cw-device-state" role="status"><LoaderCircle size={24} className="spin" /><p>正在读取设备…</p></div> : !page.items.length ? <div className="cw-device-state"><Monitor size={28} /><h3>没有匹配的设备</h3><p>{query.trim() ? "请核对设备 ID 后重新查询。" : "该账户尚无已登记设备。"}</p></div> : <ul className="cw-device-list">
+          {page.items.map(device => <li key={device.id}>
+            <div className="cw-device-row-title"><Monitor size={18} /><strong>{device.name}</strong><Badge kind={device.state === "ACTIVE" ? "ok" : device.state === "REVOKED" ? "muted" : "warn"}>{stateText(device.state)}</Badge></div>
+            <div className="cw-device-id"><code>{device.id}</code><button type="button" className="plain cw-device-icon" aria-label="复制设备 ID" title="复制设备 ID" onClick={() => void navigator.clipboard.writeText(device.id).catch(() => setError("复制失败，请手动选中设备 ID"))}><Copy size={13} /></button></div>
+            <dl className="cw-device-dates"><div><dt>登记时间</dt><dd>{displayTime(device.createdAt)}</dd></div><div><dt>证书到期</dt><dd>{displayTime(device.certificateExpiresAt)}</dd></div></dl>
+            {["PENDING", "ACTIVE"].includes(device.state) && selected?.id !== device.id && <button type="button" className="text-button cw-device-revoke" disabled={busy} onClick={() => { setSelected(device); setPassword(""); setSuccess(""); }}><UserMinus size={14} />撤销设备</button>}
+            {selected?.id === device.id && <form className="cw-device-confirm" onSubmit={event => void revoke(event)}>
+              <div className="cw-device-confirm-title"><AlertTriangle size={16} /><strong>确认撤销此设备？</strong></div>
+              <p>会话、关联开通码和激活凭证将失效，账户与素材不受影响。</p>
+              <label>超级管理员密码<input type="password" autoComplete="current-password" aria-label="撤销设备的管理员密码" value={password} disabled={busy} onChange={event => setPassword(event.target.value)} /></label>
+              <div className="cw-device-confirm-actions"><button type="button" className="plain" disabled={busy} onClick={() => { setSelected(null); setPassword(""); }}>取消</button><button type="submit" className="plain cw-device-danger" disabled={busy || !password}>{busy ? <LoaderCircle size={14} className="spin" /> : <UserMinus size={14} />}确认撤销</button></div>
+            </form>}
+          </li>)}
+        </ul>}
+      </div>
+      {page && <footer className="cw-device-footer"><span>共 {page.total} 台设备</span><div><button type="button" className="plain cw-device-icon" aria-label="设备上一页" title="上一页" disabled={busy || page.offset === 0} onClick={() => void load(Math.max(0, page.offset - PAGE_SIZE))}><ChevronLeft size={16} /></button><span>{Math.floor(page.offset / PAGE_SIZE) + 1} / {Math.max(1, Math.ceil(page.total / PAGE_SIZE))}</span><button type="button" className="plain cw-device-icon" aria-label="设备下一页" title="下一页" disabled={busy || page.offset + page.limit >= page.total} onClick={() => void load(page.offset + PAGE_SIZE)}><ChevronRight size={16} /></button></div></footer>}
+    </dialog>
+  );
+}
+
 function AccountsPanel({
   capabilities,
   request,
@@ -1393,6 +1496,7 @@ function AccountsPanel({
   const [newDisplayName, setNewDisplayName] = useState("");
   const [confirmState, setConfirmState] = useState<{ account: Account; enable: boolean; emergency: boolean } | null>(null);
   const [resetFor, setResetFor] = useState<Account | null>(null);
+  const [devicesFor, setDevicesFor] = useState<Account | null>(null);
   const [ownerPassword, setOwnerPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -1506,13 +1610,13 @@ function AccountsPanel({
   }
 
   return (
-    <section className="cw-panel" aria-label="账户管理">
+    <section className="cw-panel cw-accounts-panel" aria-label="账户管理">
       <div className="cw-pagebar">
         <div className="cw-pagebar-title">
           <h2>账户管理</h2>
           <p>
             {canRead
-              ? `${page.total} 个账户 · 第 ${Math.floor(offset / PAGE_SIZE) + 1} 页 · 停用/重置等敏感操作需二次确认`
+              ? `${page.total} 个账户`
               : "当前角色仅可创建待激活账户，不读取全局列表"}
           </p>
         </div>
@@ -1560,7 +1664,6 @@ function AccountsPanel({
           <button type="submit" className="plain" disabled={loading}>
             <Search size={14} /> 搜索
           </button>
-          <span className="cw-filter-hint">搜索按云端现有权限范围返回，不缓存账户资料。</span>
         </form>
       )}
 
@@ -1715,6 +1818,7 @@ function AccountsPanel({
         </div>
       )}
 
+      {devicesFor && isOwner && <AccountDevices key={devicesFor.id} account={devicesFor} request={request} guard={guard} onAuthFailure={onAuthFailure} onClose={() => setDevicesFor(null)} />}
       {canRead ? (
         <div className="cw-surface cw-list-surface">
           <div className="cw-list-caption">
@@ -1740,6 +1844,7 @@ function AccountsPanel({
                 <span className="cw-actions">
                   {isOwner && !account.superAdmin && (
                     <>
+                      <button type="button" className="plain" disabled={busy} onClick={() => setDevicesFor(account)}><ShieldCheck size={13} />设备管理</button>
                       {account.state === "ACTIVE" && (
                         <button
                           type="button"

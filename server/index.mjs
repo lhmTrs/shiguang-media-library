@@ -181,25 +181,26 @@ app.use("/api", (req, res, next) => {
   next();
 });
 app.get("/api/mysql", (req, res) => res.json(mysqlStorage.publicState()));
-app.get("/api/cloud-auth/status", (req, res) =>
-  res.json({ ...cloudAuth.getState(), enrollment: deviceEnrollment.getStatus() }),
-);
+const withEnrollment = state => ({ ...state, enrollment: deviceEnrollment.getStatus() });
+app.get("/api/cloud-auth/status", (req, res) => res.json(withEnrollment(cloudAuth.getState())));
 app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => {
   deviceEnrollment.cancel();
-  res.json(await cloudAuth.configure(req.body));
+  res.json(withEnrollment(await cloudAuth.configure(req.body)));
 }));
 app.post("/api/cloud-auth/enroll", asyncRoute(async (req, res) => res.json(await deviceEnrollment.enroll(req.body))));
+app.post("/api/cloud-auth/recover-device", asyncRoute(async (req, res) => res.json(await deviceEnrollment.recover(req.body))));
 app.post("/api/cloud-auth/activate", asyncRoute(async (req, res) => {
   deviceEnrollment.cancel();
-  res.json(await cloudAuth.activate(req.body));
+  res.json(withEnrollment(await cloudAuth.activate(req.body)));
 }));
 app.post("/api/cloud-auth/login", asyncRoute(async (req, res) => {
   deviceEnrollment.cancel();
-  res.json(await cloudAuth.login(req.body));
+  res.json(withEnrollment(await cloudAuth.login(req.body)));
 }));
 app.post("/api/cloud-auth/logout", asyncRoute(async (req, res) => {
   deviceEnrollment.cancel();
-  res.json(await cloudAuth.logout());
+  const result = await cloudAuth.logout();
+  res.json({ ...result, state: withEnrollment(result.state) });
 }));
 
 // 音频分析引擎：默认关闭（503 AUDIO_FEATURE_DISABLED），启用后按需下载/卸载；分析结果存本地 asset_audio
@@ -261,7 +262,10 @@ app.post("/api/assets/:id/analyze-audio", asyncRoute(async (req, res) => {
 app.get("/api/cloud-management/profile", asyncRoute(async (req, res) => res.json(await cloudManagement.profile())));
 app.delete("/api/cloud-management/devices/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.revokeDevice(req.params.id))));
 app.post("/api/cloud-management/password", asyncRoute(async (req, res) => res.json(await cloudManagement.changePassword(req.body))));
-app.post("/api/cloud-management/reset-password", asyncRoute(async (req, res) => res.json(await cloudManagement.resetPassword(req.body))));
+app.post("/api/cloud-management/reset-password", asyncRoute(async (req, res) => {
+  const result = await cloudManagement.resetPassword(req.body);
+  res.json({ ...result, state: withEnrollment(result.state) });
+}));
 app.get("/api/cloud-management/groups", asyncRoute(async (req, res) => res.json(await cloudManagement.groups(req.query))));
 app.get("/api/cloud-management/groups/:id/members", asyncRoute(async (req, res) => res.json(await cloudManagement.members(req.params.id, req.query))));
 app.get("/api/cloud-management/groups/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.group(req.params.id))));
@@ -273,6 +277,8 @@ app.post("/api/cloud-management/groups/:id/leave", asyncRoute(async (req, res) =
 app.post("/api/cloud-management/groups/:id/leader-transfers", asyncRoute(async (req, res) => res.json(await cloudManagement.transferLeader(req.params.id, req.body))));
 app.post("/api/cloud-management/groups/:id/state", asyncRoute(async (req, res) => res.json(await cloudManagement.setGroupState(req.params.id, req.body))));
 app.get("/api/cloud-management/accounts", asyncRoute(async (req, res) => res.json(await cloudManagement.accounts(req.query))));
+app.get("/api/cloud-management/accounts/:id/devices", asyncRoute(async (req, res) => res.json(await cloudManagement.accountDevices(req.params.id, req.query))));
+app.post("/api/cloud-management/accounts/:id/devices/:deviceId/revoke", asyncRoute(async (req, res) => res.json(await cloudManagement.revokeAccountDevice(req.params.id, req.params.deviceId, req.body))));
 app.get("/api/cloud-management/accounts/:id/role-assignments", asyncRoute(async (req, res) => res.json(await cloudManagement.roleAssignments(req.params.id, req.query))));
 app.get("/api/cloud-management/accounts/:id", asyncRoute(async (req, res) => res.json(await cloudManagement.account(req.params.id))));
 app.post("/api/cloud-management/accounts", asyncRoute(async (req, res) => res.json(await cloudManagement.createAccount(req.body))));

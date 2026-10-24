@@ -20,6 +20,7 @@ export type CloudLastError = {
 };
 
 export type EnrollmentStatus = {
+  recoverySupported?: boolean;
   ready: boolean;
   enabled: boolean;
   configured: boolean;
@@ -27,6 +28,8 @@ export type EnrollmentStatus = {
   username: string | null;
   certificateExpiresAt: string | null;
   activated: boolean;
+  activationPending?: boolean;
+  lastSessionErrorCode?: string | null;
   message: string | null;
 };
 
@@ -65,7 +68,7 @@ export type EnrollResult = {
   error?: CloudLastError | null;
 };
 
-export type CloudBusy = "login" | "activate" | "enroll" | "logout" | "reset" | null;
+export type CloudBusy = "login" | "activate" | "enroll" | "logout" | "reset" | "recover" | null;
 
 const STATE_LABELS: Record<string, string> = {
   unconfigured: "未配置",
@@ -101,6 +104,15 @@ export function describeFailure(
   if (code === "ENROLLMENT_UNAVAILABLE") return "本机自动开通尚未就绪，请等待正式发行配置或联系管理员";
   if (code === "DEVICE_ALREADY_ENROLLED") return "本机已经开通，无需重复操作";
   if (code === "DEVICE_KEY_LOST") return "原设备密钥已丢失，需要向管理员重新申请开通码";
+  if (code === "DEVICE_PENDING_IDENTITY_MISMATCH")
+    return "本机存在未完成的开通记录，请使用原开通码和原设备名称重试；如需换码，请联系管理员撤销旧设备并安全重置本机开通材料，不要只删除记录。";
+  if (code === "DEVICE_PENDING_INVALID")
+    return "本机未完成的开通记录与设备材料不一致，已保留原文件；请联系管理员恢复，不要自行删除记录或重新配置云端。";
+  if (code === "DEVICE_NOT_REVOKED") return "云端尚未确认本机设备已撤销，请先让超级管理员在账户管理中撤销此设备；本机材料未清理";
+  if (code === "DEVICE_RECOVERY_UNSAFE") return "本机材料或连接配置异常，安全恢复已停止，请联系管理员；不要手动删除文件";
+  if (code === "DEVICE_RECOVERY_BUSY") return "本机开通操作正在进行，请结束后再恢复";
+  if (code === "DEVICE_RECOVERY_CONFIRM_REQUIRED") return "请确认需要重新开通的本机设备后重试";
+  if (code === "ENROLLMENT_PASSWORD_INVALID") return "账户密码不能为空，且不能超过 72 个 UTF-8 字节；新账户密码还需至少 12 个字符";
   if (code === "DEVICE_LIMIT") return "该账户的设备数量已达上限，请联系管理员";
   if (code === "DEVICE_KEY_REUSED") return "该设备密钥已被使用，请重新开通";
   if (code === "ACCOUNT_ACTIVATION_PENDING") return "该账户已有待激活设备，请联系管理员处理";
@@ -144,6 +156,19 @@ export function describeFailure(
 export function stateLabel(view: CloudAuthView): string {
   if (!view.configured) return STATE_LABELS.unconfigured;
   return STATE_LABELS[view.state] || "状态未知";
+}
+
+export function enrollmentRecovery(result: EnrollResult): { mode: "enroll" | "login"; message: string } {
+  if (result.activationPending) {
+    const reason = result.error?.code === "INVALID_REQUEST"
+      ? "请核对输入：新账户密码至少 12 个字符，且不超过 72 个 UTF-8 字节。"
+      : describeFailure(result.error, "login");
+    return {
+      mode: "enroll",
+      message: `设备材料已保存，但账户激活未完成。${reason} 请使用原开通码和原设备名称重试；若旧码已撤销，请联系管理员处理，勿直接换码。`,
+    };
+  }
+  return { mode: "login", message: `设备已开通，但自动登录未完成。${describeFailure(result.error, "login")} 请使用账户密码登录。` };
 }
 
 export function stateDescription(view: CloudAuthView): string {
@@ -294,7 +319,7 @@ export function useCloudAuth(request: LocalRequest) {
     (openingCode: string, password: string, deviceName: string) =>
       run("enroll", async (generation) => {
         const result = await request<EnrollResult>("/cloud-auth/enroll", { openingCode, password, deviceName });
-        commit(generation, result.state);
+        commit(generation, { ...result.state, ...(result.enrollment ? { enrollment: result.enrollment } : {}) });
         return result;
       }),
     [run, request, commit],
@@ -307,6 +332,15 @@ export function useCloudAuth(request: LocalRequest) {
         commit(generation, result.state);
         return result;
       }),
+    [run, request, commit],
+  );
+
+  const recoverDevice = useCallback(
+    (deviceId: string) => run("recover", async generation => {
+      const result = await request<{ recovered: boolean; state: CloudAuthView }>("/cloud-auth/recover-device", { confirm: true, deviceId });
+      commit(generation, result.state);
+      return result;
+    }),
     [run, request, commit],
   );
 
@@ -342,10 +376,11 @@ export function useCloudAuth(request: LocalRequest) {
       enroll,
       logout,
       resetPassword,
+      recoverDevice,
       readStatus,
       invalidate,
     }),
-    [view, loading, busy, loadError, login, activate, enroll, logout, resetPassword, readStatus, invalidate],
+    [view, loading, busy, loadError, login, activate, enroll, logout, resetPassword, recoverDevice, readStatus, invalidate],
   );
   return controller;
 }
