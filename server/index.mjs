@@ -12,7 +12,15 @@ import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
 import { AudioEngine, isAudioEngineError } from "./audio-engine.mjs";
 import { AudioAnalysis } from "./audio-analysis.mjs";
 import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
+import { CloudAudioUpload, CloudUploadError, manualAudioAdmission } from "./cloud-audio-upload.mjs";
 import { CloudManagement, cloudManagementErrorHandler } from "./cloud-management.mjs";
+import { cloudAudioFeatureEnabled } from "./cloud-audio-feature.mjs";
+import {
+  CloudAudioService,
+  CloudAudioServiceError,
+  CLOUD_AUDIO_DISABLED,
+  CLOUD_AUDIO_MESSAGES,
+} from "./cloud-audio-service.mjs";
 import { loadReleaseConfig } from "./cloud-release-config.mjs";
 import { DeviceEnrollment } from "./device-enrollment.mjs";
 import { Tags } from "./tags.mjs";
@@ -95,6 +103,15 @@ const releaseConfig = await loadReleaseConfig(
 const deviceEnrollment = await new DeviceEnrollment(lib, { dataDir, cloudAuth, release: releaseConfig }).init();
 // T-LOCAL-008：管理接口固定白名单适配；浏览器不能直接决定云端 URL/方法/头。
 const cloudManagement = new CloudManagement(lib, { cloudAuth });
+// Cloud transfers are available by default, but remain manual and authenticated.
+const cloudTransfersEnabled = cloudAudioFeatureEnabled();
+const cloudAudio = await new CloudAudioService(lib, {
+  dataDir,
+  cloudAuth,
+  enabled: cloudTransfersEnabled,
+}).init();
+const cloudUpload = await new CloudAudioUpload(lib, { dataDir, cloudAuth, enabled: cloudTransfersEnabled }).init();
+const cloudTransferAdmission = manualAudioAdmission(() => cloudAudio.status());
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
 const rootRemoval = new RootRemoval(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || missingFiles.active || cacheJobs.size > 0);
@@ -298,6 +315,50 @@ app.delete("/api/cloud-management/role-assignments/:id", asyncRoute(async (req, 
 app.use("/api/cloud-management", cloudManagementErrorHandler);
 // 只回脱敏错误码与提示：不回云端原始 message，不记录令牌/请求体/本机路径；
 // 末端兜住所有异常（不只是 CloudAuthError），避免原生文件/TLS 错误落进通用 error.message 处理器。
+
+// ── 云端音频手动传输（固定白名单；账户权限校验） ─────────────
+function cloudAudioErrorHandler(error, req, res, next) {
+  if (res.headersSent) return next(error);
+  const known = error instanceof CloudAudioServiceError || error instanceof CloudUploadError;
+  const code = known ? error.code : "INTERNAL";
+  const status = known && [400, 401, 403, 404, 409, 413, 423, 429, 500, 502, 503, 504].includes(error.status)
+    ? error.status
+    : 500;
+  if (!known) console.error("[cloud-audio] INTERNAL");
+  else if (status >= 500) console.error(`[cloud-audio] ${code}`);
+  res.status(status).json({
+    error: error instanceof CloudUploadError ? error.message : CLOUD_AUDIO_MESSAGES[code] || CLOUD_AUDIO_MESSAGES.INTERNAL,
+    code,
+  });
+}
+app.get("/api/cloud-audio/status", asyncRoute(async (req, res) => res.json(await cloudAudio.status())));
+app.get("/api/cloud-audio/roots", asyncRoute(async (req, res) => res.json(cloudAudio.roots())));
+app.post("/api/cloud-audio/roots", asyncRoute(async (req, res) => res.json(await cloudAudio.registerRoot(req.body))));
+app.get("/api/cloud-audio/catalog", asyncRoute(async (req, res) => res.json(await cloudAudio.catalog(req.query))));
+app.get("/api/cloud-audio/search", asyncRoute(async (req, res) => res.json(await cloudAudio.search(req.query))));
+app.get("/api/cloud-audio/upload-assets", asyncRoute(async (req, res) => {
+  cloudUpload.guard();
+  const q = req.query.q ?? "";
+  const page = Number(req.query.page ?? 1);
+  if (typeof q !== "string" || q.length > 128 || !Number.isSafeInteger(page) || page < 1 || page > 2000) throw new CloudUploadError("INVALID_REQUEST",400);
+  const match = `%${q.replaceAll("!","!!").replaceAll("%","!%").replaceAll("_","!_")}%`;
+  const where = `kind IN ('music','sfx') AND trashed=0 AND online=1 AND ${lib.nonMissingAssetScope()} AND name LIKE ? ESCAPE '!'`;
+  const total = lib.db.prepare(`SELECT COUNT(*) n FROM assets WHERE ${where}`).get(match).n;
+  const items = lib.db.prepare(`SELECT id,name,kind,category,sub FROM assets WHERE ${where} ORDER BY name,id LIMIT 50 OFFSET ?`).all(match,(page-1)*50);
+  res.json({items,total,page,hasMore:page*50<total});
+}));
+app.get("/api/cloud-audio/uploads", asyncRoute(async (req, res) => res.json(cloudUpload.list())));
+app.post("/api/cloud-audio/uploads", asyncRoute(async (req, res) => res.json(await cloudUpload.prepare(req.body))));
+for (const action of ["request","refresh","reconcile","upload","cancel","forget"]) {
+  app.post(`/api/cloud-audio/uploads/:id/${action}`, asyncRoute(async (req, res) => res.json(await (action === "upload" ? cloudTransferAdmission.upload(() => cloudUpload.action(req.params.id,action)) : cloudUpload.action(req.params.id,action)))));
+}
+app.get("/api/cloud-audio/audio/:id", asyncRoute(async (req, res) => res.json(await cloudAudio.details(req.params.id, req.query))));
+app.get("/api/cloud-audio/jobs", asyncRoute(async (req, res) => res.json(cloudAudio.listJobs())));
+app.get("/api/cloud-audio/jobs/:id", asyncRoute(async (req, res) => res.json(cloudAudio.getJob(req.params.id))));
+app.post("/api/cloud-audio/jobs", asyncRoute(async (req, res) => res.json(await cloudTransferAdmission.download(() => cloudAudio.startDownload(req.body)))));
+app.post("/api/cloud-audio/jobs/:id/cancel", asyncRoute(async (req, res) => res.json(await cloudAudio.cancel(req.params.id))));
+app.post("/api/cloud-audio/jobs/:id/retry", asyncRoute(async (req, res) => res.json(await cloudTransferAdmission.download(() => cloudAudio.retry(req.params.id)))));
+app.use("/api/cloud-audio", cloudAudioErrorHandler);
 app.use("/api/cloud-auth", cloudAuthErrorHandler);
 app.post(
   "/api/mysql/test",

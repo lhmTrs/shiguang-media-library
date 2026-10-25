@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { describeFailure, displayTime, type CloudAuthController, type CloudLastError } from "./cloud-auth";
+import { CloudAudioDownload } from "./CloudAudioDownload";
 import type { LocalRequest } from "./OpenAISettings";
 
 /**
@@ -274,7 +275,7 @@ export function CloudWorkspace({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"security" | "groups" | "accounts" | "roles" | "audit">("security");
+  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit">("security");
   const generation = useRef(0);
   /** 只读最新 controller，避免把整个 auth 对象放进 effect 依赖导致父级重渲染即重取。 */
   const authRef = useRef(auth);
@@ -368,6 +369,7 @@ export function CloudWorkspace({
     const list: { id: typeof tab; label: string }[] = [
       { id: "security", label: "个人安全" },
       { id: "groups", label: "小组与成员" },
+      { id: "audio", label: "云端音频" },
     ];
     if (system.has("account:read") || system.has("account:create"))
       list.push({ id: "accounts", label: "账户管理" });
@@ -489,6 +491,7 @@ export function CloudWorkspace({
                 reloadProfile={loadProfile}
               />
             )}
+            {tab === "audio" && <CloudAudioDownload request={request} />}
             {tab === "accounts" && (
               <AccountsPanel
                 capabilities={profile.capabilities}

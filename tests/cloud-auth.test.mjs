@@ -615,3 +615,121 @@ async function freePort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
+
+// ── T-LOCAL-014B：音频内容流复用同一 mTLS 池、epoch 中止、固定 UUID ─────
+
+function collect(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let ended = false;
+    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on("error", reject);
+    stream.on("end", () => {
+      ended = true;
+      resolve(Buffer.concat(chunks));
+    });
+    stream.on("close", () => {
+      if (!ended) reject(new Error("stream closed"));
+    });
+  });
+}
+
+test("音频内容流：连续三次下载只握手一次，字节与声明长度一致", async (t) => {
+  const { auth, configure, cloud } = await setup(t);
+  await configure();
+  await auth.login({ username: "alice", password: PASSWORD });
+  const catalog = await auth.proxy("GET", "/media/audio/catalog?limit=50&offset=0");
+  assert.equal(catalog.items.length, 1);
+  const details = await auth.proxy("GET", `/media/audio/${cloud.audio.audioId}?limit=50&offset=0`);
+  assert.equal(details.shares.length, 1);
+  const base = cloud.secureConnections();
+  for (let i = 0; i < 3; i += 1) {
+    const opened = await auth.openAudioContentStream(cloud.audio.audioId);
+    assert.equal(opened.status, 200);
+    assert.equal(opened.headers["content-type"], "audio/wav");
+    assert.equal(Number(opened.headers["content-length"]), cloud.audio.bytes.length);
+    const received = await collect(opened.body);
+    assert.equal(received.length, cloud.audio.bytes.length);
+    assert.equal(crypto.createHash("sha256").update(received).digest("hex"), cloud.audio.sha256);
+  }
+  assert.equal(cloud.secureConnections(), base, "顺序下载必须复用同一套 TLS 池，不得每请求握手");
+  assert.equal(cloud.counts.audioContent, 3);
+});
+
+test("音频内容流：logout/config 变化中止在途流；旧 epoch 不能复用新会话", async (t) => {
+  const { auth, configure, cloud } = await setup(t);
+  await configure();
+  await auth.login({ username: "alice", password: PASSWORD });
+  cloud.flags.audioStall = true;
+  const opened = await auth.openAudioContentStream(cloud.audio.audioId);
+  const reading = collect(opened.body);
+  reading.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const stale = auth.epoch;
+  const logout = await auth.logout();
+  assert.equal(logout.localLoggedOut, true);
+  await assert.rejects(reading, "logout 后旧流必须被中止");
+  assert.notEqual(auth.epoch, stale);
+  await assert.rejects(
+    () => auth.openAudioContentStream(cloud.audio.audioId, { epoch: stale }),
+    (error) => error.code === "STALE",
+  );
+
+  // 重新登录后旧 epoch 仍不能下载，新会话正常。
+  await configure();
+  await auth.login({ username: "alice", password: PASSWORD });
+  await assert.rejects(
+    () => auth.openAudioContentStream(cloud.audio.audioId, { epoch: stale }),
+    (error) => error.code === "STALE",
+  );
+  cloud.flags.audioStall = false;
+  const fresh = await auth.openAudioContentStream(cloud.audio.audioId);
+  assert.equal(fresh.status, 200);
+  assert.equal((await collect(fresh.body)).length, cloud.audio.bytes.length);
+
+  // 配置身份变化（换成另一张设备证书）同样中止在途流。
+  cloud.flags.audioStall = true;
+  const second = await auth.openAudioContentStream(cloud.audio.audioId);
+  const secondReading = collect(second.body);
+  secondReading.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await auth.configure({ certPath: cloud.clientCertB, keyPath: cloud.clientKeyB });
+  await assert.rejects(secondReading, "身份变化后旧流必须被中止");
+  cloud.flags.audioStall = false;
+});
+
+test("音频内容流：只接受规范小写 UUID，非法标识不发请求", async (t) => {
+  const { auth, configure, cloud } = await setup(t);
+  await configure();
+  await auth.login({ username: "alice", password: PASSWORD });
+  const before = cloud.counts.audioContent;
+  for (const bad of ["../catalog", "11111111-2222-4333-8444-55555555555Z", "", null])
+    await assert.rejects(
+      () => auth.openAudioContentStream(bad),
+      (error) => error.code === "INVALID_REQUEST",
+    );
+  assert.equal(cloud.counts.audioContent, before);
+});
+
+test("音频内容流：响应头之后 abort 仍会销毁实际 body 并只清理一次", async (t) => {
+  const { auth, configure, cloud } = await setup(t);
+  await configure();
+  await auth.login({ username: "alice", password: PASSWORD });
+  const base = cloud.secureConnections();
+  cloud.flags.audioStall = true;
+  const controller = new AbortController();
+  const opened = await auth.openAudioContentStream(cloud.audio.audioId, { signal: controller.signal });
+  const body = opened.body;
+  let errors = 0;
+  body.on("error", () => { errors += 1; });
+  body.resume();
+  assert.equal(body.destroyed, false);
+  controller.abort();
+  const deadline = Date.now() + 3000;
+  while (!body.destroyed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(body.destroyed, true, "abort 必须停止已打开 body，而不是只在 fetch 头阶段生效");
+  assert.ok(errors <= 1, "body 不应重复收到取消错误");
+  assert.equal(auth.activeRequests ? auth.activeRequests.size : 0, 0);
+  assert.equal(cloud.secureConnections(), base, "取消不应改变身份池的握手计数");
+  cloud.flags.audioStall = false;
+});

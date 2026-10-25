@@ -73,7 +73,27 @@ export async function startMockCloud() {
   const activations = new Map(); // token -> { username, deviceFp, expiresAt }
   const sessions = new Map(); // id -> { accountId, deviceId, fp, refreshHash, used:Set, revoked, expiresAt }
   const accessTokens = new Map(); // jwt-ish -> sessionId
-  const counts = { login: 0, activate: 0, refresh: 0, logout: 0, me: 0 };
+  const counts = { login: 0, activate: 0, refresh: 0, logout: 0, me: 0, audioCatalog: 0, audioDetails: 0, audioContent: 0 };
+  const audioId = "11111111-2222-4333-8444-555555555555";
+  const shareId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const audioBytes = (() => {
+    const data = Buffer.alloc(4096, 7);
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + data.length, 4);
+    header.write("WAVEfmt ", 8);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(8000, 24);
+    header.writeUInt32LE(16000, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(data.length, 40);
+    return Buffer.concat([header, data]);
+  })();
+  const audioSha = crypto.createHash("sha256").update(audioBytes).digest("hex");
   const flags = {
     dropRefreshResponse: false,
     rateLimitRefresh: false,
@@ -81,6 +101,9 @@ export async function startMockCloud() {
     partialRefreshResponse: false,
     stallRefreshResponse: false,
     oversizeRefreshResponse: false,
+    audioStall: false,
+    audioWrongLength: false,
+    audioStatus: 200,
   };
   // 测试可控闸门：刷新已消费并轮换令牌、但客户端还没收到响应时暂停
   let refreshGate = null;
@@ -237,6 +260,75 @@ export async function startMockCloud() {
         return ok(res, null);
       }
 
+      if (route === "GET /media/audio/catalog") {
+        counts.audioCatalog++;
+        const sid = bearer(req);
+        const session = sid && sessions.get(sid);
+        if (!session || session.revoked || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "会话无效");
+        return ok(res, {
+          items: [{
+            id: audioId,
+            sha256: audioSha,
+            bytes: audioBytes.length,
+            contentType: "audio/wav",
+            createdAt: new Date(0).toISOString(),
+            preferredShareId: shareId,
+            ownerAccountId: session.accountId,
+            fileName: "测试音频.wav",
+            mediaKind: "SFX",
+            category: "音效",
+            subcategory: "环境",
+            visibleShareCount: 1,
+          }],
+          hasMore: false,
+        });
+      }
+
+      if (route === `GET /media/audio/${audioId}`) {
+        counts.audioDetails++;
+        const sid = bearer(req);
+        const session = sid && sessions.get(sid);
+        if (!session || session.revoked || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "会话无效");
+        return ok(res, {
+          audio: {
+            id: audioId,
+            sha256: audioSha,
+            bytes: audioBytes.length,
+            contentType: "audio/wav",
+            createdAt: new Date(0).toISOString(),
+          },
+          shares: [{
+            id: shareId,
+            ownerAccountId: session.accountId,
+            fileName: "测试音频.wav",
+            mediaKind: "SFX",
+            category: "音效",
+            subcategory: "环境",
+            createdAt: new Date(0).toISOString(),
+            version: 0,
+          }],
+        });
+      }
+
+      if (route === `GET /media/audio/${audioId}/content`) {
+        counts.audioContent++;
+        const sid = bearer(req);
+        const session = sid && sessions.get(sid);
+        if (!session || session.revoked || session.fp !== fp) return fail(res, 401, "UNAUTHORIZED", "会话无效");
+        if (flags.audioStatus !== 200) return fail(res, flags.audioStatus, "AUDIO_STATE_CHANGED", "不可下载");
+        res.writeHead(200, {
+          "content-type": "audio/wav",
+          "content-length": String(audioBytes.length + (flags.audioWrongLength ? 8 : 0)),
+          "cache-control": "private, no-store",
+        });
+        if (flags.audioStall) {
+          res.write(audioBytes.subarray(0, Math.floor(audioBytes.length / 2)));
+          return;
+        }
+        res.end(audioBytes);
+        return;
+      }
+
       if (route === "GET /me") {
         counts.me++;
         const sid = bearer(req);
@@ -277,6 +369,7 @@ export async function startMockCloud() {
     clientUntrustedKey: clientUntrusted.key,
     counts,
     flags,
+    audio: { audioId, shareId, bytes: audioBytes, sha256: audioSha },
     /** 本 mock 接受的 TLS 握手总数（keep-alive 复用回归用） */
     secureConnections: () => secureConnections,
     /** 登记一个账户 + 绑定设备证书（测试夹具用，等价于云端离线登记工具） */

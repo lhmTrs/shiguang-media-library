@@ -159,6 +159,8 @@ const PUBLIC_MESSAGES = {
   FORBIDDEN: "没有执行该操作的权限",
 };
 
+const AUDIO_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const nowIso = (ms) => new Date(ms).toISOString();
 
 export class CloudAuth {
@@ -405,6 +407,49 @@ export class CloudAuth {
     const token = bearer ? await this.#access(epoch) : null;
     if (epoch !== this.epoch) throw this.#staleError();
     return this.#request(method, pathname, { body, bearer: token, epoch });
+  }
+
+  /**
+   * T-LOCAL-014B：固定的音频内容流方法（GET /media/audio/{id}/content）。
+   *
+   * 只接受规范小写 UUID 与调用方捕获的 epoch；不接受 URL/头/证书/令牌参数。
+   * 成功后返回 {status, headers, body}，body 是未解码的 Node Readable，由调用方
+   * 负责消费/销毁；本方法不读取、不缓冲、不 base64、不跟随重定向。
+   * 与普通 JSON 请求共用同一套 TLS 材料、同一个有界 keep-alive 池和 epoch 中止集合：
+   * logout/configure/换设备会 abort 正在传输的流，旧 epoch 不能拿新会话继续下载。
+   */
+  async openAudioContentStream(audioId, { epoch = this.epoch, signal = null } = {}) {
+    if (typeof audioId !== "string" || !AUDIO_ID_RE.test(audioId))
+      throw new CloudAuthError("音频标识不合法", { kind: "config", code: "INVALID_REQUEST" });
+    if (epoch !== this.epoch) throw this.#staleError();
+    if (signal !== null) {
+      const valid =
+        typeof signal === "object" &&
+        typeof signal.aborted === "boolean" &&
+        typeof signal.addEventListener === "function" &&
+        typeof signal.removeEventListener === "function";
+      if (!valid) throw new CloudAuthError("下载取消信号不合法", { kind: "config", code: "INVALID_REQUEST" });
+      if (signal.aborted) throw new CloudAuthError("下载已取消", { kind: "network", code: "ABORTED" });
+    }
+    const token = await this.#access(epoch);
+    if (epoch !== this.epoch) throw this.#staleError();
+    if (signal !== null && signal.aborted) throw new CloudAuthError("下载已取消", { kind: "network", code: "ABORTED" });
+    return this.#requestStream(`/media/audio/${audioId}/content`, { bearer: token, epoch, signal });
+  }
+
+  // Fixed raw PUT; only a trusted local snapshot stream is accepted, never browser URLs/headers.
+  async uploadAudioContent(requestId, { source, bytes, epoch = this.epoch, signal = null } = {}) {
+    if (!AUDIO_ID_RE.test(requestId || "") || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > 256_000_000
+      || !source || typeof source.pipe !== "function") throw new CloudAuthError("上传参数不合法", { code: "INVALID_REQUEST" });
+    // Own errors from the moment the caller hands us the stream, including TLS/access awaits.
+    source.on("error", () => {});
+    try {
+      if (epoch !== this.epoch) throw this.#staleError();
+      const token = await this.#access(epoch);
+      return await this.#request("PUT", `/media/upload-requests/${requestId}/content`, {
+        bearer: token, epoch, rawUpload: { source, bytes, signal },
+      });
+    } finally { source.destroy(); }
   }
 
   /**
@@ -731,7 +776,7 @@ export class CloudAuth {
     }
   }
 
-  async #request(method, pathname, { body = null, bearer = null, epoch = this.epoch } = {}) {
+  async #request(method, pathname, { body = null, bearer = null, epoch = this.epoch, rawUpload = null } = {}) {
     if (epoch !== this.epoch) throw this.#staleError();
     if (!this.config) throw new CloudAuthError("云端连接尚未配置", { kind: "config" });
     const url = new URL(API_PREFIX + pathname, this.config.origin);
@@ -743,6 +788,10 @@ export class CloudAuth {
       payload = Buffer.from(JSON.stringify(body), "utf8");
       headers["content-type"] = "application/json";
       headers["content-length"] = String(payload.length);
+    }
+    if (rawUpload) {
+      headers["content-type"] = "application/octet-stream";
+      headers["content-length"] = String(rawUpload.bytes);
     }
     let tls;
     let agent;
@@ -756,6 +805,7 @@ export class CloudAuth {
       throw e instanceof CloudAuthError ? e : new CloudAuthError(PUBLIC_MESSAGES.CERT_INVALID, { kind: "cert", code: "CERT_INVALID", cause: e });
     }
     if (epoch !== this.epoch) throw this.#staleError();
+    if (rawUpload?.source.errored) throw this.#classify(rawUpload.source.errored);
 
     return await new Promise((resolve, reject) => {
       let settled = false;
@@ -770,8 +820,12 @@ export class CloudAuth {
           }
         },
       };
+      const cancelUpload = () => entry.abort(new CloudAuthError("上传结果需要核对", { code: "ABORTED", kind: "network" }));
+      const sourceError = error => { req?.destroy(error); fail(error); };
       this.activeRequests.add(entry);
       const cleanup = () => {
+        rawUpload?.signal?.removeEventListener("abort", cancelUpload);
+        if (rawUpload) { rawUpload.source.destroy(); if (!req?.writableFinished) req?.destroy(); }
         if (deadline) {
           clearTimeout(deadline);
           deadline = null;
@@ -814,6 +868,7 @@ export class CloudAuth {
           } catch {
             return fail(new CloudAuthError("云端响应无法解析", { kind: "cloud", status: res.statusCode }));
           }
+          if (rawUpload && !req.writableFinished) return fail(new CloudAuthError(PUBLIC_MESSAGES.RESPONSE_INCOMPLETE, { kind: "network", code: "RESPONSE_INCOMPLETE" }));
           if (res.statusCode >= 200 && res.statusCode < 300 && parsed?.code === "OK") return succeed(parsed.data ?? null);
           const retryHeader = res.headers["retry-after"];
           const retryAfterMs =
@@ -873,14 +928,165 @@ export class CloudAuth {
           /* 已结束 */
         }
         fail(error);
-      }, Math.max(1, Number(this.timeoutMs) || 15_000));
+      }, rawUpload ? 300_000 : Math.max(1, Number(this.timeoutMs) || 15_000));
       req.on("timeout", () => {
         const error = new CloudAuthError(PUBLIC_MESSAGES.REQUEST_TIMEOUT, { kind: "timeout", code: "REQUEST_TIMEOUT" });
         req.destroy(error);
         fail(error);
       });
       req.on("error", (e) => fail(e));
-      if (payload) req.write(payload);
+      if (rawUpload) {
+        rawUpload.source.on("error", sourceError);
+        rawUpload.signal?.addEventListener("abort", cancelUpload, { once: true });
+        if (rawUpload.signal?.aborted) cancelUpload();
+        else rawUpload.source.pipe(req);
+      } else { if (payload) req.write(payload); req.end(); }
+    });
+  }
+
+  /**
+   * 原始流请求：响应头到了就 resolve，body 原样交给调用方；不解析 JSON、不设 utf8。
+   * 请求仍登记在 activeRequests 中，直到响应体 close；epoch 失效时主动 destroy。
+   */
+  async #requestStream(pathname, { bearer, epoch, signal }) {
+    if (epoch !== this.epoch) throw this.#staleError();
+    if (!this.config) throw new CloudAuthError("云端连接尚未配置", { kind: "config" });
+    const url = new URL(API_PREFIX + pathname, this.config.origin);
+    if (url.protocol !== "https:") throw new CloudAuthError("云端地址必须使用 HTTPS", { kind: "config" });
+    let tls;
+    let agent;
+    try {
+      const prepared = await this.#tlsOptions();
+      tls = prepared.options;
+      if (epoch !== this.epoch) throw this.#staleError();
+      agent = this.#agentFor(prepared.key);
+    } catch (e) {
+      throw e instanceof CloudAuthError ? e : new CloudAuthError(PUBLIC_MESSAGES.CERT_INVALID, { kind: "cert", code: "CERT_INVALID", cause: e });
+    }
+    if (epoch !== this.epoch) throw this.#staleError();
+    if (signal !== null && signal.aborted) throw new CloudAuthError("下载已取消", { kind: "network", code: "ABORTED" });
+
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      let req = null;
+      let res = null;
+      let headerTimer = null;
+      const entry = {
+        abort: () => {
+          const error = this.#staleError();
+          try {
+            req?.destroy(error);
+          } catch {
+            /* 已结束 */
+          }
+          try {
+            res?.destroy(error);
+          } catch {
+            /* 已结束 */
+          }
+        },
+      };
+      this.activeRequests.add(entry);
+      const clearHeaderTimer = () => {
+        if (headerTimer) {
+          clearTimeout(headerTimer);
+          headerTimer = null;
+        }
+      };
+      const detachSignal = () => {
+        if (signal !== null) signal.removeEventListener("abort", onSignalAbort);
+      };
+      const finish = () => {
+        clearHeaderTimer();
+        detachSignal();
+        this.activeRequests.delete(entry);
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        finish();
+        reject(error instanceof CloudAuthError ? error : this.#classify(error));
+      };
+      const succeed = (value) => {
+        if (settled) return;
+        settled = true;
+        // 只清响应头截止计时；signal 必须保留到 body close/error/end，否则
+        // 调用者在响应头之后 abort 无法停止已打开的响应体。
+        clearHeaderTimer();
+        resolve(value);
+      };
+      const onSignalAbort = () => {
+        const error = new CloudAuthError("下载已取消", { kind: "network", code: "ABORTED" });
+        try {
+          req?.destroy(error);
+        } catch {
+          /* 已结束 */
+        }
+        try {
+          res?.destroy(error);
+        } catch {
+          /* 已结束 */
+        }
+        if (settled) {
+          // 已经 resolve 后，错误通过 body 的 error/close 传递；这里主动释放
+          // 监听与 activeRequests，避免 body 不合作时残留。
+          finish();
+          return;
+        }
+        fail(error);
+      };
+
+      if (signal !== null) {
+        signal.addEventListener("abort", onSignalAbort, { once: true });
+        if (signal.aborted) {
+          onSignalAbort();
+          return;
+        }
+      }
+      try {
+        req = https.request(
+          url,
+          {
+            method: "GET",
+            headers: { accept: "audio/*", authorization: `Bearer ${bearer}` },
+            ...tls,
+            rejectUnauthorized: true,
+            agent,
+          },
+          (incoming) => {
+            if (settled || epoch !== this.epoch) {
+              incoming.destroy();
+              if (epoch !== this.epoch) fail(this.#staleError());
+              return;
+            }
+            res = incoming;
+            if (headerTimer) {
+              clearTimeout(headerTimer);
+              headerTimer = null;
+            }
+            incoming.once("close", finish);
+            incoming.once("end", finish);
+            incoming.once("error", finish);
+            const headers = {};
+            for (const [key, value] of Object.entries(incoming.headers)) headers[key] = value;
+            succeed({ status: incoming.statusCode, headers, body: incoming });
+          },
+        );
+      } catch (e) {
+        fail(new CloudAuthError(PUBLIC_MESSAGES.CERT_INVALID, { kind: "cert", code: "CERT_INVALID", cause: e }));
+        return;
+      }
+      req.on("error", (e) => fail(e));
+      headerTimer = setTimeout(() => {
+        const error = new CloudAuthError(PUBLIC_MESSAGES.REQUEST_TIMEOUT, { kind: "timeout", code: "REQUEST_TIMEOUT" });
+        try {
+          req.destroy(error);
+        } catch {
+          /* 已结束 */
+        }
+        fail(error);
+      }, Math.max(1, Number(this.timeoutMs) || 15_000));
+      headerTimer.unref?.();
       req.end();
     });
   }
