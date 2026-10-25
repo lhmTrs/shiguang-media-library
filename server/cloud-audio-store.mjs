@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { normalizeCloudAudioFailureDetails } from "./cloud-audio-receiver.mjs";
 
 export const JOB_STATES = Object.freeze([
   "queued",
@@ -81,6 +82,7 @@ function normalizeJob(raw) {
     mimeType: safeText(raw.mimeType, 80),
     state,
     errorCode: safeText(raw.errorCode, 80),
+    failureDetails: normalizeCloudAudioFailureDetails(raw.failureDetails),
     assetId: safeText(raw.assetId, 80),
     createdFile: raw.createdFile === true,
     cancelRequested: raw.cancelRequested === true,

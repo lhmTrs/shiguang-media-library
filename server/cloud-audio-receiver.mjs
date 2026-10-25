@@ -98,13 +98,46 @@ export const CLOUD_AUDIO_RECEIVER_MESSAGES = Object.freeze({
   CLEANUP_FAILED: "音频临时文件清理失败",
 });
 
+const DIAGNOSTIC_CODES = new Set(["ABORTED", "ABSOLUTE_TIMEOUT", "ALREADY_DISPOSED", "AUDIO_CHANGED", "AUTH_CHANGED", "BUSY", "CANCELLED", "CATEGORY_INVALID", "CLEANUP_FAILED", "CLOUD_AUDIO_DISABLED", "CLOUD_UNAVAILABLE", "COLLISION_LIMIT", "CONTEXT_CHANGED", "CONTEXT_UNAVAILABLE", "DIGEST_MISMATCH", "DOWNLOAD_FAILED", "ENCODING_REJECTED", "FILESYSTEM_ERROR", "IDLE_TIMEOUT", "INDEX_BUSY", "INDEX_FAILED", "INDEX_TIMEOUT", "INSTALL_FAILED", "INTERNAL", "INTERRUPTED", "INVALID_CATEGORY", "INVALID_METADATA", "INVALID_MIME", "INVALID_NAME", "INVALID_REQUEST", "INVALID_ROOT", "JOB_NOT_FOUND", "KIND_CONFLICT", "LENGTH_MISMATCH", "MIME_INVALID", "MIME_MISMATCH", "NAME_INVALID", "NOT_CONFIGURED", "NOT_FOUND", "NOT_LOGGED_IN", "PARTIAL_REJECTED", "PUBLISH_FAILED", "RECEIVER_FAULTED", "REDIRECT_REJECTED", "RESPONSE_INVALID", "ROOT_CHANGED", "ROOT_KIND", "ROOT_NOT_FOUND", "ROOT_UNSAFE", "SHARE_CHANGED", "SHARE_UNAVAILABLE", "SOURCE_CHANGED", "STAGING_FAILED", "STATUS_REJECTED", "STORAGE_FAILED", "STREAM_FAILED", "TARGET_CHANGED", "TEMP_LIMIT", "TEMP_UNSAFE", "TOO_LARGE", "TRANSPORT_FAILED", "UNKNOWN", "UNSUPPORTED_MIME", "VERIFY_FAILED"]);
+const DIAGNOSTIC_ERRNOS = new Set(["EACCES","EPERM","EBUSY","ENOENT","EIO","ENOSPC","EROFS","EMFILE","ENFILE","EBADF","ENOTDIR","ELOOP","ENAMETOOLONG"]);
+const DIAGNOSTIC_STAGES = {close:"CLOSE_FAILED",lstat:"LSTAT_FAILED",type:"NOT_REGULAR",identity:"IDENTITY_MISMATCH",unlink:"UNLINK_FAILED"};
+function ownDiagnosticField(value, key) {
+  try { const d=Object.getOwnPropertyDescriptor(value,key);return d && Object.hasOwn(d,"value") ? d.value : undefined; }
+  catch { return undefined; }
+}
+const fixedErrno = error => {const code=ownDiagnosticField(error,"code");return DIAGNOSTIC_ERRNOS.has(code)?code:"UNKNOWN";};
+const fixedCode = value => DIAGNOSTIC_CODES.has(value) ? value : "UNKNOWN";
+function cleanupObservation(stage, error = null) {
+  return Object.freeze({stage,code:DIAGNOSTIC_STAGES[stage],errno:error===null?null:fixedErrno(error),attempted:true,confirmed:false});
+}
+/** Fixed recursive data-field projection, shared by errors, job storage and public DTOs. */
+export function normalizeCloudAudioFailureDetails(value) {
+  if (!isPlainObject(value) || ownDiagnosticField(value,"cleanupErrorCode") !== "CLEANUP_FAILED") return null;
+  const operation = (raw, close) => {
+    if (!isPlainObject(raw)) return null;
+    const stage=ownDiagnosticField(raw,"stage"),errno=ownDiagnosticField(raw,"errno");
+    if (typeof stage!=="string" || !Object.hasOwn(DIAGNOSTIC_STAGES,stage) || (stage === "close") !== close) return null;
+    return Object.freeze({stage,code:DIAGNOSTIC_STAGES[stage],errno:["type","identity"].includes(stage)||errno===null?null:DIAGNOSTIC_ERRNOS.has(errno)?errno:"UNKNOWN",attempted:ownDiagnosticField(raw,"attempted")===true,confirmed:false});
+  };
+  const primary=ownDiagnosticField(value,"primaryErrorCode");
+  return Object.freeze({primaryErrorCode:primary==null?null:fixedCode(primary),cleanupErrorCode:"CLEANUP_FAILED",closeError:operation(ownDiagnosticField(value,"closeError"),true),removalError:operation(ownDiagnosticField(value,"removalError"),false)});
+}
+export function combineCloudAudioCleanupFailure(primary, cleanup) {
+  const details=normalizeCloudAudioFailureDetails(ownDiagnosticField(cleanup,"failureDetails"));
+  return new CloudAudioReceiverError("CLEANUP_FAILED",{
+    primaryErrorCode:details?.primaryErrorCode ?? (primary==null?null:fixedCode(ownDiagnosticField(primary,"code"))),
+    cleanupErrorCode:"CLEANUP_FAILED",closeError:details?.closeError,removalError:details?.removalError,
+  });
+}
+
 export class CloudAudioReceiverError extends Error {
-  constructor(code) {
+  constructor(code, failureDetails = null) {
     super(Object.hasOwn(CLOUD_AUDIO_RECEIVER_MESSAGES, code)
       ? CLOUD_AUDIO_RECEIVER_MESSAGES[code]
       : CLOUD_AUDIO_RECEIVER_MESSAGES.TRANSPORT_FAILED);
     this.name = "CloudAudioReceiverError";
     this.code = Object.hasOwn(CLOUD_AUDIO_RECEIVER_MESSAGES, code) ? code : "TRANSPORT_FAILED";
+    this.failureDetails = normalizeCloudAudioFailureDetails(failureDetails);
   }
 }
 
@@ -399,22 +432,18 @@ export class CloudAudioReceiver {
   }
 
   async #unlinkOwned(filePath, identity) {
-    try {
-      const stat = await fs.lstat(filePath);
-      if (stat.isSymbolicLink() || !stat.isFile()) return false;
-      if (identity !== null && (stat.dev !== identity.dev || stat.ino !== identity.ino)) {
-        return false;
-      }
-      await fs.unlink(filePath);
-      return true;
-    } catch (error) {
-      return error?.code === "ENOENT";
-    }
+    let stat;
+    try { stat = await fs.lstat(filePath); }
+    catch(error) { return ownDiagnosticField(error,"code") === "ENOENT" ? {removed:true,error:null} : {removed:false,error:cleanupObservation("lstat",error)}; }
+    if (stat.isSymbolicLink() || !stat.isFile()) return {removed:false,error:cleanupObservation("type")};
+    if (identity !== null && (stat.dev !== identity.dev || stat.ino !== identity.ino)) return {removed:false,error:cleanupObservation("identity")};
+    try { await fs.unlink(filePath);return {removed:true,error:null}; }
+    catch(error) { return ownDiagnosticField(error,"code") === "ENOENT" ? {removed:true,error:null} : {removed:false,error:cleanupObservation("unlink",error)}; }
   }
 
-  #recordOrphan(filePath, identity) {
+  #recordOrphan(filePath, identity, handle = null) {
     const orphanId = crypto.randomBytes(8).toString("hex");
-    this.#orphans.set(orphanId, { path: filePath, identity });
+    this.#orphans.set(orphanId, { path: filePath, identity, handle });
   }
 
   #settleIdleWaiters() {
@@ -489,6 +518,8 @@ export class CloudAudioReceiver {
     let body = null;
     let bodyErrorGuard = null;
     let committed = false;
+    let primaryFailure = null;
+    let closeFailure = null;
     let phase = "open";
     let abortCode = null;
     let abortReject = NOOP;
@@ -668,8 +699,8 @@ export class CloudAudioReceiver {
       if (controller.signal.aborted || this.#disposed) fail(abortCode ?? "ABORTED");
       try {
         await handle.close();
-      } catch {
-        handle = null;
+      } catch (error) {
+        closeFailure = cleanupObservation("close",error);
         fail("FILESYSTEM_ERROR");
       }
       handle = null;
@@ -699,12 +730,9 @@ export class CloudAudioReceiver {
       committed = true;
       return artifact;
     } catch (error) {
-      if (error instanceof CloudAudioReceiverError) throw error;
-      if (abortCode !== null) throw new CloudAudioReceiverError(abortCode);
-      if (phase === "open") throw new CloudAudioReceiverError("TRANSPORT_FAILED");
-      if (phase === "response") throw new CloudAudioReceiverError("RESPONSE_INVALID");
-      if (phase === "verify") throw new CloudAudioReceiverError("FILESYSTEM_ERROR");
-      throw new CloudAudioReceiverError("STREAM_FAILED");
+      primaryFailure = error instanceof CloudAudioReceiverError ? error
+        : new CloudAudioReceiverError(abortCode ?? (phase === "open" ? "TRANSPORT_FAILED" : phase === "response" ? "RESPONSE_INVALID" : phase === "verify" ? "FILESYSTEM_ERROR" : "STREAM_FAILED"));
+      throw primaryFailure;
     } finally {
       clearTimeout(absoluteTimer);
       clearTimeout(idleTimer);
@@ -718,26 +746,15 @@ export class CloudAudioReceiver {
       }
       destroyStream(body);
 
-      let closeFailed = false;
       if (handle !== null) {
-        try {
-          await handle.close();
-        } catch {
-          closeFailed = true;
-        }
-        handle = null;
+        try { await handle.close();handle=null; }
+        catch(error) { closeFailure ??= cleanupObservation("close",error); }
       }
-      if (!committed && filePath !== null) {
-        const removed = await this.#unlinkOwned(filePath, identity);
-        if (!removed) {
-          this.#faulted = true;
-          this.#recordOrphan(filePath, identity);
-          throw new CloudAudioReceiverError("CLEANUP_FAILED");
-        }
-      }
-      if (!committed && closeFailed) {
-        this.#faulted = true;
-        throw new CloudAudioReceiverError("CLEANUP_FAILED");
+      const removal = !committed && filePath !== null ? await this.#unlinkOwned(filePath,identity) : {removed:true,error:null};
+      if (!committed && (closeFailure !== null || !removal.removed)) {
+        this.#faulted=true;
+        if (filePath !== null) this.#recordOrphan(filePath,identity,handle);
+        throw new CloudAudioReceiverError("CLEANUP_FAILED",{primaryErrorCode:primaryFailure?.code ?? null,cleanupErrorCode:"CLEANUP_FAILED",closeError:closeFailure,removalError:removal.error});
       }
     }
   }
@@ -746,10 +763,10 @@ export class CloudAudioReceiver {
     if (typeof artifactId !== "string" || artifactId.length === 0) fail("INVALID_REQUEST");
     const record = this.#artifacts.get(artifactId);
     if (record === undefined) return false;
-    const removed = await this.#unlinkOwned(record.path, record.identity);
-    if (!removed) {
+    const removal = await this.#unlinkOwned(record.path, record.identity);
+    if (!removal.removed) {
       this.#faulted = true;
-      throw new CloudAudioReceiverError("CLEANUP_FAILED");
+      throw new CloudAudioReceiverError("CLEANUP_FAILED",{primaryErrorCode:null,cleanupErrorCode:"CLEANUP_FAILED",removalError:removal.error});
     }
     this.#artifacts.delete(artifactId);
     return true;
@@ -775,10 +792,12 @@ export class CloudAudioReceiver {
       sha256: record.sha256,
       mimeType: record.mimeType,
     });
-    try {
-      return await consumer(snapshot);
-    } finally {
-      await this.release(artifactId);
+    let primaryFailure=null;
+    try { return await consumer(snapshot); }
+    catch(error) { primaryFailure=error;throw error; }
+    finally {
+      try { await this.release(artifactId); }
+      catch(error) { throw combineCloudAudioCleanupFailure(primaryFailure,error); }
     }
   }
 
@@ -792,25 +811,18 @@ export class CloudAudioReceiver {
       }
     }
     await this.#waitForIdle();
-    let failed = false;
-    for (const [artifactId, record] of [...this.#artifacts]) {
-      if (await this.#unlinkOwned(record.path, record.identity)) {
-        this.#artifacts.delete(artifactId);
-      } else {
-        failed = true;
-      }
+    let failure = null;
+    for (const [artifactId] of [...this.#artifacts]) {
+      try { await this.release(artifactId); } catch(error) { failure ??= error; }
     }
     for (const [orphanId, record] of [...this.#orphans]) {
-      if (await this.#unlinkOwned(record.path, record.identity)) {
-        this.#orphans.delete(orphanId);
-      } else {
-        failed = true;
-      }
+      let closeError=null;
+      if(record.handle) { try { await record.handle.close();record.handle=null; } catch(error) { closeError=cleanupObservation("close",error); } }
+      const removal=await this.#unlinkOwned(record.path,record.identity);
+      if(closeError===null&&removal.removed) this.#orphans.delete(orphanId);
+      else failure ??= new CloudAudioReceiverError("CLEANUP_FAILED",{primaryErrorCode:null,cleanupErrorCode:"CLEANUP_FAILED",closeError,removalError:removal.error});
     }
-    if (failed) {
-      this.#faulted = true;
-      fail("CLEANUP_FAILED");
-    }
+    if(failure) { this.#faulted=true;throw failure; }
     return true;
   }
 }

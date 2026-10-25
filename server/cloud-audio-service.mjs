@@ -29,7 +29,7 @@ import {
   validateMimeType,
 } from "./cloud-audio-install.mjs";
 import { CloudAudioJobStore } from "./cloud-audio-store.mjs";
-import { AUDIO_MIME_TYPES } from "./cloud-audio-receiver.mjs";
+import { AUDIO_MIME_TYPES, normalizeCloudAudioFailureDetails, combineCloudAudioCleanupFailure } from "./cloud-audio-receiver.mjs";
 import { rootIdentity } from "./fs-identity.mjs";
 
 export { CLOUD_AUDIO_FLAG } from "./cloud-audio-feature.mjs";
@@ -84,6 +84,8 @@ export const CLOUD_AUDIO_MESSAGES = Object.freeze({
   CANCELLED: "下载已取消",
   INTERRUPTED: "任务因应用重启中断，请手动重试",
   INTERNAL: "云端音频操作失败",
+  RECEIVER_FAULTED: "下载器存在未安全收尾的任务，已暂停下载和重试；仍可查询目录与历史",
+  CLEANUP_FAILED: "下载临时收尾未确认成功，请查看任务诊断；已暂停后续传输",
 });
 
 export class CloudAudioServiceError extends Error {
@@ -522,7 +524,8 @@ export class CloudAudioService {
 
   #assertUsable() {
     this.#assertEnabled();
-    if (this.#receiverFaulted || this.#receiver?.stats().faulted) fail("INTERNAL", 503);
+    this.#currentIdentity();
+    if (this.#receiverFaulted || this.#receiver?.stats().faulted) fail("RECEIVER_FAULTED", 503);
   }
 
   async status() {
@@ -662,7 +665,7 @@ export class CloudAudioService {
   }
 
   async catalog(query = {}) {
-    this.#assertUsable();
+    this.#assertEnabled();
     const { epoch } = this.#currentIdentity();
     const { limit, offset } = validatePage(query);
     const data = await this.#proxy(
@@ -683,7 +686,7 @@ export class CloudAudioService {
   }
 
   async search(query = {}) {
-    this.#assertUsable();
+    this.#assertEnabled();
     const { epoch } = this.#currentIdentity();
     if (!isPlain(query) || Object.keys(query).some(key => !["q","groupId","limit","offset"].includes(key))) fail("INVALID_REQUEST");
     const { limit, offset } = validatePage(query);
@@ -699,7 +702,7 @@ export class CloudAudioService {
   }
 
   async details(audioId, query = {}) {
-    this.#assertUsable();
+    this.#assertEnabled();
     validateUuid(audioId);
     const { epoch } = this.#currentIdentity();
     const { limit, offset } = validatePage(query);
@@ -782,6 +785,7 @@ export class CloudAudioService {
       mimeType: job.mimeType,
       state: job.state,
       errorCode: job.errorCode,
+      failureDetails: normalizeCloudAudioFailureDetails(job.failureDetails),
       error,
       assetId: job.assetId,
       createdFile: job.createdFile,
@@ -921,6 +925,7 @@ export class CloudAudioService {
     this.#assertEnabled();
     validateUuid(id);
     const job = this.#ownedJob(id);
+    this.#assertUsable();
     if (!["failed", "interrupted", "cancelled"].includes(job.state)) fail("INVALID_REQUEST", 409);
     // 重试仍是原任务意图：下载根代际变了就不静默换目录。
     const snapshot = await this.#rootSnapshot(job.rootId);
@@ -943,9 +948,7 @@ export class CloudAudioService {
         /* 已结束 */
       }
       const next = await this.#store.update(id, { cancelRequested: true });
-      // 已进入执行器：abort 后不会再有新字节；现存部分文件仍由下一次
-      // #tempUsage 扫描计量，因此这里可以立即归还本次预留。
-      this.#releaseTemp(id);
+      // 活动接收/清理尚未结算，保留预留；最终安全收尾后由本任务释放。
       return this.#jobDto(next);
     }
     if (job.state === "queued") {
@@ -1086,19 +1089,21 @@ export class CloudAudioService {
     } catch (error) {
       failure = error;
     } finally {
-      let cleanupFailed = false;
+      let cleanupFailed = failure?.code === "CLEANUP_FAILED";
+      if (cleanupFailed) this.#receiverFaulted = true;
       // 接收成功到 consume 之间的任何失败都必须释放已持产物；只释放本次
       // artifactId，绝不按目录前缀清理。
       if (artifact !== null && !artifactHandled) {
         try {
           await this.#receiver.release(artifact.artifactId);
-        } catch {
+        } catch (cleanupError) {
           this.#receiverFaulted = true;
           cleanupFailed = true;
-          failure = new CloudAudioServiceError("CLEANUP_FAILED", 500);
+          const primary = failure === null ? null : this.#mapError(failure,published);
+          failure = combineCloudAudioCleanupFailure(primary,cleanupError);
         }
       }
-      if (!cleanupFailed && this.#receiver?.stats().faulted) cleanupFailed = true;
+      // Other tasks may fault the shared receiver; never attribute their cleanup to this job.
       // 取消/失败/消费完成后定向释放本次预留；清理失败时保守保留计量并让接收器
       // 故障封锁，避免把可能仍占磁盘的字节当成可用空间。
       if (!cleanupFailed) this.#releaseTemp(id);
@@ -1116,6 +1121,7 @@ export class CloudAudioService {
             await this.#store.update(id, {
               state: "failed",
               errorCode: mapped.code,
+              failureDetails: normalizeCloudAudioFailureDetails(failure.failureDetails),
               receivedBytes: this.#progress.get(id) || 0,
               completedAt: Date.now(),
             });
