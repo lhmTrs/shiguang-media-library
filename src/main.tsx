@@ -440,6 +440,7 @@ function UploadTaskEntry({ onClose }: { onClose: () => void }) {
 
 function App() {
   const [uploadTasksOpen, setUploadTasksOpen] = useState(false);
+  const [workspaceInitialTab, setWorkspaceInitialTab] = useState<"security" | "audio">("security");
   const cloudAuth = useCloudAuth(api);
   const cloudAuthRef = useRef(cloudAuth);
   cloudAuthRef.current = cloudAuth;
@@ -1543,13 +1544,15 @@ function App() {
   if (uploadTasksOpen) return <UploadTaskEntry key={`${cloudAuth.view?.accountId || "signed-out"}:${cloudAuth.view?.deviceId || ""}:${cloudAuth.view?.sessionId || ""}`} onClose={() => setUploadTasksOpen(false)}/>;
   if (workspaceOpen) {
     return (
-      <><button disabled={cloudAuth.view?.state !== "logged-in"} onClick={() => setUploadTasksOpen(true)}>打开批量上传任务中心</button><CloudWorkspace
+      <CloudWorkspace
         auth={cloudAuth}
         request={api}
         onBack={closeWorkspace}
         onLogin={openLogin}
         onNotice={setNotice}
-      /></>
+        initialTab={workspaceInitialTab}
+        onOpenUploadTasks={() => { setWorkspaceInitialTab("audio"); setUploadTasksOpen(true); }}
+      />
     );
   }
   return (
@@ -2894,7 +2897,8 @@ function App() {
                       title={folderPickerAvailable ? "选择素材文件夹" : "此平台请使用下方绝对路径添加目录"}
                       onClick={() =>
                         void run(async () => {
-                          await api("/folders/choose", { kind: folderKind });
+                          const selection = await api<{ cancelled?: boolean }>("/folders/choose", { kind: folderKind });
+                          if (selection.cancelled) return;
                           await refresh();
                           setNotice("已登记目录，开始扫描"); await loadAllRoots();
                         })

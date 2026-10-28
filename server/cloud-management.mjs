@@ -9,7 +9,9 @@
  *   - 一次性开通码/重置码是唯一明确允许回浏览器的敏感字段，不写本地文件/日志/存储。
  *   - 401 清本地会话；409 原样上报版本冲突，绝不静默覆盖；写请求不自动重试。
  */
+import crypto from "node:crypto";
 import { CloudAuthError } from "./cloud-auth.mjs";
+import { strictJson } from "./cloud-upload-task-router.mjs";
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,63}$/;
@@ -318,8 +320,63 @@ function sanitizeUploadApprovalSettings(v) {
   return { thresholdMb: v.thresholdMb, thresholdBytes: v.thresholdBytes, version: v.version, configured: v.configured };
 }
 
+// Maintenance has a deliberately narrower input contract than other management APIs.
+const MAINTENANCE_UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const MAINTENANCE_HASH = /^[a-f0-9]{64}$/;
+const MAINTENANCE_STATES = new Set(["PLANNED", "BOUND", "NEEDS_RECHECK", "ENABLED"]);
+const maintenanceUuid = v => { if (typeof v !== "string" || !MAINTENANCE_UUID.test(v)) invalid(); return v; };
+const maintenanceHash = v => { if (typeof v !== "string" || !MAINTENANCE_HASH.test(v)) invalid(); return v; };
+const maintenanceNumber = v => integer(v, { max: Number.MAX_SAFE_INTEGER - 1 });
+function maintenanceBody(value, keys) {
+  bodyOf(value, keys);
+  if (Object.keys(value).length !== keys.length || keys.some(k => !Object.hasOwn(value, k)) || Buffer.byteLength(JSON.stringify(value), "utf8") > 4096) invalid();
+  return value;
+}
+export async function readAudioMaintenanceRequest(req, { write } = {}) {
+  if (req.originalUrl.includes("?") || req.headers["transfer-encoding"] !== undefined || req.headers["content-encoding"] !== undefined) invalid();
+  const length = req.headers["content-length"];
+  if (!write) {
+    if (length !== undefined && length !== "0") invalid();
+    return null;
+  }
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] || "") || typeof length !== "string" || !/^[1-9][0-9]*$/.test(length)) invalid();
+  const size = Number(length);
+  if (!Number.isSafeInteger(size) || size > 4096) throw new CloudManagementError("INVALID_REQUEST", 413);
+  const raw = await new Promise((resolve, reject) => {
+    let bytes = 0; const chunks = [];
+    const cleanup = () => { clearTimeout(timer); req.off("data", data); req.off("end", end); req.off("error", failed); req.off("aborted", failed); };
+    const failed = () => { cleanup(); reject(new CloudManagementError("INVALID_REQUEST", 400)); };
+    const data = chunk => { bytes += chunk.length; if (bytes > size || bytes > 4096) { failed(); req.destroy(); } else chunks.push(chunk); };
+    const end = () => { cleanup(); bytes === size ? resolve(Buffer.concat(chunks)) : reject(new CloudManagementError("INVALID_REQUEST", 400)); };
+    const timer = setTimeout(() => { failed(); req.destroy(); }, 10000);
+    req.on("data", data); req.once("end", end); req.once("error", failed); req.once("aborted", failed);
+  });
+  try { return strictJson(new TextDecoder("utf-8", { fatal: true }).decode(raw)); } catch { invalid(); }
+}
+function sanitizeAudioMaintenance(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidResponse();
+  try {
+    const v = value;
+    const result = { runId: maintenanceUuid(v.runId), operationId: maintenanceUuid(v.operationId), manifestFingerprint: maintenanceHash(v.manifestFingerprint), state: v.state,
+      expiresAt: text(v.expiresAt, { max: 64, trim: false }), objects: maintenanceNumber(v.objects), bytes: maintenanceNumber(v.bytes), receipt: null };
+    if (!MAINTENANCE_STATES.has(v.state) || !Number.isFinite(Date.parse(v.expiresAt))) throw invalidResponse();
+    if (v.state !== "ENABLED") { if (v.receipt !== null) throw invalidResponse(); }
+    else {
+      const r = v.receipt;
+      if (!r || typeof r !== "object" || Array.isArray(r) || r.runId !== result.runId || r.manifestFingerprint !== result.manifestFingerprint || r.objects !== result.objects || r.verifiedBytes !== result.bytes || r.writeMode !== "READY" || r.storageState !== "READY" || typeof r.adoptedAt !== "string" || r.adoptedAt.length > 64 || !Number.isFinite(Date.parse(r.adoptedAt))) throw invalidResponse();
+      result.receipt = { runId: result.runId, manifestFingerprint: result.manifestFingerprint, objects: result.objects, verifiedBytes: result.bytes,
+        protocolVersion: maintenanceNumber(r.protocolVersion), reconciliationVersion: maintenanceNumber(r.reconciliationVersion), writeMode: "READY", storageState: "READY", adoptedAt: r.adoptedAt };
+    }
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") > 4096) throw invalidResponse();
+    return result;
+  } catch { throw invalidResponse(); }
+}
+
 // ── 固定路由表：方法 + 路径模板 + 返回 DTO ──────────────────────────────
 const ROUTES = {
+  audioMaintenancePlan: { method: "POST", path: () => "/system/audio-maintenance/plan", parse: sanitizeAudioMaintenance },
+  audioMaintenanceApply: { method: "POST", path: ({ id }) => `/system/audio-maintenance/runs/${id}/apply`, parse: sanitizeAudioMaintenance },
+  audioMaintenanceStatus: { method: "GET", path: ({ id }) => `/system/audio-maintenance/runs/${id}`, parse: sanitizeAudioMaintenance },
   uploadApprovalSettings: { method: "GET", path: () => "/system/upload-approval-settings", parse: sanitizeUploadApprovalSettings },
   updateUploadApprovalSettings: { method: "PUT", path: () => "/system/upload-approval-settings", parse: sanitizeUploadApprovalSettings },
   me: { method: "GET", path: () => "/me", parse: sanitizeMe },
@@ -478,6 +535,43 @@ export class CloudManagement {
     } catch (error) {
       throw error instanceof CloudManagementError ? error : new CloudManagementError("RESPONSE_INVALID", 400);
     }
+  }
+
+  #maintenanceActor(value) {
+    const state = this.cloudAuth.getState();
+    const fields = [state.originHost, state.accountId, state.deviceId, state.sessionId];
+    if (typeof value !== "string" || !MAINTENANCE_HASH.test(value) || state.state !== "logged-in" || fields.some(x => typeof x !== "string" || !x || x.length > 512) || value !== crypto.createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex")) throw new CloudManagementError("STALE", 409);
+  }
+  async planAudioMaintenance(payload) {
+    const v = maintenanceBody(payload, ["operationId", "expectedProtocolVersion", "expectedStorageVersion", "clientIdentity"]);
+    const actor = v.clientIdentity; this.#maintenanceActor(actor);
+    const body = { operationId: maintenanceUuid(v.operationId), expectedProtocolVersion: maintenanceNumber(v.expectedProtocolVersion), expectedStorageVersion: maintenanceNumber(v.expectedStorageVersion) };
+    return this.#write(async epoch => {
+      this.#maintenanceActor(actor);
+      const result = await this.#call("audioMaintenancePlan", { body, epoch });
+      this.#maintenanceActor(actor);
+      if (result.operationId !== body.operationId) throw invalidResponse();
+      return result;
+    });
+  }
+  async applyAudioMaintenance(runId, payload) {
+    const value = maintenanceUuid(runId), v = maintenanceBody(payload, ["operationId", "manifestFingerprint", "recoverBound", "clientIdentity"]);
+    const actor = v.clientIdentity; this.#maintenanceActor(actor);
+    const body = { operationId: maintenanceUuid(v.operationId), manifestFingerprint: maintenanceHash(v.manifestFingerprint), recoverBound: bool(v.recoverBound) };
+    return this.#write(async epoch => {
+      this.#maintenanceActor(actor);
+      const result = await this.#call("audioMaintenanceApply", { id: value, body, epoch });
+      this.#maintenanceActor(actor);
+      if (result.runId !== value || result.operationId !== body.operationId || result.manifestFingerprint !== body.manifestFingerprint) throw invalidResponse();
+      return result;
+    });
+  }
+  async audioMaintenanceStatus(runId, clientIdentity) {
+    this.#maintenanceActor(clientIdentity);
+    const value = maintenanceUuid(runId), result = await this.#call("audioMaintenanceStatus", { id: value });
+    this.#maintenanceActor(clientIdentity);
+    if (result.runId !== value) throw invalidResponse();
+    return result;
   }
 
   // ── 个人安全 ────────────────────────────────────────────────

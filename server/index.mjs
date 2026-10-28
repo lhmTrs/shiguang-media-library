@@ -18,7 +18,7 @@ import { AudioEngine, isAudioEngineError } from "./audio-engine.mjs";
 import { AudioAnalysis } from "./audio-analysis.mjs";
 import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
 import { CloudAudioUpload, CloudUploadError, manualAudioAdmission } from "./cloud-audio-upload.mjs";
-import { CloudManagement, cloudManagementErrorHandler } from "./cloud-management.mjs";
+import { CloudManagement, cloudManagementErrorHandler, readAudioMaintenanceRequest } from "./cloud-management.mjs";
 import { cloudAudioFeatureEnabled } from "./cloud-audio-feature.mjs";
 import {
   CloudAudioService,
@@ -36,11 +36,13 @@ import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
+import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
 import { MetadataBatches, metadataCapabilities } from "./metadata-batches.mjs";
 import { createManifestSync, reconcileRoot, relocateRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const chooseFolder = createFolderPicker();
 const dataDir = dataDirectory(project);
 const audioRuntimeConfigPath =
   process.env.SHIGUANG_AUDIO_RUNTIME_CONFIG || path.join(project, "config/audio-analysis-runtime.json");
@@ -287,15 +289,17 @@ app.use("/api/projects/timeline-import/confirm", express.json({ limit: "1mb" }))
 const ordinaryJson = express.json({ limit: "256kb" });
 app.use((req, res, next) => {
   const pathname = req.url.split("?")[0];
-  return pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") ? next() : ordinaryJson(req, res, next);
+  if (pathname.startsWith("/api/cloud-management/audio-maintenance/")) res.setHeader("Cache-Control", "no-store");
+  return pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") || pathname.startsWith("/api/cloud-management/audio-maintenance/") ? next() : ordinaryJson(req, res, next);
 });
 const sessions = new Map();
 let port;
 const asyncRoute = (fn) => (req, res, next) => {
   const route = req.route?.path || req.originalUrl.split("?")[0];
   const registration = route === "/api/cloud-upload-host/register";
+  const audioMaintenance = route.startsWith("/api/cloud-management/audio-maintenance/");
   const fileStatusMaintenance = req.method === "POST" && route === "/api/maintenance/files";
-  const maintenance = req.method !== "GET" && (route === "/api/mysql" || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
+  const maintenance = req.method !== "GET" && (audioMaintenance || route === "/api/mysql" || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
   const changesAttachment = req.method !== "GET" && (route === "/api/mysql" || ["/api/cloud-auth/config", "/api/cloud-auth/enroll", "/api/cloud-auth/recover-device", "/api/cloud-auth/activate", "/api/cloud-auth/login", "/api/cloud-auth/logout"].includes(route));
   const invoke = async () => {
     if (!changesAttachment) return fn(req, res, next);
@@ -312,7 +316,7 @@ const asyncRoute = (fn) => (req, res, next) => {
       manualAudioAdmission: cloudTransferAdmission, readRuntime: () => taskRuntime }, () => { invoked = true; return invoke(); });
     if (!invoked) res.json(result);
   };
-  return (fileStatusMaintenance ? fileWork() : registration ? Promise.resolve().then(invoke) : uploadHost.track(invoke, { maintenance })).catch(e => {
+  return (fileStatusMaintenance ? fileWork() : registration ? Promise.resolve().then(invoke) : uploadHost.track(audioMaintenance && req.method !== "GET" ? () => cloudTransferAdmission.upload(invoke) : invoke, { maintenance })).catch(e => {
     if (["HOST_BUSY", "TASK_OWNER_UNSETTLED"].includes(e.code)) return res.status(423).json({ error: e.code, code: e.code });
     next(e);
   });
@@ -351,7 +355,7 @@ app.get("/api/session", (req, res) => {
   res.json({
     token,
     trashAvailable: !!nativeTrash,
-    folderPickerAvailable: process.platform === "darwin" && process.env.MEDIA_CONTAINER !== "1",
+    folderPickerAvailable: folderPickerAvailable(),
     instanceId: mysqlStorage.sourceId,
     app: "shiguang-local-media",
   });
@@ -500,6 +504,21 @@ app.delete("/api/cloud-management/opening-codes/:id", asyncRoute(async (req, res
 app.post("/api/cloud-management/accounts/:id/state", asyncRoute(async (req, res) => res.json(await cloudManagement.setAccountState(req.params.id, req.body))));
 app.post("/api/cloud-management/accounts/:id/password-reset", asyncRoute(async (req, res) => res.json(await cloudManagement.resetAccountPassword(req.params.id, req.body))));
 app.get("/api/cloud-management/candidates", asyncRoute(async (req, res) => res.json(await cloudManagement.candidates(req.query))));
+// Exact maintenance routes keep the raw 4KiB parser after the original local
+// session/origin/token gate, and inside the real HOST/manual maintenance lease.
+app.post("/api/cloud-management/audio-maintenance/plan", asyncRoute(async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(await cloudManagement.planAudioMaintenance(await readAudioMaintenanceRequest(req, { write: true })));
+}));
+app.post("/api/cloud-management/audio-maintenance/runs/:id/apply", asyncRoute(async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(await cloudManagement.applyAudioMaintenance(req.params.id, await readAudioMaintenanceRequest(req, { write: true })));
+}));
+app.get("/api/cloud-management/audio-maintenance/runs/:id", asyncRoute(async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  await readAudioMaintenanceRequest(req, { write: false });
+  res.json(await cloudManagement.audioMaintenanceStatus(req.params.id, req.headers["x-maintenance-identity"]));
+}));
 app.get("/api/cloud-management/upload-approval-settings", asyncRoute(async (req, res) => res.json(await cloudManagement.uploadApprovalSettings())));
 app.put("/api/cloud-management/upload-approval-settings", asyncRoute(async (req, res) => res.json(await cloudManagement.updateUploadApprovalSettings(req.body))));
 app.get("/api/cloud-management/permissions", asyncRoute(async (req, res) => res.json(await cloudManagement.permissions())));
@@ -893,14 +912,9 @@ app.post(
 app.post(
   "/api/folders/choose",
   asyncRoute(async (req, res) => {
-    if (process.platform !== "darwin")
-      throw Error("系统文件夹选择器仅支持 Mac");
-    const { stdout } = await run(
-      "osascript",
-      ["-e", 'POSIX path of (choose folder with prompt "选择素材文件夹")'],
-      { timeout: 120000 },
-    );
-    const root = await lib.addRoot(stdout.trim(), req.body.kind);
+    const selection = await chooseFolder();
+    if (selection.cancelled) return res.json({ cancelled: true });
+    const root = await lib.addRoot(selection.path, req.body.kind);
     void reconcileWatcher?.refresh();
     res.json({ root, job: lib.scan(root.id) });
   }),

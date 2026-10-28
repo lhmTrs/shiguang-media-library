@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   Trash2,
   Undo2,
+  Upload,
+  ListChecks,
   UserMinus,
   UserPlus,
   X,
@@ -264,19 +266,23 @@ export function CloudWorkspace({
   onBack,
   onLogin,
   onNotice,
+  onOpenUploadTasks,
+  initialTab = "security",
 }: {
   auth: CloudAuthController;
   request: LocalRequest;
   onBack: () => void;
   onLogin: () => void;
   onNotice: (message: string) => void;
+  onOpenUploadTasks?: () => void;
+  initialTab?: "security" | "audio";
 }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const profileRef = useRef<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit" | "upload-settings">("security");
+  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit" | "upload-settings" | "audio-maintenance">(initialTab);
   const generation = useRef(0);
   /** 只读最新 controller，避免把整个 auth 对象放进 effect 依赖导致父级重渲染即重取。 */
   const authRef = useRef(auth);
@@ -288,6 +294,16 @@ export function CloudWorkspace({
   const viewState = auth.view?.state;
   const accountKey = auth.view?.accountId || "";
   const signedIn = viewState === "logged-in";
+  const maintenanceIdentityFields = [auth.view?.originHost, auth.view?.accountId, auth.view?.deviceId, auth.view?.sessionId];
+  const maintenanceIdentitySource = signedIn && maintenanceIdentityFields.every(v => typeof v === "string" && v.length > 0 && v.length <= 512) ? JSON.stringify(maintenanceIdentityFields) : null;
+  const [maintenanceIdentity, setMaintenanceIdentity] = useState<{source: string; digest: string} | null>(null);
+  useEffect(() => {
+    let current = true;
+    if (maintenanceIdentitySource) void crypto.subtle.digest("SHA-256", new TextEncoder().encode(maintenanceIdentitySource)).then(bytes => {
+      if (current) setMaintenanceIdentity({ source: maintenanceIdentitySource, digest: Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("") });
+    }).catch(() => { if (current) setMaintenanceIdentity(null); });
+    return () => { current = false; };
+  }, [maintenanceIdentitySource]);
 
   useEffect(() => {
     generation.current += 1;
@@ -378,6 +394,7 @@ export function CloudWorkspace({
       list.push({ id: "roles", label: "角色与授权" });
       list.push({ id: "audit", label: "审计" });
       list.push({ id: "upload-settings", label: "上传审批设置" });
+      list.push({ id: "audio-maintenance", label: "音频维护" });
     }
     return list;
   }, [capabilities?.superAdmin, system]);
@@ -493,7 +510,7 @@ export function CloudWorkspace({
                 reloadProfile={loadProfile}
               />
             )}
-            {tab === "audio" && <CloudAudioDownload request={request} />}
+            {tab === "audio" && <AudioWorkspacePanel key={`${accountKey}:${auth.view?.deviceId || ""}:${auth.view?.sessionId || ""}`} request={request} onOpenUploadTasks={onOpenUploadTasks} />}
             {tab === "accounts" && (
               <AccountsPanel
                 capabilities={profile.capabilities}
@@ -513,6 +530,11 @@ export function CloudWorkspace({
             {tab === "upload-settings" && capabilities?.superAdmin && (
               <CloudUploadApprovalSettings request={request} guard={guard} onAuthFailure={onAuthFailure} />
             )}
+            {tab === "audio-maintenance" && capabilities?.superAdmin && (
+              maintenanceIdentity?.source === maintenanceIdentitySource
+                ? <AudioMaintenancePanel request={request} identityKey={maintenanceIdentity.digest} />
+                : <p role="status">正在核对当前维护会话，尚未允许操作。</p>
+            )}
             {tab === "audit" && (
               <AuditPanel request={request} guard={guard} onAuthFailure={onAuthFailure} />
             )}
@@ -521,6 +543,151 @@ export function CloudWorkspace({
       </main>
     </div>
   );
+}
+
+
+type MaintenanceView = {
+  runId: string; operationId: string; manifestFingerprint: string; state: "PLANNED" | "BOUND" | "NEEDS_RECHECK" | "ENABLED";
+  expiresAt: string; objects: number; bytes: number;
+  receipt: null | { runId: string; manifestFingerprint: string; objects: number; verifiedBytes: number; protocolVersion: number; reconciliationVersion: number; writeMode: "READY"; storageState: "READY"; adoptedAt: string };
+};
+type MaintenanceIntent = { format: 1; identityKey: string; operationId: string; expectedProtocolVersion: number; expectedStorageVersion: number; phase: "PLAN_PENDING" | "APPLY_PENDING" | "KNOWN"; view: MaintenanceView | null };
+function AudioWorkspacePanel({ request, onOpenUploadTasks }: { request: LocalRequest; onOpenUploadTasks?: () => void }) {
+  const [view, setView] = useState<"files" | "tasks">("files");
+  const [revision, setRevision] = useState(0);
+  const [status, setStatus] = useState<{ known?: boolean; local?: { engine?: string } } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (view !== "tasks") return;
+    let current = true;
+    setLoading(true); setFailed(false); setStatus(null);
+    void request<{ known?: boolean; local?: { engine?: string } }>("/cloud-upload-tasks/control/status")
+      .then(value => { if (current) setStatus(value); })
+      .catch(() => { if (current) setFailed(true); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [view, revision, request]);
+  const mysql = status?.local?.engine === "mysql";
+  const available = status?.local?.engine === "sqlite" && status.known === true && !!onOpenUploadTasks;
+  return <section className="cw-audio-workspace" aria-label="云端音频工作区">
+    <div className="cw-audio-heading"><h2>云端音频</h2>
+      <nav className="cw-subtabs" aria-label="云端音频视图">
+        <button type="button" className={view === "files" ? "active" : ""} aria-current={view === "files" ? "page" : undefined} onClick={() => setView("files")}><Upload size={15} />音频与单文件上传</button>
+        <button type="button" className={view === "tasks" ? "active" : ""} aria-current={view === "tasks" ? "page" : undefined} onClick={() => setView("tasks")}><ListChecks size={15} />批量上传任务</button>
+      </nav>
+    </div>
+    {view === "files" ? <CloudAudioDownload request={request} /> : <div className="cw-upload-overview">
+      <div className="cw-pagebar"><div className="cw-pagebar-title"><h3>批量上传任务</h3></div><button type="button" className="plain" disabled={loading} onClick={() => setRevision(n => n + 1)}><RefreshCw size={15} className={loading ? "spin" : ""} />刷新状态</button></div>
+      <dl className="cw-upload-facts"><div><dt>本机数据库</dt><dd>{loading ? "读取中" : mysql ? "MySQL" : status?.local?.engine === "sqlite" ? "SQLite" : "未确认"}</dd></div><div><dt>批量任务支持</dt><dd>{loading ? "读取中" : mysql ? "暂不支持 MySQL" : available ? "本机入口已接通" : "尚不可用"}</dd></div></dl>
+      {!loading && !available && <div className="cw-upload-unavailable" role="status"><AlertTriangle size={19} /><div><strong>{mysql ? "当前数据库暂不支持批量上传" : failed ? "暂时无法核对上传环境" : "批量上传环境尚未就绪"}</strong><p>{mysql ? "MySQL 接入尚未完成。现有素材和数据库保持不变。" : "未确认可用状态，未创建或启动上传任务。"}</p></div></div>}
+      <div className="cw-pagebar-actions"><button type="button" className="primary" disabled={loading || !available} onClick={onOpenUploadTasks}><ListChecks size={16} />进入上传任务中心</button></div>
+    </div>}
+  </section>;
+}
+
+const maintenanceStorageKey = "shiguang.audio-maintenance.intent.v1";
+const maintenanceUUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const maintenanceHash = /^[a-f0-9]{64}$/;
+const maintenanceInteger = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v < Number.MAX_SAFE_INTEGER;
+function maintenanceView(value: unknown): MaintenanceView {
+  const v = value as MaintenanceView;
+  if (!v || !maintenanceUUID.test(v.runId) || !maintenanceUUID.test(v.operationId) || !maintenanceHash.test(v.manifestFingerprint) || !["PLANNED","BOUND","NEEDS_RECHECK","ENABLED"].includes(v.state) || typeof v.expiresAt !== "string" || !Number.isFinite(Date.parse(v.expiresAt)) || !maintenanceInteger(v.objects) || !maintenanceInteger(v.bytes)) throw Error("维护结果尚未核清，请保留原操作并查询");
+  let receipt: MaintenanceView["receipt"] = null;
+  if (v.state === "ENABLED") {
+    const r = v.receipt;
+    if (!r || r.runId !== v.runId || r.manifestFingerprint !== v.manifestFingerprint || r.objects !== v.objects || r.verifiedBytes !== v.bytes || r.writeMode !== "READY" || r.storageState !== "READY" || !maintenanceInteger(r.protocolVersion) || !maintenanceInteger(r.reconciliationVersion) || typeof r.adoptedAt !== "string" || !Number.isFinite(Date.parse(r.adoptedAt))) throw Error("维护回执尚未核清");
+    receipt = { runId: r.runId, manifestFingerprint: r.manifestFingerprint, objects: r.objects, verifiedBytes: r.verifiedBytes, protocolVersion: r.protocolVersion, reconciliationVersion: r.reconciliationVersion, writeMode: "READY", storageState: "READY", adoptedAt: r.adoptedAt };
+  } else if (v.receipt !== null) throw Error("维护回执尚未核清");
+  return { runId: v.runId, operationId: v.operationId, manifestFingerprint: v.manifestFingerprint, state: v.state, expiresAt: v.expiresAt, objects: v.objects, bytes: v.bytes, receipt };
+}
+function readMaintenanceIntent(): MaintenanceIntent | null {
+  const raw = localStorage.getItem(maintenanceStorageKey); if (raw === null) return null;
+  if (raw.length > 8192) throw Error("原维护记录无法核验，未自动重建");
+  const v = JSON.parse(raw) as MaintenanceIntent;
+  if (!v || Object.keys(v).sort().join(",") !== ["format","identityKey","operationId","expectedProtocolVersion","expectedStorageVersion","phase","view"].sort().join(",") || v.format !== 1 || typeof v.identityKey !== "string" || !maintenanceHash.test(v.identityKey) || !maintenanceUUID.test(v.operationId) || !maintenanceInteger(v.expectedProtocolVersion) || !maintenanceInteger(v.expectedStorageVersion) || !["PLAN_PENDING","APPLY_PENDING","KNOWN"].includes(v.phase)) throw Error("原维护记录无法核验，未自动重建");
+  const view = v.view === null ? null : maintenanceView(v.view);
+  if (view && view.operationId !== v.operationId || v.phase === "KNOWN" && !view) throw Error("原维护记录不一致");
+  return { format: 1, identityKey: v.identityKey, operationId: v.operationId, expectedProtocolVersion: v.expectedProtocolVersion, expectedStorageVersion: v.expectedStorageVersion, phase: v.phase, view };
+}
+export function AudioMaintenancePanel({ request, identityKey }: { request: LocalRequest; identityKey: string }) {
+  const [intent, setIntent] = useState<MaintenanceIntent | null>(null), [storageError, setStorageError] = useState(false);
+  const [protocol, setProtocol] = useState("0"), [storage, setStorage] = useState("2"), [lookupRun, setLookupRun] = useState("");
+  const [verifiedFingerprint, setVerifiedFingerprint] = useState(""), [scopeConfirmed, setScopeConfirmed] = useState(false), [recover, setRecover] = useState(false);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const currentIdentity = useRef(identityKey); currentIdentity.current = identityKey;
+  const alive = useRef(true), working = useRef(false), serial = useRef(0);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
+  useEffect(() => {
+    serial.current++; working.current = false; setBusy(false); setError(""); setVerifiedFingerprint(""); setScopeConfirmed(false); setRecover(false); setLookupRun("");
+    try { setIntent(readMaintenanceIntent()); setStorageError(false); } catch { setIntent(null); setStorageError(true); }
+  }, [identityKey]);
+  const foreign = !!intent && intent.identityKey !== identityKey;
+  const view = foreign ? null : intent?.view;
+  const bound = view?.state === "BOUND" || view?.state === "NEEDS_RECHECK";
+  async function act(work: (live: () => void) => Promise<void>) {
+    if (working.current) return; working.current = true; setBusy(true); setError(""); const generation = serial.current, actor = identityKey;
+    const live = () => { if (!alive.current || serial.current !== generation || currentIdentity.current !== actor) throw Error("身份已变化，原记录保留，未转交新会话"); };
+    try {
+      if (!navigator.locks?.request) throw Error("浏览器无法协调原维护操作，禁止提交");
+      await navigator.locks.request("shiguang.audio-maintenance.intent", { mode: "exclusive", ifAvailable: true }, async lock => {
+        if (!lock) throw Error("另一页面正在处理原维护操作"); live(); await work(live);
+      });
+    } catch (e) { if (alive.current && serial.current === generation) setError((e as Error).message); }
+    finally { if (alive.current && serial.current === generation) { working.current = false; setBusy(false); } }
+  }
+  function save(next: MaintenanceIntent, expected: MaintenanceIntent | null) {
+    const actual = readMaintenanceIntent();
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error("原维护记录已变化，请保留并核对，未重发");
+    const raw = JSON.stringify(next); if (raw.length > 8192) throw Error("维护记录超过本机限制");
+    localStorage.setItem(maintenanceStorageKey, raw); if (localStorage.getItem(maintenanceStorageKey) !== raw) throw Error("无法安全保存原维护记录"); setIntent(next);
+  }
+  function accept(raw: unknown, pending: MaintenanceIntent, live: () => void) {
+    live(); const next = maintenanceView(raw);
+    if (next.operationId !== pending.operationId || pending.view && (next.runId !== pending.view.runId || next.manifestFingerprint !== pending.view.manifestFingerprint || next.objects !== pending.view.objects || next.bytes !== pending.view.bytes)) throw Error("响应与原计划不一致，未更换原命令");
+    save({ ...pending, phase: "KNOWN", view: next }, pending); setVerifiedFingerprint(""); setScopeConfirmed(false); setRecover(false);
+  }
+  const create = () => act(async live => {
+    if (storageError || readMaintenanceIntent() !== null) throw Error("原维护操作尚未核清，禁止另建计划");
+    if (!/^(0|[1-9][0-9]*)$/.test(protocol) || !/^(0|[1-9][0-9]*)$/.test(storage) || !maintenanceInteger(Number(protocol)) || !maintenanceInteger(Number(storage))) throw Error("请填写核对后的有效版本");
+    const pending: MaintenanceIntent = { format: 1, identityKey, operationId: crypto.randomUUID(), expectedProtocolVersion: Number(protocol), expectedStorageVersion: Number(storage), phase: "PLAN_PENDING", view: null };
+    save(pending, null); live();
+    const result = await request<MaintenanceView>("/cloud-management/audio-maintenance/plan", { operationId: pending.operationId, expectedProtocolVersion: pending.expectedProtocolVersion, expectedStorageVersion: pending.expectedStorageVersion, clientIdentity: identityKey });
+    accept(result, pending, live);
+  });
+  const query = () => act(async live => {
+    const saved = readMaintenanceIntent(); if (!saved || saved.identityKey !== identityKey) throw Error("原会话不匹配，未转交记录");
+    const runId = saved.view?.runId || lookupRun;
+    if (!maintenanceUUID.test(runId)) throw Error("计划结果未知时，请先取得管理员核对的原运行ID；不会重新生成计划");
+    const response = await fetch("/api/cloud-management/audio-maintenance/runs/" + runId, { headers: { "x-maintenance-identity": saved.identityKey }, cache: "no-store" });
+    const raw = await response.json(); if (!response.ok) throw Error(typeof raw?.error === "string" ? raw.error : "原计划查询失败，未重新提交");
+    live(); const result = maintenanceView(raw); if (result.runId !== runId) throw Error("原运行ID不一致"); accept(result, saved, live);
+  });
+  const apply = () => act(async live => {
+    const saved = readMaintenanceIntent(), known = saved?.view;
+    if (!saved || saved.identityKey !== identityKey || saved.phase !== "KNOWN" || !known || !scopeConfirmed || verifiedFingerprint !== known.manifestFingerprint) throw Error("请先取得并核对总监对原计划的范围确认");
+    const recovery = known.state === "BOUND" || known.state === "NEEDS_RECHECK";
+    if (recovery ? !recover : known.state !== "PLANNED" || Date.parse(known.expiresAt) <= Date.now() || recover) throw Error("原计划状态不允许此操作，请查询原运行");
+    const pending: MaintenanceIntent = { ...saved, phase: "APPLY_PENDING" }; save(pending, saved); live();
+    const result = await request<MaintenanceView>("/cloud-management/audio-maintenance/runs/" + known.runId + "/apply", { operationId: saved.operationId, manifestFingerprint: known.manifestFingerprint, recoverBound: recovery, clientIdentity: saved.identityKey });
+    accept(result, pending, live);
+  });
+  return <section className="cw-panel" aria-label="云端音频维护" style={{ overflowWrap: "anywhere" }}>
+    <h2>云端音频维护</h2><p>仅由当前负责人明确操作。生成计划不会启用上传；必须先交总监核对原对象范围，再确认采用。</p>
+    {error && <p role="alert">{error}</p>}
+    {storageError && <p role="alert">原维护记录无法读取。已停止操作，请保留现场交管理员核对，不会自动清除或重建。</p>}
+    {foreign && <p role="alert">存在其他会话的维护记录，已保留。当前会话不能查询、接管或继续原操作。</p>}
+    {!intent && !storageError && <><label>协议状态版本<input aria-label="协议状态版本" value={protocol} onChange={e => setProtocol(e.target.value)} disabled={busy}/></label><label>存储状态版本<input aria-label="存储状态版本" value={storage} onChange={e => setStorage(e.target.value)} disabled={busy}/></label><p>请使用本次核对的实际版本；版本冲突时保留原操作，不自动换号重试。</p><button disabled={busy} onClick={() => void create()}>明确生成维护计划（不启写）</button></>}
+    {intent && !foreign && <><dl><dt>原操作ID</dt><dd>{intent.operationId}</dd>{view && <><dt>运行ID</dt><dd>{view.runId}</dd><dt>计划指纹</dt><dd>{view.manifestFingerprint}</dd><dt>状态</dt><dd>{view.state}</dd><dt>对象数量 / 字节</dt><dd>{view.objects} / {view.bytes}</dd><dt>计划到期</dt><dd>{view.expiresAt}</dd></>}</dl>
+      {intent.phase !== "KNOWN" && <p role="status">原请求结果尚未核清，只能查询原运行；不会重新生成计划或自动重发采用。</p>}
+      {!view && <label>管理员核对的原运行ID<input aria-label="管理员核对的原运行ID" value={lookupRun} onChange={e => setLookupRun(e.target.value)} disabled={busy}/></label>}
+      <button disabled={busy || storageError} onClick={() => void query()}>查询原维护运行</button>
+      {view && view.state !== "ENABLED" && <><p>请将上述运行ID、操作ID、指纹、数量及字节交总监。数量相同不能证明对象相同；收到原范围核对确认前不要采用。</p><label>总监确认的原计划指纹<input aria-label="总监确认的原计划指纹" value={verifiedFingerprint} onChange={e => setVerifiedFingerprint(e.target.value)} disabled={busy}/></label><label><input type="checkbox" checked={scopeConfirmed} onChange={e => setScopeConfirmed(e.target.checked)} disabled={busy}/>已收到总监对原对象与撤共享语义的核对确认</label>
+        {bound && <label><input type="checkbox" checked={recover} onChange={e => setRecover(e.target.checked)} disabled={busy}/>明确恢复同一已绑定计划，仅继续结算</label>}
+        <button disabled={busy || storageError || intent.phase !== "KNOWN" || !scopeConfirmed || verifiedFingerprint !== view.manifestFingerprint || (bound ? !recover : view.state !== "PLANNED" || recover || Date.parse(view.expiresAt) <= Date.now())} onClick={() => void apply()}>{bound ? "明确恢复原计划结算" : "明确采用已核对计划"}</button></>}
+      {view?.state === "ENABLED" && <p role="status">原计划已取得启用回执：READY / READY。回执是历史事实；后续上传仍需实际权限、库和存储就绪。当前本地 MySQL 批量任务不因此变为可用。</p>}
+    </>}
+  </section>;
 }
 
 function WorkspaceHeader({
