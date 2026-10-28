@@ -18,7 +18,14 @@ import { createGunzip } from "node:zlib";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import tar from "tar-stream";
+import {
+  CONTRACT_VERSION as RELEASE_MEMBERS_CONTRACT_VERSION,
+  CODES as RELEASE_MEMBERS_CODES,
+  parseReleaseMembers,
+  checkExternalExpectation,
+} from "./audio-release-members.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CA_FILE = path.join(HERE, "audio-engine-ca.pem");
@@ -35,8 +42,28 @@ const TAR_METADATA_ALLOWANCE = 64 * 1024;
 const HASH_CHUNK_BYTES = 256 * 1024;
 /** 安装元数据版本；旧 marker 无该字段时仍可展示 status，但运行必须显式重装。 */
 const INSTALL_METADATA_VERSION = 2;
+const SCOPE_BUDGET_EXHAUSTED = Symbol("audioEngineScopeBudgetExhausted");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GENERATION_PATTERN = /^[0-9a-f]{32,64}$/;
+/** 只有 tar.gz 进入现有安装器；成员声明也只能描述同一归档格式。 */
+const RELEASE_ARCHIVE_FORMAT = "tar.gz";
+/** 只有 archive size/hash 的既有发布描述：成员元数据不可用，绝不由归档身份反推。 */
+export const LEGACY_MEMBER_METADATA_UNAVAILABLE = "LEGACY_MEMBER_METADATA_UNAVAILABLE";
+/** 调用方显式提供成员声明并由已验合同解析后的状态。 */
+export const DECLARED_MEMBER_METADATA = "DECLARED";
+const RELEASE_MEMBERS_MISMATCH_CODES = new Set([
+  RELEASE_MEMBERS_CODES.EXTERNAL_PIN_MISMATCH,
+  RELEASE_MEMBERS_CODES.EXTERNAL_BYTES_MISMATCH,
+  RELEASE_MEMBERS_CODES.EXTERNAL_VERSION_MISMATCH,
+  RELEASE_MEMBERS_CODES.EXTERNAL_MEMBERS_MISMATCH,
+]);
+const RELEASE_MEMBERS_UNSUPPORTED_CODES = new Set([
+  RELEASE_MEMBERS_CODES.SCHEMA_UNKNOWN,
+  RELEASE_MEMBERS_CODES.SCHEMA_VERSION_UNKNOWN,
+  RELEASE_MEMBERS_CODES.ARCHIVE_FORMAT_UNSUPPORTED,
+  RELEASE_MEMBERS_CODES.PLATFORM_UNSUPPORTED,
+  RELEASE_MEMBERS_CODES.ARCH_UNSUPPORTED,
+]);
 
 /** 应用内固定发布描述；生产路径不允许环境变量/浏览器覆盖。 */
 export const ENGINE_RELEASE = Object.freeze({
@@ -77,6 +104,10 @@ const CODES = {
   NOT_INSTALLED: "ENGINE_NOT_INSTALLED",
   REINSTALL_REQUIRED: "ENGINE_REINSTALL_REQUIRED",
   RELEASE_MISMATCH: "ENGINE_RELEASE_MISMATCH",
+  RELEASE_DECLARATION_INVALID: "ENGINE_RELEASE_DECLARATION_INVALID",
+  RELEASE_DECLARATION_UNSUPPORTED: "ENGINE_RELEASE_DECLARATION_UNSUPPORTED",
+  RELEASE_EXPECTATION_INVALID: "ENGINE_RELEASE_EXPECTATION_INVALID",
+  RELEASE_EXPECTATION_MISMATCH: "ENGINE_RELEASE_EXPECTATION_MISMATCH",
   INTEGRITY_FAILED: "ENGINE_INTEGRITY_FAILED",
   RUN_FAILED: "ENGINE_RUN_FAILED",
   INVALID_CALLBACK: "ENGINE_INVALID_CALLBACK",
@@ -112,6 +143,10 @@ const MESSAGES = {
   [CODES.NOT_INSTALLED]: "尚未安装音频引擎",
   [CODES.REINSTALL_REQUIRED]: "当前安装缺少可信摘要，需要重新安装或验证",
   [CODES.RELEASE_MISMATCH]: "已安装版本与当前发布描述不一致",
+  [CODES.RELEASE_DECLARATION_INVALID]: "发布成员声明无效",
+  [CODES.RELEASE_DECLARATION_UNSUPPORTED]: "发布成员声明尚未获准用于安装或运行",
+  [CODES.RELEASE_EXPECTATION_INVALID]: "外部成员期望无效",
+  [CODES.RELEASE_EXPECTATION_MISMATCH]: "发布成员声明与外部期望不一致",
   [CODES.INTEGRITY_FAILED]: "安装内容校验失败",
   [CODES.RUN_FAILED]: "音频运行失败",
   [CODES.INVALID_CALLBACK]: "运行接口参数无效",
@@ -134,8 +169,29 @@ function statusForCode(code) {
   if (code === CODES.CONFIRM_REQUIRED) return 400;
   if (code === CODES.BUSY || code === CODES.UNSUPPORTED_PLATFORM) return 409;
   if (code === CODES.NOT_INSTALLED || code === CODES.REINSTALL_REQUIRED || code === CODES.RELEASE_MISMATCH) return 409;
+  if (code === CODES.RELEASE_DECLARATION_UNSUPPORTED || code === CODES.RELEASE_EXPECTATION_MISMATCH) return 409;
   if (code === CODES.DISK_SPACE_LOW) return 507;
   return 400;
+}
+
+/**
+ * 已验成员 parser 的严格预检：只回答“调用方原始输入能否被原合同接受”，不读取
+ * 调用方 getter（parser 自己按 descriptor 归一化），也不向调用方抛业务异常。
+ * 失败只表示不能进入私有快照；真正的拒绝仍由 evaluateReleaseContract 给固定码。
+ */
+function isStrictMemberDeclaration(value) {
+  try {
+    const parsed = parseReleaseMembers(value);
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      parsed.ok === true &&
+      parsed.declaration !== null &&
+      typeof parsed.declaration === "object"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function safeRelease(release) {
@@ -155,13 +211,242 @@ function safeRelease(release) {
   if (!Number.isSafeInteger(merged.tarMaxBytes) || merged.tarMaxBytes <= merged.extractedMaxBytes) {
     throw new Error("发布描述 tarMaxBytes 无效");
   }
+  // safeRelease 只浅冻结合并结果；members 是调用方持有的嵌套对象，必须复制成
+  // 私有不可变快照。否则构造/后赋后修改原对象会改变 engine.release 的有效声明，
+  // 而缓存合同仍是旧值（P2-1）。
+  //
+  // 复制前必须先用已验严格 parser 校验调用方原始输入（P2 round4）：快照只能收紧
+  // 结构，不能“清洗”掉 symbol、数组额外/隐藏字段等原合同应拒绝的内容。若先克隆
+  // 再解析，这些字段会在克隆时被丢弃，把非法声明洗成合法并返回 declarationParsed
+  // 成功。原始输入不通过时保留原引用，交由合同入口按固定码
+  // ENGINE_RELEASE_DECLARATION_INVALID 拒绝，不在这里抛通用异常。
+  if (merged.members !== undefined && isStrictMemberDeclaration(merged.members)) {
+    merged.members = snapshotPureData(merged.members);
+  }
   return Object.freeze(merged);
 }
 
+/**
+ * 归档身份-only 的既有发布描述。这里只描述“成员元数据不可用”，
+ * 绝不把 archive size/hash 当作成员 pin，也不声称成员声明已解析。
+ */
+const ARCHIVE_ONLY_RELEASE_FACTS = Object.freeze({
+  contractVersion: RELEASE_MEMBERS_CONTRACT_VERSION,
+  mode: "archive-only",
+  format: RELEASE_ARCHIVE_FORMAT,
+  memberMetadata: LEGACY_MEMBER_METADATA_UNAVAILABLE,
+  declarationParsed: false,
+  declarationOnly: false,
+  compatibility: null,
+  schemaVersion: null,
+  memberCount: 0,
+  externalPinProvided: false,
+  externalPinSource: null,
+  archiveSha256Matched: null,
+  archiveBytesMatched: null,
+  releaseVersionMatched: null,
+  membersMatched: null,
+  declarationMatchesExternal: null,
+  contentVerified: false,
+  publisherAuthenticated: false,
+  runtimeIdentityVerified: false,
+  trusted: false,
+});
+
+function releaseDeclarationError(code) {
+  return new AudioEngineError(code);
+}
+
+/**
+ * 受限纯数据快照：成功时返回深冻结的私有副本，调用方之后修改原对象不能改变
+ * 已固定的声明/期望；遇到 accessor/自定义原型/循环/共享引用就保留原值，交给
+ * 合同入口按固定诊断拒绝，绝不调用 getter。
+ */
+function snapshotPureData(value) {
+  if (value === null || typeof value !== "object") return value;
+  try {
+    const seen = new Set();
+    const clone = (input, depth) => {
+      if (input === null || typeof input !== "object") return input;
+      if (depth > 16 || seen.has(input)) throw new Error("unsupported");
+      seen.add(input);
+      if (Array.isArray(input)) {
+        if (Object.getPrototypeOf(input) !== Array.prototype) throw new Error("unsupported");
+        // 快照不能丢弃数组上的 symbol/额外/隐藏属性；否则克隆会掩盖原合同应拒绝的
+        // 结构。只允许规范索引 + length，其它任何 own 属性都保留原值交给 parser。
+        if (Object.getOwnPropertySymbols(input).length !== 0) throw new Error("unsupported");
+        const names = Object.getOwnPropertyNames(input);
+        if (names.length !== input.length + 1) throw new Error("unsupported");
+        for (const key of names) {
+          if (key === "length") continue;
+          if (!/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= input.length) {
+            throw new Error("unsupported");
+          }
+        }
+        const out = [];
+        for (let index = 0; index < input.length; index += 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+          if (!descriptor || descriptor.enumerable !== true || !("value" in descriptor)) {
+            throw new Error("unsupported");
+          }
+          out.push(clone(descriptor.value, depth + 1));
+        }
+        return Object.freeze(out);
+      }
+      const prototype = Object.getPrototypeOf(input);
+      if (prototype !== Object.prototype && prototype !== null) throw new Error("unsupported");
+      // 同上：symbol own key 不能被 for...getOwnPropertyNames 静默丢弃。
+      if (Object.getOwnPropertySymbols(input).length !== 0) throw new Error("unsupported");
+      const out = Object.create(null);
+      for (const key of Object.getOwnPropertyNames(input)) {
+        const descriptor = Object.getOwnPropertyDescriptor(input, key);
+        if (!descriptor || descriptor.enumerable !== true || !("value" in descriptor)) {
+          throw new Error("unsupported");
+        }
+        Object.defineProperty(out, key, {
+          value: clone(descriptor.value, depth + 1),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      return Object.freeze(out);
+    };
+    return clone(value, 0);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * 声明只描述“它自己”；成功消费前必须把声明中的 release/archive 身份绑到当前
+ * 实际 safeRelease，并确认声明包含实际 binary 对应的成员。否则声明与外 pin
+ * 互相自洽也只是在描述另一个工件（P2-2）。不匹配按声明无效拒绝，不降级成
+ * “已解析未匹配”，也不从 archive 字段反推外部成员 pin。
+ */
+function assertDeclarationBoundToRelease(declaration, release) {
+  const bound =
+    declaration.release.version === release.version &&
+    declaration.release.platform === release.platform &&
+    declaration.release.arch === release.arch &&
+    declaration.archive.format === RELEASE_ARCHIVE_FORMAT &&
+    declaration.archive.bytes === release.size &&
+    declaration.archive.sha256 === release.sha256 &&
+    declaration.members.some((member) => member.path === release.binary);
+  if (!bound) throw releaseDeclarationError(CODES.RELEASE_DECLARATION_INVALID);
+}
+
+/**
+ * 纯同步评估发布描述中的声明合同；不读 FS/网络/进程，不创建 Agent，不取锁。
+ *
+ * 支持范围（本票只接声明，不接多成员执行）：
+ * - 无 `format`/`members`：原 archive-only 路径，事实为 LEGACY_MEMBER_METADATA_UNAVAILABLE；
+ * - `format` 只允许 "tar.gz"；其它值在构造/消费入口直接拒绝；
+ * - `members` 交给已验 `audio-release-members.mjs` 解析；
+ *   v1 多成员本票明确未获准，直接拒绝；仅 v0 legacy 单成员可作为声明通过；
+ * - `memberExpectation` 必须由调用方经独立参数显式提供，绝不从 release 的
+ *   archive size/hash 或成员声明自身反向填充；未提供时只解析，不声称 matches。
+ */
+function evaluateReleaseContract(release, memberExpectation) {
+  const hasFormat = release.format !== undefined;
+  const hasMembers = release.members !== undefined;
+  const hasExpectation = memberExpectation !== undefined && memberExpectation !== null;
+
+  if (!hasMembers) {
+    if (hasExpectation) throw releaseDeclarationError(CODES.RELEASE_EXPECTATION_INVALID);
+    if (!hasFormat || release.format === RELEASE_ARCHIVE_FORMAT) return ARCHIVE_ONLY_RELEASE_FACTS;
+    throw releaseDeclarationError(CODES.RELEASE_DECLARATION_UNSUPPORTED);
+  }
+  if (hasFormat && release.format !== RELEASE_ARCHIVE_FORMAT) {
+    throw releaseDeclarationError(CODES.RELEASE_DECLARATION_UNSUPPORTED);
+  }
+
+  const parsed = parseReleaseMembers(release.members);
+  if (!parsed || parsed.ok !== true || !parsed.declaration) {
+    const parsedCode = parsed && Array.isArray(parsed.errors) && parsed.errors[0]
+      ? parsed.errors[0].code
+      : null;
+    throw releaseDeclarationError(
+      RELEASE_MEMBERS_UNSUPPORTED_CODES.has(parsedCode)
+        ? CODES.RELEASE_DECLARATION_UNSUPPORTED
+        : CODES.RELEASE_DECLARATION_INVALID,
+    );
+  }
+  const declaration = parsed.declaration;
+  if (declaration.compatibility !== "legacy-single-member" || declaration.schemaVersion !== 0) {
+    throw releaseDeclarationError(CODES.RELEASE_DECLARATION_UNSUPPORTED);
+  }
+  assertDeclarationBoundToRelease(declaration, release);
+
+  let external = null;
+  if (hasExpectation) {
+    // 最粗的“把同一 release 的声明对象直接当外部 pin”在读取前拒绝；来源真实性
+    // 仍由调用方负责，引擎不声称能证明调用方没有复制值。
+    if (memberExpectation === release.members) {
+      throw releaseDeclarationError(CODES.RELEASE_EXPECTATION_INVALID);
+    }
+    const checked = checkExternalExpectation(parsed, memberExpectation);
+    if (!checked || checked.ok !== true) {
+      const code = checked && Array.isArray(checked.errors) && checked.errors[0]
+        ? checked.errors[0].code
+        : null;
+      throw releaseDeclarationError(
+        RELEASE_MEMBERS_MISMATCH_CODES.has(code)
+          ? CODES.RELEASE_EXPECTATION_MISMATCH
+          : CODES.RELEASE_EXPECTATION_INVALID,
+      );
+    }
+    // 本票要求外部期望必须真正提供成员 bytes/hash；只给 archive pin 不足以
+    // 声称成员声明已匹配，按期望无效处理，而不是降级成 parse-only。
+    if (checked.facts.membersMatched !== true) {
+      throw releaseDeclarationError(CODES.RELEASE_EXPECTATION_INVALID);
+    }
+    external = checked.facts;
+  }
+
+  return Object.freeze({
+    contractVersion: RELEASE_MEMBERS_CONTRACT_VERSION,
+    mode: "declared-single-member",
+    format: declaration.archive.format,
+    memberMetadata: DECLARED_MEMBER_METADATA,
+    declarationParsed: true,
+    declarationOnly: true,
+    compatibility: declaration.compatibility,
+    schemaVersion: declaration.schemaVersion,
+    memberCount: declaration.members.length,
+    externalPinProvided: external ? external.externalPinProvided === true : false,
+    externalPinSource: external ? external.externalPinSource : null,
+    archiveSha256Matched: external ? external.archiveSha256Matched : null,
+    archiveBytesMatched: external ? external.archiveBytesMatched : null,
+    releaseVersionMatched: external ? external.releaseVersionMatched : null,
+    membersMatched: external ? external.membersMatched : null,
+    declarationMatchesExternal: external ? external.declarationMatchesExternal : null,
+    // 声明元数据一致不等于归档内容、发布者或运行身份已认证。
+    contentVerified: false,
+    publisherAuthenticated: false,
+    runtimeIdentityVerified: false,
+    trusted: false,
+  });
+}
+
 export class AudioEngine {
+  #release;
+  #releaseContract = null;
+  #memberExpectation;
+  #activeScopes = 0;
+
   constructor(dataDir, options = {}) {
     this.dataDir = dataDir;
-    this.release = safeRelease(options.release);
+    // release setter 需要这些实例状态先就绪；也保证构造期没有任何 FS/网络动作。
+    this._state = "idle";
+    this._runLease = null;
+    this._scopeFaulted = false;
+    this.#memberExpectation = options.memberExpectation;
+    this.release = options.release;
+    // 声明合同必须在读取 CA、创建 Agent 之前完成；multi/unknown 在这里就 fail-closed。
+    this.#releaseView();
+    // 已验期望冻结为私有快照；后赋 release 仍用这根固定 pin 复核。
+    this.#memberExpectation = snapshotPureData(this.#memberExpectation);
     this.platform = options.platform || process.platform;
     this.arch = options.arch || process.arch;
     this.ca = options.ca !== undefined ? options.ca : fssync.readFileSync(DEFAULT_CA_FILE);
@@ -179,12 +464,9 @@ export class AudioEngine {
 
     this.job = null;
     this._jobSeq = 0;
-    this._state = "idle";
     this._runPromise = null;
     this._cancelRequested = false;
     this._abort = null;
-    /** 当前运行租约（内部 withRunLease）；只用于取消请求，不用于提前放锁。 */
-    this._runLease = null;
 
     this.agent = new https.Agent({
       keepAlive: true,
@@ -195,17 +477,61 @@ export class AudioEngine {
     });
   }
 
+  get release() {
+    return this.#release;
+  }
+
+  /**
+   * 后赋 release 仍走同一 safeRelease 兼容层；声明合同在消费入口（install/run/
+   * lifecycle/status）重新评估。安装/运行进行中拒绝替换，避免一份操作混用两份描述。
+   */
+  set release(value) {
+    // 同一份声明对象不能同时冒充“独立外部 pin”。safeRelease 会把 members 复制成
+    // 私有快照，因此身份守卫必须在复制前做（构造期 #memberExpectation 仍是原对象）。
+    const membersDescriptor =
+      value !== null && typeof value === "object" ? Object.getOwnPropertyDescriptor(value, "members") : null;
+    if (
+      membersDescriptor &&
+      "value" in membersDescriptor &&
+      this.#memberExpectation !== undefined &&
+      this.#memberExpectation !== null &&
+      membersDescriptor.value === this.#memberExpectation
+    ) {
+      throw releaseDeclarationError(CODES.RELEASE_EXPECTATION_INVALID);
+    }
+    const next = safeRelease(value);
+    if (this._state !== "idle" || this._runLease || this.#activeScopes > 0) {
+      throw new AudioEngineError(CODES.BUSY);
+    }
+    this.#release = next;
+    this.#releaseContract = null;
+  }
+
+  /** 当前发布描述的只读合同事实；首次调用时做纯同步解析，失败抛固定码。 */
+  get releaseContract() {
+    return this.#releaseView();
+  }
+
+  #releaseView() {
+    if (this.#releaseContract) return this.#releaseContract;
+    this.#releaseContract = evaluateReleaseContract(this.#release, this.#memberExpectation);
+    return this.#releaseContract;
+  }
+
   /** 已安装版本；只从可信指针 + 安装标记读取。 */
   get version() {
+    this.#releaseView();
     return this.#installedInfo()?.version ?? null;
   }
 
   /** 分析器内部使用的二进制路径；未通过可信链校验时返回 null，不提供越界路径。 */
   get binaryPath() {
+    this.#releaseView();
     return this.#installedInfo()?.binaryPath ?? null;
   }
 
   status() {
+    const contract = this.#releaseView();
     const info = this.#installedInfo();
     return {
       installed: !!info,
@@ -220,6 +546,7 @@ export class AudioEngine {
         size: this.release.size,
         sha256: this.release.sha256,
       },
+      releaseContract: contract,
     };
   }
 
@@ -229,6 +556,8 @@ export class AudioEngine {
    */
   install({ confirm } = {}) {
     if (confirm !== true) throw new AudioEngineError(CODES.CONFIRM_REQUIRED);
+    // 任何安装动作（锁/磁盘/下载）之前先过声明门；后赋 multi/unknown 在这里拒绝。
+    this.#releaseView();
     if (this.platform !== this.release.platform || this.arch !== this.release.arch) {
       throw new AudioEngineError(CODES.UNSUPPORTED_PLATFORM);
     }
@@ -293,6 +622,7 @@ export class AudioEngine {
   /** 卸载；安装中直接 409，不会先卸载再让安装目录冒出来。 */
   async uninstall() {
     if (this._state !== "idle") throw new AudioEngineError(CODES.BUSY);
+    this.#releaseView();
     this._state = "busy";
     let lock = null;
     try {
@@ -343,7 +673,7 @@ export class AudioEngine {
    * cancel/AbortSignal/dispose 只请求取消，不提前返回或放锁。
    */
   withRunLease(callback, options = {}) {
-    const { signal } = options || {};
+    const { signal, deadlineAtMs } = options || {};
     if (typeof callback !== "function") {
       return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
     }
@@ -357,23 +687,108 @@ export class AudioEngine {
       return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
     }
     if (signal?.aborted) return Promise.reject(new AudioEngineError(CODES.CANCELLED));
+    if (this._scopeFaulted) return Promise.reject(new AudioEngineError(CODES.BUSY));
     if (this._runLease) return Promise.reject(new AudioEngineError(CODES.BUSY));
+    // 运行租约取锁/读 FS 之前先过声明门；不拿漏过的 multi/unknown 去碰实际安装。
+    try {
+      this.#releaseView();
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
     const controller = new AbortController();
     const entry = { controller, promise: null };
     this._runLease = entry;
     const onAbort = () => controller.abort();
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
-    const promise = this.#withRunLease(callback, controller.signal)
-      .finally(() => {
-        if (signal) signal.removeEventListener("abort", onAbort);
-        if (this._runLease === entry) this._runLease = null;
-      });
+    let work;
+    if (deadlineAtMs === undefined) {
+      // 旧入口兼容：行为、错误码、顺序、锁/owner 格式保持今日语义，不纳入新账本。
+      work = this.#withRunLeaseLegacy(callback, controller.signal);
+    } else if (!Number.isFinite(deadlineAtMs)) {
+      work = Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
+    } else {
+      work = this.#withRunLeaseScoped(callback, controller.signal, deadlineAtMs);
+    }
+    const promise = work.finally(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (this._runLease === entry) this._runLease = null;
+    });
     entry.promise = promise;
     return promise;
   }
 
-  async #withRunLease(callback, signal) {
+  /**
+   * 内部 lifecycle scope：同一把 `.audio-install.lock`，不要求 run record/已安装。
+   * 只用于 pipeline 原 probe 位置与 scoped run；独立 AudioProbe 直接调用不在此列。
+   * 所有 scope 获取/释放 FS 调用发起前登记 pending，并受同一 mono deadline 约束。
+   */
+  withLifecycleScope(callback, options = {}) {
+    const { scope = "probe", signal, deadlineAtMs } = options || {};
+    if (typeof callback !== "function") {
+      return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
+    }
+    if (scope !== "probe" && scope !== "run") {
+      return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
+    }
+    if (!Number.isFinite(deadlineAtMs)) {
+      return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
+    }
+    if (
+      signal !== undefined &&
+      (!signal ||
+        typeof signal.aborted !== "boolean" ||
+        typeof signal.addEventListener !== "function" ||
+        typeof signal.removeEventListener !== "function")
+    ) {
+      return Promise.reject(new AudioEngineError(CODES.INVALID_CALLBACK));
+    }
+    if (signal?.aborted) return Promise.reject(new AudioEngineError(CODES.CANCELLED));
+    if (this._scopeFaulted) return Promise.reject(new AudioEngineError(CODES.BUSY));
+    try {
+      this.#releaseView();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    this.#activeScopes += 1;
+    try {
+      const promise = this.#withLifecycleScope(callback, { scope, signal, deadlineAtMs });
+      return promise.finally(() => {
+        this.#activeScopes -= 1;
+      });
+    } catch (error) {
+      this.#activeScopes -= 1;
+      return Promise.reject(error);
+    }
+  }
+
+  async #withRunLeaseScoped(callback, signal, deadlineAtMs) {
+    return this.withLifecycleScope(
+      async (guard) => {
+        const enginesStat = await lstatOrNull(this.enginesRoot);
+        if (!enginesStat) throw new AudioEngineError(CODES.NOT_INSTALLED);
+        if (enginesStat.isSymbolicLink() || !enginesStat.isDirectory()) {
+          throw new AudioEngineError(CODES.UNSAFE_TARGET);
+        }
+        if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
+        const record = await this.#loadRunRecord();
+        if (!record) throw new AudioEngineError(CODES.NOT_INSTALLED);
+        if (record.legacy) throw new AudioEngineError(CODES.REINSTALL_REQUIRED);
+        const descriptor = await this.#verifyRunDescriptor(record, signal);
+        if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
+        try {
+          Object.defineProperty(signal, "signal", { value: signal, configurable: true });
+        } catch {}
+        const result = await this.#invokeRunCallback(callback, descriptor, signal, guard);
+        if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
+        return result;
+      },
+      { scope: "run", signal, deadlineAtMs },
+    );
+  }
+
+  /** 今日原路径：保留原获取/校验/释放顺序，不接新 deadline/pending/迟到接管。 */
+  async #withRunLeaseLegacy(callback, signal) {
     let lock = null;
     try {
       const enginesStat = await lstatOrNull(this.enginesRoot);
@@ -396,7 +811,7 @@ export class AudioEngine {
       try {
         Object.defineProperty(signal, "signal", { value: signal, configurable: true });
       } catch {}
-      const result = await this.#invokeRunCallback(callback, descriptor, signal);
+      const result = await this.#invokeRunCallback(callback, descriptor, signal, null);
       if (signal.aborted) throw new AudioEngineError(CODES.CANCELLED);
       return result;
     } catch (error) {
@@ -415,19 +830,396 @@ export class AudioEngine {
     }
   }
 
+  async #withLifecycleScope(callback, { scope, signal, deadlineAtMs }) {
+    const attempt = {
+      scope,
+      entryAtMono: monoNow(),
+      deadlineAtMs,
+      ownerToken: crypto.randomBytes(16).toString("hex"),
+      root: { state: "not-started", dev: null, ino: null, late: false },
+      lock: { state: "not-started", dev: null, ino: null, late: false, ownerWritten: false },
+      ops: new Set(),
+      faulted: false,
+      faultReason: null,
+      guard: null,
+      ownerRemovedLate: false,
+      releasedLate: false,
+      releaseFailedLate: false,
+      closeFailed: false,
+    };
+    const beginOp = (kind) => {
+      const op = { kind, settled: false, late: false, outcome: null };
+      attempt.ops.add(op);
+      return op;
+    };
+    const settleOp = (op, outcome) => {
+      if (!op || op.settled) return;
+      op.settled = true;
+      op.outcome = outcome;
+      if (!op.late) attempt.ops.delete(op);
+    };
+    const runFs = (kind, fn) => {
+      const hook = this.hooks?.scopeFs;
+      if (typeof hook === "function") return hook(kind, fn);
+      return fn();
+    };
+    const scopeFailure = (code, reason, extra = {}) => {
+      const error = new AudioEngineError(code);
+      error.evidence = {
+        scope,
+        scopeAcquire: attempt.lock.state === "owned" ? "ok" : "unknown",
+        ownerToken: attempt.ownerToken,
+        pending: [...attempt.ops].filter((op) => !op.settled).map((op) => op.kind),
+        faulted: attempt.faulted,
+        reason,
+        ...extra,
+      };
+      return error;
+    };
+    const lockFailed = (reason, extra = {}) => {
+      attempt.faulted = true;
+      attempt.faultReason = reason;
+      attempt.lock.state = attempt.lock.state === "owned" ? "held" : attempt.lock.state;
+      return scopeFailure(CODES.LOCK_FAILED, reason, extra);
+    };
+
+    let guard = null;
+    try {
+      try {
+        // enginesRoot：lstat 只读检查；absent 才登记 ensure-root 后非递归 mkdir。
+        let rootStat = await runFs("root-lstat", () => lstatOrNull(this.enginesRoot));
+        if (signal?.aborted) throw new AudioEngineError(CODES.CANCELLED);
+        if (!rootStat) {
+          attempt.root.state = "creating";
+          const op = beginOp("ensure-root");
+          const promise = runFs("root-mkdir", () => fs.mkdir(this.enginesRoot, { mode: 0o700 })).catch(
+            (error) => {
+              // 并发创建：EEXIST 由后续 lstat 复核必须是普通目录；其它失败保持 unknown。
+              if (error?.code === "EEXIST") return null;
+              throw new AudioEngineError(CODES.LOCK_FAILED);
+            },
+          );
+          const outcome = await raceBudget(promise, remaining(attempt.deadlineAtMs));
+          if (outcome === SCOPE_BUDGET_EXHAUSTED) {
+            op.late = true;
+            attempt.root.state = "unknown";
+            promise.then(
+              async () => {
+                const created = await lstatOrNull(this.enginesRoot);
+                if (created && created.isDirectory() && !created.isSymbolicLink()) {
+                  attempt.root.dev = created.dev;
+                  attempt.root.ino = created.ino;
+                  attempt.root.late = true;
+                  attempt.root.state = "present";
+                }
+                settleOp(op, { ok: true });
+              },
+              () => {},
+            );
+            throw lockFailed("SCOPE_ROOT_DEADLINE", { op: "ensure-root" });
+          }
+          settleOp(op, { ok: true });
+          rootStat = await lstatOrNull(this.enginesRoot);
+        }
+        if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+          throw new AudioEngineError(CODES.UNSAFE_TARGET);
+        }
+        attempt.root.state = "present";
+        attempt.root.dev = rootStat.dev;
+        attempt.root.ino = rootStat.ino;
+        if (remaining(attempt.deadlineAtMs) <= 0) throw lockFailed("SCOPE_DEADLINE", { op: "before-lock" });
+
+        // 排他 mkdir lock；EEXIST 等一律 BUSY，不写 owner、不删除、不重试。
+        attempt.lock.state = "mkdir-pending";
+        const mkdirOp = beginOp("mkdir-lock");
+        const mkdirPromise = runFs("lock-mkdir", () => fs.mkdir(this.lockRoot, { mode: 0o700 })).catch(
+          (error) => {
+            if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error?.code)) {
+              throw new AudioEngineError(CODES.BUSY);
+            }
+            throw new AudioEngineError(CODES.LOCK_FAILED);
+          },
+        );
+        const acquired = await raceBudget(mkdirPromise, remaining(attempt.deadlineAtMs));
+        if (acquired === SCOPE_BUDGET_EXHAUSTED) {
+          mkdirOp.late = true;
+          attempt.lock.state = "acquire-unknown";
+          // 迟到成功只留空锁（不补 owner/open/write/fsync/close），交人工恢复。
+          mkdirPromise.then(
+            async () => {
+              const created = await lstatOrNull(this.lockRoot);
+              if (created && created.isDirectory() && !created.isSymbolicLink()) {
+                attempt.lock.state = "empty-lock-late";
+                attempt.lock.dev = created.dev;
+                attempt.lock.ino = created.ino;
+                attempt.lock.late = true;
+              }
+              settleOp(mkdirOp, { ok: true });
+            },
+            (error) => {
+              if (["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(error?.code)) {
+                attempt.lock.state = "busy-late";
+              }
+              settleOp(mkdirOp, { ok: false, error });
+            },
+          );
+          throw lockFailed("SCOPE_ACQUIRE_DEADLINE", { op: "mkdir-lock" });
+        }
+        settleOp(mkdirOp, { ok: true });
+
+        const lockStat = await lstatOrNull(this.lockRoot);
+        if (!lockStat || lockStat.isSymbolicLink() || !lockStat.isDirectory()) {
+          throw lockFailed("SCOPE_LOCK_UNSAFE", { op: "mkdir-lock" });
+        }
+        attempt.lock.dev = lockStat.dev;
+        attempt.lock.ino = lockStat.ino;
+        attempt.lock.state = "mkdir-created";
+
+        // owner.json：open/write/fsync/close 逐项发起前登记；迟到 fd 仍负责 close。
+        attempt.lock.state = "owner-pending";
+        const ownerPath = path.join(this.lockRoot, "owner.json");
+        const ownerBody = JSON.stringify({
+          pid: process.pid,
+          jobId: scope,
+          token: attempt.ownerToken,
+          startedAt: new Date().toISOString(),
+        });
+        let handle = null;
+        const openOp = beginOp("owner-open");
+        const openPromise = runFs("owner-open", () => fs.open(ownerPath, "wx", 0o600));
+        const opened = await raceBudget(openPromise, remaining(attempt.deadlineAtMs));
+        if (opened === SCOPE_BUDGET_EXHAUSTED) {
+          openOp.late = true;
+          openPromise.then(
+            (lateHandle) => {
+              settleOp(openOp, { ok: true, lateFd: true });
+              lateHandle.close().catch(() => {
+                attempt.closeFailed = true;
+              });
+            },
+            () => {},
+          );
+          throw lockFailed("SCOPE_OWNER_OPEN_DEADLINE", { op: "owner-open" });
+        }
+        handle = opened;
+        settleOp(openOp, { ok: true });
+
+        const writeOp = beginOp("owner-write");
+        const written = await raceBudget(
+          handle.writeFile(ownerBody, { encoding: "utf8" }),
+          remaining(attempt.deadlineAtMs),
+        );
+        if (written === SCOPE_BUDGET_EXHAUSTED) {
+          writeOp.late = true;
+          Promise.resolve(handle.close()).catch(() => {
+            attempt.closeFailed = true;
+          });
+          throw lockFailed("SCOPE_OWNER_WRITE_DEADLINE", { op: "owner-write" });
+        }
+        settleOp(writeOp, { ok: true });
+
+        const closeOp = beginOp("owner-close");
+        const closed = await raceBudget(handle.close(), remaining(attempt.deadlineAtMs));
+        if (closed === SCOPE_BUDGET_EXHAUSTED) {
+          closeOp.late = true;
+          throw lockFailed("SCOPE_OWNER_CLOSE_DEADLINE", { op: "owner-close" });
+        }
+        settleOp(closeOp, { ok: true });
+        attempt.lock.state = "owned";
+        attempt.lock.ownerWritten = true;
+
+        const pendingResources = new Set();
+        guard = {
+          retained: false,
+          retainReason: null,
+          retain(reason) {
+            this.retained = true;
+            this.retainReason = typeof reason === "string" && reason ? reason : "resource-unknown";
+            attempt.lock.state = "held";
+          },
+          track(kind) {
+            pendingResources.add(String(kind));
+          },
+          settle(kind) {
+            pendingResources.delete(String(kind));
+          },
+          get pending() {
+            return new Set(pendingResources);
+          },
+          get evidence() {
+            return {
+              scope,
+              ownerToken: attempt.ownerToken,
+              pending: [...pendingResources],
+              faulted: attempt.faulted,
+            };
+          },
+        };
+        attempt.guard = guard;
+      } catch (error) {
+        if (isAudioEngineError(error) && error.code === CODES.BUSY) {
+          attempt.faulted = false;
+          throw error;
+        }
+        if (isAudioEngineError(error)) {
+          // 确定性目标错误不 latch 实例故障门；只有 unknown/获取失败才 fail-closed。
+          attempt.faulted = error.code !== CODES.UNSAFE_TARGET;
+          if (!error.evidence) {
+            error.evidence = {
+              scope,
+              scopeAcquire: "unknown",
+              ownerToken: attempt.ownerToken,
+              pending: [...attempt.ops].filter((op) => !op.settled).map((op) => op.kind),
+              faulted: true,
+            };
+          }
+          throw error;
+        }
+        throw lockFailed("SCOPE_ACQUIRE_FAILED");
+      }
+      return await callback(guard);
+    } finally {
+      if (guard?.retained) {
+        attempt.lock.state = "held";
+      } else if (attempt.lock.state === "owned") {
+        try {
+          await this.#releaseScope(attempt, guard, runFs);
+        } catch (error) {
+          attempt.faulted = true;
+          this._scopeFaulted = true;
+          throw isAudioEngineError(error) ? error : new AudioEngineError(CODES.LOCK_FAILED);
+        }
+      } else if (attempt.lock.state === "empty-lock-late") {
+        // 空锁保留，交人工；不改写证据、不 release、不新发起 owner 写入。
+      } else if (["acquire-unknown", "owner-pending", "release-pending"].includes(attempt.lock.state)) {
+        attempt.lock.state = "held";
+      }
+      if (attempt.faulted) this._scopeFaulted = true;
+    }
+  }
+
+  async #releaseScope(attempt, guard, runFs = (_kind, fn) => fn()) {
+    const lockFailed = (reason, extra = {}) => {
+      attempt.faulted = true;
+      attempt.faultReason = reason;
+      attempt.lock.state = "release-pending";
+      const error = new AudioEngineError(CODES.LOCK_FAILED);
+      error.evidence = {
+        scope: attempt.scope,
+        ownerToken: attempt.ownerToken,
+        scopeRelease: "pending",
+        reason,
+        ...extra,
+      };
+      return error;
+    };
+    if (remaining(attempt.deadlineAtMs) <= 0) throw lockFailed("RELEASE_DEADLINE");
+    attempt.lock.state = "releasing";
+
+    const before = await lstatOrNull(this.lockRoot);
+    if (!before) throw lockFailed("RELEASE_LOCK_MISSING");
+    if (before.isSymbolicLink() || !before.isDirectory()) throw lockFailed("RELEASE_LOCK_UNSAFE");
+    if (attempt.lock.dev !== null && (before.dev !== attempt.lock.dev || before.ino !== attempt.lock.ino)) {
+      throw lockFailed("RELEASE_LOCK_REPLACED");
+    }
+    const raw = await readSmallText(path.join(this.lockRoot, "owner.json"), MAX_METADATA_BYTES);
+    if (raw === null) throw lockFailed("OWNER_MISMATCH");
+    let owner;
+    try {
+      owner = sanitizeLockOwner(JSON.parse(raw));
+    } catch {
+      owner = null;
+    }
+    if (!owner || owner.token !== attempt.ownerToken) throw lockFailed("OWNER_MISMATCH");
+    const entries = await fs.readdir(this.lockRoot).catch(() => null);
+    if (!entries || entries.length !== 1 || entries[0] !== "owner.json") {
+      throw lockFailed("OWNER_MISMATCH");
+    }
+    const afterRead = await lstatOrNull(this.lockRoot);
+    if (!afterRead || afterRead.dev !== before.dev || afterRead.ino !== before.ino) {
+      throw lockFailed("RELEASE_LOCK_REPLACED");
+    }
+    const ownerStat = await lstatOrNull(path.join(this.lockRoot, "owner.json"));
+    if (!ownerStat || ownerStat.isSymbolicLink() || !ownerStat.isFile()) {
+      throw lockFailed("OWNER_MISMATCH");
+    }
+
+    const unlinkOp = { kind: "release-unlink", settled: false, late: false, outcome: null };
+    attempt.ops.add(unlinkOp);
+    const unlinkPromise = runFs("release-unlink", () => fs.unlink(path.join(this.lockRoot, "owner.json")));
+    const unlinked = await raceBudget(unlinkPromise, remaining(attempt.deadlineAtMs));
+    if (unlinked === SCOPE_BUDGET_EXHAUSTED) {
+      unlinkOp.late = true;
+      unlinkPromise.then(
+        () => {
+          attempt.ownerRemovedLate = true;
+          unlinkOp.settled = true;
+          unlinkOp.outcome = { ok: true, late: true };
+        },
+        () => {
+          attempt.releaseFailedLate = true;
+          unlinkOp.settled = true;
+          unlinkOp.outcome = { ok: false, late: true };
+        },
+      );
+      throw lockFailed("RELEASE_UNLINK_DEADLINE");
+    }
+    unlinkOp.settled = true;
+    attempt.ops.delete(unlinkOp);
+
+    const rmdirOp = { kind: "release-rmdir", settled: false, late: false, outcome: null };
+    attempt.ops.add(rmdirOp);
+    const rmdirPromise = runFs("release-rmdir", () => fs.rmdir(this.lockRoot));
+    const removed = await raceBudget(rmdirPromise, remaining(attempt.deadlineAtMs));
+    if (removed === SCOPE_BUDGET_EXHAUSTED) {
+      rmdirOp.late = true;
+      rmdirPromise.then(
+        () => {
+          attempt.releasedLate = true;
+          rmdirOp.settled = true;
+          rmdirOp.outcome = { ok: true, late: true };
+        },
+        () => {
+          attempt.releaseFailedLate = true;
+          rmdirOp.settled = true;
+          rmdirOp.outcome = { ok: false, late: true };
+        },
+      );
+      throw lockFailed("RELEASE_RMDIR_DEADLINE");
+    }
+    rmdirOp.settled = true;
+    attempt.ops.delete(rmdirOp);
+    attempt.lock.state = "released";
+  }
+
   /**
    * callback 错误边界：安装器内部错误（指针/路径/摘要/锁）仍按原固定码抛出；
    * callback 自己的异常只允许列表内的 code，并用默认文案与默认 status 重建，
    * 不透传 message/code/status，避免私有路径随错误外泄。
    */
-  async #invokeRunCallback(callback, descriptor, signal) {
+  async #invokeRunCallback(callback, descriptor, signal, guard) {
     try {
       return await callback(descriptor, signal);
     } catch (error) {
-      if (isAudioEngineError(error) && CALLBACK_ERROR_CODES.has(error.code)) {
-        throw new AudioEngineError(error.code);
+      // D10：retain 由实际 pending/unknown 证据决定，不再按“非白名单”一刀切。
+      const evidence = error && typeof error === "object" ? error.evidence : null;
+      if (
+        guard &&
+        (guard.retained ||
+          guard.pending.size > 0 ||
+          evidence?.resourceUnknown === true ||
+          evidence?.closeSettled === false)
+      ) {
+        guard.retain("callback-resource-unknown");
       }
-      throw new AudioEngineError(CODES.RUN_FAILED);
+      if (isAudioEngineError(error) && CALLBACK_ERROR_CODES.has(error.code)) {
+        const mapped = new AudioEngineError(error.code);
+        if (evidence) mapped.evidence = evidence;
+        throw mapped;
+      }
+      const mapped = new AudioEngineError(CODES.RUN_FAILED);
+      if (evidence) mapped.evidence = evidence;
+      throw mapped;
     }
   }
 
@@ -1230,6 +2022,8 @@ export class AudioEngine {
   }
 
   async #acquireLock(jobId) {
+    // scope 获取/释放出现 unknown 后，本实例 run/install/uninstall 一律 fail-closed。
+    if (this._scopeFaulted) throw new AudioEngineError(CODES.BUSY);
     const token = crypto.randomBytes(16).toString("hex");
     const owner = {
       pid: process.pid,
@@ -1306,6 +2100,42 @@ export class AudioEngine {
     }
     if ((await lstatOrNull(this.lockRoot)) !== null) return fail();
   }
+}
+
+function monoNow() {
+  return performance.now();
+}
+
+function remaining(deadlineAtMs) {
+  return deadlineAtMs - monoNow();
+}
+
+/** 只停止等待，不取消内核 FS 调用；迟到结果仍由创建时的 handler 接管。 */
+function raceBudget(promise, budgetMs) {
+  if (!(budgetMs > 0)) return Promise.resolve(SCOPE_BUDGET_EXHAUSTED);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(SCOPE_BUDGET_EXHAUSTED);
+    }, budgetMs);
+    if (typeof timer.unref === "function") timer.unref();
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function isSha256Hex(value) {

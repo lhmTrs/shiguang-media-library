@@ -68,6 +68,7 @@ export const CLOUD_AUDIO_MESSAGES = Object.freeze({
   KIND_CONFLICT: "同一文件已按另一种素材类型入库，未更改其类型",
   ROOT_CHANGED: "下载目录已变化，请重新选择",
   SHARE_UNAVAILABLE: "所选云端来源已不可用",
+  SHARE_CHANGED: "共享状态已变化，请刷新后重试",
   AUDIO_CHANGED: "云端音频已变化，请重新选择",
   AUTH_CHANGED: "云端账户或设备状态已变化",
   CATEGORY_INVALID: "云端分类不合法",
@@ -528,6 +529,22 @@ export class CloudAudioService {
     if (this.#receiverFaulted || this.#receiver?.stats().faulted) fail("RECEIVER_FAULTED", 503);
   }
 
+  // Synchronous current in-process facts only. Disk residue remains subject to
+  // the separate async status/actual admission proofs; no handles escape.
+  currentActivity() {
+    const unknown = () => ({ known: false, allowed: false, code: "RECEIVER_ACTIVITY_UNKNOWN" });
+    try {
+      if (!this.#initialized || this.#disposed || !this.#enabled || !this.#store || !this.#receiver || typeof this.#receiver.stats !== "function") return unknown();
+      const receiver = this.#receiver.stats();
+      if (!receiver || typeof receiver.then === "function" || ["active", "artifacts", "orphans"].some(k => !Number.isSafeInteger(receiver[k]) || receiver[k] < 0) || typeof receiver.faulted !== "boolean" || typeof receiver.disposed !== "boolean") return unknown();
+      const pending = this.#store.countActive();
+      if (!Number.isSafeInteger(pending) || pending < 0 || typeof this.#receiverFaulted !== "boolean" || !Number.isSafeInteger(this.#tempReservedBytes) || this.#tempReservedBytes < 0) return unknown();
+      const active = this.#active.size, reservations = this.#tempReservations.size;
+      const allowed = !receiver.disposed && !receiver.faulted && !this.#receiverFaulted && receiver.active === 0 && receiver.artifacts === 0 && receiver.orphans === 0 && pending === 0 && active === 0 && reservations === 0 && this.#tempReservedBytes === 0 && this.#rootLocks.size === 0 && this.#startLocks.size === 0;
+      return { known: true, allowed, active, pending, reservations, receiverActive: receiver.active, receiverArtifacts: receiver.artifacts, receiverOrphans: receiver.orphans, receiverFaulted: receiver.faulted || this.#receiverFaulted, receiverDisposed: receiver.disposed };
+    } catch { return unknown(); }
+  }
+
   async status() {
     if (!this.#enabled) {
       return {
@@ -646,9 +663,9 @@ export class CloudAudioService {
     return current;
   }
 
-  async #proxy(method, pathname, epoch) {
+  async #proxy(method, pathname, epoch, body = null) {
     try {
-      return await this.#auth.proxy(method, pathname, { epoch });
+      return await this.#auth.proxy(method, pathname, body === null ? { epoch } : { epoch, body });
     } catch (error) {
       if (error instanceof CloudAuthError) {
         if (error.status === 401 || error.code === "UNAUTHORIZED" || error.code === "NOT_LOGGED_IN") {
@@ -658,6 +675,8 @@ export class CloudAudioService {
         }
         if (error.code === "STALE") fail("AUTH_CHANGED", 409);
         if (error.status === 404 || error.status === 403) fail("NOT_FOUND", 404);
+        // 写请求的 409 是版本冲突（可刷新重试），不能折叠成“云端不可用”。
+        if (method !== "GET" && error.status === 409) fail("SHARE_CHANGED", 409);
         fail("CLOUD_UNAVAILABLE", 502);
       }
       fail("CLOUD_UNAVAILABLE", 502);
@@ -717,6 +736,20 @@ export class CloudAudioService {
     if (!Array.isArray(data.shares) || data.shares.length > limit) fail("CLOUD_UNAVAILABLE", 502);
     const shares = data.shares.map(mapShare);
     return { audio, shares, hasMore: shares.length === limit, limit, offset };
+  }
+
+  /**
+   * 撤回共享：GROUP → PRIVATE，取消对外访问；不删除文件、不放弃 owner 保留。
+   * 云端 revoke 的成功体是 ApiResponse<Void>（data=null），因此这里只回 withdrawn，
+   * 不编造 version/state；需要最新状态请重读 details。
+   */
+  async withdrawShare(shareId, expectedVersion) {
+    this.#assertUsable();
+    validateUuid(shareId);
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) fail("INVALID_REQUEST");
+    const { epoch } = this.#currentIdentity();
+    await this.#proxy("POST", `/media/shares/${shareId}/revoke`, epoch, { expectedVersion });
+    return { shareId, withdrawn: true };
   }
 
   /** 在显式选择/下载前重新读取详情，分页查找所选 share；不缓存、不逐行预取。 */
@@ -1167,13 +1200,17 @@ export class CloudAudioService {
   #withRootLock(rootId, task) {
     const previous = this.#rootLocks.get(rootId) || Promise.resolve();
     const run = previous.then(task, task);
-    this.#rootLocks.set(
-      rootId,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
     );
+    this.#rootLocks.set(rootId, tail);
+    // Observe the actual normalized tail after it settles. A predecessor must
+    // never remove a newer queued tail for this root; keep original run errors.
+    const settled = () => {
+      if (this.#rootLocks.get(rootId) === tail) this.#rootLocks.delete(rootId);
+    };
+    void tail.then(settled, settled);
     return run;
   }
 
@@ -1258,7 +1295,7 @@ export class CloudAudioService {
         }
         if (asset.kind !== targetKind) {
           try {
-            this.#lib.patch(asset.id, { kind: targetKind });
+            this.#lib.patch(asset.id, { kind: targetKind }, { source: "system" });
           } catch {
             fail("INDEX_FAILED", 500);
           }

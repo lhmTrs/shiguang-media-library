@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { describeFailure, displayTime, type CloudAuthController, type CloudLastError } from "./cloud-auth";
+import { CloudUploadApprovalSettings } from "./CloudUploadApprovalSettings";
 import { CloudAudioDownload } from "./CloudAudioDownload";
 import type { LocalRequest } from "./OpenAISettings";
 
@@ -275,7 +276,7 @@ export function CloudWorkspace({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit">("security");
+  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit" | "upload-settings">("security");
   const generation = useRef(0);
   /** 只读最新 controller，避免把整个 auth 对象放进 effect 依赖导致父级重渲染即重取。 */
   const authRef = useRef(auth);
@@ -376,6 +377,7 @@ export function CloudWorkspace({
     if (capabilities?.superAdmin) {
       list.push({ id: "roles", label: "角色与授权" });
       list.push({ id: "audit", label: "审计" });
+      list.push({ id: "upload-settings", label: "上传审批设置" });
     }
     return list;
   }, [capabilities?.superAdmin, system]);
@@ -507,6 +509,9 @@ export function CloudWorkspace({
                 guard={guard}
                 onAuthFailure={onAuthFailure}
               />
+            )}
+            {tab === "upload-settings" && capabilities?.superAdmin && (
+              <CloudUploadApprovalSettings request={request} guard={guard} onAuthFailure={onAuthFailure} />
             )}
             {tab === "audit" && (
               <AuditPanel request={request} guard={guard} onAuthFailure={onAuthFailure} />

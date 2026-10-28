@@ -1,0 +1,10 @@
+import assert from'node:assert/strict';
+import{createFakeExecutor}from'../fakes.mjs';
+import{createCase,NORMAL_RAW}from'../scenarios.mjs';
+import{runProtocolHarness}from'../harness.mjs';
+const raw=Buffer.from(NORMAL_RAW);let coercionCalls=0;
+Object.defineProperty(raw,'valueOf',{value(){coercionCalls++;return raw;}});
+const executor=createFakeExecutor({raw}),c=createCase('normal');
+const result=await runProtocolHarness(c.scenario,{...c.adapters,executor});
+console.log(JSON.stringify({coercionCalls,code:result.code}));
+assert.equal(coercionCalls,0,'accepted Buffer raw copy must not invoke caller coercion');

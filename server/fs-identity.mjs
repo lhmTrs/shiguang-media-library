@@ -132,6 +132,7 @@ export async function walkFiles(root, { skipDir = ".shiguang", onError } = {}) {
           relPath: path.relative(root.path, abs).split(path.sep).join("/"),
           size: stat.size,
           mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
           birthtimeMs: stat.birthtimeMs,
           dev: stat.dev,
           ino: stat.ino,
@@ -143,4 +144,42 @@ export async function walkFiles(root, { skipDir = ".shiguang", onError } = {}) {
   };
   await walk(root.path);
   return files.filter((f) => !f.relPath.startsWith(skipDir + "/"));
+}
+
+// Explicit fingerprint jobs only. Legacy reconcile hashing keeps its existing behavior.
+export const fingerprintFileIdentity = s => ({ dev: s.dev, ino: s.ino, size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, birthtimeMs: s.birthtimeMs, nlink: s.nlink });
+export async function fingerprintRootIdentity(root) {
+  const key = await rootIdentity(root), stat = await fs.lstat(root.path);
+  if (![stat.dev, stat.ino].every(n => Number.isSafeInteger(n) && n > 0) || `${stat.dev}:${stat.ino}` !== key)
+    throw Object.assign(Error('ROOT_IDENTITY_UNAVAILABLE'), { code: 'ROOT_IDENTITY_UNAVAILABLE' });
+  return key;
+}
+export async function stableFileSha256(root, file, { remainingBytes, signal, check = () => {}, onRead = () => {} } = {}) {
+  const error = code => Object.assign(Error(code), { code });
+  const guard = () => { check(); if (signal?.aborted) throw error('CANCELLED'); };
+  guard();
+  if (!Number.isSafeInteger(remainingBytes) || remainingBytes < 0 || !path.isAbsolute(file) || path.normalize(file) !== file || !within(root.path, file) || file === root.path) throw error('INVALID_FILE');
+  const rootKey = await fingerprintRootIdentity(root); guard();
+  const before = await fs.lstat(file); guard();
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || !Number.isSafeInteger(before.size) || ![before.dev, before.ino].every(n => Number.isSafeInteger(n) && n > 0) || ![before.mtimeMs, before.ctimeMs, before.birthtimeMs].every(n => Number.isFinite(n) && n >= 0)) throw error('FILE_IDENTITY_UNAVAILABLE');
+  if (before.size > remainingBytes) throw error('BYTE_BUDGET');
+  if (await fs.realpath(file) !== file) throw error('FILE_LINK'); guard();
+  let handle;
+  try {
+    handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); guard();
+    const same = s => JSON.stringify(fingerprintFileIdentity(s)) === JSON.stringify(fingerprintFileIdentity(before));
+    if (!same(await handle.stat())) throw error('FILE_CHANGED'); guard();
+    const hash = crypto.createHash('sha256'), buffer = Buffer.alloc(65536); let position = 0;
+    while (position < before.size) {
+      guard(); const want = Math.min(buffer.length, before.size - position, remainingBytes - position);
+      if (want < 1) throw error('BYTE_BUDGET');
+      const { bytesRead } = await handle.read(buffer, 0, want, position);
+      onRead(bytesRead); guard();
+      if (bytesRead < 1 || bytesRead > want) throw error('FILE_CHANGED');
+      hash.update(buffer.subarray(0, bytesRead)); position += bytesRead;
+    }
+    if (!same(await handle.stat())) throw error('FILE_CHANGED'); guard();
+    if (!same(await fs.lstat(file)) || await fs.realpath(file) !== file || await fingerprintRootIdentity(root) !== rootKey) throw error('FILE_CHANGED'); guard();
+    return { sha256: hash.digest('hex'), bytes: position, file: fingerprintFileIdentity(before), rootIdentity: rootKey };
+  } finally { await handle?.close(); }
 }

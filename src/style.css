@@ -4967,3 +4967,6 @@ dd {
   .cw-audio-job-title strong { max-width: 100%; }
 }
 .cw-audio-more { align-self: flex-start; }
+.cw-audio-source-row { display: flex; align-items: stretch; gap: 6px; }
+.cw-audio-source-row .cw-audio-source { flex: 1; min-width: 0; }
+.cw-audio-withdraw { align-self: center; white-space: nowrap; font-size: 10.5px; padding: 4px 8px; }

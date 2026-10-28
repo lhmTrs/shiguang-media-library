@@ -12,6 +12,7 @@
  * 未知字段原样保留（沿用项目里 config 的做法），避免把别的工具写的附加信息洗掉。
  */
 import fs from "node:fs/promises";
+import { constants, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { within } from "./fs-identity.mjs";
@@ -87,6 +88,7 @@ export function validateManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "清单不是对象";
   if (!value.entries || typeof value.entries !== "object" || Array.isArray(value.entries))
     return "清单缺少 entries 映射";
+  if (value.repairOperations !== undefined && validateRepairMarkers(value.repairOperations)) return "修复标记无效";
   for (const [id, entry] of Object.entries(value.entries)) {
     if (!id || typeof id !== "string") return "存在空 id";
     if (!entry || typeof entry !== "object") return `条目 ${id} 不是对象`;
@@ -97,12 +99,31 @@ export function validateManifest(value) {
   return null;
 }
 
+export function validateRepairMarkers(markers) {
+  if (!markers || typeof markers !== "object" || Array.isArray(markers) || Object.keys(markers).length > 64) return true;
+  const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+  return Object.entries(markers).some(([id, m]) => !m || !uuid.test(id) || m.operationId !== id || ![m.assetId,m.fromRootId,m.toRootId].every(v=>uuid.test(v)) || !["PREPARED","COMPLETE","ABORTED"].includes(m.phase) || !/^[a-f0-9]{64}$/.test(m.snapshotSha256 || "") || ((m.format !== undefined || m.mode !== undefined || m.aliasAssetId !== undefined) && (m.format !== 2 || m.mode !== "merge" || !uuid.test(m.aliasAssetId || "") || m.aliasAssetId === m.assetId)) || typeof m.targetRelativePath !== "string" || !m.targetRelativePath || m.targetRelativePath.length > 4096 || /^[\\/]|^[A-Za-z]:/.test(m.targetRelativePath) || m.targetRelativePath.split(/[\\/]/).some(v=>!v||v==="."||v===".."));
+}
+
 /** 读取清单；缺失返回 { manifest: null, reason: "missing" }，损坏返回 reason 并附原始文本长度，绝不抛错。 */
-export async function readManifest(root) {
+export async function readManifest(root, { maxBytes = Infinity, guard = () => {}, onRead = () => {} } = {}) {
   const file = manifestPath(root);
   let text;
   try {
-    text = await fs.readFile(file, "utf8");
+    if (Number.isFinite(maxBytes)) {
+      const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const stat = await handle.stat(); guard();
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) throw Object.assign(Error("MANIFEST_LIMIT"), { code: "MANIFEST_LIMIT" });
+        const bytes = Buffer.alloc(stat.size); let offset = 0;
+        while (offset < bytes.length) { const read = await handle.read(bytes, offset, Math.min(65536, bytes.length-offset), offset); onRead(read.bytesRead); guard(); if (!read.bytesRead) throw Error("MANIFEST_CHANGED"); offset += read.bytesRead; }
+        const after = await handle.stat(); guard();
+        const named = await fs.lstat(file); guard();
+        if ([after,named].some(current=>current.dev!==stat.dev || current.ino!==stat.ino || current.size!==stat.size || current.mtimeMs!==stat.mtimeMs || current.ctimeMs!==stat.ctimeMs)) throw Error("MANIFEST_CHANGED");
+        text=bytes.toString("utf8");
+      } finally { await handle.close(); }
+      guard();
+    } else text = await fs.readFile(file, "utf8");
   } catch (e) {
     return { manifest: null, reason: e.code === "ENOENT" ? "missing" : String(e.code || e.message) };
   }
@@ -113,26 +134,48 @@ export async function readManifest(root) {
     return { manifest: null, reason: "unparsable", bytes: text.length };
   }
   const invalid = validateManifest(parsed);
-  if (invalid) return { manifest: null, reason: "invalid", detail: invalid };
-  return { manifest: parsed, reason: "ok" };
+  if (invalid) return { manifest: null, reason: invalid === "修复标记无效" ? "repair-invalid" : "invalid", detail: invalid };
+  return { manifest: parsed, reason: "ok", ...(Number.isFinite(maxBytes) ? { raw: text } : {}) };
 }
 
 /**
  * 原子写入：tmp → fsync → rename，并保留一份 .bak。
  * 返回 { bytes, revision, skipped }；只读模式或越界时不会写出任何东西。
  */
-export async function writeManifest(root, manifest) {
+export async function writeManifest(root, manifest, { guard = () => {}, maxBytes = Infinity, onRead = () => {} } = {}) {
+  guard();
   if (filesReadonly()) return { skipped: true, reason: "readonly", bytes: 0, revision: Number(manifest?.revision) || 0 };
   const file = manifestPath(root);
   return serialize(file, async () => {
+    guard();
     const dir = await prepareManifestDir(root);
+    guard();
+    if (Number.isFinite(maxBytes)) {
+      const pinned = lstatSync(dir), outer = guard;
+      guard = () => { outer(); const current = lstatSync(dir); if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== pinned.dev || current.ino !== pinned.ino || realpathSync(dir) !== dir) throw Object.assign(Error("MANIFEST_CHANGED"), { code: "MANIFEST_CHANGED" }); };
+      guard();
+    }
     const target = await fs.lstat(file).catch(() => null);
+    guard();
     if (target?.isSymbolicLink()) throw Error("清单文件是符号链接，已拒绝写入");
     // revision 单调递增：多个写入方（对账 / 监听 / 元数据同步）之间不会互相倒退
-    const current = (await readManifest(root)).manifest;
+    const read = await readManifest(root, { maxBytes, guard, onRead }), current = read.manifest;
+    if (Number.isFinite(maxBytes) && !current && read.reason !== "missing") throw Object.assign(Error("MANIFEST_UNAVAILABLE"), { code: "MANIFEST_UNAVAILABLE" });
+    guard();
+    const repairOperations = { ...current?.repairOperations, ...manifest.repairOperations };
+    for (const [id, previous] of Object.entries(current?.repairOperations || {})) {
+      const next = repairOperations[id];
+      if (next.snapshotSha256 !== previous.snapshotSha256) throw Error("修复标记冲突");
+      if (previous.phase === "COMPLETE" || previous.phase === "ABORTED") repairOperations[id] = previous;
+    }
+    if (validateRepairMarkers(repairOperations)) throw Error("修复标记无效");
     const revision = Math.max(Number(manifest.revision) || 0, Number(current?.revision) || 0);
+    const entries = { ...manifest.entries };
+    for (const marker of Object.values(repairOperations)) if (marker.format === 2 && marker.mode === "merge" && marker.phase === "COMPLETE") delete entries[marker.aliasAssetId];
     const payload = {
       ...manifest,
+      entries,
+      ...(Object.keys(repairOperations).length ? { repairOperations } : {}),
       revision,
       format: MANIFEST_FORMAT,
       updatedAt: new Date().toISOString(),
@@ -140,21 +183,37 @@ export async function writeManifest(root, manifest) {
     delete payload.skipped;
     delete payload.reason;
     const text = JSON.stringify(payload, null, 2) + "\n";
+    if (Buffer.byteLength(text) > maxBytes) throw Object.assign(Error("MANIFEST_LIMIT"), { code: "MANIFEST_LIMIT" });
     const tmp = path.join(dir, `${MANIFEST_NAME}.tmp-${process.pid}-${++tmpSeq}-${randomUUID().slice(0, 8)}`);
-    const handle = await fs.open(tmp, "w", 0o600);
+    const handle = await fs.open(tmp, Number.isFinite(maxBytes) ? "wx" : "w", 0o600);
     try {
+      guard();
       await handle.writeFile(text, "utf8");
+      guard();
       await handle.sync();
+      guard();
     } catch (e) {
       await handle.close().catch(() => {});
       await fs.rm(tmp, { force: true }).catch(() => {});
       throw e;
     }
     await handle.close();
-    try {
-      await fs.copyFile(file, `${file}.bak`);
-    } catch {} // 首次写入没有旧文件，属正常
+    guard();
+    if (Number.isFinite(maxBytes) && current) {
+      // Use the already bounded/read raw bytes; don't follow an existing .bak link.
+      const backup = `${tmp}.backup`, previous = await fs.open(backup, "wx", 0o600);
+      try { guard(); await previous.writeFile(read.raw, "utf8"); guard(); await previous.sync(); guard(); }
+      finally { await previous.close(); }
+      guard(); await fs.rename(backup, `${file}.bak`); guard();
+    } else if (!Number.isFinite(maxBytes)) {
+      try { await fs.copyFile(file, `${file}.bak`); } catch {} // legacy first write
+    }
+    guard();
     await fs.rename(tmp, file);
+    guard();
+    const directoryHandle = await fs.open(dir, "r");
+    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+    guard();
     return { bytes: Buffer.byteLength(text), revision, skipped: false };
   });
 }
@@ -177,6 +236,7 @@ export function entryFromAsset(asset) {
     favorite: asset.favorite ? true : false,
     confirmed: asset.confirmed ? true : false,
     capturedMs: asset.captured_ms ?? null,
+    captureSource: asset.capture_source ?? "",
   };
 }
 
@@ -187,6 +247,8 @@ export function metaFromEntry(entry) {
   if (typeof entry.note === "string") out.note = entry.note;
   if (typeof entry.category === "string") out.category = entry.category;
   if (typeof entry.sub === "string") out.sub = entry.sub;
+  if (typeof entry.confirmed === "boolean") out.confirmed = entry.confirmed ? 1 : 0;
+  if (typeof entry.captureSource === "string") out.capture_source = entry.captureSource;
   if (typeof entry.favorite === "boolean") out.favorite = entry.favorite ? 1 : 0;
   if (entry.capturedMs === null || typeof entry.capturedMs === "number") out.captured_ms = entry.capturedMs;
   return out;

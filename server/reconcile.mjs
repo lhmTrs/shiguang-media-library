@@ -13,10 +13,11 @@
  *   - reconcilePaths：只处理监听报出来的少量路径（外部改名/移动 1~2 秒内接上）
  */
 import fs from "node:fs/promises";
+import { repairRootState, mergeAlias } from "./asset-repair.mjs";
 import { watch as fsWatch } from "node:fs";
 import path from "node:path";
 import { fileCreated, id } from "./library.mjs";
-import { kindForExt, readAssetId, sha256File, walkFiles, within, writeAssetId } from "./fs-identity.mjs";
+import { kindForExt, readAssetId, rootIdentity, sha256File, walkFiles, within, writeAssetId } from "./fs-identity.mjs";
 import {
   emptyManifest,
   entryFromAsset,
@@ -41,6 +42,53 @@ const isIgnoredRel = (rel) => !rel || insideManifestDir(rel) || rel.split("/").s
 
 function assetsOfRoot(lib, rootId) {
   return lib.db.prepare("SELECT * FROM assets WHERE root_id=? AND trashed=0").all(rootId);
+}
+
+function registeredRootSnapshot(lib, expected) {
+  const current = lib.db.prepare("SELECT * FROM roots WHERE id=?").get(expected.id);
+  return current && !current.retired && current.path === expected.path && current.kind === expected.kind ? current : null;
+}
+function rootRegistrationUnchanged(lib, snapshot) {
+  const current = snapshot && registeredRootSnapshot(lib, snapshot);
+  return !!current && Number(current.revision || 0) === Number(snapshot.revision || 0);
+}
+
+async function adoptMovedFromRoot(lib, root, file) {
+  const targetRegistration = registeredRootSnapshot(lib, root);
+  if (!targetRegistration || !file.dev || !file.ino) return null;
+  const rows = lib.db.prepare("SELECT * FROM assets WHERE dev=? AND ino=? AND trashed=0 LIMIT 3").all(file.dev, file.ino);
+  if (rows.length !== 1) return null;
+  const previous = rows[0];
+  if (previous.root_id === root.id || lib.locks.has(previous.id) || previous.size !== file.size ||
+      Math.abs(previous.mtime - file.mtimeMs) >= 1 ||
+      previous.kind !== kindForExt(path.extname(file.abs).slice(1), root.kind)) return null;
+  const oldRoot = lib.roots().find(r => r.id === previous.root_id && !r.retired);
+  if (!oldRoot || !within(oldRoot.path, previous.path)) return null;
+  try {
+    const oldKey = await rootIdentity(oldRoot), newKey = await rootIdentity(root);
+    try { await fs.lstat(previous.path); return null; }
+    catch (error) { if (error.code !== "ENOENT") return null; }
+    const real = await fs.realpath(file.abs), current = await fs.lstat(file.abs);
+    if (real !== file.abs || !within(root.path, real) || !current.isFile() || current.nlink !== 1 ||
+        current.dev !== file.dev || current.ino !== file.ino || current.size !== file.size ||
+        Math.abs(current.mtimeMs - file.mtimeMs) >= 1) return null;
+    if (oldKey !== await rootIdentity(oldRoot) || newKey !== await rootIdentity(root)) return null;
+    try { await fs.lstat(previous.path); return null; }
+    catch (error) { if (error.code !== "ENOENT") return null; }
+    return lib.db.transaction(() => {
+      if (!rootRegistrationUnchanged(lib, oldRoot) || !rootRegistrationUnchanged(lib, targetRegistration)) return null;
+      const fresh = lib.db.prepare("SELECT * FROM assets WHERE id=?").get(previous.id);
+      if (!fresh || fresh.trashed || fresh.root_id !== previous.root_id || fresh.path !== previous.path ||
+          fresh.dev !== previous.dev || fresh.ino !== previous.ino || fresh.size !== previous.size ||
+          fresh.mtime !== previous.mtime || lib.locks.has(previous.id) ||
+          lib.db.prepare("SELECT id FROM assets WHERE path=?").get(file.abs) ||
+          lib.db.prepare("SELECT id FROM operations WHERE asset_id=? AND status='pending'").get(previous.id)) return null;
+      lib.db.prepare("UPDATE assets SET root_id=?,path=?,name=?,ext=?,sha256=NULL,online=1,file_status='unknown',file_checked_ms=0 WHERE id=?")
+        .run(root.id, file.abs, path.basename(file.abs), path.extname(file.abs).slice(1).toLowerCase(), previous.id);
+      lib.db.prepare("UPDATE roots SET revision=COALESCE(revision,0)+1 WHERE id=?").run(previous.root_id);
+      return lib.db.prepare("SELECT * FROM assets WHERE id=?").get(previous.id);
+    })();
+  } catch { return null; }
 }
 
 /** 把数据库现有元数据物化成清单（首次启用 / 清单丢失时使用）。 */
@@ -100,8 +148,21 @@ async function readManifestOrBuild(lib, root, report) {
  * @param {boolean} [opts.tagFiles] 是否给文件写 xattr id（默认写；只读盘/不支持的文件系统上静默失败）
  * @param {number}  [opts.hashBudgetFiles] / [opts.hashBudgetBytes] 渐进哈希预算
  */
+async function trackedIndexWork(lib, deferred, work) {
+  if (lib.locks.size) return { ...deferred, deferred: true, repairPending: true, code: "ASSET_OPERATION_IN_PROGRESS" };
+  const count = lib.repairIndexReaders ?? 0;
+  if (!Number.isSafeInteger(count) || count < 0 || count >= 1024) throw Object.assign(Error("INDEX_ACTIVITY_UNKNOWN"), { code: "INDEX_ACTIVITY_UNKNOWN" });
+  lib.repairIndexReaders = count + 1;
+  try { return await work(); }
+  finally { const current = lib.repairIndexReaders; lib.repairIndexReaders = Number.isSafeInteger(current) && current > 0 ? current - 1 : NaN; }
+}
 export async function reconcileRoot(lib, root, opts = {}) {
+  const work = () => trackedIndexWork(lib, { mode: "full", rootId: root.id, skipped: 0, walkErrors: [], conflicts: [] }, () => reconcileRootWork(lib, root, opts));
+  return lib.scanProof ? lib.scanProof.run(root.id, 'FULL', work, { signal: opts.signal }) : work();
+}
+async function reconcileRootWork(lib, root, opts = {}) {
   const started = Date.now();
+  const targetRegistration = registeredRootSnapshot(lib, root);
   const report = {
     mode: "full",
     rootId: root.id,
@@ -122,6 +183,10 @@ export async function reconcileRoot(lib, root, opts = {}) {
     conflicts: [],
     walkErrors: [],
   };
+  if (!targetRegistration) { report.registrationChanged = true; report.elapsedMs = Date.now() - started; return report; }
+  const repairManifest = await readManifest(root);
+  const repair = repairRootState(lib, root, repairManifest.manifest);
+  if (repairManifest.reason === "repair-invalid" || repair.blocked) return { ...report, deferred: true, repairPending: true, code: repair.code || "REPAIR_MARKER_INVALID" };
   // 先判定登记目录本身是否还在：**不可读就立刻退出**。
   // 否则下面的清单写入会 mkdir -p 把"已搬走的旧目录"重新创建出来，随后又判定它可访问，
   // 于是离线判断与"重新指定位置"的提醒全部失效（已实测复现）。
@@ -137,6 +202,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
   }
 
   const manifest = await readManifestOrBuild(lib, root, report);
+  if (repairRootState(lib, root, manifest).blocked) return { ...report, deferred: true, repairPending: true, code: "REPAIR_PENDING" };
 
   const files = await walkFiles(root, {
     onError: (p, e) => report.walkErrors.push(`${relOf(root, p)}: ${e.code || e.message}`),
@@ -144,6 +210,14 @@ export async function reconcileRoot(lib, root, opts = {}) {
   const rootRows = assetsOfRoot(lib, root.id);
   const rowById = new Map(rootRows.map((r) => [r.id, r]));
   const rowByPath = new Map(rootRows.map((r) => [r.path, r]));
+
+  // Only nonlocal IDs need a lookup; steady roots must not add an IPC per asset.
+  for (const entryId of Object.keys(manifest.entries)) {
+    if (mergeAlias(lib, entryId)) { delete manifest.entries[entryId]; continue; }
+    if (rowById.has(entryId)) continue;
+    const owner = lib.db.prepare("SELECT root_id FROM assets WHERE id=?").get(entryId);
+    if (owner && owner.root_id !== root.id) delete manifest.entries[entryId];
+  }
 
   const freeEntries = new Map(Object.entries(manifest.entries));
   const freeFiles = new Map(files.map((f) => [f.relPath, f]));
@@ -286,14 +360,14 @@ export async function reconcileRoot(lib, root, opts = {}) {
 
   // ── 落库 1：认领成功的条目（path 是全局唯一约束，冲突只记录不崩）
   const updateAsset = lib.db.prepare(
-    "UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?",
+    "UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=0,file_status='unknown' WHERE id=?",
   );
   const setDigest = lib.db.prepare("UPDATE assets SET sha256=? WHERE id=?");
   const claimOrder = [...claims.entries()].sort((a, b) => (a[1].how === "path" ? -1 : 0) - (b[1].how === "path" ? -1 : 0));
   const insertRecovered = lib.db.prepare(
     "INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   );
-  const adoptMeta = lib.db.prepare("UPDATE assets SET tags=?,note=?,category=?,sub=?,favorite=?,captured_ms=? WHERE id=?");
+  const adoptMeta = lib.db.prepare("UPDATE assets SET tags=?,note=?,category=?,sub=?,favorite=?,captured_ms=?,capture_source=?,confirmed=? WHERE id=?");
   for (const [entryId, { file, how, digest }] of claimOrder) {
     const entry = manifest.entries[entryId];
     const parentChanged = path.dirname(entry.relPath || "") !== path.dirname(file.relPath);
@@ -303,7 +377,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
       const meta = metaFromEntry(entry);
       const live = rowByPath.get(file.abs); // 扫描可能已经把这个文件重新入了库（新 id）
       if (live) {
-        adoptMeta.run(meta.tags ?? "[]", meta.note ?? "", meta.category ?? "", meta.sub ?? "", meta.favorite ?? 0, meta.captured_ms ?? null, live.id);
+        lib.metadataVersions.edit(live.id, () => adoptMeta.run(meta.tags ?? "[]", meta.note ?? "", meta.category ?? "", meta.sub ?? "", meta.favorite ?? 0, meta.captured_ms ?? null, meta.capture_source ?? "", meta.confirmed ?? 0, live.id), { source: "import", forceUnknown: true });
         manifest.entries[live.id] = { ...entry, ...meta, relPath: file.relPath, dev: file.dev, ino: file.ino, size: file.size };
         delete manifest.entries[entryId];
       } else {
@@ -314,7 +388,7 @@ export async function reconcileRoot(lib, root, opts = {}) {
           file.size, file.mtimeMs, fileCreated({ birthtimeMs: file.birthtimeMs }),
           meta.category ?? "", meta.sub ?? "", "清单恢复", 0, file.dev, file.ino, digest ?? entry.sha256 ?? null,
         );
-        adoptMeta.run(meta.tags ?? "[]", meta.note ?? "", meta.category ?? "", meta.sub ?? "", meta.favorite ?? 0, meta.captured_ms ?? null, entryId);
+        lib.metadataVersions.edit(entryId, () => adoptMeta.run(meta.tags ?? "[]", meta.note ?? "", meta.category ?? "", meta.sub ?? "", meta.favorite ?? 0, meta.captured_ms ?? null, meta.capture_source ?? "", meta.confirmed ?? 0, entryId), { source: "import", forceUnknown: true });
       }
       report.recovered = (report.recovered || 0) + 1;
       continue;
@@ -322,10 +396,12 @@ export async function reconcileRoot(lib, root, opts = {}) {
     // 稳态下（外部没动过）绝大多数条目都没变：这时**一次数据库写入都不该发生**。
     // 否则每次启动都要对上万个资产逐行 UPDATE，走 MySQL worker 的 IPC 会拖到几分钟。
     const rowNow = rowById.get(entryId);
+    const bindingChanged = !!entry.fingerprintBinding && entry.fingerprintBinding.file?.ctimeMs !== file.ctimeMs;
     const unchanged =
       rowNow &&
+      Number(rowNow.online) === 1 && !bindingChanged &&
       rowNow.path === file.abs &&
-      rowNow.file_status !== "missing" &&
+      !["missing", "offline", "unavailable"].includes(rowNow.file_status) &&
       Number(rowNow.size) === file.size &&
       Math.abs(Number(rowNow.mtime) - file.mtimeMs) < 1 &&
       Number(rowNow.dev) === file.dev &&
@@ -350,12 +426,13 @@ export async function reconcileRoot(lib, root, opts = {}) {
     }
     if (digest) {
       setDigest.run(digest, entryId);
-    } else if (rowNow && (Number(rowNow.size) !== file.size || Math.abs(Number(rowNow.mtime) - file.mtimeMs) >= 1)) {
+    } else if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || Number(rowNow.dev) !== file.dev || Number(rowNow.ino) !== file.ino || bindingChanged)) {
       // 文件内容原地变了（size/mtime 变）而本轮没重算哈希：**必须清掉旧哈希**，
       // 否则将来跨盘移动时会拿过期哈希去匹配，认不回来。
       lib.db.prepare("UPDATE assets SET sha256=NULL WHERE id=?").run(entryId);
       delete entry.sha256;
     }
+    if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || Number(rowNow.dev) !== file.dev || Number(rowNow.ino) !== file.ino) || digest || bindingChanged) delete entry.fingerprintBinding;
     entry.relPath = file.relPath;
     entry.size = file.size;
     entry.dev = file.dev;
@@ -384,26 +461,37 @@ export async function reconcileRoot(lib, root, opts = {}) {
     const ext = path.extname(file.relPath).slice(1).toLowerCase();
     const kind = kindForExt(ext, root.kind);
     if (!kind) continue; // 非媒体文件不索引（与扫描器口径一致）
+    const moved = await adoptMovedFromRoot(lib, root, file);
+    if (moved) {
+      manifest.entries[moved.id] = { ...entryFromAsset(moved), relPath: file.relPath, dev: file.dev, ino: file.ino, size: file.size };
+      report.moved++;
+      continue;
+    }
     const newId = id();
     try {
-      insertAsset.run(
-        newId,
-        root.id,
-        file.abs,
-        path.basename(file.relPath),
-        ext,
-        kind,
-        file.size,
-        file.mtimeMs,
-        fileCreated({ birthtimeMs: file.birthtimeMs }),
-        root.kind === "music" ? path.basename(path.dirname(file.relPath)) : "",
-        "",
-        "",
-        0,
-        file.dev,
-        file.ino,
-        null,
-      );
+      const inserted = lib.db.transaction(() => {
+        if (!rootRegistrationUnchanged(lib, targetRegistration)) return false;
+        insertAsset.run(
+          newId,
+          root.id,
+          file.abs,
+          path.basename(file.relPath),
+          ext,
+          kind,
+          file.size,
+          file.mtimeMs,
+          fileCreated({ birthtimeMs: file.birthtimeMs }),
+          root.kind === "music" ? path.basename(path.dirname(file.relPath)) : "",
+          "",
+          "",
+          0,
+          file.dev,
+          file.ino,
+          null,
+        );
+        return true;
+      })();
+      if (!inserted) { report.registrationChanged = true; report.skipped++; report.elapsedMs = Date.now() - started; return report; }
     } catch (e) {
       report.conflicts.push({ path: file.abs, error: String(e.message || e), code: e.code, errno: e.errno, sql: e.sql });
       continue;
@@ -429,10 +517,10 @@ export async function reconcileRoot(lib, root, opts = {}) {
   }
 
   // ── 落库 3：认领不到的条目 → 只标离线，**绝不删除**
-  const markOffline = lib.db.prepare("UPDATE assets SET online=0 WHERE id=?");
+  const markOffline = lib.db.prepare("UPDATE assets SET online=0 WHERE id=? AND root_id=? AND path=?");
   for (const [entryId, entry] of freeEntries) {
     if (!rowById.has(entryId)) continue;
-    markOffline.run(entryId);
+    markOffline.run(entryId, root.id, rowById.get(entryId).path);
     entry.state = "missing";
     entry.missingSince = entry.missingSince || new Date().toISOString();
     report.missing++;
@@ -452,13 +540,13 @@ export async function reconcileRoot(lib, root, opts = {}) {
         category: lib.directoryClassification ? row.category : meta.category ?? row.category,
         sub: lib.directoryClassification ? row.sub : meta.sub ?? row.sub,
         favorite: meta.favorite ?? row.favorite,
+        confirmed: lib.directoryClassification && row.review ? 0 : meta.confirmed ?? row.confirmed,
       };
       try {
-        lib.db
-          .prepare("UPDATE assets SET tags=?,note=?,category=?,sub=?,favorite=? WHERE id=?")
-          .run(next.tags, next.note, next.category, next.sub, next.favorite, entryId);
-        if (meta.captured_ms !== undefined)
-          lib.db.prepare("UPDATE assets SET captured_ms=? WHERE id=?").run(meta.captured_ms, entryId);
+        lib.metadataVersions.edit(entryId, () => {
+          lib.db.prepare("UPDATE assets SET tags=?,note=?,category=?,sub=?,favorite=?,confirmed=? WHERE id=?").run(next.tags, next.note, next.category, next.sub, next.favorite, next.confirmed, entryId);
+          if (meta.captured_ms !== undefined) lib.db.prepare("UPDATE assets SET captured_ms=?,capture_source=? WHERE id=?").run(meta.captured_ms, meta.capture_source ?? "", entryId);
+        }, { source: "import", forceUnknown: true });
         row = { ...row, ...meta, ...next };
       } catch (e) {
         report.conflicts.push({ entryId, error: "元数据并入失败：" + String(e.message || e), code: e.code, errno: e.errno, sql: e.sql });
@@ -509,11 +597,20 @@ export async function reconcileRoot(lib, root, opts = {}) {
  * 返回 { handled, needFullReconcile, ... }；`needFullReconcile` 为真时调用方应跑一次全量。
  */
 export async function reconcilePaths(lib, root, relPaths, opts = {}) {
+  const work = () => trackedIndexWork(lib, { handled: 0, needFullReconcile: false }, () => reconcilePathsWork(lib, root, relPaths, opts));
+  return lib.scanProof ? lib.scanProof.run(root.id, 'QUICK', work, { signal: opts.signal }) : work();
+}
+async function reconcilePathsWork(lib, root, relPaths, opts = {}) {
   const targets = [...new Set(relPaths.map((r) => String(r).split(path.sep).join("/")))].filter((r) => !isIgnoredRel(r));
   if (!targets.length) return { handled: 0, needFullReconcile: false };
   const report = { handled: 0, needFullReconcile: false, vanished: 0, adopted: 0, touched: 0 };
+  const targetRegistration = registeredRootSnapshot(lib, root);
+  if (!targetRegistration) return { ...report, registrationChanged: true };
   let createdManifest = false;
-  let manifest = (await readManifest(root)).manifest;
+  const initialManifest = await readManifest(root);
+  let manifest = initialManifest.manifest;
+  const repair = repairRootState(lib, root, manifest);
+  if (initialManifest.reason === "repair-invalid" || repair.blocked) return { ...report, deferred: true, repairPending: true, code: repair.code || "REPAIR_MARKER_INVALID" };
   if (manifest) manifest = normalizeEntryPaths(root, manifest);
   if (!manifest) {
     // 清单还不存在（例如刚登记目录就发生外部改名）：就地物化一份，
@@ -522,7 +619,6 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     createdManifest = true;
   }
   const byPath = lib.db.prepare("SELECT * FROM assets WHERE path=?");
-  const justOffline = []; // 本轮刚被标离线的记录：外部改名时"旧名字"就在这里
 
   // 第一遍：已经消失的路径（改名/移走的"旧名字"）先标离线，给第二遍腾出候选
   for (const rel of targets) {
@@ -533,7 +629,6 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
       const row = byPath.get(abs);
       if (row && !row.trashed && row.online) {
         lib.db.prepare("UPDATE assets SET online=0 WHERE id=?").run(row.id);
-        justOffline.push(row);
         report.vanished++;
       }
       // 该路径下还有记录 → 消失的是一个**目录**，其下文件路径全部变了
@@ -564,8 +659,12 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     if (current) {
       if (!current.trashed) {
         lib.db
-          .prepare("UPDATE assets SET size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?")
+          .prepare("UPDATE assets SET size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=0,file_status='unknown' WHERE id=?")
           .run(stat.size, stat.mtimeMs, stat.dev, stat.ino, current.id);
+        if (Number(current.size) !== stat.size || Number(current.mtime) !== stat.mtimeMs || Number(current.dev) !== stat.dev || Number(current.ino) !== stat.ino || manifest.entries[current.id]?.fingerprintBinding?.file?.ctimeMs !== undefined && manifest.entries[current.id].fingerprintBinding.file.ctimeMs !== stat.ctimeMs) {
+          lib.db.prepare('UPDATE assets SET sha256=NULL WHERE id=?').run(current.id);
+          if (manifest.entries[current.id]) { delete manifest.entries[current.id].sha256; delete manifest.entries[current.id].fingerprintBinding; }
+        }
         report.touched++;
       }
       continue;
@@ -574,30 +673,30 @@ export async function reconcilePaths(lib, root, relPaths, opts = {}) {
     let candidates = lib.db
       .prepare("SELECT * FROM assets WHERE root_id=? AND trashed=0 AND dev=? AND ino=?")
       .all(root.id, stat.dev, stat.ino);
-    // ② 退一步：本轮刚离线 + 同大小 + 同扩展名，且唯一 —— 覆盖"建库后还没记过身份就改名"的情况
-    if (!candidates.length && justOffline.length) {
-      const hits = justOffline.filter((r) => r.size === stat.size && String(r.ext || "").toLowerCase() === ext);
-      if (hits.length === 1) candidates = hits;
-    }
-    // ③ 再退到"同根内离线 + 同名 + 同大小"，覆盖跨目录移动但没改名的场景
-    if (!candidates.length)
-      candidates = lib.db
-        .prepare("SELECT * FROM assets WHERE root_id=? AND trashed=0 AND name=? AND size=? AND online=0")
-        .all(root.id, path.basename(rel), stat.size);
+    // Weak name/size matches need the full reconciler's evidence, never quick-path adoption.
     if (candidates.length === 1) {
       const target = candidates[0];
       try {
         lib.db
-          .prepare("UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?")
+          .prepare("UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,sha256=NULL,online=1,file_checked_ms=0,file_status='unknown' WHERE id=?")
           .run(abs, path.basename(rel), ext, stat.size, stat.mtimeMs, stat.dev, stat.ino, target.id);
       } catch {
         report.needFullReconcile = true; // 目标路径被别的记录占着，交给全量对账精确处理
         continue;
       }
       if (manifest?.entries?.[target.id]) {
+        delete manifest.entries[target.id].sha256; delete manifest.entries[target.id].fingerprintBinding;
         Object.assign(manifest.entries[target.id], { relPath: rel, size: stat.size, dev: stat.dev, ino: stat.ino });
       }
       if (opts.tagFiles !== false) await writeAssetId(abs, target.id);
+      report.adopted++;
+      report.handled++;
+      continue;
+    }
+    const moved = await adoptMovedFromRoot(lib, root, { abs, relPath: rel, size: stat.size, mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino });
+    if (!rootRegistrationUnchanged(lib, targetRegistration)) return { ...report, registrationChanged: true };
+    if (moved) {
+      manifest.entries[moved.id] = { ...entryFromAsset(moved), relPath: rel, dev: stat.dev, ino: stat.ino, size: stat.size };
       report.adopted++;
       report.handled++;
       continue;
@@ -798,15 +897,23 @@ export function createManifestSync(lib, options = {}) {
   };
 
   async function writeRoot(root) {
-    const { manifest } = await readManifest(root);
+    const work = () => trackedIndexWork(lib, {}, () => writeRootWork(root));
+    return lib.scanProof ? lib.scanProof.run(root.id, 'MANIFEST', work) : work();
+  }
+  async function writeRootWork(root) {
+    const read = await readManifest(root), manifest = read.manifest;
+    const repair = repairRootState(lib, root, manifest);
+    if (read.reason === "repair-invalid" || repair.blocked) return { deferred: true, repairPending: true, code: repair.code || "REPAIR_MARKER_INVALID" };
     const built = await materializeManifest(lib, root);
     for (const [entryId, entry] of Object.entries(built.entries)) {
       const previous = manifest?.entries?.[entryId];
       // 保留上一版里的未知字段、dev/ino、sha256、tagged 与 missing 痕迹；受管字段用数据库现值覆盖
       built.entries[entryId] = previous ? { ...previous, ...strip(entry) } : strip(entry);
+      if (!entry.sha256) { delete built.entries[entryId].sha256; delete built.entries[entryId].fingerprintBinding; }
     }
     for (const [entryId, previous] of Object.entries(manifest?.entries ?? {}))
-      if (!built.entries[entryId]) built.entries[entryId] = previous;
+      if (!built.entries[entryId] && !mergeAlias(lib, entryId)) built.entries[entryId] = previous;
+    repairRootState(lib, root, built);
     built.revision = Number(manifest?.revision || 0) + 1;
     await writeManifest(root, built);
   }
@@ -824,10 +931,12 @@ export function createManifestSync(lib, options = {}) {
     dirty.clear();
     if (!roots.length) return;
     writing = true;
+    const deferred = [];
     try {
       for (const root of roots) {
         try {
-          await writeRoot(root);
+          const result = await writeRoot(root);
+          if (result?.deferred) { dirty.add(root.id); deferred.push({ rootId: root.id, code: result.code }); } // no new timer
         } catch (e) {
           log(`[manifest] ${root.path} 清单同步失败：${e.code || e.message}`);
         }
@@ -835,6 +944,7 @@ export function createManifestSync(lib, options = {}) {
     } finally {
       writing = false;
     }
+    if (deferred.length) return { deferred: true, repairPending: true, roots: deferred };
   }
 
   return {

@@ -1,3 +1,4 @@
+import { assertMergeHistoryRetained } from "./asset-repair.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -17,6 +18,7 @@ export class RootRemoval {
       throw Error("扫描或素材操作正在进行，请完成后再移除目录");
   }
   snapshot(rootId, lock = false) {
+    assertMergeHistoryRetained(this.lib, { rootId });
     const db = this.lib.db, suffix = lock && db.kind === "mysql" ? " FOR UPDATE" : "";
     const root = suffix ? db.prepare("SELECT * FROM roots WHERE id=? FOR UPDATE").get(rootId) : this.lib.rootById(rootId);
     if (!root) throw Error("目录已移除，请刷新列表");

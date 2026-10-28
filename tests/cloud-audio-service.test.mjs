@@ -15,6 +15,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { Library } from "../server/library.mjs";
 import { CloudAudioService, CloudAudioServiceError } from "../server/cloud-audio-service.mjs";
+import { CloudAuthError } from "../server/cloud-auth.mjs";
 import { CloudAudioInstaller } from "../server/cloud-audio-install.mjs";
 import { CloudAudioReceiver } from "../server/cloud-audio-receiver.mjs";
 import { CloudAudioJobStore } from "../server/cloud-audio-store.mjs";
@@ -54,7 +55,7 @@ function makeCloud() {
     shareId,
     secondShareId,
     mediaKind: "SFX",
-    calls: { catalog: 0, details: 0, stream: 0 },
+    calls: { catalog: 0, details: 0, stream: 0, writes: [] },
     flags: { noShares: false, emptyCatalog: false, wrongBytes: null, truncate: false, streamGate: null, detailGate: null },
     getState() {
       return {
@@ -68,7 +69,13 @@ function makeCloud() {
     async forgetSession() {
       this.epoch += 1;
     },
-    async proxy(method, pathname) {
+    async proxy(method, pathname, options = {}) {
+      if (method !== "GET") {
+        // 写请求：记录方法与 body 供断言；云端 revoke 成功体为 null。
+        this.calls.writes.push({ method, pathname, body: options.body ?? null, epoch: options.epoch });
+        if (this.flags.writeError) throw this.flags.writeError;
+        return null;
+      }
       if (pathname.startsWith("/media/audio/catalog")) {
         this.calls.catalog += 1;
         if (this.flags.emptyCatalog) return { items: [], hasMore: false };
@@ -944,4 +951,65 @@ test("容量释放：接近上限的小文件下载完成后预留不泄漏，�
   });
   assert.equal((await waitJob(service, second.id)).state, "completed");
   assert.equal((await fs.stat(residue)).size, 599_999_700);
+});
+
+test("撤回共享：POST /media/shares/{id}/revoke 带 expectedVersion，成功只回 withdrawn", async (t) => {
+  const { cloud, service } = await setup(t);
+  const result = await service.withdrawShare(cloud.shareId, 0);
+  assert.deepEqual(result, { shareId: cloud.shareId, withdrawn: true });
+  assert.equal(cloud.calls.writes.length, 1);
+  const [write] = cloud.calls.writes;
+  assert.equal(write.method, "POST");
+  assert.equal(write.pathname, `/media/shares/${cloud.shareId}/revoke`);
+  assert.deepEqual(write.body, { expectedVersion: 0 });
+  assert.equal(write.epoch, cloud.epoch);
+});
+
+test("撤回共享：版本冲突 409 映射为可重试的 SHARE_CHANGED，不折叠成云端不可用", async (t) => {
+  const { cloud, service } = await setup(t);
+  cloud.flags.writeError = new CloudAuthError("conflict", { kind: "cloud", code: "CONFLICT", status: 409 });
+  const error = await service.withdrawShare(cloud.shareId, 3).then(
+    () => assert.fail("应失败"),
+    (failure) => failure,
+  );
+  assert.ok(error instanceof CloudAudioServiceError);
+  assert.equal(error.code, "SHARE_CHANGED");
+  assert.equal(error.status, 409);
+});
+
+test("撤回共享：非 owner/不存在 403/404 一律 NOT_FOUND，且不回显云端原文", async (t) => {
+  for (const status of [403, 404]) {
+    const { cloud, service } = await setup(t);
+    cloud.flags.writeError = new CloudAuthError("secret detail from cloud", {
+      kind: "cloud",
+      code: "FORBIDDEN",
+      status,
+      cloudMessage: true,
+    });
+    const error = await service.withdrawShare(cloud.shareId, 1).then(
+      () => assert.fail("应失败"),
+      (failure) => failure,
+    );
+    assert.equal(error.code, "NOT_FOUND");
+    assert.equal(error.status, 404);
+    assert.equal(String(error.message).includes("secret detail"), false);
+  }
+});
+
+test("撤回共享：参数非法时不发任何请求", async (t) => {
+  const { cloud, service } = await setup(t);
+  for (const [shareId, version] of [
+    ["not-a-uuid", 0],
+    [cloud.shareId, -1],
+    [cloud.shareId, "0"],
+    [cloud.shareId, 1.5],
+    [cloud.shareId, undefined],
+  ]) {
+    const error = await service.withdrawShare(shareId, version).then(
+      () => assert.fail("应失败"),
+      (failure) => failure,
+    );
+    assert.equal(error.code, "INVALID_REQUEST");
+  }
+  assert.deepEqual(cloud.calls.writes, []);
 });

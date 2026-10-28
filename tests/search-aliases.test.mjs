@@ -59,6 +59,20 @@ test("search aliases, name-only scope, combinations and filename tie-break", t =
   assert.equal(sorted[0], "Heavy_hit.wav");
   assert(sorted.indexOf("悬疑转场.wav") < sorted.indexOf("Dark_Whoosh.wav"));
   assert(sorted.indexOf("White noise.wav") < sorted.indexOf("Dark_Whoosh.wav"));
+  db.exec("CREATE TABLE project_assets (asset_id INTEGER, project_id TEXT, status TEXT)");
+  for (const sort of ["revealCount", "projectCount"]) {
+    const results = names({ sort, q: "转场" });
+    assert(results.indexOf("悬疑转场.wav") < results.indexOf("普通.wav"));
+    assert(results.indexOf("Dark_Whoosh.wav") < results.indexOf("普通2.wav"), "name aliases outrank category matches at equal counts");
+    assert.deepEqual(names({ sort, q: "转场 恐怖" }), ["普通.wav", "Dark_Whoosh.wav"], "all terms must match the name for the name tie-break");
+    const any = names({ sort, q: "脚步 恐怖", qMode: "any" });
+    assert(any.indexOf("Footsteps.wav") < any.indexOf("普通.wav"));
+    assert.deepEqual(names({ sort, q: '"电影 转场"' }), ["电影 转场.wav"]);
+  }
+  db.prepare("UPDATE assets SET reveal_count=1 WHERE name='普通.wav'").run();
+  assert.equal(names({ sort: "revealCount", q: "转场" })[0], "普通.wav", "count remains the primary order");
+  db.exec("INSERT INTO project_assets SELECT id,'p1','used' FROM assets WHERE name='普通2.wav'");
+  assert.equal(names({ sort: "projectCount", q: "转场" })[0], "普通2.wav", "project usage remains the primary order");
 });
 
 test("MySQL predicate uses parameterized native REGEXP, with a one-field name scope", () => {

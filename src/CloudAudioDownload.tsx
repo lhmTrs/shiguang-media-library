@@ -169,6 +169,8 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
   const [jobs, setJobs] = useState<AudioJob[]>([]);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [myAccountId, setMyAccountId] = useState("");
+  const [withdrawingShare, setWithdrawingShare] = useState("");
   const [error, setError] = useState("");
   const catalogSeq = useRef(0);
   const detailSeq = useRef(0);
@@ -222,8 +224,9 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
         setRoots(nextRoots);
         setRootId((current) => current || nextRoots[0]?.id || "");
         setJobs(nextJobs);
-        const profile = await request<{capabilities:{groups:{groupId:string;name:string;state:string;canReadShared:boolean}[]}}>("/cloud-management/profile");
+        const profile = await request<{me:{accountId:string};capabilities:{groups:{groupId:string;name:string;state:string;canReadShared:boolean}[]}}>("/cloud-management/profile");
         if (!alive) return;
+        setMyAccountId(profile.me?.accountId || "");
         setGroups(profile.capabilities.groups.filter(g=>g.state==="ACTIVE"&&g.canReadShared));
         await loadCatalog(0);
       } catch (failure) {
@@ -256,9 +259,42 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
     }
   }, [jobs]);
 
+  // 撤回共享 = GROUP→PRIVATE、取消对外访问；不删文件、不放弃 owner 保留。
+  // 云端 revoke 成功体为空，因此成功后重读详情，用真实状态刷新列表。
+  const withdrawShare = useCallback(
+    async (share: AudioShare) => {
+      if (withdrawingShare || !detail || !detail.shares.some(item => item.id === share.id)) return;
+      const seq = detailSeq.current;
+      const audioId = detail.audioId;
+      const current = () => seq === detailSeq.current;
+      setWithdrawingShare(share.id);
+      setNotice("");
+      try {
+        await request(`/cloud-audio/shares/${share.id}/withdraw`, { expectedVersion: share.version });
+        if (!current()) return;
+        const data = await request<{ audio: unknown; shares: AudioShare[]; hasMore: boolean }>(
+          `/cloud-audio/audio/${audioId}?limit=50&offset=0`,
+        );
+        if (!current()) return;
+        setDetail(value => current() && value?.audioId === audioId
+          ? { ...value, shares: data.shares, hasMore: data.hasMore === true }
+          : value);
+        setChosenShare(value => current() ? (data.shares.some(item => item.id === value) ? value : data.shares[0]?.id || "") : value);
+        setNotice(value => current() ? `已撤回「${share.fileName}」的对外共享：其他人不再可见；文件与你的云端保留未删除` : value);
+        if (current()) void loadCatalog(0);
+      } catch (failure) {
+        if (current()) setNotice(value => current() ? failureText(failure) : value);
+      } finally {
+        if (current()) setWithdrawingShare(value => current() ? "" : value);
+      }
+    },
+    [detail, loadCatalog, request, withdrawingShare],
+  );
+
   const openDetails = useCallback(
     async (item: CatalogItem) => {
       const seq = (detailSeq.current += 1);
+      setWithdrawingShare("");
       setChosenShare(item.preferredShareId);
       setDetail({ audioId: item.id, loading: true, loadingMore: false, error: "", shares: [], hasMore: false, preferredShareId: item.preferredShareId });
       try {
@@ -310,6 +346,7 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
 
   const closeDetails = useCallback(() => {
     detailSeq.current += 1;
+    setWithdrawingShare("");
     setDetail(null);
     setChosenShare("");
   }, []);
@@ -459,7 +496,7 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
       )}
 
       <CloudAudioUpload request={request} />
-      <form className="manual-audio-fields" onSubmit={event=>{event.preventDefault();appliedSearch.current={q:query,groupId:groupFilter};setDetail(null);void loadCatalog(0);}}>
+      <form className="manual-audio-fields" onSubmit={event=>{event.preventDefault();appliedSearch.current={q:query,groupId:groupFilter};closeDetails();void loadCatalog(0);}}>
         <input aria-label="云端音频关键词" placeholder="名称或两级分类中的字面关键词" maxLength={128} value={query} onChange={event=>setQuery(event.target.value)} />
         <select aria-label="查找小组" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">全部当前可见（含本人私有）</option>{groups.map(g=><option key={g.groupId} value={g.groupId}>{g.name}</option>)}</select>
         <button className="plain" disabled={catalogLoading}>查找云端音频</button><span role="status">匹配 {total} 个音频对象</span>
@@ -672,21 +709,35 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
                 <p className="cw-audio-dialog-hint">来源只影响本次复制；同名同内容的本地文件会被校验复用，不会覆盖既有文件。</p>
                 <div className="cw-audio-source-list" role="radiogroup" aria-label="可见来源">
                   {detail.shares.map((share) => (
-                    <label className={"cw-audio-source" + (chosenShare === share.id ? " selected" : "")} key={share.id}>
-                      <input
-                        type="radio"
-                        name="cloud-audio-share"
-                        checked={chosenShare === share.id}
-                        onChange={() => setChosenShare(share.id)}
-                      />
-                      <div>
-                        <strong title={share.fileName}>{share.fileName}</strong>
-                        <small>
-                          {share.category || "未分类"}{share.subcategory ? ` / ${share.subcategory}` : ""} ·{" "}
-                          {share.mediaKind === "MUSIC" ? "音乐" : "音效"} · 发布于 {formatTime(Date.parse(share.createdAt))}
-                        </small>
-                      </div>
-                    </label>
+                    <div className="cw-audio-source-row" key={share.id}>
+                      <label className={"cw-audio-source" + (chosenShare === share.id ? " selected" : "")}>
+                        <input
+                          type="radio"
+                          name="cloud-audio-share"
+                          checked={chosenShare === share.id}
+                          onChange={() => setChosenShare(share.id)}
+                        />
+                        <div>
+                          <strong title={share.fileName}>{share.fileName}</strong>
+                          <small>
+                            {share.category || "未分类"}{share.subcategory ? ` / ${share.subcategory}` : ""} ·{" "}
+                            {share.mediaKind === "MUSIC" ? "音乐" : "音效"} · 发布于 {formatTime(Date.parse(share.createdAt))}
+                            {share.ownerAccountId === myAccountId ? " · 你的来源" : ""}
+                          </small>
+                        </div>
+                      </label>
+                      {myAccountId && share.ownerAccountId === myAccountId && (
+                        <button
+                          type="button"
+                          className="plain cw-audio-withdraw"
+                          disabled={!!withdrawingShare}
+                          title="撤回后其他人不再能看到这条来源；文件与你的云端保留不会删除"
+                          onClick={() => void withdrawShare(share)}
+                        >
+                          {withdrawingShare === share.id ? "撤回中…" : "撤回共享"}
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </div>
                 {detail.hasMore && (

@@ -6,6 +6,11 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
+import { publicRepairCode, mergeAlias } from "./asset-repair.mjs";
+import { CloudUploadHost } from "./cloud-upload-host.mjs";
+import { CloudUploadTaskRuntime, runFileStatusMaintenance } from "./cloud-upload-task-runtime.mjs";
+import { createCloudUploadTaskEntry, TASK_ENTRY_BASE, taskMayReadRemote } from "./cloud-upload-task-entry.mjs";
+import { fingerprint as taskFingerprint } from "./cloud-upload-protocol.mjs";
 import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
 import { MysqlStorage } from "./mysql.mjs";
 import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
@@ -25,6 +30,7 @@ import { loadReleaseConfig } from "./cloud-release-config.mjs";
 import { DeviceEnrollment } from "./device-enrollment.mjs";
 import { Tags } from "./tags.mjs";
 import { MusicAnalysis } from "./music-analysis.mjs";
+import { AssetFingerprints } from "./asset-fingerprints.mjs";
 import { MissingFiles } from "./missing-files.mjs";
 import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
@@ -36,6 +42,8 @@ import { dataDirectory } from "./runtime.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const dataDir = dataDirectory(project);
+const audioRuntimeConfigPath =
+  process.env.SHIGUANG_AUDIO_RUNTIME_CONFIG || path.join(project, "config/audio-analysis-runtime.json");
 const trashSource = path.join(project, "server/trash.swift");
 const trashVersion = crypto
   .createHash("sha256")
@@ -74,6 +82,7 @@ let reconcileWatcher = null;
 // 元数据（标签/备注/分类）改动后防抖刷新清单：让"GPT 直接读 .shiguang/manifest.json"看到最新值
 const manifestSync = createManifestSync(lib, { log: (m) => console.log(m) });
 lib.onMetadataChanged = (rootId) => manifestSync.touch(rootId);
+const assetFingerprints = new AssetFingerprints(lib);
 const categories = lib.directoryClassification;
 const tags = new Tags(lib).init();
 const projects = new Projects(lib).init();
@@ -92,9 +101,20 @@ function audioFeature() {
   if (!audioEnabled) return null;
   if (!audioAnalysis) {
     audioEngine = new AudioEngine(dataDir);
-    audioAnalysis = new AudioAnalysis(lib, audioEngine);
+    audioAnalysis = new AudioAnalysis(lib, audioEngine, {
+      dataDir,
+      runtimeConfigPath: audioRuntimeConfigPath,
+    });
   }
   return { engine: audioEngine, analysis: audioAnalysis };
+}
+function rejectAudioAnalysis(res, error) {
+  // 适配器只交固定 {code,message,status}；未知异常不拼接原始 message。
+  const known = Number.isInteger(error?.status) && [400, 404, 409, 429, 503].includes(error.status);
+  const status = known ? error.status : 400;
+  const code = typeof error?.code === "string" ? error.code : "ANALYZE_FAILED";
+  const message = known && typeof error?.message === "string" ? error.message : "音频分析失败";
+  return res.status(status).json({ error: message, code });
 }
 // 内置发行配置只含公共地址/CA；原始仓库默认未启用，未就绪时普通用户只看到提示。
 const releaseConfig = await loadReleaseConfig(
@@ -115,6 +135,143 @@ const cloudTransferAdmission = manualAudioAdmission(() => cloudAudio.status());
 const missingFiles = new MissingFiles(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || lib.locks.size > 0 || cacheJobs.size > 0 || [...lib.jobs.values()].some(j => j.type !== "cleanup" && j.status === "running"));
 const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || lib.locks.size > 0 || [...lib.jobs.values()].some(j => j.type !== "duplicates" && j.status === "running"));
 const rootRemoval = new RootRemoval(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || missingFiles.active || cacheJobs.size > 0);
+const uploadHost = await new CloudUploadHost(lib, { upload: cloudUpload, sourceId: mysqlStorage.sourceId, readMaintenance: async () => {
+  const status = await cloudAudio.status();
+  const known = Number.isSafeInteger(status.active) && Number.isSafeInteger(status.queued) && status.active >= 0 && status.queued >= 0 && Number.isSafeInteger(status.staleTempFiles) && status.staleTempFiles >= 0 && typeof status.receiverFaulted === "boolean" && typeof status.staleTempUnreadable === "boolean";
+  return { known, allowed: known && !status.active && !status.queued && !status.receiverFaulted && !status.staleTempUnreadable && !status.staleTempFiles && !mysqlStorage.migrating && !rootRemoval.active && !duplicateAudio.marking && !missingFiles.active && !musicAnalysis.active && !musicAnalysis.testing && !cacheJobs.size };
+} }).init();
+// One task owner per actual application attachment. No registration, scan,
+// recovery or scheduling occurs while constructing or opening this entry.
+let taskEntry = null;
+let taskRuntime = null;
+let taskClosing = false;
+let applicationClosing = false;
+let identityChanging = false;
+const lifecycleReads = new Set();
+let viteServer = null;
+let taskPermission = null;
+let taskDiskObservation = null;
+const taskError = (code, status = 503) => Object.assign(Error(code), { code, status });
+const taskIdentity = () => {
+  const state = cloudAuth.getState();
+  if (!state.configured || state.state !== "logged-in" || !state.accountId || !state.deviceId || !Number.isSafeInteger(cloudAuth.epoch)) throw taskError("NOT_LOGGED_IN", 401);
+  const origin = cloudAuth.config?.origin;
+  if (typeof origin !== "string") throw taskError("SERVICE_IDENTITY_UNKNOWN");
+  return { cloudServiceKey: crypto.createHash("sha256").update(new URL(origin).origin).digest("hex"), accountId: state.accountId, deviceId: state.deviceId, librarySourceId: uploadHost.sourceId, epoch: cloudAuth.epoch };
+};
+const taskIdentityKey = () => JSON.stringify(taskIdentity());
+const taskActivity = () => {
+  const current = cloudAudio.currentActivity();
+  const flags = [mysqlStorage.migrating, rootRemoval.active, duplicateAudio.marking, musicAnalysis.active, musicAnalysis.testing];
+  const missingKnown = missingFiles.active === null || missingFiles.active instanceof Promise;
+  const known = missingKnown && current?.known === true && flags.every(v => typeof v === "boolean" || Number.isSafeInteger(v) && v >= 0) && cacheJobs instanceof Map && cloudUpload.lib === lib && cloudUpload.auth === cloudAuth && uploadHost.lib === lib && uploadHost.upload === cloudUpload && uploadHost.db === lib.db;
+  return { known, allowed: known && missingFiles.active === null && current.allowed === true && !flags.some(Boolean) && cacheJobs.size === 0 && !taskClosing };
+};
+async function taskVerifyPermission() {
+  taskPermission = null;
+  const key = taskIdentityKey(), me = await cloudAuth.me();
+  if (taskIdentityKey() !== key) throw taskError("AUTH_CHANGED", 409);
+  const state = cloudAuth.getState();
+  // The original upload actor contract requires a current authenticated session.
+  // Target/group grants and protocol readiness remain checked by the original
+  // remote operations; this is not a fabricated global upload permission.
+  const allowed = me?.accountId === state.accountId && me?.deviceId === state.deviceId && me?.sessionId === state.sessionId;
+  if (allowed) taskPermission = { key, observed: performance.now() };
+  return { known: true, allowed };
+}
+async function taskReadPermission() {
+  if (taskMayReadRemote()) return taskVerifyPermission();
+  const current = taskPermission && taskPermission.key === taskIdentityKey() && performance.now() - taskPermission.observed <= 10000;
+  return { known: !!current, allowed: !!current };
+}
+async function taskReadMaintenance() {
+  if (!taskMayReadRemote()) {
+    const current = taskActivity(), stored = taskDiskObservation;
+    const known = current.known && stored?.key === taskIdentityKey() && performance.now() - stored.observed <= 10000;
+    return { known, allowed: known && current.allowed && stored.allowed === true };
+  }
+
+  const key = taskIdentityKey(), value = await cloudAudio.status();
+  if (taskIdentityKey() !== key) throw taskError("AUTH_CHANGED", 409);
+  const fresh = taskActivity();
+  const known = fresh.known && [value.active, value.queued, value.staleTempFiles].every(n => Number.isSafeInteger(n) && n >= 0) && typeof value.receiverFaulted === "boolean" && typeof value.staleTempUnreadable === "boolean";
+  const allowed = known && fresh.allowed && value.active === 0 && value.queued === 0 && value.staleTempFiles === 0 && !value.receiverFaulted && !value.staleTempUnreadable;
+  taskDiskObservation = known ? { key, observed: performance.now(), allowed } : null;
+  return { known, allowed };
+}
+function taskLocalGuard(req, { write }) {
+  const cookie = req.headers.cookie?.match(/(?:^|; )media_session=([^;]+)/)?.[1];
+  const value = cookie && sessions.get(cookie);
+  return { allowed: !!value && req.headers.host === `127.0.0.1:${port}` && (!req.headers.origin || req.headers.origin === `http://127.0.0.1:${port}`) && !["cross-site", "same-site"].includes(req.headers["sec-fetch-site"]) && (!write || req.headers["x-local-token"] === value), sessionId: cookie || null };
+}
+function taskLocalRoots() {
+  const rows = lib.db.prepare("SELECT id,substr(name,1,181) name,kind FROM roots WHERE COALESCE(retired,0)=0 AND kind IN ('music','sfx','mixed') ORDER BY id LIMIT 33").all();
+  const rootsOverflow = rows.length > 32, rootMetadataUnknown = rows.some(row => typeof row.name !== "string" || row.name.length > 180);
+  return { rootsOverflow, rootMetadataUnknown, roots: rootsOverflow || rootMetadataUnknown ? [] : rows.map(row => ({ rootId: row.id, name: row.name || "素材目录", kind: row.kind })) };
+}
+function ensureTaskEntry() {
+  if (taskClosing || identityChanging || applicationClosing) throw taskError("ENTRY_CLOSED");
+  if (taskEntry) return taskEntry;
+  taskIdentity();
+  taskRuntime = new CloudUploadTaskRuntime({ lib, upload: cloudUpload, cloudAuth, host: uploadHost, manualAudioAdmission: cloudTransferAdmission, currentIdentity: taskIdentity,
+    guardLocalRequest: taskLocalGuard, readPermission: taskReadPermission, readMaintenance: taskReadMaintenance, readActivity: async () => taskActivity(),
+    assertHostRegistrationCurrent: () => {
+      const fresh = taskActivity();
+      return fresh.known === true && fresh.allowed === true && taskPermission !== null && taskPermission.key === taskIdentityKey() && performance.now() - taskPermission.observed <= 10000 && !taskClosing;
+    }
+  });
+  taskEntry = createCloudUploadTaskEntry({ runtime: taskRuntime, host: uploadHost, currentIdentity: taskIdentity, guardLocalRequest: taskLocalGuard,
+    verifySession: async () => { const permission = await taskVerifyPermission(), maintenance = await taskReadMaintenance(); return { known: permission.known && maintenance.known, allowed: permission.allowed && maintenance.allowed }; },
+    readGroups: async () => {
+      const key = taskIdentityKey(), profile = await cloudManagement.profile();
+      const state = cloudAuth.getState(), groups = profile?.capabilities?.groups;
+      if (taskIdentityKey() !== key || profile?.me?.accountId !== state.accountId || profile?.me?.deviceId !== state.deviceId || profile?.me?.sessionId !== state.sessionId) throw taskError("AUTH_CHANGED", 409);
+      if (!Array.isArray(groups) || groups.length > 100 || groups.some(group => !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(group.groupId) || typeof group.name !== "string" || group.name.length > 180 || /[\u0000-\u001f\u007f]/.test(group.name)) || new Set(groups.map(group => group.groupId)).size !== groups.length) throw taskError("GROUP_SCOPE_UNKNOWN");
+      return { groups: groups.filter(group => group.state === "ACTIVE").map(group => ({ groupId: group.groupId, name: group.name || "已登记小组" })) };
+    },
+    readLocalStatus: () => ({ identityKey: taskFingerprint(taskIdentity()), proofAdmission: (() => {
+      try { const rows = lib.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'cloud_upload_scan_%' LIMIT 16").all();
+        if (!rows.length) return { known: true, mode: "REGISTER", expectedVersion: 0 };
+        const value = taskRuntime.proof.schema({ functionRequired: false });
+        if (value.proofs.some(proof => proof.lease_id)) return { known: false, code: "SCAN_PROOF_OWNER_UNKNOWN" };
+        return { known: true, mode: "OPEN_SESSION", expectedVersion: value.reg.version };
+      } catch { return { known: false }; }
+    })(), ...taskLocalRoots(), engine: lib.db.kind === "mysql" ? "mysql" : "sqlite", registrationAssetIds: lib.db.prepare("SELECT id FROM assets WHERE trashed=0 AND online=1 AND kind IN ('music','sfx') AND " + lib.activeAssetScope() + " LIMIT 1").all().map(r => r.id) })
+  });
+  return taskEntry;
+}
+async function drainTaskEntry({ ownHostActive = 0 } = {}) {
+  taskClosing = true; taskPermission = null; taskDiskObservation = null;
+  if (taskEntry) {
+    const exit = await taskEntry.dispose({ timeoutMs: 10000 });
+    if (exit.closed !== true) throw taskError("TASK_OWNER_UNSETTLED", 423);
+  }
+  const deadline = Date.now() + 10000;
+  let chainsSettled = false;
+  if (!(cloudAuth.controlChain instanceof Promise) || !(cloudAuth.persistChain instanceof Promise)) throw taskError("TASK_OWNER_UNSETTLED", 423);
+  const controlPromise = cloudAuth.controlChain, persistPromise = cloudAuth.persistChain;
+  Promise.allSettled([controlPromise, persistPromise]).then(() => { chainsSettled = true; });
+  const idle = () => {
+    const receiver = cloudAudio.currentActivity();
+    return receiver.known === true && receiver.allowed === true && chainsSettled && cloudAuth.controlChain === controlPromise && cloudAuth.persistChain === persistPromise && cloudAuth.activeRequests instanceof Set && cloudAuth.activeRequests.size === 0 && cloudAuth.inflightRefresh === null &&
+      uploadHost.active === ownHostActive && uploadHost.db === lib.db && cloudUpload.lib === lib && cloudUpload.auth === cloudAuth &&
+      cloudUpload.busy === false && cloudUpload.controllers.size === 0 && cloudUpload.operations.size === 0 && cloudUpload.settledTasks.size === 0 && cloudUpload.inspections.size === 0 &&
+      lib.workers === 0 && lib.metadataPending.size === 0 && lib.metadataQueue.length === 0 && lib.repairIndexReaders === 0 && lib.jobs.size <= 5000 &&
+      ![...lib.jobs.values()].some(job => !['done','failed','partial','cancelled','interrupted'].includes(job.status)) &&
+      !mysqlStorage.migrating && !rootRemoval.active && !duplicateAudio.marking && missingFiles.active === null && !musicAnalysis.active && !musicAnalysis.testing && cacheJobs.size === 0;
+  };
+  while (!idle() || lifecycleReads.size) {
+    if (Date.now() >= deadline) throw taskError("TASK_OWNER_UNSETTLED", 423);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const actual = Promise.resolve().then(() => cloudAudio.status()); lifecycleReads.add(actual);
+  actual.then(() => lifecycleReads.delete(actual), () => lifecycleReads.delete(actual));
+  let timer;
+  const disk = await Promise.race([actual, new Promise(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); })]).finally(() => clearTimeout(timer));
+  if (!disk || !idle() || ![disk.active,disk.queued,disk.staleTempFiles].every(value => Number.isSafeInteger(value) && value === 0) || disk.receiverFaulted !== false || disk.staleTempUnreadable !== false) throw taskError("TASK_OWNER_UNSETTLED", 423);
+  taskEntry = null; taskRuntime = null;
+}
+
 for (const a of lib.db
   .prepare(
     "SELECT id FROM assets WHERE (probe='pending' OR capture_status='pending') AND online=1 AND trashed=0 AND " + lib.activeAssetScope(),
@@ -127,12 +284,41 @@ app.use("/api/projects/:id/timeline-import/preview", express.json({ limit: "10mb
 app.use("/api/projects/:id/timeline-import/confirm", express.json({ limit: "1mb" }));
 app.use("/api/projects/timeline-import/preview", express.json({ limit: "10mb" }));
 app.use("/api/projects/timeline-import/confirm", express.json({ limit: "1mb" }));
-app.use(express.json({ limit: "256kb" }));
+const ordinaryJson = express.json({ limit: "256kb" });
+app.use((req, res, next) => {
+  const pathname = req.url.split("?")[0];
+  return pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") ? next() : ordinaryJson(req, res, next);
+});
 const sessions = new Map();
 let port;
-const asyncRoute = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch(next);
+const asyncRoute = (fn) => (req, res, next) => {
+  const route = req.route?.path || req.originalUrl.split("?")[0];
+  const registration = route === "/api/cloud-upload-host/register";
+  const fileStatusMaintenance = req.method === "POST" && route === "/api/maintenance/files";
+  const maintenance = req.method !== "GET" && (route === "/api/mysql" || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
+  const changesAttachment = req.method !== "GET" && (route === "/api/mysql" || ["/api/cloud-auth/config", "/api/cloud-auth/enroll", "/api/cloud-auth/recover-device", "/api/cloud-auth/activate", "/api/cloud-auth/login", "/api/cloud-auth/logout"].includes(route));
+  const invoke = async () => {
+    if (!changesAttachment) return fn(req, res, next);
+    if (identityChanging) throw taskError("TASK_OWNER_UNSETTLED", 423);
+    identityChanging = true; let drained = false;
+    try { await drainTaskEntry({ ownHostActive: 1 }); drained = true; return await fn(req, res, next); }
+    finally { identityChanging = false; if (drained) taskClosing = false; }
+  };
+  // File-status checks write assets too. Use the same HOST/manual gate for the
+  // passive task-owner decision and every write, including forced UI checks.
+  const fileWork = async () => {
+    let invoked = false;
+    const result = await runFileStatusMaintenance({ lib, upload: cloudUpload, host: uploadHost,
+      manualAudioAdmission: cloudTransferAdmission, readRuntime: () => taskRuntime }, () => { invoked = true; return invoke(); });
+    if (!invoked) res.json(result);
+  };
+  return (fileStatusMaintenance ? fileWork() : registration ? Promise.resolve().then(invoke) : uploadHost.track(invoke, { maintenance })).catch(e => {
+    if (["HOST_BUSY", "TASK_OWNER_UNSETTLED"].includes(e.code)) return res.status(423).json({ error: e.code, code: e.code });
+    next(e);
+  });
+};
 app.use((req, res, next) => {
+  if (applicationClosing) return res.status(503).json({ error: "APPLICATION_CLOSING", code: "APPLICATION_CLOSING" });
   const expected = `127.0.0.1:${port}`;
   if (req.headers.host !== expected)
     return res.status(403).json({ error: "仅允许本机地址访问" });
@@ -179,6 +365,10 @@ app.use("/api", (req, res, next) => {
     return res.status(401).json({ error: "本机会话失效，请刷新页面" });
   if (req.method !== "GET" && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
+  if (identityChanging && !(req.method === "GET" && req.path === "/cloud-auth/status")) return res.status(423).json({ error: "IDENTITY_CHANGING", code: "IDENTITY_CHANGING" });
+  // The same gate includes synchronous API handlers while registration/maintenance
+  // owns an awaited operation; response closure never releases that ownership.
+  if (uploadHost.exclusive) return res.status(423).json({ error: "HOST_BUSY", code: "HOST_BUSY" });
   res.setHeader("Cache-Control", "no-store");
   next();
 });
@@ -196,6 +386,10 @@ app.use("/api", (req, res, next) => {
   )
     return res.status(423).json({ error: "数据库迁移中，请稍后再操作" });
   next();
+});
+app.use(TASK_ENTRY_BASE, (req, res, next) => {
+  try { ensureTaskEntry().router(req, res, next); }
+  catch (error) { res.status(error.status || 503).json({ error: { code: /^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "ENTRY_UNKNOWN" } }); }
 });
 app.get("/api/mysql", (req, res) => res.json(mysqlStorage.publicState()));
 const withEnrollment = state => ({ ...state, enrollment: deviceEnrollment.getStatus() });
@@ -262,17 +456,19 @@ app.delete("/api/audio-engine", asyncRoute(async (req, res) => {
 app.get("/api/assets/:id/audio", asyncRoute(async (req, res) => {
   const audio = audioFeature();
   if (!audio) return rejectAudioFeature(res);
-  res.json(audio.analysis.get(req.params.id));
+  try {
+    res.json(await audio.analysis.get(req.params.id));
+  } catch (error) {
+    return rejectAudioAnalysis(res, error);
+  }
 }));
 app.post("/api/assets/:id/analyze-audio", asyncRoute(async (req, res) => {
   const audio = audioFeature();
   if (!audio) return rejectAudioFeature(res);
   try {
     res.json(await audio.analysis.analyze(req.params.id, { force: req.body?.force === true }));
-  } catch (e) {
-    if (e.code === "ENGINE_NOT_INSTALLED") return res.status(409).json({ error: "音频分析引擎未安装", code: e.code });
-    if (e.code === "NOT_FOUND") return res.status(404).json({ error: e.message, code: e.code });
-    return res.status(400).json({ error: e.message, code: e.code || "ANALYZE_FAILED" });
+  } catch (error) {
+    return rejectAudioAnalysis(res, error);
   }
 }));
 // T-LOCAL-008：账户/小组/授权的本地固定路由。浏览器只给业务参数，方法/云端路径/头均由 Node 固定。
@@ -304,6 +500,8 @@ app.delete("/api/cloud-management/opening-codes/:id", asyncRoute(async (req, res
 app.post("/api/cloud-management/accounts/:id/state", asyncRoute(async (req, res) => res.json(await cloudManagement.setAccountState(req.params.id, req.body))));
 app.post("/api/cloud-management/accounts/:id/password-reset", asyncRoute(async (req, res) => res.json(await cloudManagement.resetAccountPassword(req.params.id, req.body))));
 app.get("/api/cloud-management/candidates", asyncRoute(async (req, res) => res.json(await cloudManagement.candidates(req.query))));
+app.get("/api/cloud-management/upload-approval-settings", asyncRoute(async (req, res) => res.json(await cloudManagement.uploadApprovalSettings())));
+app.put("/api/cloud-management/upload-approval-settings", asyncRoute(async (req, res) => res.json(await cloudManagement.updateUploadApprovalSettings(req.body))));
 app.get("/api/cloud-management/permissions", asyncRoute(async (req, res) => res.json(await cloudManagement.permissions())));
 app.get("/api/cloud-management/roles", asyncRoute(async (req, res) => res.json(await cloudManagement.roles(req.query))));
 app.get("/api/cloud-management/roles/:id/impact", asyncRoute(async (req, res) => res.json(await cloudManagement.roleImpact(req.params.id, req.query))));
@@ -353,6 +551,12 @@ for (const action of ["request","refresh","reconcile","upload","cancel","forget"
   app.post(`/api/cloud-audio/uploads/:id/${action}`, asyncRoute(async (req, res) => res.json(await (action === "upload" ? cloudTransferAdmission.upload(() => cloudUpload.action(req.params.id,action)) : cloudUpload.action(req.params.id,action)))));
 }
 app.get("/api/cloud-audio/audio/:id", asyncRoute(async (req, res) => res.json(await cloudAudio.details(req.params.id, req.query))));
+app.post("/api/cloud-audio/shares/:id/withdraw", asyncRoute(async (req, res) => {
+  const body = req.body ?? {};
+  if (body === null || typeof body !== "object" || Array.isArray(body)) throw new CloudAudioServiceError("INVALID_REQUEST", 400);
+  for (const key of Object.keys(body)) if (key !== "expectedVersion") throw new CloudAudioServiceError("INVALID_REQUEST", 400);
+  res.json(await cloudAudio.withdrawShare(req.params.id, body.expectedVersion));
+}));
 app.get("/api/cloud-audio/jobs", asyncRoute(async (req, res) => res.json(cloudAudio.listJobs())));
 app.get("/api/cloud-audio/jobs/:id", asyncRoute(async (req, res) => res.json(cloudAudio.getJob(req.params.id))));
 app.post("/api/cloud-audio/jobs", asyncRoute(async (req, res) => res.json(await cloudTransferAdmission.download(() => cloudAudio.startDownload(req.body)))));
@@ -442,6 +646,42 @@ app.post("/api/reconcile", asyncRoute(async (req, res) => {
     );
   res.json({ reports });
 }));
+// Explicit bounded jobs only. Existing origin/session/token middleware applies.
+const repairRoute = fn => asyncRoute(async (req, res) => {
+  try { res.json(await fn(req)); }
+  catch (e) { res.status(e.status || 409).json({ error: publicRepairCode(e), code: publicRepairCode(e) }); }
+});
+app.get("/api/cloud-upload-host/readiness", repairRoute(() => uploadHost.readiness()));
+app.post("/api/cloud-upload-host/register", repairRoute(req => uploadHost.register(req.body)));
+app.post("/api/asset-repairs/history", repairRoute(req => uploadHost.repairCall("history", [req.body])));
+app.post("/api/asset-repairs/resolve", repairRoute(req => uploadHost.repairCall("resolve", [req.body])));
+app.post("/api/asset-repairs/preview", repairRoute(req => uploadHost.repairCall("preview", [req.body, req.headers.cookie])));
+app.post("/api/asset-repairs/confirm", repairRoute(req => uploadHost.repairCall("confirm", [req.body, req.headers.cookie])));
+app.get("/api/asset-repairs/:id", repairRoute(req => uploadHost.repairCall("get", [req.params.id])));
+app.post("/api/asset-repairs/:id/recover", repairRoute(req => uploadHost.repairCall("recover", [req.params.id, req.body, req.headers.cookie])));
+// Two-ID merge is a separate explicit workflow; no startup registration/merge.
+const mergeRoute = fn => asyncRoute(async (req, res) => {
+  try { res.json(await fn(req)); }
+  catch (e) { res.status(e.status || 409).json({ error: publicRepairCode(e), code: publicRepairCode(e), ...(e.code === "MERGE_UNSUPPORTED_REFERENCE" ? { relation: e.relation } : {}), ...(e.code === "MERGE_UNSUPPORTED_MANUAL_FIELD" ? { field: e.field } : {}) }); }
+});
+app.get("/api/asset-merges/readiness", mergeRoute(async () => { const upload = await uploadHost.readiness(), fields = lib.metadataVersions.readiness(); return { ready: upload.ready && fields.ready, uploadCode: upload.code, fieldsCode: fields.code }; }));
+app.get("/api/asset-merges/aliases/:id", mergeRoute(req => { if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(req.params.id)) throw Object.assign(Error("INVALID_SELECTION"), { code: "INVALID_SELECTION", status: 400 }); return { mapping: mergeAlias(lib, req.params.id) }; }));
+app.post("/api/asset-merges/preview", mergeRoute(req => uploadHost.mergeCall("preview", [req.body, req.headers.cookie])));
+app.post("/api/asset-merges/confirm", mergeRoute(req => uploadHost.mergeCall("confirm", [req.body, req.headers.cookie])));
+app.get("/api/asset-merges/:id", mergeRoute(req => uploadHost.mergeCall("get", [req.params.id])));
+app.post("/api/asset-merges/:id/recover", mergeRoute(req => uploadHost.mergeCall("recover", [req.params.id, req.body, req.headers.cookie])));
+// Explicit field evidence registration. All routes keep the current local
+// session/token/origin policy; mutations own the real maintenance track.
+const fieldRegistrationRoute = fn => asyncRoute(async (req, res) => { try { res.json(await fn(req)); } catch (e) { const code = /^[A-Z_]{1,64}$/.test(e.code || "") ? e.code : "METADATA_REGISTRATION_UNKNOWN"; res.status(e.status || 409).json({error:code,code}); } });
+app.get("/api/asset-metadata-registration/readiness", fieldRegistrationRoute(() => uploadHost.fieldRegistration.readiness()));
+app.post("/api/asset-metadata-registration/preview", fieldRegistrationRoute(req => uploadHost.fieldRegistration.preview(req.body, req.headers.cookie)));
+app.post("/api/asset-metadata-registration/confirm", fieldRegistrationRoute(req => uploadHost.fieldRegistration.confirm(req.body, req.headers.cookie)));
+app.get("/api/asset-metadata-registration/commands/:id", fieldRegistrationRoute(req => uploadHost.fieldRegistration.result(req.params.id)));
+app.post("/api/asset-metadata-registration/commands/:id/finalize", fieldRegistrationRoute(req => uploadHost.fieldRegistration.finish(req.params.id, req.body)));
+app.post("/api/asset-metadata-registration/commands/:id/abort", fieldRegistrationRoute(req => uploadHost.fieldRegistration.finish(req.params.id, req.body, true)));
+app.post("/api/asset-fingerprints", (req, res) => res.status(202).json(assetFingerprints.start(req.body)));
+app.get("/api/asset-fingerprints/:id", (req, res) => res.json(assetFingerprints.get(req.params.id)));
+app.post("/api/asset-fingerprints/:id/cancel", (req, res) => res.json(assetFingerprints.cancel(req.params.id)));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
 app.get("/api/projects/usage-counts", (req,res) => res.json(lib.db.prepare("SELECT asset_id,COUNT(*) n FROM project_assets WHERE status='used' GROUP BY asset_id").all()));
 app.post("/api/projects/timeline-import/preview", (req,res) => res.json(projects.imports.preview(null,req.body,req.headers.cookie)));
@@ -497,7 +737,7 @@ app.post("/api/maintenance/files", asyncRoute(async (req, res) => {
 const cleanupConfirmations = new Map();
 app.post("/api/maintenance/files/cleanup/preview", asyncRoute(async (req, res) => {
   for (const [id, item] of cleanupConfirmations) if (Date.now() - item.createdMs > 600000) cleanupConfirmations.delete(id);
-  const items = missingFiles.cleanupPreview(req.body.ids);
+  const items = await missingFiles.checkedCleanupPreview(req.body.ids);
   const confirmation = crypto.randomBytes(24).toString("hex");
   cleanupConfirmations.set(confirmation, { items, session: req.headers.cookie, createdMs: Date.now() });
   res.json({ confirmation, items });
@@ -1066,13 +1306,18 @@ if (process.env.NODE_ENV === "production") {
   const { createServer } = await import("vite");
   const vite = await createServer({
     root: project,
-    server: { middlewareMode: true },
+    cacheDir: path.join(dataDir, "vite-entry-cache"),
+    esbuild: { jsx: "automatic" },
+    optimizeDeps: { include: ["react", "react-dom/client", "react-dom", "react/jsx-dev-runtime", "lucide-react"] },
+    server: { middlewareMode: true, hmr: false },
     appType: "spa",
   });
+  viteServer = vite;
   app.use(vite.middlewares);
 }
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
+  if (["ASSET_IS_ALIAS", "MERGE_HISTORY_RETAINED"].includes(error.code)) return res.status(409).json({ error: error.message, code: error.code, ...(error.code === "ASSET_IS_ALIAS" ? { canonicalAssetId: error.canonicalAssetId } : {}) });
   console.error(error.message);
   res
     .status(400)
@@ -1099,6 +1344,41 @@ for (let p = startPort; p < startPort + 30; p++) {
   }
 }
 if (!server) throw Error("没有可用端口");
+let shutdownWork = null;
+async function shutdownApplication() {
+  if (shutdownWork) return shutdownWork;
+  applicationClosing = true;
+  shutdownWork = (async () => {
+    reconcileWatcher?.stop(); manifestSync.stop();
+    await drainTaskEntry();
+    manifestSync.stop();
+    await viteServer?.close();
+    const stopped = new Promise(resolve => server.close(() => resolve(true)));
+    server.closeIdleConnections?.();
+    let timer;
+    const stoppedKnown = await Promise.race([stopped, new Promise(resolve => { timer = setTimeout(() => resolve(false), 10000); })]);
+    clearTimeout(timer);
+    if (!stoppedKnown) throw taskError("SERVER_WORK_UNSETTLED");
+    const end = Date.now() + 10000;
+    while (uploadHost.active || lib.workers || lib.metadataPending.size || lib.metadataQueue.length || lib.repairIndexReaders) {
+      if (Date.now() >= end) throw taskError("APPLICATION_WORK_UNSETTLED");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const activity = cloudAudio.currentActivity();
+    if (activity.known !== true || activity.allowed !== true || cacheJobs.size) throw taskError("RECEIVER_WORK_UNSETTLED");
+    const uploaded = await cloudUpload.dispose({ timeoutMs: 10000 });
+    if (uploaded.closed !== true) throw taskError("UPLOAD_WORK_UNSETTLED");
+    await cloudAudio.dispose();
+    const hostExit = await uploadHost.dispose();
+    if (hostExit.closed !== true) throw taskError("HOST_WORK_UNSETTLED");
+    cloudAuth.dispose(); lib.db.close();
+    console.log("APPLICATION_CLOSED_KNOWN");
+    if (process.connected) process.disconnect();
+  })().catch(error => { console.error(/^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "APPLICATION_CLOSE_UNKNOWN"); shutdownWork = null; });
+  return shutdownWork;
+}
+process.on("SIGTERM", () => { void shutdownApplication(); });
+process.on("SIGINT", () => { void shutdownApplication(); });
 console.log(`拾光素材库 http://127.0.0.1:${port}`);
 await fs.writeFile(
   path.join(dataDir, "server.json"),

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import mysql from "mysql2/promise";
 import { MysqlDatabase } from "./mysql-db.mjs";
 import { observeDatabase } from "./read-cache.mjs";
+import { UPLOAD_TABLES, uploadMysqlColumnType, uploadConstraints, uploadOrderBy } from "./cloud-upload-batch-store.mjs";
 const TABLES = ["roots", "assets", "operations"];
 export function validateConfig(input, previous = {}) {
   const port = Number(input.port ?? 3306);
@@ -68,6 +69,23 @@ function checksum(rows, columns) {
  * 独立导出是为了能脱离数据库单测这条映射。
  */
 export function mysqlColumnType(table, col) {
+  if (["asset_metadata_clock", "asset_metadata_fields"].includes(table)) {
+    if (col.name === "singleton_id") return "BIGINT PRIMARY KEY";
+    if (["asset_id", "domain_id"].includes(col.name)) return "VARCHAR(36)";
+    if (["schema_sha256", "db_identity", "value_sha256"].includes(col.name)) return "CHAR(64)";
+    if (col.name === "field") return "VARCHAR(24)";
+    if (["coverage", "provenance"].includes(col.name)) return "VARCHAR(32)";
+    if (["seq", "version", "modified_ms"].includes(col.name)) return "BIGINT";
+    throw error("未知字段证据列，未迁移");
+  }
+  if (table === "asset_repair_journal") {
+    if (["operation_id","canonical_asset_id","alias_asset_id","from_root_id","to_root_id"].includes(col.name)) return "VARCHAR(36)" + (col.name === "operation_id" ? " PRIMARY KEY" : "");
+    if (["idempotency_key","input_sha256"].includes(col.name)) return "CHAR(64)";
+    if (col.name === "phase") return "VARCHAR(24)";
+    if (["version","created_ms","updated_ms"].includes(col.name)) return "BIGINT";
+    return "LONGTEXT";
+  }
+  if(Object.hasOwn(UPLOAD_TABLES,table))return uploadMysqlColumnType(table,col);
   if (col.name === "id") return "VARCHAR(36) PRIMARY KEY";
   if (/(sha256|sha1|md5|_hash|hash)$/i.test(String(col.name))) return "VARCHAR(64)";
   if (table === "asset_subcategories" && col.name === "name") return "VARCHAR(120)";
@@ -192,6 +210,7 @@ export class MysqlStorage {
       [...this.lib.jobs.values()].some((j) => j.status === "running")
     )
       throw error("请等待扫描或文件操作完成后再迁移");
+    if (this.lib.db.prepare("SELECT operation_id FROM asset_repair_journal WHERE alias_asset_id IS NOT NULL LIMIT 1").get()) throw error("存在已合并记录，尚未验证其 MySQL 迁移，未切换数据库");
     this.migrating = true;
     this.lib.migrating = true;
     this.state.status = "syncing";
@@ -253,8 +272,9 @@ export class MysqlStorage {
           .get()
       )
         tables.push("music_category_links");
-      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches", "project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders"])
+      for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches", "project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders", "asset_repair_journal", "asset_metadata_clock", "asset_metadata_fields"])
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
+      for(const table of Object.keys(UPLOAD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       const snapshot = this.lib.db.transaction(() =>
         Object.fromEntries(
           tables.map((t) => [
@@ -263,7 +283,7 @@ export class MysqlStorage {
               columns: this.lib.db.prepare(`PRAGMA table_info(${t})`).all(),
               rows: this.lib.db
                 .prepare(
-                  `SELECT * FROM ${t} ORDER BY ${t === "operations" ? "rowid" : "id"}`,
+                  `SELECT * FROM ${t} ORDER BY ${Object.hasOwn(UPLOAD_TABLES,t)?uploadOrderBy(t):t === "asset_repair_journal" ? "operation_id" : t === "operations" ? "rowid" : "id"}`,
                 )
                 .all(),
             },
@@ -302,14 +322,19 @@ export class MysqlStorage {
       for (const t of tables) {
         const defs = snapshot[t].columns.map((col) => {
           const type = mysqlColumnType(t, col);
+          if(Object.hasOwn(UPLOAD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${col.dflt_value!==null?" DEFAULT "+col.dflt_value:""}`;
           return `\`${col.name}\` ${type}${col.name === "id" ? "" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
+        if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
+        if (t === "asset_metadata_fields") defs.push("PRIMARY KEY(asset_id,field)");
+        // Evidence is retained by migration, but MySQL latest remains unsupported.
         if (t === "operations")
           defs.push("operation_seq BIGINT AUTO_INCREMENT UNIQUE");
         if (t === "asset_subcategories") defs.push("UNIQUE(category_id,name)");
         if (t === "media_projects") defs.push("UNIQUE(name)");
         if (t === "project_manual_assets") defs.push("UNIQUE(project_id,asset_id)");
         if (t === "project_assets") defs.push("UNIQUE(project_id,asset_id)", "INDEX project_assets_asset(asset_id)");
+        if (t === "asset_repair_journal") defs.push("UNIQUE(idempotency_key)", "UNIQUE(alias_asset_id)");
         if (t === "music_category_links")
           defs.push(
             "UNIQUE(asset_id,category_id)",
@@ -351,9 +376,10 @@ export class MysqlStorage {
           );
         }
         const [copied] = await conn.query(
-          `SELECT ${columns.map((c) => "`" + c + "`").join(",")} FROM ${t} ORDER BY id`,
+          `SELECT ${columns.map((c) => "`" + c + "`").join(",")} FROM ${t} ORDER BY ${Object.hasOwn(UPLOAD_TABLES,t)?uploadOrderBy(t):"id"}`,
         );
-        const source = [...snapshot[t].rows].sort((a, b) =>
+        // Upload snapshots were read using these same typed PKs (including numeric ordinal).
+        const source = Object.hasOwn(UPLOAD_TABLES,t) ? snapshot[t].rows : [...snapshot[t].rows].sort((a, b) =>
           a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
         );
         if (checksum(copied, columns) !== checksum(source, columns))

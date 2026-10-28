@@ -67,6 +67,8 @@ import { OpenAISettings } from "./OpenAISettings";
 import { CloudConnectionSettings } from "./CloudConnectionSettings";
 import { AccountEntry, CloudLoginPage } from "./CloudAccount";
 import { CloudWorkspace } from "./CloudWorkspace";
+import { CloudUploadTaskCenter } from "./CloudUploadTaskCenter";
+import type { RetryQualification } from "./cloud-upload-task-client";
 import { useCloudAuth } from "./cloud-auth";
 import { MusicAnalysisPanel } from "./MusicAnalysisPanel";
 import { AssetEditDialog } from "./AssetEditDialog";
@@ -76,6 +78,8 @@ import { AssetCategoryDialog } from "./AssetCategoryDialog";
 import { AssetActions } from "./AssetActions";
 import { QuickTagDialog } from "./QuickTagDialog";
 import { MissingCleanupDialog, type CleanupResult } from "./MissingCleanupDialog";
+import { readMergePairs } from "./AssetMergeDialog";
+import { OfflineRepairDialog } from "./OfflineRepairDialog";
 import { ProjectManager, ProjectHistory, type Project } from "./ProjectManager";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
@@ -269,6 +273,12 @@ const time = (n: number | null) =>
 const audioAsset = (a: Asset) =>
   ["sfx", "music"].includes(a.kind) &&
   !["mp4", "mov", "m4v", "mkv", "avi", "mts", "m2ts", "webm"].includes(a.ext);
+function useMergeDetails(value: { selected: Asset | null; tagText: string; note: string; editCategory: string; editSub: string; editKind: string; captureEdit: string; editingAsset: Asset | null }) {
+  const latest = React.useRef(value);
+  React.useLayoutEffect(() => { latest.current = value; });
+  return latest;
+}
+
 function IconButton({
   icon: Icon,
   title,
@@ -349,7 +359,87 @@ function Wave({ asset }: { asset: Asset }) {
     </div>
   );
 }
+type EntryStatus = { known?: boolean; identityKey?: string; host?: { ready?: boolean; canRegister?: boolean; version?: number; code?: string }; proof?: { known?: boolean; version?: number }; dispatchStarted?: boolean; local?: { engine?: string; rootsOverflow?: boolean; rootMetadataUnknown?: boolean; roots: { rootId: string; name: string }[]; registrationAssetIds: string[]; proofAdmission?: { known: boolean; mode?: string; expectedVersion?: number } } };
+type EntryPlan = { queueFingerprint: string; pending: unknown[]; scope: string };
+function UploadTaskEntry({ onClose }: { onClose: () => void }) {
+  const [status, setStatus] = useState<EntryStatus | null>(null), [rootId, setRootId] = useState("");
+  const [groupObservation, setGroupObservation] = useState<{identityKey: string; groups: {groupId: string; name: string}[]} | null>(null);
+  const observedIdentity = useRef<string | null>(null); observedIdentity.current = status?.identityKey || null;
+  const [plan, setPlan] = useState<EntryPlan | null>(null), [agreed, setAgreed] = useState(false), [automatic, setAutomatic] = useState(false);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [pending, setPending] = useState(false);
+  const [pendingDescription, setPendingDescription] = useState("");
+  const alive = useRef(true), generation = useRef(0);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; generation.current++; }; }, []);
+  const storageKey = "shiguang.upload-task-entry.intent";
+  useEffect(() => { try { const raw = localStorage.getItem(storageKey); setPending(raw !== null); if (raw && raw.length <= 8192) { const value = JSON.parse(raw); setPendingDescription(`${String(value.route || "未知操作").slice(0,80)} · 原命令 ${String(value.input?.clientCommandId || "此操作无命令查询合同").slice(0,80)}`); } } catch { setPending(true); } }, []);
+  async function request<T>(route: string, body?: unknown): Promise<T> {
+    const response = await fetch("/api/cloud-upload-tasks/control/" + route, { method: body === undefined ? "GET" : "POST", headers: body === undefined ? {} : { "content-type": "application/json", "x-local-token": token, "x-task-identity": status?.identityKey || "" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const value = await response.json(); if (!response.ok) throw Error(value?.error?.code || "ENTRY_UNKNOWN"); return value;
+  }
+  async function run(work: () => Promise<void>) { if (busy) return; setBusy(true); setError(""); const current = generation.current; try { await work(); } catch (e) { if (alive.current && generation.current === current) setError((e as Error).message); } finally { if (alive.current && generation.current === current) setBusy(false); } }
+  async function readStatus() { const value = await request<EntryStatus>("status"); if (alive.current) setStatus(value); }
+  async function mutate(route: string, input: unknown) {
+    if (!navigator.locks?.request) throw Error("浏览器无法协调原操作，禁止提交");
+    return navigator.locks.request("shiguang.upload-entry:" + (status?.identityKey || "unknown"), { mode: "exclusive", ifAvailable: true }, async lock => {
+      if (!lock) throw Error("另一页面正在处理原操作，禁止提交");
+      return submitWithIntent(route, input);
+    });
+  }
+  async function submitWithIntent(route: string, input: unknown) {
+    if (!status?.identityKey) throw Error("请先核对当前账户和库状态");
+    if (localStorage.getItem(storageKey) !== null) throw Error("原操作结果尚未核清，请保留现场并查询状态");
+    const intent = JSON.stringify({ identityKey: status.identityKey, route, input }); localStorage.setItem(storageKey, intent);
+    if (localStorage.getItem(storageKey) !== intent) throw Error("无法保存原操作，禁止提交");
+    setPending(true); setPendingDescription(route + " · 原意图已保存"); const result = await request<{ ready?: boolean; known?: boolean; phase?: string; unknown?: boolean }>(route, input);
+    if (result.unknown === true || result.known === false || result.ready === false || result.phase === "INIT_PENDING" || result.phase === "UNKNOWN") throw Error("原操作结果未知，请查询状态；不会自动重试");
+    if (localStorage.getItem(storageKey) !== intent) throw Error("原操作记录已变化，请核对结果");
+    localStorage.removeItem(storageKey); if (alive.current) setPending(false); await readStatus();
+  }
+  const admission = status?.local?.proofAdmission, disabled = busy || pending;
+  return <main aria-label="批量上传入口" style={{ height: "100dvh", overflowY: "auto", overflowX: "hidden", padding: "16px", boxSizing: "border-box", overflowWrap: "anywhere" }}><header className="section-head"><h1>批量上传</h1><button onClick={onClose}>返回账户</button></header>
+    <section className="card"><h2>环境与扫描证明</h2><p>打开此页不登记、不扫描、不恢复或启动任务。每一步均需明确操作。</p>
+      <button disabled={busy} onClick={() => void run(readStatus)}>核对当前上传状态</button>
+      <button disabled={busy || !status?.identityKey || pending} onClick={() => void run(async () => { const result = await request<{known:boolean;allowed:boolean}>("session-check", {}); if (!result.known || !result.allowed) throw Error("云端会话或本地环境尚未核清"); await readStatus(); })}>明确核对云端会话</button>
+      {error && <p role="alert">{error}</p>}{pending && <p role="status">已保留原操作：{pendingDescription}。结果尚未核清，禁止再次发起；请查询状态并交管理员核对原命令。</p>}
+      {status?.local?.engine === "mysql" && <p role="status">当前 MySQL 模式尚不支持批量上传，请保留当前库配置。</p>}
+      {status?.local?.rootsOverflow && <p role="status">目录超过本入口一次支持的32个，未截取部分目录。请先核对目录范围。</p>}
+      {status?.local?.rootMetadataUnknown && <p role="status">目录名称信息尚未核清，暂不能选择扫描范围。</p>}
+      {status && <p role="status">{status.known ? "当前账户与库已核对" : "上传环境未知或不可用"} · {status.host?.ready ? "上传记录已登记" : "上传记录未就绪"} · {status.proof?.known ? "本次扫描会话已准入" : "尚无本次扫描会话"}</p>}
+      <button disabled={disabled || !status?.known || status.host?.canRegister !== true || !status.local?.registrationAssetIds.length} onClick={() => void run(() => mutate("host-registration", { clientCommandId: crypto.randomUUID(), expectedVersion: status?.host?.version ?? 0, assetIds: status?.local?.registrationAssetIds }))}>明确登记上传记录</button>
+      <button disabled={disabled || !status?.host?.ready || status.proof?.known === true || admission?.known !== true} onClick={() => void run(() => mutate("proof-admission", { mode: admission?.mode, expectedVersion: admission?.expectedVersion, clientCommandId: crypto.randomUUID() }))}>明确准入扫描证明会话</button>
+      <label>待完整核对的素材目录<select aria-label="待完整核对的素材目录" value={rootId} onChange={e => setRootId(e.target.value)}><option value="">请选择目录</option>{status?.local?.roots.map(r => <option key={r.rootId} value={r.rootId}>{r.name}</option>)}</select></label>
+      <button disabled={disabled || !status?.proof?.known || !rootId} onClick={() => void run(() => mutate("full-scan", { rootId, confirmed: true }))}>明确完整核对所选目录</button><p>完整核对只生成当前范围证据，不自动建队列或上传。目录或内容变化后需重新核对。</p>
+    </section>
+    <button disabled={busy || !status?.known || pending} onClick={() => void run(async () => {
+      const identityKey = status?.identityKey; if (!identityKey) throw Error("请先核对当前会话");
+      setGroupObservation(null); const value = await request<{groups:{groupId:string;name:string}[]}>("groups", {});
+      if (!alive.current || observedIdentity.current !== identityKey) throw Error("当前账户已变化");
+      setGroupObservation({identityKey,groups:value.groups});
+    })}>明确读取当前小组范围</button><p>小组范围由当前账户能力返回；提交时仍由服务重新核对成员与权限。</p>
+    <CloudUploadTaskCenter groups={groupObservation?.identityKey === status?.identityKey ? groupObservation?.groups : undefined} readRetryQualification={async ({batchId,itemId,itemVersion,identityKey,signal}) => {
+      const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+      if (!uuid.test(batchId) || !uuid.test(itemId) || !Number.isSafeInteger(itemVersion) || itemVersion < 0 || observedIdentity.current !== identityKey) throw Error("重试资格范围尚未核清");
+      const response = await fetch(`/api/cloud-upload-tasks/batches/${batchId}/items/${itemId}/retry-qualification?itemVersion=${itemVersion}`, { headers: {"x-task-identity":identityKey}, signal });
+      const value = await response.json(); if (!response.ok) throw Error(value?.error?.code || "RETRY_CONTEXT_UNAVAILABLE");
+      if (signal.aborted || !alive.current || observedIdentity.current !== identityKey) throw Error("当前账户已变化");
+      return {...value.data,identityKey} as RetryQualification & {identityKey:string};
+    }} apiBase="/api/cloud-upload-tasks" identityKey={status?.identityKey || null} getLocalToken={() => token || null} apiAvailable={status?.known === true} canCreate={status?.host?.ready === true && status?.proof?.known === true && !pending} schedulerReady={status?.host?.ready === true && status?.proof?.known === true && !pending} fetcher={(input, init) => {
+      const target = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
+      if (target.origin !== location.origin || !(target.pathname === "/api/cloud-upload-tasks" || target.pathname.startsWith("/api/cloud-upload-tasks/"))) return Promise.reject(Error("TASK_ROUTE_INVALID"));
+      const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined)); headers.set("x-task-identity", status?.identityKey || ""); return fetch(input, { ...init, headers });
+    }} onClose={onClose}/>
+    <section className="card"><h2>明确启动当前账户与库的整个待处理队列</h2><p>此操作覆盖当前服务、账户、设备和库下全部未完成任务，包含历史会话任务；不只针对刚创建的一个批次。历史任务须逐批明确继续，不会自动恢复。</p>
+      <button disabled={busy || !status?.proof?.known} onClick={() => void run(async () => { const value = await request<EntryPlan>("queue-plan"); if (alive.current) { setPlan(value); setAgreed(false); } })}>核对整个待处理队列</button>
+      {plan && <><p>待处理 {plan.pending.length} 个批次；本次核对指纹：{plan.queueFingerprint}。</p><label><input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)}/>我确认操作当前命名空间的全部未完成任务</label>
+      <label><input type="checkbox" checked={automatic} onChange={e => setAutomatic(e.target.checked)}/>明确启用调度，并包含同范围后来明确加入的任务</label>
+      <button disabled={disabled || !agreed} onClick={() => void run(() => mutate("recover", { scope: "CURRENT_NAMESPACE_ALL_PENDING", queueFingerprint: plan.queueFingerprint, confirmed: true }))}>明确恢复整个队列记录（不启动）</button>
+      <button disabled={disabled || !agreed || !automatic} onClick={() => void run(() => mutate("start", { scope: "CURRENT_NAMESPACE_ALL_PENDING", queueFingerprint: plan.queueFingerprint, confirmed: true, automatic, recover: false }))}>明确启动整个队列</button></>}
+    </section>
+  </main>;
+}
+
 function App() {
+  const [uploadTasksOpen, setUploadTasksOpen] = useState(false);
   const cloudAuth = useCloudAuth(api);
   const cloudAuthRef = useRef(cloudAuth);
   cloudAuthRef.current = cloudAuth;
@@ -636,6 +726,7 @@ function App() {
   const [categoryAsset, setCategoryAsset] = useState<Asset | null>(null);
   const [tagAsset, setTagAsset] = useState<Asset | null>(null);
   const [cleanupIds, setCleanupIds] = useState<string[] | null>(null);
+  const [repairIds, setRepairIds] = useState<string[] | null>(null);
   const [fileChecking, setFileChecking] = useState(false);
   const fileCheckInFlight = useRef(false);
   const [editRevision, setEditRevision] = useState(0);
@@ -1287,18 +1378,60 @@ function App() {
     setSelected(prev => prev?.id === asset.id ? result.asset : prev);
     await refreshRef.current();
   }
+  async function restoredAsset(assetId: string) {
+    const updated = await api<Asset>(`/assets/${assetId}`);
+    setSelected(previous => previous?.id === assetId ? updated : previous);
+    setChecked(previous => new Set([...previous].filter(id => id !== assetId)));
+    setEditRevision(n => n + 1);
+    // Foreground refresh preserves the separate unsaved note/tag/detail inputs.
+    await refreshRef.current();
+  }
+  const mergeDetails = useMergeDetails({ selected, tagText, note, editCategory, editSub, editKind, captureEdit, editingAsset });
+  function beforeAssetMerge(canonicalId: string, donorId: string) {
+    if (selected?.id === donorId && (tagText !== selected.tags.join("，") || note !== selected.note || editCategory !== selected.category || editSub !== selected.sub || editKind !== selected.kind || captureEdit !== (selected.captured_ms === null ? "" : new Date(selected.captured_ms + 8 * 3600000).toISOString().slice(0, 16)))) {
+      window.alert("被吸收记录有未保存的详情草稿。请先保存或复制并处理草稿，再回来合并；本次没有提交。");
+      return false;
+    }
+    if (editingAsset?.id === donorId) { window.alert("被吸收记录仍在编辑，请先保存并关闭编辑窗口，再合并。"); return false; }
+    return true;
+  }
+  async function mergedAsset(canonicalId: string, donorId: string) {
+    const updated = await api<Asset>(`/assets/${canonicalId}`);
+    // The GET may outlive its render/modal. Read the latest committed detail
+    // snapshot now; a functional selection update alone does not refresh closures.
+    const hasDonorDraft = (current: typeof mergeDetails.current) => {
+      const detail = current.selected;
+      return detail?.id === donorId && (current.tagText !== detail.tags.join("，") || current.note !== detail.note || current.editCategory !== detail.category || current.editSub !== detail.sub || current.editKind !== detail.kind || current.captureEdit !== (detail.captured_ms === null ? "" : new Date(detail.captured_ms + 8 * 3600000).toISOString().slice(0, 16)));
+    };
+    if (hasDonorDraft(mergeDetails.current) || mergeDetails.current.editingAsset?.id === donorId) setNotice("该记录已被合并。未保存草稿仍保留供复制；旧记录不能再直接保存，请核对保留记录。");
+    setSelected(previous => {
+      if (previous?.id === canonicalId) return updated;
+      if (previous?.id !== donorId) return previous;
+      const current = mergeDetails.current;
+      // A queued selection not represented by the committed detail snapshot is
+      // also preserved; lack of a matching snapshot is not proof of a clean draft.
+      return current.selected?.id === donorId && !hasDonorDraft(current) && current.editingAsset?.id !== donorId ? null : previous;
+    });
+    setChecked(previous => new Set([...previous].filter(id => id !== canonicalId && id !== donorId)));
+    setAssets(previous => previous.filter(asset => asset.id !== donorId).map(asset => asset.id === canonicalId ? updated : asset));
+    setEditRevision(n => n + 1);
+    // Same selected ID does not reset the independent detail draft inputs.
+    await refreshRef.current();
+  }
   function assetActions(asset: Asset, grid = false) {
-    if (view === "missing") return <div className={"asset-quick-actions" + (grid ? " asset-card-actions" : "")} onClick={e => e.stopPropagation()}>
+    if (view === "missing" || view === "offline") return <div className={"asset-quick-actions" + (grid ? " asset-card-actions" : "")} onClick={e => e.stopPropagation()}>
       {!folderView && <IconButton icon={FilePenLine} title={"修改分类：" + asset.name} onClick={() => setCategoryAsset(asset)}/>}
-      <IconButton icon={Trash2} title={"清理失效记录：" + asset.name} disabled={busy || fileChecking} onClick={() => setCleanupIds([asset.id])}/>
+      <IconButton icon={Search} title={"尝试修复：" + asset.name} disabled={busy || fileChecking} onClick={() => setRepairIds([asset.id])}/>
+      <IconButton icon={Trash2} title={"核对并清理库内记录：" + asset.name} disabled={busy || fileChecking} onClick={() => setCleanupIds([asset.id])}/>
     </div>;
-    return <AssetActions asset={asset} grid={grid} compact={compactActions} busy={busy} canTrash={trashAvailable}
+    let hasMergeRecord = false; try { hasMergeRecord = readMergePairs(asset.id).length > 0; } catch { hasMergeRecord = true; }
+    return <><AssetActions asset={asset} grid={grid} compact={compactActions} busy={busy} canTrash={trashAvailable}
       reveal={() => void run(() => revealAsset(asset))} trash={() => trashAsset(asset)}
       tags={() => setTagAsset(asset)} category={!folderView ? () => setCategoryAsset(asset) : undefined}
       extraCategory={!folderView ? () => setQuickCategory(asset) : undefined}
       move={folderView ? () => moveAsset(asset) : undefined}
       project={() => void run(() => addToProject([asset.id]))} inProject={projectMembers.some(m => m.asset_id === asset.id)}
-      favorite={() => void run(() => patch(asset, { favorite: !asset.favorite }))}/>;
+      favorite={() => void run(() => patch(asset, { favorite: !asset.favorite }))}/>{(hasMergeRecord || selected?.id === asset.id) && <button disabled={busy} onClick={() => setRepairIds([asset.id])}>核对合并结果</button>}</>;
   }
   function operationInput() {
     return {
@@ -1407,15 +1540,16 @@ function App() {
       />
     );
   }
+  if (uploadTasksOpen) return <UploadTaskEntry key={`${cloudAuth.view?.accountId || "signed-out"}:${cloudAuth.view?.deviceId || ""}:${cloudAuth.view?.sessionId || ""}`} onClose={() => setUploadTasksOpen(false)}/>;
   if (workspaceOpen) {
     return (
-      <CloudWorkspace
+      <><button disabled={cloudAuth.view?.state !== "logged-in"} onClick={() => setUploadTasksOpen(true)}>打开批量上传任务中心</button><CloudWorkspace
         auth={cloudAuth}
         request={api}
         onBack={closeWorkspace}
         onLogin={openLogin}
         onNotice={setNotice}
-      />
+      /></>
     );
   }
   return (
@@ -1576,7 +1710,8 @@ function App() {
                   <button disabled={fileChecking} onClick={() => { close(); void checkFiles(true); }}><RefreshCw size={16} className={fileChecking ? "spin" : ""}/>{fileChecking ? "检查中…" : "检查文件状态"}</button>
                   <button onClick={() => { close(); window.location.href = "/api/export" + (checked.size ? "?ids=" + [...checked].join(",") : ""); }}><Download size={16}/>导出清单{checked.size ? `（${checked.size} 项）` : ""}</button>
                 </>}</ToolbarPopover>
-                {view === "missing" && <button className="danger" disabled={!checked.size || fileChecking || checked.size > 200} onClick={() => setCleanupIds([...checked])}><Trash2 size={16}/>清理所选记录</button>}
+                {(view === "missing" || view === "offline") && <button title="尝试修复所选记录（每次最多50条，仅预览候选）" disabled={busy || !checked.size || fileChecking || checked.size > 50} onClick={() => setRepairIds([...checked])}><Search size={16}/>尝试修复所选</button>}
+                {(view === "missing" || view === "offline") && <button className="danger" disabled={!checked.size || fileChecking || checked.size > 200} onClick={() => setCleanupIds([...checked])}><Trash2 size={16}/>清理所选记录</button>}
               </div>
             </section>
             {error && (
@@ -2579,6 +2714,7 @@ function App() {
           </div>
         )}
       </main>
+      {repairIds && <OfflineRepairDialog key={repairIds.join(",")} ids={repairIds} assets={assets} roots={roots} request={api} close={() => setRepairIds(null)} restored={id => { void restoredAsset(id).catch(fail); }} beforeMerge={beforeAssetMerge} merged={(canonical, donor) => { void mergedAsset(canonical, donor).catch(fail); }}/>}
       {cleanupIds && <MissingCleanupDialog key={cleanupIds.join(",")} ids={cleanupIds} request={api} close={() => setCleanupIds(null)} changed={async (result: CleanupResult) => {
         const removed = new Set(result.removedIds);
         setSelected(prev => prev && removed.has(prev.id) ? null : prev);

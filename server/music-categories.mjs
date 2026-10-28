@@ -1,3 +1,4 @@
+import { metadataTransaction } from "./asset-metadata-versions.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -39,13 +40,13 @@ export class MusicCategories {
     const insert = this.lib.db.prepare(
       "INSERT INTO music_categories(id,name) VALUES(?,?)",
     );
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       for (const { category } of categories)
         if (!existing.has(category)) {
           insert.run(crypto.randomUUID(), category);
           existing.add(category);
         }
-    })();
+    });
   }
   list(query = {}) {
     this.register();
@@ -148,7 +149,7 @@ export class MusicCategories {
     const old = this.get(id);
     const name = this.name(input.name);
     this.assertUnique(name, id);
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       this.lib.db
         .prepare(
           `UPDATE assets SET category=? WHERE ${this.allKinds ? "" : "kind='music' AND "}category=?`,
@@ -157,12 +158,12 @@ export class MusicCategories {
       this.lib.db
         .prepare("UPDATE music_categories SET name=? WHERE id=?")
         .run(name, id);
-    })();
+    });
     return { id, name };
   }
   remove(id) {
     const old = this.get(id);
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       this.lib.db
         .prepare(
           `UPDATE assets SET category='',sub='' WHERE ${this.allKinds ? "" : "kind='music' AND "}category=?`,
@@ -173,7 +174,7 @@ export class MusicCategories {
       this.lib.db
         .prepare("DELETE FROM music_category_links WHERE category_id=?")
         .run(id);
-    })();
+    });
     return { removed: true };
   }
   assign(input) {
@@ -197,15 +198,15 @@ export class MusicCategories {
     const update = this.lib.db.prepare(
       "UPDATE assets SET sub=CASE WHEN category=? THEN sub ELSE '' END,category=? WHERE id=?",
     );
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       for (const id of ids) {
         if (!this.allKinds || input.categoryId === "uncategorized") this.lib.db
           .prepare("DELETE FROM music_category_links WHERE asset_id=?")
           .run(id);
         update.run(name, name, id);
       }
-    })();
-    this.lib.onMetadataChanged?.(); // 批量分类改动：让清单尽快跟上
+    });
+    this.lib.metadataVersions.afterCommit(() => this.lib.onMetadataChanged?.()); // 已提交后同步清单
     return { updated: ids.length };
   }
   members(assetId) {
@@ -237,10 +238,10 @@ export class MusicCategories {
     const a = this.lib.asset(input.assetId);
     if (a.trashed || (!this.allKinds && a.kind !== "music")) throw Error("只能修改未删除素材的分类");
     const category = this.get(input.categoryId);
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       if (a.category === category.name) this.lib.db.prepare("UPDATE assets SET category='',sub='' WHERE id=?").run(a.id);
       this.lib.db.prepare("DELETE FROM music_category_links WHERE asset_id=? AND category_id=?").run(a.id, category.id);
-    })();
+    });
     return { removed: true };
   }
   save(input) {
@@ -251,12 +252,12 @@ export class MusicCategories {
     if (typeof input.sub !== "string" || input.sub.length > 120) throw Error("子类最多 120 字");
     if (!Array.isArray(input.extraIds) || input.extraIds.length > 100 || input.extraIds.some(id => typeof id !== "string")) throw Error("额外分类格式错误，最多 100 个");
     const extras = [...new Set(input.extraIds)].map(id => this.get(id));
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       this.lib.patch(asset.id, { category: existingPrimary, sub: input.sub.trim() });
       this.lib.db.prepare("DELETE FROM music_category_links WHERE asset_id=?").run(asset.id);
       for (const extra of extras) if (extra.name !== existingPrimary)
         this.lib.db.prepare("INSERT INTO music_category_links(id,asset_id,category_id) VALUES(?,?,?)").run(crypto.randomUUID(), asset.id, extra.id);
-    })();
+    });
     return this.lib.asset(asset.id);
   }
   existingName(name) {
@@ -290,7 +291,7 @@ export class AssetCategories extends MusicCategories {
       const dir = path.join(this.lib.dataDir, "backups");
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(dir, `before-category-hierarchy-${Date.now()}-${crypto.randomUUID()}.json`), JSON.stringify({ createdAt: new Date().toISOString(), assets: rows, categories: db.prepare("SELECT * FROM music_categories").all() }), { flag: "wx", mode: 0o600 });
-      db.transaction(() => {
+      metadataTransaction(this.lib, () => {
         const pairs = new Map(rows.map(row => [JSON.stringify([row.category, row.sub]), row]));
         for (const row of pairs.values()) {
           const parent = this.ensureFolder(row.category.trim() || "历史未归类");
@@ -298,7 +299,7 @@ export class AssetCategories extends MusicCategories {
           db.prepare("UPDATE assets SET category=?,sub=? WHERE category=? AND sub=?").run(parent.name, row.sub.trim(), row.category, row.sub);
         }
         db.prepare("INSERT INTO category_hierarchy_meta(id) VALUES(?)").run("legacy-v1");
-      })();
+      });
     }
     this.lib.hierarchyAvailable = true;
     this.lib.categoryStore = this;
@@ -328,18 +329,18 @@ export class AssetCategories extends MusicCategories {
     const old = this.subcategory(id), parent = this.get(old.category_id), name = this.name(input.name);
     const duplicate = this.lib.db.prepare("SELECT id FROM asset_subcategories WHERE category_id=? AND name=?").get(old.category_id, name);
     if (duplicate && duplicate.id !== id) throw Error("该主分类下已存在同名子类");
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       this.lib.db.prepare("UPDATE assets SET sub=? WHERE category=? AND sub=?").run(name, parent.name, old.name);
       this.lib.db.prepare("UPDATE asset_subcategories SET name=? WHERE id=?").run(name, id);
-    })();
+    });
     return this.subcategory(id);
   }
   removeSubcategory(id) {
     const old = this.subcategory(id), parent = this.get(old.category_id);
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       this.lib.db.prepare("UPDATE assets SET sub='' WHERE category=? AND sub=?").run(parent.name, old.name);
       this.lib.db.prepare("DELETE FROM asset_subcategories WHERE id=?").run(id);
-    })();
+    });
     return { removed: true };
   }
   validatePair(category, sub) {

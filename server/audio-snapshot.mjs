@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { within } from "./fs-identity.mjs";
 
 const CHUNK_BYTES = 64 * 1024;
@@ -33,6 +34,7 @@ export const SNAPSHOT_CODES = Object.freeze({
   CANCELLED: "CANCELLED",
   SNAPSHOT_FAILED: "SNAPSHOT_FAILED",
   CLEANUP_FAILED: "CLEANUP_FAILED",
+  TIMEOUT: "TIMEOUT",
   INVALID_REQUEST: "INVALID_REQUEST",
 });
 
@@ -46,6 +48,7 @@ const MESSAGES = Object.freeze({
   CANCELLED: "快照已取消",
   SNAPSHOT_FAILED: "快照失败",
   CLEANUP_FAILED: "快照清理失败",
+  TIMEOUT: "快照超时",
   INVALID_REQUEST: "快照参数无效",
 });
 
@@ -60,6 +63,48 @@ export class AudioSnapshotError extends Error {
 const fail = (code) => {
   throw new AudioSnapshotError(code);
 };
+
+const SNAPSHOT_BUDGET_EXHAUSTED = Symbol("snapshotBudgetExhausted");
+
+const monoNow = () => performance.now();
+const remaining = (deadlineAtMs) => deadlineAtMs - monoNow();
+
+function raceBudget(promise, budgetMs) {
+  if (!(budgetMs > 0)) return Promise.resolve(SNAPSHOT_BUDGET_EXHAUSTED);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(SNAPSHOT_BUDGET_EXHAUSTED);
+    }, budgetMs);
+    if (typeof timer.unref === "function") timer.unref();
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** 创建阶段的共享副作用；超时未 settle 时不得按“未创建”回收现场。 */
+const MUTATING_OPERATIONS = new Set([
+  "base-mkdir",
+  "base-chmod",
+  "job-mkdir",
+  "marker-write",
+  "output-open",
+  "output-write",
+]);
 
 const isAborted = (signal) => Boolean(signal?.aborted);
 const checkAbort = (signal) => {
@@ -196,6 +241,7 @@ export async function createSnapshot(options = {}) {
     maxBytes = DEFAULT_MAX_BYTES,
     signal,
     jobId = "snapshot",
+    deadlineAtMs,
     hooks = {},
   } = options;
   if (
@@ -208,20 +254,127 @@ export async function createSnapshot(options = {}) {
     !Number.isSafeInteger(maxBytes) ||
     maxBytes < 0 ||
     typeof jobId !== "string" ||
-    !jobId
+    !jobId ||
+    (deadlineAtMs !== undefined && (typeof deadlineAtMs !== "number" || !Number.isFinite(deadlineAtMs)))
   ) {
     fail("INVALID_REQUEST");
   }
   checkAbort(signal);
 
+  // 创建失败时带给 queue 的归属证据：pending 中的操作已发起但未 settle，
+  // 仍可能产生目录/文件/句柄；存在共享副作用 pending 时不得并发删除或重建。
+  const pendingOperations = new Set();
+  const closeFailures = [];
+  let mutationPending = false;
+  let failure = null;
+
+  const deadlineError = (reason, extra = {}) => {
+    const error = new AudioSnapshotError("TIMEOUT");
+    error.evidence = {
+      reason,
+      resourceUnknown: true,
+      closeSettled: false,
+      creationPending:
+        mutationPending || [...pendingOperations].some((label) => MUTATING_OPERATIONS.has(label)),
+      pendingOperations: [...pendingOperations],
+      ...extra,
+    };
+    return error;
+  };
+  const recordCloseFailure = (label, error) => {
+    closeFailures.push(label);
+    if (error?.evidence && typeof error.evidence === "object") {
+      error.evidence.closeFailed = true;
+      error.evidence.resourceUnknown = true;
+      error.evidence.closeSettled = false;
+      error.evidence.lateCloseFailures = [...closeFailures];
+    }
+  };
+  // 已发起的只读/写句柄迟到返回：close 后失败仍记独立证据，不吞错。
+  // 返回的 promise 对“close 成功/失败”一律 resolve：迟到接管链的 `.then` 派生
+  // promise 无人 await，若把 close 拒绝透传出去就会变成 unhandledRejection。
+  // 拒绝在这里被完整消费并归属为 closeFailed/lateCloseFailures，不外抛、不改终态。
+  const closeLate = (handle, label, error) => {
+    pendingOperations.add(label);
+    return Promise.resolve()
+      .then(() => handle.close())
+      .then(
+        () => {
+          pendingOperations.delete(label);
+          return true;
+        },
+        () => {
+          pendingOperations.delete(label);
+          recordCloseFailure(label, error);
+          return false;
+        },
+      );
+  };
+  const checkBudget = () => {
+    if (deadlineAtMs !== undefined && remaining(deadlineAtMs) <= 0) {
+      throw deadlineError("SNAPSHOT_ENTRY_DEADLINE");
+    }
+  };
+  const budgeted = async (promise, label, { mutation = false, reason = label } = {}) => {
+    const guarded = Promise.resolve(promise);
+    guarded.catch(() => {});
+    pendingOperations.add(label);
+    let outcome;
+    try {
+      outcome =
+        deadlineAtMs === undefined ? await guarded : await raceBudget(guarded, remaining(deadlineAtMs));
+    } catch (error) {
+      pendingOperations.delete(label);
+      throw error;
+    }
+    if (outcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+      if (mutation) mutationPending = true;
+      throw deadlineError(reason);
+    }
+    pendingOperations.delete(label);
+    return outcome;
+  };
+  const closeBounded = async (handle, label, error) => {
+    if (!handle) return true;
+    pendingOperations.add(label);
+    const closePromise = Promise.resolve().then(() => handle.close()).then(
+      () => ({ ok: true }),
+      (closeError) => ({ ok: false, closeError }),
+    );
+    if (deadlineAtMs === undefined) {
+      const outcome = await closePromise;
+      pendingOperations.delete(label);
+      if (!outcome.ok) {
+        recordCloseFailure(label, error);
+        return false;
+      }
+      return true;
+    }
+    const outcome = await raceBudget(closePromise, remaining(deadlineAtMs));
+    if (outcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+      // 只停止等待；迟到 close 失败仍记独立证据，不改变已公布终态。
+      closePromise.then((late) => {
+        pendingOperations.delete(label);
+        if (!late.ok) recordCloseFailure(label, error);
+      });
+      return false;
+    }
+    pendingOperations.delete(label);
+    if (!outcome.ok) {
+      recordCloseFailure(label, error);
+      return false;
+    }
+    return true;
+  };
+
   let rootReal;
   let sourceReal;
   let before;
   try {
-    rootReal = await fs.realpath(rootPath);
-    const rootStat = await fs.lstat(rootReal);
+    rootReal = await budgeted(fs.realpath(rootPath), "root-realpath");
+    const rootStat = await budgeted(fs.lstat(rootReal), "root-lstat");
     if (!rootStat.isDirectory()) fail("SOURCE_OUTSIDE_ROOT");
-    sourceReal = await fs.realpath(sourcePath);
+    sourceReal = await budgeted(fs.realpath(sourcePath), "source-realpath");
   } catch (error) {
     throw mapFsError(error);
   }
@@ -231,7 +384,7 @@ export async function createSnapshot(options = {}) {
   try {
     // 最终组件必须是普通文件，不接受符号链接（即使指向根内）；父级符号链接仅在其
     // realpath 仍落在登记根内时允许。
-    const lst = await fs.lstat(sourcePath);
+    const lst = await budgeted(fs.lstat(sourcePath), "source-lstat");
     if (lst.isSymbolicLink()) fail("SOURCE_NOT_REGULAR");
     if (!lst.isFile()) fail("SOURCE_NOT_REGULAR");
     before = identityOf(lst);
@@ -239,27 +392,81 @@ export async function createSnapshot(options = {}) {
     throw mapFsError(error);
   }
   if (before.size > maxBytes) fail("INPUT_LIMIT_EXCEEDED");
+  checkBudget();
 
   if (typeof hooks.beforeOpen === "function") await hooks.beforeOpen({ sourcePath, sourceReal });
+  checkBudget();
 
   let handle;
-  try {
-    handle = await fs.open(
-      sourceReal,
-      constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0),
+  {
+    const openPromise = Promise.resolve().then(() =>
+      fs.open(
+        sourceReal,
+        constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0),
+      ),
     );
-  } catch (error) {
-    throw mapFsError(error);
+    openPromise.catch(() => {});
+    pendingOperations.add("source-open");
+    let openedOutcome;
+    try {
+      openedOutcome =
+        deadlineAtMs === undefined
+          ? await openPromise
+          : await raceBudget(openPromise, remaining(deadlineAtMs));
+    } catch (error) {
+      pendingOperations.delete("source-open");
+      throw mapFsError(error);
+    }
+    if (openedOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+      const error = deadlineError("SNAPSHOT_SOURCE_OPEN_DEADLINE");
+      // open 已发起：迟到返回的 fd 由本次调用负责 close，close 失败记独立证据。
+      openPromise.then(
+        (lateHandle) => closeLate(lateHandle, "source-open-late", error),
+        () => {},
+      );
+      throw error;
+    }
+    pendingOperations.delete("source-open");
+    handle = openedOutcome;
   }
 
   let opened;
-  try {
-    opened = await handle.stat();
-    if (!opened.isFile()) fail("SOURCE_NOT_REGULAR");
-    if (!sameIdentity(before, identityOf(opened))) fail("SOURCE_CHANGED");
-  } catch (error) {
-    await handle.close().catch(() => {});
-    throw mapFsError(error);
+  {
+    const statPromise = Promise.resolve().then(() => handle.stat());
+    statPromise.catch(() => {});
+    pendingOperations.add("source-stat");
+    let statOutcome;
+    try {
+      statOutcome =
+        deadlineAtMs === undefined
+          ? await statPromise
+          : await raceBudget(statPromise, remaining(deadlineAtMs));
+    } catch (error) {
+      pendingOperations.delete("source-stat");
+      await closeBounded(handle, "source-stat-close", error);
+      handle = null;
+      throw mapFsError(error);
+    }
+    if (statOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+      const error = deadlineError("SNAPSHOT_SOURCE_STAT_DEADLINE");
+      const lateHandle = handle;
+      handle = null;
+      statPromise.then(
+        () => closeLate(lateHandle, "source-stat-late", error),
+        () => closeLate(lateHandle, "source-stat-late", error),
+      );
+      throw error;
+    }
+    pendingOperations.delete("source-stat");
+    opened = statOutcome;
+    try {
+      if (!opened.isFile()) fail("SOURCE_NOT_REGULAR");
+      if (!sameIdentity(before, identityOf(opened))) fail("SOURCE_CHANGED");
+    } catch (error) {
+      await closeBounded(handle, "source-identity-close", error);
+      handle = null;
+      throw mapFsError(error);
+    }
   }
 
   const base = path.join(dataDir, "audio-jobs");
@@ -269,18 +476,52 @@ export async function createSnapshot(options = {}) {
   let markerWritten = false;
   let out;
   try {
-    await fs.mkdir(base, { recursive: true, mode: 0o700 });
-    await fs.chmod(base, 0o700).catch(() => {});
-    await fs.mkdir(dir, { mode: 0o700 });
+    await budgeted(fs.mkdir(base, { recursive: true, mode: 0o700 }), "base-mkdir", {
+      mutation: true,
+    });
+    await budgeted(fs.chmod(base, 0o700).catch(() => {}), "base-chmod", { mutation: true });
+    await budgeted(fs.mkdir(dir, { mode: 0o700 }), "job-mkdir", { mutation: true });
     created = true;
-    await fs.writeFile(
-      path.join(dir, MARKER),
-      JSON.stringify({ token, jobId, pid: process.pid, createdAt: new Date().toISOString() }),
-      { mode: 0o600, flag: "wx" },
+    await budgeted(
+      fs.writeFile(
+        path.join(dir, MARKER),
+        JSON.stringify({ token, jobId, pid: process.pid, createdAt: new Date().toISOString() }),
+        { mode: 0o600, flag: "wx" },
+      ),
+      "marker-write",
+      { mutation: true },
     );
     markerWritten = true;
     const filePath = path.join(dir, SNAPSHOT_FILE);
-    out = await fs.open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    {
+      const outputOpenPromise = Promise.resolve().then(() =>
+        fs.open(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600),
+      );
+      outputOpenPromise.catch(() => {});
+      pendingOperations.add("output-open");
+      let outputOpenOutcome;
+      try {
+        outputOpenOutcome =
+          deadlineAtMs === undefined
+            ? await outputOpenPromise
+            : await raceBudget(outputOpenPromise, remaining(deadlineAtMs));
+      } catch (error) {
+        pendingOperations.delete("output-open");
+        throw error;
+      }
+      if (outputOpenOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+        mutationPending = true;
+        const error = deadlineError("SNAPSHOT_OUTPUT_OPEN_DEADLINE");
+        // output open 已发起：迟到返回的 fd 由本次调用 close，不并发删除现场。
+        outputOpenPromise.then(
+          (lateOut) => closeLate(lateOut, "output-open-late", error),
+          () => {},
+        );
+        throw error;
+      }
+      pendingOperations.delete("output-open");
+      out = outputOpenOutcome;
+    }
 
     const hash = crypto.createHash("sha256");
     const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
@@ -288,7 +529,33 @@ export async function createSnapshot(options = {}) {
     let chunks = 0;
     for (;;) {
       checkAbort(signal);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      checkBudget();
+      const readPromise = Promise.resolve().then(() => handle.read(buffer, 0, buffer.length, null));
+      readPromise.catch(() => {});
+      pendingOperations.add("source-read");
+      let readOutcome;
+      try {
+        readOutcome =
+          deadlineAtMs === undefined
+            ? await readPromise
+            : await raceBudget(readPromise, remaining(deadlineAtMs));
+      } catch (error) {
+        pendingOperations.delete("source-read");
+        throw error;
+      }
+      if (readOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+        const error = deadlineError("SNAPSHOT_SOURCE_READ_DEADLINE");
+        const lateHandle = handle;
+        handle = null;
+        // 读已发起：等这次 read 返回后再 close 同一个 fd；close 失败保留独立证据。
+        readPromise.then(
+          () => closeLate(lateHandle, "source-read-late", error),
+          () => closeLate(lateHandle, "source-read-late", error),
+        );
+        throw error;
+      }
+      pendingOperations.delete("source-read");
+      const { bytesRead } = readOutcome;
       if (bytesRead === 0) break;
       bytes += bytesRead;
       if (bytes > maxBytes) fail("INPUT_LIMIT_EXCEEDED");
@@ -299,7 +566,36 @@ export async function createSnapshot(options = {}) {
       // 不能把“已读入 buffer”当成“已写入副本”。
       let written = 0;
       while (written < bytesRead) {
-        const { bytesWritten } = await out.write(buffer, written, bytesRead - written);
+        const writePromise = Promise.resolve().then(() =>
+          out.write(buffer, written, bytesRead - written),
+        );
+        writePromise.catch(() => {});
+        pendingOperations.add("output-write");
+        let writeOutcome;
+        try {
+          writeOutcome =
+            deadlineAtMs === undefined
+              ? await writePromise
+              : await raceBudget(writePromise, remaining(deadlineAtMs));
+        } catch (error) {
+          pendingOperations.delete("output-write");
+          throw error;
+        }
+        if (writeOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+          // 写已发起且可能产生共享副作用：保留现场，不并发第二次 rm/创建；
+          // 写 settle 后仍负责 close 本实例 fd。
+          mutationPending = true;
+          const error = deadlineError("SNAPSHOT_OUTPUT_WRITE_DEADLINE");
+          const lateOut = out;
+          out = null;
+          writePromise.then(
+            () => closeLate(lateOut, "output-write-late", error),
+            () => closeLate(lateOut, "output-write-late", error),
+          );
+          throw error;
+        }
+        pendingOperations.delete("output-write");
+        const { bytesWritten } = writeOutcome;
         if (
           !Number.isInteger(bytesWritten) ||
           bytesWritten <= 0 ||
@@ -319,17 +615,39 @@ export async function createSnapshot(options = {}) {
     // 成功前核对副本的实际字节数，避免“报告 bytes/hash 来自源读取、副本却缺失”。
     let copyStat;
     try {
-      copyStat = await out.stat();
+      copyStat = await budgeted(out.stat(), "output-stat");
     } catch {
       fail("SNAPSHOT_FAILED");
     }
     if (copyStat.size !== bytes) fail("SNAPSHOT_FAILED");
 
     let after;
-    try {
-      after = await handle.stat();
-    } catch {
-      fail("SOURCE_CHANGED");
+    {
+      const statPromise = Promise.resolve().then(() => handle.stat());
+      statPromise.catch(() => {});
+      pendingOperations.add("source-recheck");
+      let statOutcome;
+      try {
+        statOutcome =
+          deadlineAtMs === undefined
+            ? await statPromise
+            : await raceBudget(statPromise, remaining(deadlineAtMs));
+      } catch {
+        pendingOperations.delete("source-recheck");
+        fail("SOURCE_CHANGED");
+      }
+      if (statOutcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+        const error = deadlineError("SNAPSHOT_SOURCE_RECHECK_DEADLINE");
+        const lateHandle = handle;
+        handle = null;
+        statPromise.then(
+          () => closeLate(lateHandle, "source-recheck-late", error),
+          () => closeLate(lateHandle, "source-recheck-late", error),
+        );
+        throw error;
+      }
+      pendingOperations.delete("source-recheck");
+      after = statOutcome;
     }
     if (!sameIdentity(opened, identityOf(after))) fail("SOURCE_CHANGED");
     if (bytes !== opened.size) fail("SOURCE_CHANGED");
@@ -337,8 +655,8 @@ export async function createSnapshot(options = {}) {
     // 路径仍指向打开时的同一对象；realpath 也不能在复制期间换到别处。
     let now;
     try {
-      now = await fs.lstat(sourceReal);
-      const realAgain = await fs.realpath(sourcePath);
+      now = await budgeted(fs.lstat(sourceReal), "source-final-lstat");
+      const realAgain = await budgeted(fs.realpath(sourcePath), "source-final-realpath");
       if (realAgain !== sourceReal) fail("SOURCE_CHANGED");
       if (!within(rootReal, realAgain)) fail("SOURCE_OUTSIDE_ROOT");
     } catch (error) {
@@ -363,35 +681,109 @@ export async function createSnapshot(options = {}) {
       jobId,
       source: identityOf(opened),
       cleaned: false,
+      cleanupPending: false,
+      cleanupSettled: false,
+      cleanupPromise: null,
       cleanup: null,
     };
-    snapshot.cleanup = async () => {
+    snapshot.cleanup = async (cleanupOptions = {}) => {
       if (snapshot.cleaned) return;
-      await removeOwnedDir(base, dir, token);
+      // 唯一一次 rm：并发/重入清理只共享同一个 promise，绝不再发起第二次 rm。
+      if (!snapshot.cleanupPromise) {
+        snapshot.cleanupPromise = removeOwnedDir(base, dir, token).then(
+          () => {
+            snapshot.cleaned = true;
+            snapshot.cleanupPending = false;
+            snapshot.cleanupSettled = true;
+          },
+          (error) => {
+            snapshot.cleanupPending = false;
+            snapshot.cleanupSettled = true;
+            throw error;
+          },
+        );
+      }
+      const cleanupDeadline =
+        cleanupOptions && Number.isFinite(cleanupOptions.deadlineAtMs)
+          ? cleanupOptions.deadlineAtMs
+          : null;
+      if (Number.isFinite(cleanupDeadline)) {
+        const outcome = await raceBudget(snapshot.cleanupPromise, remaining(cleanupDeadline));
+        if (outcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+          // 只停止等待：迟到完成只改善证据，不重开 rm、不改上层终态。
+          snapshot.cleanupPending = true;
+          fail("CLEANUP_FAILED");
+        }
+      } else {
+        await snapshot.cleanupPromise;
+      }
       snapshot.cleaned = true;
     };
     return snapshot;
   } catch (error) {
-    try {
-      await out?.close();
-    } catch {
-      /* close 失败由目录清理兜底 */
-    }
+    failure = error;
+    // 先按同一 deadline 收敛输出句柄；createSnapshot 返回的对象尚不存在，
+    // queue 只能靠错误 evidence 判断是否必须保留现场和租约。
+    await closeBounded(out, "output-close", error);
     out = null;
+    if (mutationPending && error?.evidence && typeof error.evidence === "object") {
+      error.evidence.creationPending = true;
+      error.evidence.creationPreserved = true;
+      error.evidence.pendingOperations = [...pendingOperations];
+    }
     let cleanupError = null;
-    if (created) {
+    // 共享副作用（mkdir/marker/output-open/write）尚未 settle 时：
+    //   - 不能按“未创建”删除或重建；
+    //   - 不并发第二次 rm；
+    //   - 迟到完成只改善证据，由上层保留租约与现场。
+    if (created && !mutationPending) {
+      const cleanup = markerWritten
+        ? removeOwnedDir(base, dir, token)
+        : removeIncompleteDir(base, dir);
       try {
-        if (markerWritten) await removeOwnedDir(base, dir, token);
-        else await removeIncompleteDir(base, dir);
+        if (deadlineAtMs !== undefined) {
+          // 创建失败回收同样受同一绝对 deadline 约束；预算耗尽只发起一次、
+          // 不等待，迟到结果只作证据，最终仍 fail-closed 为 CLEANUP_FAILED。
+          const outcome = await raceBudget(cleanup, remaining(deadlineAtMs));
+          if (outcome === SNAPSHOT_BUDGET_EXHAUSTED) {
+            cleanup.catch(() => {});
+            cleanupError = true;
+          }
+        } else {
+          await cleanup;
+        }
       } catch {
         cleanupError = true;
       }
     }
-    if (cleanupError) throw new AudioSnapshotError("CLEANUP_FAILED");
+    if (cleanupError) {
+      // 清理失败优先只改安全错误码：原错误的 evidence 对象必须原样移交，
+      // 不能复制当时字段。迟到 close 失败会继续更新同一个对象，上层在
+      // CLEANUP_FAILED 返回后仍能观察到 closeFailed/lateCloseFailures/unknown。
+      const cleanupFailed = new AudioSnapshotError("CLEANUP_FAILED");
+      if (error?.evidence && typeof error.evidence === "object") {
+        cleanupFailed.evidence = error.evidence;
+      }
+      throw cleanupFailed;
+    }
     throw mapFsError(error);
   } finally {
-    await out?.close().catch(() => {});
-    await handle.close().catch(() => {});
+    const outClosed = await closeBounded(out, "output-close-finally", failure);
+    const sourceClosed = await closeBounded(handle, "source-close-finally", failure);
+    if (!failure && (!outClosed || !sourceClosed)) {
+      // 成功路径上 close 未证实：不得返回一个可能仍持有 fd 的快照对象。
+      const error = new AudioSnapshotError(
+        closeFailures.length > 0 ? "SNAPSHOT_FAILED" : "TIMEOUT",
+      );
+      error.evidence = {
+        reason: "SNAPSHOT_CLOSE_DEADLINE",
+        resourceUnknown: true,
+        closeSettled: false,
+        closeFailed: closeFailures.length > 0,
+        lateCloseFailures: [...closeFailures],
+      };
+      throw error;
+    }
   }
 }
 

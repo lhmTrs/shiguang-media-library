@@ -1,3 +1,4 @@
+import { assertMergeHistoryRetained } from "./asset-repair.mjs";
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
@@ -80,9 +81,30 @@ export class MissingFiles {
     if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => typeof id !== "string")) throw Error("每次请选择 1–200 条失效记录");
     return [...new Set(ids)].map(id => {
       const a = this.lib.asset(id);
+      assertMergeHistoryRetained(this.lib, { assetId: a.id, rootId: a.root_id });
       if (a.trashed || a.file_status !== "missing") throw Error("所选记录状态已变化，请刷新后重新选择");
       return { id: a.id, name: a.name, path: a.path, reason: a.file_check_reason, checkedMs: a.file_checked_ms };
     });
+  }
+  async checkedCleanupPreview(ids) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => typeof id !== "string")) throw Error("每次请选择 1–200 条记录");
+    if (this.active || this.busy()) throw Error("检查、扫描或素材操作正在进行，请稍后核对");
+    const inspect = async () => {
+      const items = [];
+      for (const id of new Set(ids)) {
+        if (this.busy()) throw Error("素材操作正在进行，请稍后核对");
+        const asset = this.lib.asset(id);
+        if (asset.trashed) throw Error("所选记录状态已变化，请刷新后重新选择");
+        await this.verify(asset);
+        const current = this.lib.asset(id);
+        if (current.path !== asset.path || current.file_status !== "missing")
+          throw Error("文件仍存在、目录离线或暂时不可访问，已保留记录；请先重新关联文件或连接原目录");
+        items.push(...this.cleanupPreview([id]));
+      }
+      return items;
+    };
+    this.active = inspect().finally(() => { this.active = null; });
+    return this.active;
   }
   clean(items) {
     if (this.active || this.busy()) throw Error("检查、扫描或素材操作正在进行，请稍后清理");
@@ -140,6 +162,7 @@ export class MissingFiles {
           try {
             const asset = lib.db.prepare("SELECT * FROM assets WHERE id=? AND path=? AND trashed=0").get(snapshot.id, snapshot.path);
             if (!asset || lib.locks.has(asset.id) || lib.db.prepare("SELECT id FROM operations WHERE asset_id=? AND status='pending'").get(asset.id)) continue;
+            assertMergeHistoryRetained(lib, { assetId: asset.id, rootId: asset.root_id });
             const records = {};
             for (const table of related) records[table] = lib.db.prepare(`SELECT * FROM ${table} WHERE asset_id=?`).all(asset.id);
             const diagnosticWhere = lib.db.kind === "mysql" ? "JSON_UNQUOTE(JSON_EXTRACT(payload,'$.assetId'))=?" : "json_extract(payload,'$.assetId')=?";
@@ -153,7 +176,15 @@ export class MissingFiles {
             if (this.busy() || identity !== await this.rootHealth(root) || !await this.missing(snapshot, root)) { await this.verify(asset); continue; }
             lib.db.transaction(() => {
               const fresh = lib.db.prepare("SELECT * FROM assets WHERE id=?").get(asset.id);
-              if (!fresh || JSON.stringify(fresh) !== JSON.stringify(asset) || lib.locks.has(asset.id)) return;
+              if (!fresh || JSON.stringify(fresh) !== JSON.stringify(asset) || lib.locks.has(asset.id) ||
+                  lib.db.prepare("SELECT id FROM operations WHERE asset_id=? AND status='pending'").get(asset.id)) return;
+              assertMergeHistoryRetained(lib, { assetId: fresh.id, rootId: fresh.root_id });
+              // No operation created/changed after the durable backup may be deleted as old history.
+              if (related.includes("operations")) {
+                const order = rows => [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+                const current = lib.db.prepare("SELECT * FROM operations WHERE asset_id=?").all(asset.id);
+                if (JSON.stringify(order(current)) !== JSON.stringify(order(records.operations))) return;
+              }
               for (const table of related) lib.db.prepare(`DELETE FROM ${table} WHERE asset_id=?`).run(asset.id);
               if (tables.has("openai_diagnostics")) lib.db.prepare(`DELETE FROM openai_diagnostics WHERE ${diagnosticWhere}`).run(asset.id);
               lib.db.prepare("DELETE FROM assets WHERE id=?").run(asset.id);

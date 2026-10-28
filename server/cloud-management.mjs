@@ -311,8 +311,17 @@ function sanitizeScalar(v) {
   return null;
 }
 
+function sanitizeUploadApprovalSettings(v) {
+  if (!v || !Number.isSafeInteger(v.thresholdMb) || v.thresholdMb < 1 ||
+      !Number.isSafeInteger(v.thresholdBytes) || v.thresholdBytes !== v.thresholdMb * 1_000_000 ||
+      !Number.isSafeInteger(v.version) || v.version < 0 || typeof v.configured !== "boolean") throw invalidResponse();
+  return { thresholdMb: v.thresholdMb, thresholdBytes: v.thresholdBytes, version: v.version, configured: v.configured };
+}
+
 // ── 固定路由表：方法 + 路径模板 + 返回 DTO ──────────────────────────────
 const ROUTES = {
+  uploadApprovalSettings: { method: "GET", path: () => "/system/upload-approval-settings", parse: sanitizeUploadApprovalSettings },
+  updateUploadApprovalSettings: { method: "PUT", path: () => "/system/upload-approval-settings", parse: sanitizeUploadApprovalSettings },
   me: { method: "GET", path: () => "/me", parse: sanitizeMe },
   devices: { method: "GET", path: () => "/me/devices", parse: (v) => list(v, sanitizeDevice) },
   revokeDevice: { method: "DELETE", path: ({ id }) => `/me/devices/${id}`, parse: sanitizeScalar },
@@ -729,6 +738,17 @@ export class CloudManagement {
   }
 
   // ── 角色与授权 ──────────────────────────────────────────────
+  async uploadApprovalSettings() {
+    return this.#call("uploadApprovalSettings");
+  }
+
+  async updateUploadApprovalSettings(payload) {
+    const body = bodyOf(payload, ["thresholdMb", "expectedVersion"]);
+    const thresholdMb = integer(body.thresholdMb, { min: 1, max: 2048, name: "审批阈值 MB" });
+    const expectedVersion = integer(body.expectedVersion, { name: "expectedVersion" });
+    return this.#write(epoch => this.#call("updateUploadApprovalSettings", { body: { thresholdMb, expectedVersion }, epoch }));
+  }
+
   async permissions() {
     return this.#call("permissions");
   }

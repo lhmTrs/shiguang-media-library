@@ -1,3 +1,4 @@
+import { metadataTransaction } from "./asset-metadata-versions.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -146,7 +147,7 @@ export class MetadataBatches {
     if (this.lib.db.prepare("SELECT id FROM metadata_batches WHERE id=?").get(plan.id)) return this.read(plan.id);
     await this.backup(plan.id, plan); this.guard();
     const payload = { reason: plan.reason, basis: plan.basis, items: [], skipped: [...plan.skipped] };
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       const active = new Set(this.lib.roots().map(r => r.id));
       for (const entry of plan.entries.filter(e => e.fields.length)) {
         let current;
@@ -158,14 +159,14 @@ export class MetadataBatches {
         payload.items.push({ ...entry, undone: false });
       }
       this.lib.db.prepare("INSERT INTO metadata_batches(id,created_ms,status,payload) VALUES(?,?,?,?)").run(plan.id, Date.now(), "applied", JSON.stringify(payload));
-    })();
+    });
     return this.read(plan.id);
   }
   async undo(id) {
     this.guard(); const before = this.read(id);
     await this.backup(`undo-${id}`, before); this.guard();
     let restored = 0; const skipped = [];
-    this.lib.db.transaction(() => {
+    metadataTransaction(this.lib, () => {
       const row = this.lib.db.prepare("SELECT payload FROM metadata_batches WHERE id=?" + (this.lib.db.kind === "mysql" ? " FOR UPDATE" : "")).get(id);
       const payload = JSON.parse(row.payload), active = new Set(this.lib.roots().map(r => r.id));
       for (const entry of payload.items.filter(e => !e.undone)) {
@@ -178,7 +179,7 @@ export class MetadataBatches {
       }
       const status = payload.items.every(e => e.undone) ? "undone" : payload.items.some(e => e.undone) ? "partially_undone" : "applied";
       this.lib.db.prepare("UPDATE metadata_batches SET status=?,payload=? WHERE id=?").run(status, JSON.stringify(payload), id);
-    })();
+    });
     return { batchId: id, restored, skipped, status: this.read(id).status };
   }
 }

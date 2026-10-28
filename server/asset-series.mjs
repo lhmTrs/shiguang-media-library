@@ -2,6 +2,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { cachedRead, observeDatabase } from "./read-cache.mjs";
 import { pageSize, currentPage } from "./pagination.mjs";
+import { searchTerms } from "./search-query.mjs";
+import { keywordPredicate } from "./search-aliases.mjs";
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 const videoFormats = new Set(["mp4", "mov", "m4v", "mkv", "avi", "mts", "m2ts", "webm"]);
@@ -9,8 +11,8 @@ const compareName = (a, b) => collator.compare(a.name, b.name) || collator.compa
 function compare(sort) {
   return (a, b) => {
     if (sort === "name") return compareName(a, b);
-    if (sort === "revealCount") return (b.reveal_count || 0) - (a.reveal_count || 0) || -compareName(a, b);
-    if (sort === "projectCount") return (b.project_count || 0) - (a.project_count || 0) || -compareName(a, b);
+    if (sort === "revealCount") return (b.reveal_count || 0) - (a.reveal_count || 0) || b.name_match - a.name_match || -compareName(a, b);
+    if (sort === "projectCount") return (b.project_count || 0) - (a.project_count || 0) || b.name_match - a.name_match || -compareName(a, b);
     const field = { size: "size", recent: "mtime", createdNewest: "created_ms", createdOldest: "created_ms", capturedNewest: "captured_ms", capturedOldest: "captured_ms" }[sort];
     if (!field) return compareName(a, b);
     return Number(a[field] == null) - Number(b[field] == null) ||
@@ -19,9 +21,12 @@ function compare(sort) {
 }
 function index(lib, query) {
   const { where, values } = lib.assetFilter(query);
-  const key = "asset-series:" + JSON.stringify([where, values, query.sort || "name"]);
+  const key = "asset-series:" + JSON.stringify([where, values, query.sort || "name", query.q || "", query.qMode || "all"]);
   return cachedRead(lib.db, key, () => {
-    const rows = lib.db.prepare(`SELECT id,name,path,root_id,kind,ext,reveal_count,size,mtime,created_ms,captured_ms FROM assets WHERE ${where}`).all(...values);
+    const terms = ["revealCount", "projectCount"].includes(query.sort) ? searchTerms(query.q) : [];
+    const predicates = terms.map(term => keywordPredicate(term, lib.db, { nameOnly: true }));
+    const nameMatch = predicates.length ? "CASE WHEN (" + predicates.map(item => item.sql).join(query.qMode === "any" ? " OR " : " AND ") + ") THEN 1 ELSE 0 END" : "0";
+    const rows = lib.db.prepare(`SELECT id,name,path,root_id,kind,ext,reveal_count,size,mtime,created_ms,captured_ms,${nameMatch} AS name_match FROM assets WHERE ${where}`).all(...predicates.flatMap(item => item.values), ...values);
     if (query.sort === "projectCount") {
       const counts = new Map(lib.db.prepare("SELECT asset_id,COUNT(DISTINCT project_id) n FROM project_assets WHERE status='used' GROUP BY asset_id").all().map(row => [row.asset_id, Number(row.n)]));
       for (const row of rows) row.project_count = counts.get(row.id) || 0;

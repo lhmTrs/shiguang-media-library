@@ -1,3 +1,4 @@
+import { metadataTransaction } from "./asset-metadata-versions.mjs";
 import path from "node:path";
 
 export const PENDING_DIRECTORY = "\u0000pending";
@@ -29,9 +30,12 @@ export class DirectoryClassification {
   sync(rootId, assetId, changes = this.changes(rootId, assetId)) {
     if (!changes.length) return;
     const update = this.lib.db.prepare("UPDATE assets SET category=?,sub=?,review=?,confirmed=? WHERE id=?");
-    this.lib.db.transaction(() => {
-      for (const { row, next, confirmed } of changes) update.run(next.category, next.sub, next.review, confirmed, row.id);
-    })();
+    metadataTransaction(this.lib, () => {
+      for (const { row, next } of changes) {
+        const current = this.lib.db.prepare("SELECT confirmed FROM assets WHERE id=?").get(row.id);
+        if (current) update.run(next.category, next.sub, next.review, next.review ? 0 : current.confirmed, row.id);
+      }
+    });
   }
   filter(value) {
     let parts;

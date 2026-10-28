@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { PHOTO, VIDEO, AUDIO } from "./fs-identity.mjs";
+import { PHOTO, VIDEO, AUDIO, rootIdentity } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
 import { observeDatabase } from "./read-cache.mjs";
@@ -14,6 +14,10 @@ import { searchTerms } from "./search-query.mjs";
 import { keywordPredicate } from "./search-aliases.mjs";
 import { naturalAssetList } from "./asset-series.mjs";
 import { pageSize, currentPage } from "./pagination.mjs";
+import { readManifest } from "./fs-manifest.mjs";
+import { initRepairJournal, mergeAlias, repairRootState } from "./asset-repair.mjs";
+import { metadataVersionsFor } from "./asset-metadata-versions.mjs";
+import { installPassiveScanProofFence } from "./cloud-upload-scan-proof.mjs";
 export const run = promisify(execFile);
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
@@ -48,10 +52,12 @@ export class Library {
     this.directoryClassification = directoryClassification ? new DirectoryClassification(this) : null;
     this.jobs = new Map();
     this.locks = new Set();
+    this.repairIndexReaders = 0;
     this.metadataQueue = [];
     this.metadataPending = new Set();
     this.workers = 0;
   }
+  get metadataVersions() { return metadataVersionsFor(this); }
   async init() {
     await fs.mkdir(this.dataDir, { recursive: true });
     this.cache = path.join(this.dataDir, "cache");
@@ -59,6 +65,8 @@ export class Library {
     if (this.database) {
       this.db = this.database;
       observeDatabase(this.db);
+      installPassiveScanProofFence(this.db);
+      void this.metadataVersions;
       this.ensureRevealCount();
       await this.ensureRootManagement();
       this.db
@@ -72,6 +80,8 @@ export class Library {
     }
     this.db = new Database(path.join(this.dataDir, "library.sqlite"));
     observeDatabase(this.db);
+    installPassiveScanProofFence(this.db);
+    void this.metadataVersions;
     this.db.pragma("journal_mode = WAL");
     this.db
       .exec(`CREATE TABLE IF NOT EXISTS roots(id TEXT PRIMARY KEY,path TEXT UNIQUE,kind TEXT,name TEXT,online INTEGER DEFAULT 1);
@@ -132,6 +142,7 @@ export class Library {
     this.directoryClassification.sync(null, null, changes);
   }
   ensureRevealCount() {
+    initRepairJournal(this.db);
     const columns = this.db.kind === "mysql"
       ? this.db.prepare("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='assets'").all()
       : this.db.prepare("PRAGMA table_info(assets)").all();
@@ -312,6 +323,8 @@ export class Library {
     return { root: this.rootById(rootId), changed };
   }
   asset(assetId) {
+    const alias = mergeAlias(this, assetId);
+    if (alias) throw Object.assign(Error("该记录已合并；请先核对保留记录，未转移旧写入授权"), { code: "ASSET_IS_ALIAS", status: 409, canonicalAssetId: alias.canonicalAssetId });
     const a = this.db.prepare("SELECT * FROM assets WHERE id=?").get(assetId);
     if (!a) throw Error("素材不存在");
     return { ...a, tags: JSON.parse(a.tags) };
@@ -353,7 +366,9 @@ export class Library {
     if (!within(r.path, real)) throw Error("路径超出登记目录");
     return real;
   }
-  async source(assetId) {
+  async source(assetId, options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(k => k !== "readOnly") || options.readOnly !== undefined && typeof options.readOnly !== "boolean") throw Object.assign(Error("INVALID_SOURCE_OPTIONS"), { code: "INVALID_SOURCE_OPTIONS" });
+    if (options.readOnly === true) return this.readOnlySource(assetId);
     let a = this.asset(assetId);
     if (a.trashed) throw Error("素材已移入废纸篓");
     if (this.fileChecker) { await this.fileChecker.verify(a); a = this.asset(assetId); }
@@ -362,7 +377,30 @@ export class Library {
     if (!stat.isFile()) throw Error("不是普通文件");
     return { a, p: real, stat };
   }
-  scan(rootId, classification = new Map()) {
+  // Trusted batch inspection only: validate actual registered FS and repair
+  // state without refreshing MissingFiles' mutable status projection. Ordinary
+  // source() still calls the original checker/record path unchanged.
+  async readOnlySource(assetId) {
+    const a = this.asset(assetId), root = this.rootById(a.root_id);
+    const changed = () => { throw Object.assign(Error("SOURCE_CHANGED"), { code: "SOURCE_CHANGED", status: 409 }); };
+    const assetSnapshot = JSON.stringify(a), rootSnapshot = JSON.stringify(root);
+    const guard = () => {
+      if (this.db.kind === "mysql" || a.trashed || root.retired || root.online !== 1 || !["music", "sfx"].includes(a.kind) || !(this.locks instanceof Set) || this.locks.size || !Number.isSafeInteger(this.repairIndexReaders) || this.repairIndexReaders !== 0 || this.workers !== 0 || this.metadataPending.size || this.metadataQueue.length) changed();
+      if (JSON.stringify(this.asset(assetId)) !== assetSnapshot || JSON.stringify(this.rootById(root.id)) !== rootSnapshot || repairRootState(this, root).blocked) changed();
+    };
+    guard(); const rootKey = await rootIdentity(root); guard();
+    const manifest = await readManifest(root, { maxBytes: 4 * 1024 * 1024 }); guard();
+    if (manifest.reason !== "missing" && !manifest.manifest || repairRootState(this, root, manifest.manifest).blocked) changed();
+    const real = await this.checked(a.path, root.id); guard();
+    const named = await fs.lstat(a.path); guard();
+    if (named.isSymbolicLink() || !named.isFile() || real !== a.path) changed();
+    const stat = await fs.stat(real); guard();
+    if (!Number.isSafeInteger(a.dev) || !Number.isSafeInteger(a.ino) || stat.dev !== a.dev || stat.ino !== a.ino || stat.size !== a.size || stat.mtimeMs !== a.mtime || !stat.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || named.size !== stat.size || named.mtimeMs !== stat.mtimeMs || named.ctimeMs !== stat.ctimeMs) changed();
+    await fs.access(real, constants.R_OK); guard();
+    if (await rootIdentity(root) !== rootKey) changed(); guard();
+    return { a, p: real, stat };
+  }
+  scan(rootId, classification = new Map(), options = {}) {
     if ([...this.jobs.values()].some(j => j.type === "duplicate-cleanup" && j.status === "running")) throw Error("重复音频清理中，请稍后扫描");
     if (this.locks.size) throw Error("文件操作进行中，请完成后再扫描");
     if (
@@ -382,15 +420,21 @@ export class Library {
       startedAt: Date.now(),
     };
     this.jobs.set(job.id, job);
-    this.scanWork(job, classification).catch((e) => {
+    this.scanWork(job, classification, options).catch((e) => {
       job.status = "failed";
       job.errors.push(e.message);
     });
     return job;
   }
-  async scanWork(job, classification) {
+  async scanWork(job, classification, { signal } = {}) {
+    const work = () => this.scanWorkContents(job, classification);
+    return this.scanProof ? this.scanProof.run(job.rootId, 'SCAN', work, { signal, job }) : work();
+  }
+  async scanWorkContents(job, classification) {
     const root = this.roots().find((r) => r.id === job.rootId);
     if (!root) throw Error("目录不存在");
+    const repairManifest = await readManifest(root, { maxBytes: 4 * 1024 * 1024 });
+    if (repairManifest.reason !== "missing" && !repairManifest.manifest || repairRootState(this, root, repairManifest.manifest).blocked) throw Object.assign(Error("目录修复记录尚未核清，未扫描覆盖"), { code: "MERGE_STATE_UNKNOWN" });
     try {
       await fs.access(root.path);
     } catch {
@@ -905,87 +949,75 @@ export class Library {
         .map((r) => r.ext),
     };
   }
-  patch(assetId, patch) {
-    const original = this.asset(assetId);
-    if (this.directoryClassification && ["category", "sub", "review"].some(k => Object.hasOwn(patch, k))) throw Error("分类和待确认状态由文件位置决定，请移动到分类目录");
-    if (this.directoryClassification && original.review && patch.confirmed) throw Error("请先将素材移出根目录或待确认文件夹");
-    if (this.categoryStore && Object.hasOwn(patch, "category"))
-      patch = { ...patch, category: this.categoryStore.existingName(patch.category) };
-    if (this.hierarchyAvailable && (Object.hasOwn(patch, "category") || Object.hasOwn(patch, "sub"))) {
-      const parent = patch.category ?? original.category;
-      const sub = Object.hasOwn(patch, "sub") ? patch.sub : parent !== original.category ? "" : original.sub;
-      patch = { ...patch, sub: this.categoryStore.validatePair(parent, sub) };
-    }
-    if (Object.hasOwn(patch, "capturedAt")) {
-      if (patch.capturedAt === "") {
-        this.db
-          .prepare(
-            "UPDATE assets SET captured_ms=NULL,capture_source='',capture_error='',capture_status='pending' WHERE id=?",
-          )
-          .run(assetId);
-        this.enqueue(assetId, true);
-      } else {
-        if (
-          typeof patch.capturedAt !== "string" ||
-          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(patch.capturedAt)
-        )
-          throw Error("拍摄时间格式错误");
-        const parsed = parseCaptureTime(
-          patch.capturedAt.length === 16
-            ? patch.capturedAt + ":00"
-            : patch.capturedAt,
-        );
-        if (!parsed) throw Error("拍摄时间无效");
-        this.db
-          .prepare(
-            "UPDATE assets SET captured_ms=?,capture_source='手动校正（北京时间）',capture_status='ready',capture_error='' WHERE id=?",
-          )
-          .run(parsed.ms, assetId);
+  patch(assetId, patch, { source = "manual" } = {}) {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw Error("标注格式错误");
+    return this.metadataVersions.edit(assetId, () => {
+      const original = this.asset(assetId);
+      if (this.directoryClassification && ["category", "sub", "review"].some(k => Object.hasOwn(patch, k))) throw Error("分类和待确认状态由文件位置决定，请移动到分类目录");
+      if (this.directoryClassification && original.review && patch.confirmed) throw Error("请先将素材移出根目录或待确认文件夹");
+      if (this.categoryStore && Object.hasOwn(patch, "category"))
+        patch = { ...patch, category: this.categoryStore.existingName(patch.category) };
+      if (this.hierarchyAvailable && (Object.hasOwn(patch, "category") || Object.hasOwn(patch, "sub"))) {
+        const parent = patch.category ?? original.category;
+        const sub = Object.hasOwn(patch, "sub") ? patch.sub : parent !== original.category ? "" : original.sub;
+        patch = { ...patch, sub: this.categoryStore.validatePair(parent, sub) };
       }
-    }
-    const columns = [],
-      v = [];
-    if (Object.hasOwn(patch, "kind") && patch.kind !== original.kind) {
-      columns.push("basis=?");
-      v.push("人工指定素材类型");
-    }
-    for (const k of [
-      "note",
-      "category",
-      "sub",
-      "kind",
-      "favorite",
-      "confirmed",
-      "tags",
-    ])
-      if (Object.hasOwn(patch, k)) {
-        let value = patch[k];
-        if (k === "tags") {
-          if (
-            !Array.isArray(value) ||
-            value.length > 40 ||
-            value.some((t) => typeof t !== "string" || t.length > 60)
-          )
-            throw Error("标签格式错误");
-          value = JSON.stringify([
-            ...new Set(value.map((t) => t.trim()).filter(Boolean)),
-          ]);
-        } else if (["favorite", "confirmed"].includes(k)) value = value ? 1 : 0;
-        else if (typeof value !== "string" || value.length > 4000)
-          throw Error("字段过长或格式错误");
-        if (k === "kind" && !["sfx", "music", "video", "photo"].includes(value))
-          throw Error("素材类型错误");
-        columns.push(k + "=?");
-        v.push(value);
+      let capture = null, enqueueCapture = false;
+      if (Object.hasOwn(patch, "capturedAt")) {
+        if (patch.capturedAt === "") { capture = { ms: null, source: "", status: "pending" }; enqueueCapture = true; }
+        else {
+          if (typeof patch.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(patch.capturedAt)) throw Error("拍摄时间格式错误");
+          const parsed = parseCaptureTime(patch.capturedAt.length === 16 ? patch.capturedAt + ":00" : patch.capturedAt);
+          if (!parsed) throw Error("拍摄时间无效");
+          capture = { ms: parsed.ms, source: "手动校正（北京时间）", status: "ready" };
+        }
       }
-    if (columns.length)
-      this.db
-        .prepare("UPDATE assets SET " + columns.join(",") + " WHERE id=?")
-        .run(...v, assetId);
-    // 元数据变了：通知清单同步器（index.mjs 注入），让 .shiguang/manifest.json 尽快跟上，
-    // 这样外部（GPT/脚本）读清单时看到的不是上次对账时的旧标签。
-    if (columns.length) this.onMetadataChanged?.(original.root_id);
-    return this.asset(assetId);
+      const columns = [],
+        v = [];
+      if (Object.hasOwn(patch, "kind") && patch.kind !== original.kind) {
+        columns.push("basis=?");
+        v.push(source === "manual" ? "人工指定素材类型" : "自动导入素材类型");
+      }
+      for (const k of [
+        "note",
+        "category",
+        "sub",
+        "kind",
+        "favorite",
+        "confirmed",
+        "tags",
+      ])
+        if (Object.hasOwn(patch, k)) {
+          let value = patch[k];
+          if (k === "tags") {
+            if (
+              !Array.isArray(value) ||
+              value.length > 40 ||
+              value.some((t) => typeof t !== "string" || t.length > 60)
+            )
+              throw Error("标签格式错误");
+            value = JSON.stringify([
+              ...new Set(value.map((t) => t.trim()).filter(Boolean)),
+            ]);
+          } else if (["favorite", "confirmed"].includes(k)) value = value ? 1 : 0;
+          else if (typeof value !== "string" || value.length > 4000)
+            throw Error("字段过长或格式错误");
+          if (k === "kind" && !["sfx", "music", "video", "photo"].includes(value))
+            throw Error("素材类型错误");
+          columns.push(k + "=?");
+          v.push(value);
+        }
+      if (capture) this.db.prepare("UPDATE assets SET captured_ms=?,capture_source=?,capture_status=?,capture_error='' WHERE id=?").run(capture.ms, capture.source, capture.status, assetId);
+      if (columns.length)
+        this.db
+          .prepare("UPDATE assets SET " + columns.join(",") + " WHERE id=?")
+          .run(...v, assetId);
+      // 元数据变了：通知清单同步器（index.mjs 注入），让 .shiguang/manifest.json 尽快跟上，
+      // 这样外部（GPT/脚本）读清单时看到的不是上次对账时的旧标签。
+      if (columns.length || capture) this.metadataVersions.afterCommit(() => this.onMetadataChanged?.(original.root_id), "metadata:" + original.root_id);
+      if (enqueueCapture) this.metadataVersions.afterCommit(() => this.enqueue(assetId, true), "enqueue:" + assetId);
+      return this.asset(assetId);
+    }, { source });
   }
   async plan(input, jobId = null) {
     if (

@@ -1,3 +1,4 @@
+import { metadataTransaction } from "./asset-metadata-versions.mjs";
 import crypto from "node:crypto";
 import { observeDatabase } from "./read-cache.mjs";
 export class Tags {
@@ -114,71 +115,33 @@ export class Tags {
     return t;
   }
   rename(id, input) {
-    const old = this.get(id);
-    const name = this.name(input.name);
-    this.register(this.rows());
-    this.unique(name, id);
-    const rows = this.rows().filter((a) => a.tags.includes(old.name));
-    this.lib.db.transaction(() => {
-      for (const a of rows)
-        this.lib.db
-          .prepare("UPDATE assets SET tags=? WHERE id=?")
-          .run(
-            JSON.stringify([
-              ...new Set(a.tags.map((t) => (t === old.name ? name : t))),
-            ]),
-            a.id,
-          );
-      this.lib.db
-        .prepare("UPDATE asset_tags SET name=? WHERE id=?")
-        .run(name, id);
-    })();
-    return { id, name };
+    return metadataTransaction(this.lib, () => {
+      const old = this.get(id), name = this.name(input.name);
+      this.register(this.rows()); this.unique(name, id);
+      const rows = this.rows().filter(a => a.tags.includes(old.name));
+      for (const a of rows) this.lib.patch(a.id, { tags: [...new Set(a.tags.map(t => t === old.name ? name : t))] });
+      this.lib.db.prepare("UPDATE asset_tags SET name=? WHERE id=?").run(name, id);
+      return { id, name };
+    });
   }
   remove(id) {
-    const tag = this.get(id);
-    const rows = this.rows().filter((a) => a.tags.includes(tag.name));
-    this.lib.db.transaction(() => {
-      for (const a of rows)
-        this.lib.db
-          .prepare("UPDATE assets SET tags=? WHERE id=?")
-          .run(JSON.stringify(a.tags.filter((t) => t !== tag.name)), a.id);
+    return metadataTransaction(this.lib, () => {
+      const tag = this.get(id), rows = this.rows().filter(a => a.tags.includes(tag.name));
+      for (const a of rows) this.lib.patch(a.id, { tags: a.tags.filter(t => t !== tag.name) });
       this.lib.db.prepare("DELETE FROM asset_tags WHERE id=?").run(id);
-    })();
-    return { removed: true };
+      return { removed: true };
+    });
   }
   apply(input) {
-    if (
-      !["add", "remove"].includes(input.action) ||
-      !Array.isArray(input.ids) ||
-      !input.ids.length ||
-      input.ids.length > 200 ||
-      input.ids.some((id) => typeof id !== "string")
-    )
-      throw Error("请选择 1–200 个素材和有效操作");
-    const tag = this.get(input.tagId);
-    const rows = [...new Set(input.ids)].map((id) => this.lib.asset(id));
-    for (const a of rows) {
-      if (a.trashed) throw Error("不能修改已删除素材的标签");
-      if (
-        input.action === "add" &&
-        !a.tags.includes(tag.name) &&
-        a.tags.length >= 40
-      )
-        throw Error("素材最多保存 40 个标签");
-    }
-    this.lib.db.transaction(() => {
+    if (!['add','remove'].includes(input.action) || !Array.isArray(input.ids) || !input.ids.length || input.ids.length > 200 || input.ids.some(id => typeof id !== 'string')) throw Error("请选择 1–200 个素材和有效操作");
+    return metadataTransaction(this.lib, () => {
+      const tag = this.get(input.tagId), rows = [...new Set(input.ids)].map(id => this.lib.asset(id));
       for (const a of rows) {
-        const tags =
-          input.action === "add"
-            ? [...new Set([...a.tags, tag.name])]
-            : a.tags.filter((t) => t !== tag.name);
-        this.lib.db
-          .prepare("UPDATE assets SET tags=? WHERE id=?")
-          .run(JSON.stringify(tags), a.id);
+        if (a.trashed) throw Error("不能修改已删除素材的标签");
+        if (input.action === 'add' && !a.tags.includes(tag.name) && a.tags.length >= 40) throw Error("素材最多保存 40 个标签");
       }
-    })();
-    this.lib.onMetadataChanged?.(); // 批量标签改动：让清单尽快跟上（不传 rootId = 全部根）
-    return { updated: rows.length };
+      for (const a of rows) this.lib.patch(a.id, { tags: input.action === 'add' ? [...new Set([...a.tags, tag.name])] : a.tags.filter(t => t !== tag.name) });
+      return { updated: rows.length };
+    });
   }
 }

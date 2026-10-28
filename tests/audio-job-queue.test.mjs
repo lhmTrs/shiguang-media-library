@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { AudioJobQueue } from "../server/audio-job-queue.mjs";
+import { AudioJobQueue, AudioQueueError } from "../server/audio-job-queue.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -102,6 +102,8 @@ async function harness(t, options = {}) {
     dataDir,
     resolveAsset,
     execute,
+    commit: options.commit,
+    abort: options.abort,
     wallDeadlineMs: options.wallDeadlineMs ?? 1000,
     maxSnapshotBytes: 1024 * 1024,
     maxWaiting: options.maxWaiting ?? 8,
@@ -280,7 +282,9 @@ test("运行中取消：cancelling 等待 execute settle + 快照清理后才 ca
   assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
 });
 
-test("超时：wall deadline abort 并等待 settle，failed TIMEOUT，下一项可执行", async (t) => {
+test("超时后 settle 已越过 deadline：清理只停止等待并保留故障租约，下一项不启动", async (t) => {
+  // T13I round2 合同调整：deadline 耗尽时快照清理不能再无界等待；清理未 settle
+  // 归为 CLEANUP_FAILED 并保留故障租约，因此不再断言“下一项可执行/锁已释放”。
   let first = true;
   const h = await harness(t, {
     wallDeadlineMs: 100,
@@ -296,11 +300,12 @@ test("超时：wall deadline abort 并等待 settle，failed TIMEOUT，下一项
   await h.addAsset("b");
   const a = await h.queue.submit("a");
   const failed = await waitState(h.queue, a.id, "failed");
-  assert.equal(failed.error.code, "TIMEOUT");
+  assert.equal(failed.error.code, "CLEANUP_FAILED");
+  assert.equal(h.queue.busy, true);
+  assert.ok(await fs.lstat(h.lockPath), "清理未 settle 必须保留故障租约");
   const b = await h.queue.submit("b");
-  await waitState(h.queue, b.id, "succeeded");
-  assert.equal((await jobDirs(h.jobsPath)).length, 0);
-  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
+  await delay(30);
+  assert.equal((await h.queue.get(b.id)).state, "queued", "故障态阻止下一项启动");
 });
 
 test("执行失败受控、摘要不泄露路径/原始错误，随后下一任务成功", async (t) => {
@@ -721,5 +726,263 @@ test("marker 部分写入 + rmdir 失败 + 取消交错：CLEANUP_FAILED，保�
   } finally {
     fs.writeFile = originalWriteFile;
     fs.rmdir = originalRmdir;
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* T13G：saving / commit / abort                                        */
+/* ------------------------------------------------------------------ */
+
+test("T13G commit 在快照清理后同步执行：saving 阶段可见、resultSaved=true、summary 不含产物", async (t) => {
+  const events = [];
+  let productSeen = null;
+  const h = await harness(t, {
+    hooks: {
+      async afterSnapshot() {
+        events.push("snapshot");
+      },
+      async afterExecute() {
+        events.push("execute");
+      },
+    },
+    commit(product, info) {
+      events.push("commit");
+      productSeen = product;
+      assert.equal(typeof info.jobId, "string");
+      assert.equal(info.assetId, "a");
+      return { saved: true };
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "succeeded");
+  assert.deepEqual(events, ["snapshot", "execute", "commit"]);
+  assert.deepEqual(productSeen, { ok: true });
+  assert.equal(done.resultSaved, true);
+  assert.equal(done.error, null);
+  assert.equal(JSON.stringify(done).includes("ok"), false, "summary 不得暴露产物");
+  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
+});
+
+test("T13G commit 期间重入 cancel 仍以成功提交为准，迟到 cancel 不改状态", async (t) => {
+  let cancelSummary = null;
+  const h = await harness(t, {
+    commit(product, info) {
+      // 同步重入：cancel 是 async，但其返回摘要在此刻同步计算。
+      h.queue.cancel(info.jobId).then((summary) => {
+        cancelSummary = summary;
+      });
+      return { saved: true };
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "succeeded");
+  assert.equal(done.resultSaved, true);
+  await delay(5);
+  assert.equal(cancelSummary.state, "saving", "commit 期间 cancel 看到 saving，不改判 cancelling");
+  const after = await h.queue.cancel(job.id);
+  assert.equal(after.state, "succeeded");
+  assert.equal((await h.queue.get(job.id)).state, "succeeded");
+  assert.equal((await h.queue.get(job.id)).resultSaved, true);
+  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
+});
+
+test("T13G execute 后提交前取消：不 commit、abort 一次、终态 cancelled", async (t) => {
+  const aborts = [];
+  let commits = 0;
+  const h = await harness(t, {
+    commit() {
+      commits += 1;
+    },
+    abort(product, reason) {
+      aborts.push({ product, reason });
+    },
+    hooks: {
+      async afterExecute({ job }) {
+        await h.queue.cancel(job.id);
+      },
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "cancelled");
+  assert.equal(commits, 0);
+  assert.equal(aborts.length, 1);
+  assert.equal(aborts[0].reason, "CANCELLED");
+  assert.deepEqual(aborts[0].product, { ok: true });
+  assert.equal(done.resultSaved, false);
+  assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
+});
+
+test("T13G commit 抛错/返回拒绝 Promise：固定失败、安全消费、abort 一次、不假成功", async (t) => {
+  for (const mode of ["throw", "reject"]) {
+    const aborts = [];
+    const h = await harness(t, {
+      commit() {
+        if (mode === "throw") throw new Error("secret /tmp/path custom");
+        return Promise.reject(new Error("secret /tmp/path custom"));
+      },
+      abort(product, reason) {
+        aborts.push(reason);
+      },
+    });
+    await h.addAsset("a");
+    const job = await h.queue.submit("a");
+    const done = await waitState(h.queue, job.id, "failed");
+    assert.equal(done.error.code, "COMMIT_FAILED", mode);
+    assert.match(done.error.message, /保存失败/);
+    assert.doesNotMatch(JSON.stringify(done), /secret|tmp\/path|custom/);
+    assert.equal(done.resultSaved, false);
+    assert.deepEqual(aborts, ["COMMIT_FAILED"]);
+    assert.equal(await fs.lstat(h.lockPath).catch(() => null), null);
+    await delay(5);
+  }
+});
+
+test("T13G 快照清理失败不 commit、abort 撤销、resultSaved=false 且保留租约/busy", async (t) => {
+  let commits = 0;
+  const aborts = [];
+  const h = await harness(t, {
+    commit() {
+      commits += 1;
+    },
+    abort(product, reason) {
+      aborts.push(reason);
+    },
+    hooks: {
+      async afterSnapshot({ snapshot }) {
+        snapshot.cleanup = async () => {
+          throw new Error("cleanup boom");
+        };
+      },
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "failed");
+  assert.equal(done.error.code, "CLEANUP_FAILED");
+  assert.equal(done.resultSaved, false);
+  assert.equal(commits, 0);
+  assert.deepEqual(aborts, ["CLEANUP_FAILED"]);
+  assert.ok(await fs.lstat(h.lockPath), "清理失败保留租约");
+  assert.equal(h.queue.busy, true);
+  const blocked = await h.queue.submit("a");
+  await delay(20);
+  assert.equal((await h.queue.get(blocked.id)).state, "queued", "故障后不得启动下一项");
+  assert.equal(aborts.length, 1, "只撤销本任务的 token，不重复撤销");
+});
+
+test("T13G abort 失败不吞错：固定 ABORT_FAILED，保留故障 busy/租约", async (t) => {
+  const h = await harness(t, {
+    abort() {
+      throw new Error("abort boom");
+    },
+    hooks: {
+      async afterExecute({ job }) {
+        await h.queue.cancel(job.id);
+      },
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "failed");
+  assert.equal(done.error.code, "ABORT_FAILED");
+  assert.doesNotMatch(done.error.message, /boom/);
+  assert.equal(h.queue.busy, true);
+  assert.ok(await fs.lstat(h.lockPath), "撤销失败也不得释放租约");
+});
+
+test("T13G 提交成功后队列租约释放失败：failed + LEASE_RELEASE_FAILED，resultSaved 真实为 true", async (t) => {
+  let saved = false;
+  const h = await harness(t, {
+    commit() {
+      saved = true;
+      return { saved: true };
+    },
+    hooks: {
+      async afterExecute() {
+        const file = path.join(h.lockPath, "owner.json");
+        const owner = JSON.parse(await fs.readFile(file, "utf8"));
+        assert.equal(owner.purpose, "audio-job-queue");
+        await fs.writeFile(file, JSON.stringify({ ...owner, token: "0".repeat(32) }), { mode: 0o600 });
+      },
+    },
+  });
+  await h.addAsset("a");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "failed");
+  assert.equal(done.error.code, "LEASE_RELEASE_FAILED");
+  assert.equal(done.resultSaved, true);
+  assert.equal(saved, true);
+  assert.equal(h.queue.busy, true);
+  assert.ok(await fs.lstat(h.lockPath), "释放失败保留故障锁");
+});
+
+test("T13G begin 后撤销失败（execute 抛 ABORT_FAILED）：保留租约/busy，取消/超时不覆盖，下一项不启动", async (t) => {
+  const h = await harness(t, {
+    wallDeadlineMs: 40,
+    executor: async () => {
+      await delay(90);
+      const error = new Error("/private/synthetic/revoke.wav");
+      error.code = "ABORT_FAILED";
+      throw error;
+    },
+  });
+  await h.addAsset("a");
+  await h.addAsset("b");
+  const job = await h.queue.submit("a");
+  const done = await waitState(h.queue, job.id, "failed");
+  assert.equal(done.error.code, "ABORT_FAILED", "超时不得覆盖撤销失败");
+  assert.match(done.error.message, /撤销失败/);
+  assert.doesNotMatch(JSON.stringify(done), /private|synthetic/);
+  assert.equal(done.resultSaved, false);
+  assert.equal(h.queue.busy, true);
+  assert.ok(await fs.lstat(h.lockPath), "撤销失败必须保留故障租约");
+  const afterCancel = await h.queue.cancel(job.id);
+  assert.equal(afterCancel.error.code, "ABORT_FAILED", "迟到取消不得改判");
+  const next = await h.queue.submit("b");
+  await delay(20);
+  assert.equal((await h.queue.get(next.id)).state, "queued", "故障态阻止下一项启动");
+});
+
+test("T13G 注入 AudioQueueError 自定义 message 不透传；commit/abort 普通 thenable 固定失败且不执行 then", async (t) => {
+  const typed = await harness(t, {
+    executor: async () => {
+      throw new AudioQueueError("ENGINE_FAILED", "/private/synthetic/engine.wav");
+    },
+  });
+  await typed.addAsset("a");
+  let job = await typed.queue.submit("a");
+  let done = await waitState(typed.queue, job.id, "failed");
+  assert.equal(done.error.code, "ENGINE_FAILED");
+  assert.doesNotMatch(JSON.stringify(done), /private|synthetic|engine\.wav/);
+
+  for (const phase of ["commit", "abort"]) {
+    let thenCalls = 0;
+    const thenable = {
+      then() {
+        thenCalls += 1;
+        throw new Error("普通 thenable 不得执行");
+      },
+    };
+    const h = await harness(t, {
+      commit: phase === "commit" ? () => thenable : undefined,
+      abort: phase === "abort" ? () => thenable : undefined,
+      hooks:
+        phase === "abort"
+          ? {
+              async afterExecute({ job: active }) {
+                await h.queue.cancel(active.id);
+              },
+            }
+          : {},
+    });
+    await h.addAsset("a");
+    job = await h.queue.submit("a");
+    done = await waitState(h.queue, job.id, "failed");
+    assert.equal(done.error.code, phase === "commit" ? "COMMIT_FAILED" : "ABORT_FAILED", phase);
+    assert.equal(thenCalls, 0, "普通 thenable 的 then 不得被调用");
+    assert.equal(done.resultSaved, false);
   }
 });

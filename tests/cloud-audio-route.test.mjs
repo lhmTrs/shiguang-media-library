@@ -170,6 +170,26 @@ test("显式开启：status 可用；未配置/未登录时固定错误；写操
   assert.equal(badId.status, 400);
   assert.equal((await badId.json()).code, "INVALID_REQUEST");
 
+  // 撤回共享：路由必须存在、写操作要本机 token、DTO 严格、未配置身份时固定码。
+  const withdrawNoToken = await call(server, "/api/cloud-audio/shares/6f1a4c1e-1111-4222-8333-444455556666/withdraw", {
+    method: "POST",
+    body: { expectedVersion: 0 },
+    token: false,
+  });
+  assert.equal(withdrawNoToken.status, 403, "撤回是写操作，缺本机 token 必须 403");
+  const withdrawBadBody = await call(server, "/api/cloud-audio/shares/6f1a4c1e-1111-4222-8333-444455556666/withdraw", {
+    method: "POST",
+    body: { expectedVersion: 0, extra: true },
+  });
+  assert.equal(withdrawBadBody.status, 400);
+  assert.equal((await withdrawBadBody.json()).code, "INVALID_REQUEST");
+  const withdrawNotConfigured = await call(server, "/api/cloud-audio/shares/6f1a4c1e-1111-4222-8333-444455556666/withdraw", {
+    method: "POST",
+    body: { expectedVersion: 0 },
+  });
+  assert.equal(withdrawNotConfigured.status, 503);
+  assert.equal((await withdrawNotConfigured.json()).code, "NOT_CONFIGURED");
+
   // 临时工作目录只在显式开启后创建；任务文件在第一次真正的任务写入时才落盘。
   assert.equal((await fs.stat(path.join(server.dataDir, "cloud-audio-tmp"))).mode & 0o777, 0o700);
   await assert.rejects(fs.access(path.join(server.dataDir, "cloud-audio-provenance.json")), /ENOENT/);
