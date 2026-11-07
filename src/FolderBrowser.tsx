@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Folder, FolderOpen, FolderInput, FolderPlus, RefreshCw, Search, Tag, X, Play, Pause, Image, Film, Music2 } from "lucide-react";
 import type { Asset } from "./main";
 import { TagRuleFilter, emptyTagRules } from "./TagRuleFilter";
 import { ProjectMediaDialog } from "./ProjectManager";
+import {mediaDoubleClick} from './MediaViewer';
 import { displayDirectoryOptions, type DirectoryOption } from "./directory-labels";
 
 type Request = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
@@ -16,7 +17,7 @@ function FolderPreview({ asset, playing, click }: { asset: Asset; playing: boole
   const [failed, setFailed] = useState(false), visual = ["photo", "video"].includes(asset.kind);
   const Icon = asset.kind === "photo" ? Image : asset.kind === "video" ? Film : Music2;
   const direct = asset.kind === "photo" && ["jpg", "jpeg", "png", "webp", "gif"].includes(asset.ext);
-  return <button className="folder-asset-preview" data-kind={asset.kind} title={(visual ? "预览素材：" : "试听素材：") + asset.name} aria-label={(visual ? "预览素材：" : "试听素材：") + asset.name} disabled={!asset.online || asset.ext === "ncm"} onClick={click}>
+  return <button className="folder-asset-preview" data-kind={asset.kind} title={(visual ? "预览素材：" : "试听素材：") + asset.name} aria-label={(visual ? "预览素材：" : "试听素材：") + asset.name} disabled={!visual && (!asset.online || asset.ext === "ncm")} onClick={click}>
     {visual && asset.online && !failed ? <img src={`/api/media/${asset.id}/${direct ? "original" : "thumb"}`} alt={asset.name} loading="lazy" onError={() => setFailed(true)}/> : visual ? <Icon size={23}/> : playing ? <Pause size={21}/> : <Play size={21}/>}
   </button>;
 }
@@ -63,6 +64,10 @@ export function FolderBrowser({ roots, request, revision, play, playingId, isPla
   const [loading, setLoading] = useState(false), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [scanJob, setScanJob] = useState("");
   const [preview, setPreview] = useState<Asset | null>(null);
+  const previewContext = [active.root, active.directory, search, kind, page, revision].join(':');
+  const previewScope = useRef('');
+  const openPreview = (asset: Asset) => { previewScope.current = previewContext; setPreview(asset); };
+  useEffect(() => setPreview(null), [previewContext]);
   const root = roots.find(r => r.id === active.root);
   const choose = (root: string, directory: string) => { setActive({ root, directory }); setPage(1); };
   useEffect(() => { setNewFolder(null); }, [active.root, active.directory]);
@@ -124,8 +129,8 @@ export function FolderBrowser({ roots, request, revision, play, playingId, isPla
           <div className="folder-assets" aria-busy={loading}>{!loading && !result.items.length && <div className="empty-state"><FolderOpen size={30}/><p>{filters ? "没有匹配的素材" : "暂无已索引素材"}</p></div>}{result.items.map(asset => {
             const visual = ["photo", "video"].includes(asset.kind);
             const playing = playingId === asset.id && isPlaying;
-            return <article className="folder-asset" key={asset.id}>
-              <FolderPreview asset={asset} playing={playing} click={() => visual ? setPreview(asset) : play(asset)}/>
+            return <article className="folder-asset" key={asset.id} onDoubleClick={event => { if (visual && mediaDoubleClick(event)) openPreview(asset); }}>
+              <FolderPreview asset={asset} playing={playing} click={() => visual ? openPreview(asset) : play(asset)}/>
               <div className="folder-asset-info"><button className="asset-name-button" title={asset.name} onClick={() => tags(asset)}>{asset.name}</button><small>{asset.ext.toUpperCase()} · {(asset.size / 1024).toFixed(1)} KB{asset.duration != null ? ` · ${asset.duration.toFixed(1)} 秒` : ""}{!asset.online ? " · 离线" : ""}</small><div className="tags">{asset.tags.map(t => <span key={t}>{t}</span>)}</div></div>
               <div className="folder-asset-actions"><button className="icon-button" title={"编辑标签：" + asset.name} onClick={() => tags(asset)}><Tag size={16}/></button><button className="icon-button" title={"移动到文件夹：" + asset.name} disabled={busy || !asset.online} onClick={() => move(asset)}><FolderInput size={16}/></button><button className="icon-button" title={"加入项目：" + asset.name} disabled={busy} onClick={() => void perform(() => addToProject([asset.id]))}><FolderOpen size={16}/></button><button className="icon-button" title={"定位素材：" + asset.name} disabled={busy || !asset.online} onClick={() => void perform(async () => { await request(`/assets/${asset.id}/reveal`, {}); })}><ExternalLink size={16}/></button></div>
             </article>;
@@ -134,6 +139,6 @@ export function FolderBrowser({ roots, request, revision, play, playingId, isPla
         </> : <div className="empty-state"><FolderOpen size={34}/><p>暂无素材目录</p></div>}
       </div>
     </div>
-    {preview && <ProjectMediaDialog key={preview.id} asset={preview} close={() => setPreview(null)} stopAudio={stopAudio} label="文件夹素材预览"/>}
+    {preview && previewScope.current === previewContext && <ProjectMediaDialog key={preview.id} asset={preview} close={() => setPreview(null)} stopAudio={stopAudio} label="文件夹素材预览"/>}
   </section>;
 }

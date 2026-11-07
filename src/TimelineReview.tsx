@@ -4,6 +4,7 @@ import type { ProjectRequest } from "./ProjectManager";
 import { elapsed, type TimelineReference } from "./TimelineUsage";
 
 type Render = {path:string;offset:number;updatedAt:number};
+type Selection = Render | {cancelled:true};
 export function TimelineReview({ reference: ref, projectId, projectName, initialIndex, request, close, stopAudio }: {
   reference:TimelineReference;projectId:string;projectName?:string;initialIndex:number;request:ProjectRequest;close:()=>void;stopAudio?:()=>void;
 }) {
@@ -11,15 +12,22 @@ export function TimelineReview({ reference: ref, projectId, projectName, initial
   const [selected,setSelected]=useState(initialIndex), [position,setPosition]=useState(occurrences[initialIndex]?.start??0);
   const [render,setRender]=useState<Render|null>(null), [file,setFile]=useState(""), [offset,setOffset]=useState("0"), [busy,setBusy]=useState(false), [loading,setLoading]=useState(true), [error,setError]=useState(""), [mediaError,setMediaError]=useState(false), [videoDuration,setVideoDuration]=useState(0);
   const [settingsOpen,setSettingsOpen]=useState(true);
+  const [filePickerAvailable,setFilePickerAvailable]=useState<boolean|null>(null);
+  const requestGeneration=useRef(0);
   const video=useRef<HTMLVideoElement>(null), dialog=useRef<HTMLDivElement>(null), pending=useRef<number|null>(occurrences[initialIndex]?.start??0);
   const endpoint=`/projects/${projectId}/timelines/${ref.timelineId}/render`;
   const duration=ref.duration && ref.duration>0 ? ref.duration : videoDuration>0 ? Math.max(0,videoDuration-(render?.offset??0)) : Math.max(1,...occurrences.map(o=>o.end??0));
   const selectedOccurrence=occurrences[selected];
   useEffect(()=>{
-    let live=true;
+    let live=true;requestGeneration.current++;setLoading(true);setBusy(false);
     request<Render|null>(endpoint).then(value=>{if(live){setRender(value);setFile(value?.path??"");setOffset(String(value?.offset??0));setSettingsOpen(!value);}}).catch(e=>{if(live)setError(e.message);}).finally(()=>{if(live)setLoading(false);});
-    return()=>{live=false;};
+    return()=>{live=false;requestGeneration.current++;};
   },[endpoint,request]);
+  useEffect(()=>{
+    let live=true;setFilePickerAvailable(null);
+    request<{renderFilePickerAvailable?:boolean}>("/session").then(value=>{if(live)setFilePickerAvailable(value.renderFilePickerAvailable===true);}).catch(()=>{if(live)setFilePickerAvailable(false);});
+    return()=>{live=false;};
+  },[request]);
   useEffect(()=>{const previous=document.activeElement as HTMLElement;dialog.current?.focus();return()=>previous?.focus();},[]);
   function seek(seconds:number, play=false) {
     const at=Math.max(0,Math.min(duration,seconds));setPosition(at);pending.current=at;
@@ -32,11 +40,14 @@ export function TimelineReview({ reference: ref, projectId, projectName, initial
     }
   }
   async function associate(choose:boolean) {
+    if(choose&&filePickerAvailable!==true)return;
+    const generation=requestGeneration.current;
     setBusy(true);setError("");
     try {
-      const saved=await request<Render>(endpoint+(choose?"/choose":""),{path:file,offset:Number(offset)});
+      const saved=await request<Selection>(endpoint+(choose?"/choose":""),{path:file,offset:Number(offset)});
+      if(generation!==requestGeneration.current||"cancelled" in saved)return;
       video.current?.pause();pending.current=position;setRender(saved);setFile(saved.path);setOffset(String(saved.offset));setMediaError(false);setVideoDuration(0);setSettingsOpen(false);
-    } catch(e){setError(e instanceof Error?e.message:"关联失败");setSettingsOpen(true);}finally{setBusy(false);}
+    } catch(e){if(generation===requestGeneration.current){setError(e instanceof Error?e.message:"关联失败");setSettingsOpen(true);}}finally{if(generation===requestGeneration.current)setBusy(false);}
   }
   return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)close();}}><div className="modal timeline-review" role="dialog" aria-modal="true" aria-label="时间线使用位置" tabIndex={-1} ref={dialog} onKeyDown={e=>{
     if(e.key==="Escape"&&!busy){e.stopPropagation();close();}
@@ -60,8 +71,9 @@ export function TimelineReview({ reference: ref, projectId, projectName, initial
       </section>
       <details className="timeline-render-settings" open={settingsOpen} onToggle={e=>setSettingsOpen(e.currentTarget.open)}><summary><FileVideo size={15}/><strong>成片设置</strong><span title={render?.path}>{render ? render.path.split(/[\\/]/).pop() : "未关联成片"}</span><ChevronDown size={14}/></summary>
       <form className="timeline-render-form" onSubmit={e=>{e.preventDefault();void associate(false);}}>
-        <label>本地成片路径<input aria-label="本地成片路径" placeholder="/Users/…/成片.mp4" value={file} onChange={e=>setFile(e.target.value)} disabled={busy||loading}/></label>
-        <div className="timeline-render-actions"><button className="plain" type="button" disabled={busy||loading} onClick={()=>void associate(true)}><FolderOpen size={15}/>选择成片文件</button><button className="plain" type="submit" disabled={busy||loading||!file.trim()}><Link size={15}/>关联成片</button>{render&&<button className="icon-button" type="button" title="解除成片关联，不删除文件" aria-label="解除成片关联" disabled={busy} onClick={()=>{setBusy(true);void request(endpoint,{},"DELETE").then(()=>{video.current?.pause();setRender(null);setFile("");setMediaError(false);setVideoDuration(0);setSettingsOpen(true);}).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><Unlink size={16}/></button>}</div>
+        <label>本地成片路径<input aria-label="本地成片路径" placeholder="例如 D:\成片\视频.mp4 或 /Users/…/成片.mp4" value={file} onChange={e=>setFile(e.target.value)} disabled={busy||loading}/></label>
+        <div className="timeline-render-actions"><button className="plain" type="button" disabled={busy||loading||filePickerAvailable!==true} onClick={()=>void associate(true)}><FolderOpen size={15}/>选择成片文件</button><button className="plain" type="submit" disabled={busy||loading||!file.trim()}><Link size={15}/>关联成片</button>{render&&<button className="icon-button" type="button" title="解除成片关联，不删除文件" aria-label="解除成片关联" disabled={busy} onClick={()=>{setBusy(true);void request(endpoint,{},"DELETE").then(()=>{video.current?.pause();setRender(null);setFile("");setMediaError(false);setVideoDuration(0);setSettingsOpen(true);}).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><Unlink size={16}/></button>}</div>
+        {filePickerAvailable!==true&&<small role="status">{filePickerAvailable===null?"正在确认系统文件选择能力…":"当前环境无法使用系统文件选择，请填写本地成片路径。"}</small>}
         <label className="timeline-render-offset">成片偏移（秒）<input type="number" step="0.001" min="-86400" max="86400" value={offset} onChange={e=>setOffset(e.target.value)} aria-label="成片偏移秒数" disabled={busy}/></label>
         <small>完整时间线导出填 0；成片额外有 3 秒片头填 3。每条时间线独立关联，文件不上传。</small>
       </form>

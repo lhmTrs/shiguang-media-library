@@ -14,12 +14,15 @@ import { fingerprint as taskFingerprint } from "./cloud-upload-protocol.mjs";
 import { assetSeriesList, assetSeriesMembers, assetSeriesAdjacent } from "./asset-series.mjs";
 import { MysqlStorage } from "./mysql.mjs";
 import { CloudAuth, cloudAuthErrorHandler } from "./cloud-auth.mjs";
+import { CloudTagsSync } from "./cloud-tags-sync.mjs";
+import { cloudTagsRouter } from "./cloud-tags-router.mjs";
 import { AudioEngine, isAudioEngineError } from "./audio-engine.mjs";
 import { AudioAnalysis } from "./audio-analysis.mjs";
 import { audioFeatureEnabled, rejectAudioFeature } from "./audio-feature.mjs";
 import { CloudAudioUpload, CloudUploadError, manualAudioAdmission } from "./cloud-audio-upload.mjs";
 import { CloudManagement, cloudManagementErrorHandler, readAudioMaintenanceRequest } from "./cloud-management.mjs";
 import { cloudAudioFeatureEnabled } from "./cloud-audio-feature.mjs";
+import { cloudAudioPlatformCapability, requireCloudAudioPlatform, CLOUD_AUDIO_PLATFORM_UNSUPPORTED } from "./cloud-audio-platform.mjs";
 import {
   CloudAudioService,
   CloudAudioServiceError,
@@ -37,12 +40,31 @@ import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
 import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
+import { createFilePicker, filePickerAvailable } from "./file-picker.mjs";
 import { MetadataBatches, metadataCapabilities } from "./metadata-batches.mjs";
 import { createManifestSync, reconcileRoot, relocateRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
+import { createStoryboardGeneration } from "./storyboard-generation/index.mjs";
+import {ProjectVideos} from './project-videos/store.mjs';
+import {projectVideoRouter} from './project-videos/router.mjs';
+import {createStoryboardVideo} from "./storyboard-video/index.mjs";
+import { createStoryboardModule } from "./storyboard/router.mjs";
+import { PromptTemplates } from "./prompt-templates/store.mjs";
+import { ProjectAssets } from "./project-assets/store.mjs";
+import { projectAssetRouter } from "./project-assets/router.mjs";
+import { promptRouter } from "./prompt-templates/router.mjs";
+import { CodexStore } from "./prompt-codex/store.mjs";
+import { CodexMedia } from "./prompt-codex/media.mjs";
+import {ReferenceImageImports} from "./project-assets/image-import.mjs";
+import { CodexPictures } from "./prompt-codex/pictures.mjs";
+import { CodexService } from "./prompt-codex/service.mjs";
+import { CodexBackup } from "./prompt-codex/backup.mjs";
+import { codexRouter } from "./prompt-codex/router.mjs";
+import { createConcierge } from "./concierge/index.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const chooseFolder = createFolderPicker();
+const chooseRenderFile = createFilePicker();
 const dataDir = dataDirectory(project);
 const audioRuntimeConfigPath =
   process.env.SHIGUANG_AUDIO_RUNTIME_CONFIG || path.join(project, "config/audio-analysis-runtime.json");
@@ -88,6 +110,11 @@ const assetFingerprints = new AssetFingerprints(lib);
 const categories = lib.directoryClassification;
 const tags = new Tags(lib).init();
 const projects = new Projects(lib).init();
+const projectAssets = new ProjectAssets(lib).init();
+const prompts = new PromptTemplates(lib, { dataDir }).init();
+const codexStore = new CodexStore(lib, prompts).init();
+codexStore.recover();
+const codexMedia = await new CodexMedia(dataDir).init();
 const metadataBatches = new MetadataBatches(lib).init();
 const folderBrowser = new FolderBrowser(lib);
 const musicAnalysis = await new MusicAnalysis(lib).init();
@@ -125,8 +152,10 @@ const releaseConfig = await loadReleaseConfig(
 const deviceEnrollment = await new DeviceEnrollment(lib, { dataDir, cloudAuth, release: releaseConfig }).init();
 // T-LOCAL-008：管理接口固定白名单适配；浏览器不能直接决定云端 URL/方法/头。
 const cloudManagement = new CloudManagement(lib, { cloudAuth });
+const cloudTags = new CloudTagsSync(lib, { cloudAuth, dataDir });
 // Cloud transfers are available by default, but remain manual and authenticated.
-const cloudTransfersEnabled = cloudAudioFeatureEnabled();
+const cloudPlatform = cloudAudioPlatformCapability();
+const cloudTransfersEnabled = cloudAudioFeatureEnabled() && cloudPlatform.supported;
 const cloudAudio = await new CloudAudioService(lib, {
   dataDir,
   cloudAuth,
@@ -139,9 +168,13 @@ const duplicateAudio = new DuplicateAudio(lib, () => mysqlStorage.migrating || m
 const rootRemoval = new RootRemoval(lib, () => mysqlStorage.migrating || musicAnalysis.active || musicAnalysis.testing || duplicateAudio.marking || missingFiles.active || cacheJobs.size > 0);
 const uploadHost = await new CloudUploadHost(lib, { upload: cloudUpload, sourceId: mysqlStorage.sourceId, readMaintenance: async () => {
   const status = await cloudAudio.status();
-  const known = Number.isSafeInteger(status.active) && Number.isSafeInteger(status.queued) && status.active >= 0 && status.queued >= 0 && Number.isSafeInteger(status.staleTempFiles) && status.staleTempFiles >= 0 && typeof status.receiverFaulted === "boolean" && typeof status.staleTempUnreadable === "boolean";
+  const known = cloudPlatform.supported && status.statisticsKnown !== false && Number.isSafeInteger(status.active) && Number.isSafeInteger(status.queued) && status.active >= 0 && status.queued >= 0 && Number.isSafeInteger(status.staleTempFiles) && status.staleTempFiles >= 0 && typeof status.receiverFaulted === "boolean" && typeof status.staleTempUnreadable === "boolean";
   return { known, allowed: known && !status.active && !status.queued && !status.receiverFaulted && !status.staleTempUnreadable && !status.staleTempFiles && !mysqlStorage.migrating && !rootRemoval.active && !duplicateAudio.marking && !missingFiles.active && !musicAnalysis.active && !musicAnalysis.testing && !cacheJobs.size };
 } }).init();
+const codexPictures = new CodexPictures(lib, { directory: path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project, "personal_item"), "picture"), onRootAdded: async () => { await reconcileWatcher?.refresh(); } });
+projectAssets.imageImports = new ReferenceImageImports(projectAssets, codexPictures);
+const codexService = new CodexService(codexStore, codexMedia, { pictures: codexPictures, withActivity: fn => uploadHost.track(fn) });
+const codexBackup = new CodexBackup(codexStore, codexMedia, codexService);
 // One task owner per actual application attachment. No registration, scan,
 // recovery or scheduling occurs while constructing or opening this entry.
 let taskEntry = null;
@@ -212,6 +245,7 @@ function taskLocalRoots() {
   return { rootsOverflow, rootMetadataUnknown, roots: rootsOverflow || rootMetadataUnknown ? [] : rows.map(row => ({ rootId: row.id, name: row.name || "素材目录", kind: row.kind })) };
 }
 function ensureTaskEntry() {
+  requireCloudAudioPlatform();
   if (taskClosing || identityChanging || applicationClosing) throw taskError("ENTRY_CLOSED");
   if (taskEntry) return taskEntry;
   taskIdentity();
@@ -242,7 +276,9 @@ function ensureTaskEntry() {
   });
   return taskEntry;
 }
-async function drainTaskEntry({ ownHostActive = 0 } = {}) {
+async function drainTaskEntry({ ownHostActive = 0, allowNeverStarted = false } = {}) {
+  if (!cloudPlatform.supported && !allowNeverStarted) requireCloudAudioPlatform();
+  const neverStarted = () => allowNeverStarted && taskEntry === null && taskRuntime === null && cloudAudio.neverStartedIO() === true && cloudUpload.neverStartedIO() === true;
   taskClosing = true; taskPermission = null; taskDiskObservation = null;
   if (taskEntry) {
     const exit = await taskEntry.dispose({ timeoutMs: 10000 });
@@ -255,7 +291,7 @@ async function drainTaskEntry({ ownHostActive = 0 } = {}) {
   Promise.allSettled([controlPromise, persistPromise]).then(() => { chainsSettled = true; });
   const idle = () => {
     const receiver = cloudAudio.currentActivity();
-    return receiver.known === true && receiver.allowed === true && chainsSettled && cloudAuth.controlChain === controlPromise && cloudAuth.persistChain === persistPromise && cloudAuth.activeRequests instanceof Set && cloudAuth.activeRequests.size === 0 && cloudAuth.inflightRefresh === null &&
+    return (receiver.known === true && receiver.allowed === true || neverStarted()) && chainsSettled && cloudAuth.controlChain === controlPromise && cloudAuth.persistChain === persistPromise && cloudAuth.activeRequests instanceof Set && cloudAuth.activeRequests.size === 0 && cloudAuth.inflightRefresh === null &&
       uploadHost.active === ownHostActive && uploadHost.db === lib.db && cloudUpload.lib === lib && cloudUpload.auth === cloudAuth &&
       cloudUpload.busy === false && cloudUpload.controllers.size === 0 && cloudUpload.operations.size === 0 && cloudUpload.settledTasks.size === 0 && cloudUpload.inspections.size === 0 &&
       lib.workers === 0 && lib.metadataPending.size === 0 && lib.metadataQueue.length === 0 && lib.repairIndexReaders === 0 && lib.jobs.size <= 5000 &&
@@ -265,6 +301,10 @@ async function drainTaskEntry({ ownHostActive = 0 } = {}) {
   while (!idle() || lifecycleReads.size) {
     if (Date.now() >= deadline) throw taskError("TASK_OWNER_UNSETTLED", 423);
     await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  if (neverStarted()) {
+    if (!idle()) throw taskError("TASK_OWNER_UNSETTLED", 423);
+    return; // Memory-only process proof, never a maintenance/history idle proof.
   }
   const actual = Promise.resolve().then(() => cloudAudio.status()); lifecycleReads.add(actual);
   actual.then(() => lifecycleReads.delete(actual), () => lifecycleReads.delete(actual));
@@ -280,6 +320,11 @@ for (const a of lib.db
   )
   .all())
   lib.enqueue(a.id);
+const storyboard = createStoryboardModule({ dataDir, lib, projectAssets });
+const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:storyboard.store,codex:codexService,projects});
+const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia});
+const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
+const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
 app.disable("x-powered-by");
 app.use("/api/projects/:id/timeline-import/preview", express.json({ limit: "10mb" }));
@@ -289,8 +334,9 @@ app.use("/api/projects/timeline-import/confirm", express.json({ limit: "1mb" }))
 const ordinaryJson = express.json({ limit: "256kb" });
 app.use((req, res, next) => {
   const pathname = req.url.split("?")[0];
+  if(pathname==='/api/project-videos'||pathname.startsWith('/api/project-videos/')||pathname==='/api/concierge'||pathname.startsWith('/api/concierge/'))return next();
   if (pathname.startsWith("/api/cloud-management/audio-maintenance/")) res.setHeader("Cache-Control", "no-store");
-  return pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") || pathname.startsWith("/api/cloud-management/audio-maintenance/") ? next() : ordinaryJson(req, res, next);
+  return pathname === "/api/project-assets" || pathname.startsWith("/api/project-assets/") || pathname === "/api/prompt-codex" || pathname.startsWith("/api/prompt-codex/") || pathname === "/api/prompt-templates" || pathname.startsWith("/api/prompt-templates/") || pathname === "/api/storyboard" || pathname.startsWith("/api/storyboard/") || pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") || pathname.startsWith("/api/cloud-management/audio-maintenance/") ? next() : ordinaryJson(req, res, next);
 });
 const sessions = new Map();
 let port;
@@ -302,6 +348,7 @@ const asyncRoute = (fn) => (req, res, next) => {
   const maintenance = req.method !== "GET" && (audioMaintenance || route === "/api/mysql" || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
   const changesAttachment = req.method !== "GET" && (route === "/api/mysql" || ["/api/cloud-auth/config", "/api/cloud-auth/enroll", "/api/cloud-auth/recover-device", "/api/cloud-auth/activate", "/api/cloud-auth/login", "/api/cloud-auth/logout"].includes(route));
   const invoke = async () => {
+    if (audioMaintenance) requireCloudAudioPlatform();
     if (!changesAttachment) return fn(req, res, next);
     if (identityChanging) throw taskError("TASK_OWNER_UNSETTLED", 423);
     identityChanging = true; let drained = false;
@@ -356,6 +403,7 @@ app.get("/api/session", (req, res) => {
     token,
     trashAvailable: !!nativeTrash,
     folderPickerAvailable: folderPickerAvailable(),
+    renderFilePickerAvailable: filePickerAvailable(),
     instanceId: mysqlStorage.sourceId,
     app: "shiguang-local-media",
   });
@@ -376,6 +424,16 @@ app.use("/api", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+// Platform refusal follows the original local session/token gates and precedes
+// any cloud operation, old-history observation, or host/field registration.
+app.use("/api", (req, res, next) => {
+  const blocked = req.path.startsWith("/cloud-audio/") && req.path !== "/cloud-audio/status" ||
+    req.path.startsWith("/cloud-management/audio-maintenance/") ||
+    req.path.startsWith("/cloud-upload-host/") && req.path !== "/cloud-upload-host/readiness" ||
+    req.path.startsWith("/asset-metadata-registration/") || req.path.startsWith("/asset-repairs/") || req.path.startsWith("/asset-merges/");
+  if (!cloudPlatform.supported && blocked) return res.status(503).json({ code: cloudPlatform.code, error: CLOUD_AUDIO_MESSAGES[cloudPlatform.code], statisticsKnown: false, historyState: "UNINSPECTED" });
+  next();
+});
 app.get("/api/stats", (req, res) => res.json(lib.stats()));
 app.use("/api", (req, res, next) => {
   if (rootRemoval.active && req.method !== "GET") return res.status(423).json({ error: "正在备份并移除目录管理记录，请稍后修改素材" });
@@ -391,13 +449,30 @@ app.use("/api", (req, res, next) => {
     return res.status(423).json({ error: "数据库迁移中，请稍后再操作" });
   next();
 });
+// Storyboard shares the existing Host/origin, cookie and write-token gates.
+app.use("/api/storyboard-generation", storyboardGeneration.router);
+app.use("/api/storyboard-video", storyboardVideo.router);
+app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
+app.use("/api/storyboard", storyboard.router);
+app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
+app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute));
+app.use("/api/prompt-codex", codexRouter(codexStore, codexService, codexMedia, codexBackup, asyncRoute));
+app.use("/api/concierge", concierge.router);
 app.use(TASK_ENTRY_BASE, (req, res, next) => {
-  try { ensureTaskEntry().router(req, res, next); }
+  try {
+    if (!cloudPlatform.supported) {
+      if (!taskLocalGuard(req, { write: req.method !== "GET" }).allowed) throw taskError("LOCAL_REQUEST_REJECTED", 403);
+      if (req.method === "GET" && req.path === "/control/status" && !req.originalUrl.includes("?")) return res.json({ known: false, code: cloudPlatform.code, historyState: "UNINSPECTED", statisticsKnown: false, local: { engine: lib.db.kind === "mysql" ? "mysql" : "sqlite" } });
+      requireCloudAudioPlatform();
+    }
+    ensureTaskEntry().router(req, res, next);
+  }
   catch (error) { res.status(error.status || 503).json({ error: { code: /^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "ENTRY_UNKNOWN" } }); }
 });
 app.get("/api/mysql", (req, res) => res.json(mysqlStorage.publicState()));
 const withEnrollment = state => ({ ...state, enrollment: deviceEnrollment.getStatus() });
 app.get("/api/cloud-auth/status", (req, res) => res.json(withEnrollment(cloudAuth.getState())));
+app.use("/api/cloud-tags", cloudTagsRouter(cloudTags));
 app.post("/api/cloud-auth/config", asyncRoute(async (req, res) => {
   deviceEnrollment.cancel();
   res.json(withEnrollment(await cloudAuth.configure(req.body)));
@@ -536,7 +611,7 @@ app.use("/api/cloud-management", cloudManagementErrorHandler);
 // ── 云端音频手动传输（固定白名单；账户权限校验） ─────────────
 function cloudAudioErrorHandler(error, req, res, next) {
   if (res.headersSent) return next(error);
-  const known = error instanceof CloudAudioServiceError || error instanceof CloudUploadError;
+  const known = error instanceof CloudAudioServiceError || error instanceof CloudUploadError || error?.code === CLOUD_AUDIO_PLATFORM_UNSUPPORTED;
   const code = known ? error.code : "INTERNAL";
   const status = known && [400, 401, 403, 404, 409, 413, 423, 429, 500, 502, 503, 504].includes(error.status)
     ? error.status
@@ -712,9 +787,9 @@ app.post("/api/projects/:id/timelines/:timelineId/render", asyncRoute(async (req
 app.delete("/api/projects/:id/timelines/:timelineId/render", (req,res) => res.json(projects.renders.remove(req.params.id,req.params.timelineId)));
 app.post("/api/projects/:id/timelines/:timelineId/render/choose", asyncRoute(async (req,res) => {
   projects.renders.validate(req.params.id,req.params.timelineId);
-  if (process.platform !== "darwin") throw Error("系统文件选择器仅支持 Mac，请输入本地绝对路径");
-  const {stdout} = await run("osascript",["-e",'POSIX path of (choose file with prompt "选择本时间线导出的成片" of type {"public.movie"})'],{timeout:120000});
-  res.json(await projects.renders.save(req.params.id,req.params.timelineId,{path:stdout.trim(),offset:req.body.offset}));
+  const selected = await chooseRenderFile();
+  if (selected.cancelled) return res.json({ cancelled: true });
+  res.json(await projects.renders.save(req.params.id,req.params.timelineId,{path:selected.path,offset:req.body.offset}));
 }));
 app.get("/api/projects/:id/timelines/:timelineId/render/media", asyncRoute(async (req,res) => {
   const {handle,path:file} = await projects.renders.open(req.params.id,req.params.timelineId);
@@ -1362,9 +1437,14 @@ let shutdownWork = null;
 async function shutdownApplication() {
   if (shutdownWork) return shutdownWork;
   applicationClosing = true;
+  storyboard.beginClose();
+  concierge.beginClose();
   shutdownWork = (async () => {
+    await concierge.close();
+    await storyboardVideo.close();
+    await codexService.close();
     reconcileWatcher?.stop(); manifestSync.stop();
-    await drainTaskEntry();
+    await drainTaskEntry({ allowNeverStarted: true });
     manifestSync.stop();
     await viteServer?.close();
     const stopped = new Promise(resolve => server.close(() => resolve(true)));
@@ -1373,19 +1453,21 @@ async function shutdownApplication() {
     const stoppedKnown = await Promise.race([stopped, new Promise(resolve => { timer = setTimeout(() => resolve(false), 10000); })]);
     clearTimeout(timer);
     if (!stoppedKnown) throw taskError("SERVER_WORK_UNSETTLED");
+    await storyboard.close();
     const end = Date.now() + 10000;
-    while (uploadHost.active || lib.workers || lib.metadataPending.size || lib.metadataQueue.length || lib.repairIndexReaders) {
+    while (uploadHost.active || cloudTags.busy || lib.workers || lib.metadataPending.size || lib.metadataQueue.length || lib.repairIndexReaders) {
       if (Date.now() >= end) throw taskError("APPLICATION_WORK_UNSETTLED");
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     const activity = cloudAudio.currentActivity();
-    if (activity.known !== true || activity.allowed !== true || cacheJobs.size) throw taskError("RECEIVER_WORK_UNSETTLED");
+    if ((activity.known !== true || activity.allowed !== true) && !(cloudAudio.neverStartedIO() === true && cloudUpload.neverStartedIO() === true) || cacheJobs.size) throw taskError("RECEIVER_WORK_UNSETTLED");
     const uploaded = await cloudUpload.dispose({ timeoutMs: 10000 });
     if (uploaded.closed !== true) throw taskError("UPLOAD_WORK_UNSETTLED");
-    await cloudAudio.dispose();
+    const downloaded = await cloudAudio.dispose();
+    if (downloaded?.closed !== true) throw taskError("RECEIVER_WORK_UNSETTLED");
     const hostExit = await uploadHost.dispose();
     if (hostExit.closed !== true) throw taskError("HOST_WORK_UNSETTLED");
-    cloudAuth.dispose(); lib.db.close();
+    cloudTags.close(); cloudAuth.dispose(); lib.db.close();
     console.log("APPLICATION_CLOSED_KNOWN");
     if (process.connected) process.disconnect();
   })().catch(error => { console.error(/^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "APPLICATION_CLOSE_UNKNOWN"); shutdownWork = null; });

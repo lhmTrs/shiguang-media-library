@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+const MAX_OUTPUT = 16384;
+const MAX_PATH = 8192;
 const windowsScript = `
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -26,6 +28,20 @@ on error number -128
   return ""
 end try`;
 
+// Require a fully qualified Windows path. isAbsolute also accepts paths
+// rooted only on the current drive, so it is not sufficient here.
+function fullWindowsPath(value) {
+  if (typeof value !== "string" || !value || value.length > MAX_PATH || /[\x00-\x1f\x7f<>"|?*]/.test(value)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) {
+    const tail = value.slice(3);
+    return !tail.includes(":") && !tail.split(/[\\/]/).some(p => p === "." || p === "..");
+  }
+  if (!value.startsWith("\\\\") || value.includes(":")) return false;
+  const parts = value.slice(2).split("\\");
+  return parts.length >= 2 && !!parts[0] && !!parts[1] &&
+    !parts.some(p => p === "." || p === ".." || p.includes("/"));
+}
+
 export function folderPickerAvailable(platform = process.platform, env = process.env) {
   return env.MEDIA_CONTAINER !== "1" && ["darwin", "win32"].includes(platform);
 }
@@ -40,9 +56,10 @@ export function createFolderPicker({ platform = process.platform, env = process.
       let selected;
       if (platform === "win32") {
         const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
-        if (!path.win32.isAbsolute(systemRoot)) throw Error("INVALID_SYSTEM_ROOT");
+        if (!fullWindowsPath(systemRoot) || !/^[A-Za-z]:\\/.test(systemRoot)) throw Error("INVALID_SYSTEM_ROOT");
         const executable = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-        const { stdout } = await run(executable, ["-NoLogo", "-NoProfile", "-STA", "-EncodedCommand", Buffer.from(windowsScript, "utf16le").toString("base64")], { timeout: 120000, maxBuffer: 16384, encoding: "utf8", windowsHide: true, shell: false });
+        const { stdout } = await run(executable, ["-NoLogo", "-NoProfile", "-STA", "-EncodedCommand", Buffer.from(windowsScript, "utf16le").toString("base64")], { timeout: 120000, maxBuffer: MAX_OUTPUT, encoding: "utf8", windowsHide: true, shell: false });
+        if (typeof stdout !== "string" || Buffer.byteLength(stdout) > MAX_OUTPUT) throw Error("INVALID_DIALOG_RESULT");
         const result = JSON.parse(stdout.replace(/^\uFEFF/, "").trim());
         if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).length !== 1 || !Object.hasOwn(result, "path")) throw Error("INVALID_DIALOG_RESULT");
         selected = result.path;
@@ -51,8 +68,8 @@ export function createFolderPicker({ platform = process.platform, env = process.
         selected = stdout.replace(/\r?\n$/, "");
       }
       if (selected === null || selected === "") return { cancelled: true };
-      const paths = platform === "win32" ? path.win32 : path.posix;
-      if (typeof selected !== "string" || selected.length > 8192 || selected.includes("\0") || !paths.isAbsolute(selected)) throw Error("INVALID_DIALOG_PATH");
+      if (typeof selected !== "string" || selected.length > MAX_PATH || selected.includes("\0") ||
+          !(platform === "win32" ? fullWindowsPath(selected) : path.posix.isAbsolute(selected))) throw Error("INVALID_DIALOG_PATH");
       return { cancelled: false, path: selected };
     } catch {
       throw Error("无法完成系统文件夹选择。请重试，或在下方填写文件夹绝对路径添加目录");

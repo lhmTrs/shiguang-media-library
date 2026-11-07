@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -21,8 +20,9 @@ try {
     // Source downloads need the compiler even when the caller exports NODE_ENV=production.
     await command(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--include=dev"], process.platform === "win32");
   }
-  try { await fs.access(path.join(project, "dist/index.html")); }
-  catch { await command(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], process.platform === "win32"); }
+  // An existing dist may belong to the previous checkout. Success must mean
+  // this source was built, and a failed build must not reach doctor/start.
+  await command(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], process.platform === "win32");
   await command(process.execPath, ["scripts/doctor.mjs"]);
   if (process.argv.includes("--start")) await command(process.execPath, ["scripts/portable.mjs", "--open"]);
   else console.log("安装检查完成。运行 npm start（分享包）或 npm run portable（源项目）启动。");

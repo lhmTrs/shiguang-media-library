@@ -106,6 +106,15 @@ export function kindForExt(ext, rootKind) {
   return null;
 }
 
+/** Optional index hint only: never store rounded/overflowed file identities.
+ * Keep raw stat identity checks in file-operation/proof code unchanged.
+ */
+export function indexFileIdentity(stat) {
+  return [stat.dev, stat.ino].every(n => Number.isSafeInteger(n) && n > 0)
+    ? { dev: stat.dev, ino: stat.ino }
+    : { dev: null, ino: null };
+}
+
 /** 遍历一个登记根下的所有可索引文件（跳过点目录、符号链接），返回相对路径与身份信息。 */
 export async function walkFiles(root, { skipDir = ".shiguang", onError } = {}) {
   const files = [];
@@ -134,8 +143,7 @@ export async function walkFiles(root, { skipDir = ".shiguang", onError } = {}) {
           mtimeMs: stat.mtimeMs,
           ctimeMs: stat.ctimeMs,
           birthtimeMs: stat.birthtimeMs,
-          dev: stat.dev,
-          ino: stat.ino,
+          ...indexFileIdentity(stat),
         });
       } catch (e) {
         onError?.(abs, e);

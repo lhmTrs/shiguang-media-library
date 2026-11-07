@@ -1,0 +1,18 @@
+// Synthetic reusable templates, no user projects or inputs.
+export const examples=[
+{id:'storyboard',name:'剧本转电影分镜',description:'从一段故事，得到可执行的分镜表',category:'影视创作',icon:'film',version:1,
+fields:[{key:'剧本内容',type:'textarea',required:true,help:'粘贴剧本或场景内容，人物动作和对白可直接保留。',default:''},{key:'目标时长',type:'number',required:true,default:'80',help:'单位为秒'},{key:'画面比例',type:'select',required:true,options:['16:9','9:16','1:1','2.39:1'],default:'16:9'},{key:'视觉风格',type:'select',required:true,options:['写实电影','温暖生活感','冷峻悬疑','自然纪录片'],default:'写实电影'},{key:'特殊要求',type:'textarea',required:false,default:'',help:'选填，例如强调微表情、保留环境声。'}],
+example:{'剧本内容':'傍晚，小林回到工作室，发现窗边多了一盆绿植。\n他放下背包，蹲下看见花盆上的纸条：“记得休息。”\n小林停顿片刻，轻轻笑了。他把绿植挪到阳光里，给朋友发去一条语音：“收到，谢谢。”','目标时长':'80','画面比例':'16:9','视觉风格':'写实电影','特殊要求':'情绪通过微表情与动作停顿表达；保留原对白，不增加旁白。'},
+body:'请根据以下剧本，设计一份可执行的电影分镜方案。\n\n【剧本内容】\n{{剧本内容}}\n\n【制作要求】\n目标时长：{{目标时长}} 秒\n画面比例：{{画面比例}}\n视觉风格：{{视觉风格}}\n\n【特殊要求】\n{{特殊要求}}\n\n【固定创作规则】\n1. 保留原剧情与对白，不擅自增加人物和情节。\n2. 用人物动作、微表情和镜头递进表达情绪。\n3. 保持空间、视线、动作与声音的连续性。\n4. 每镜明确动作起点、变化过程和结束状态。\n5. 各镜时长相加须等于目标时长。\n\n【输出格式】\n先简述导演思路，再按 Markdown 表格输出：\n镜号｜场景｜景别与角度｜画面与人物动作｜摄影机设计｜声音与对白｜时长（秒）。\n最后检查时长和连续性，不省略具体动作与运镜。'},
+{id:'video',name:'镜头转视频提示词',description:'将镜头内容整理成清晰的视频生成指令',category:'影视创作',icon:'spark',version:1,
+fields:[{key:'镜头内容',type:'textarea',required:true,default:'',help:'填写画面、动作、空间与情绪变化。'},{key:'片段时长',type:'number',required:true,default:'10'},{key:'画面比例',type:'select',required:true,options:['16:9','9:16','1:1'],default:'16:9'},{key:'人物参考',type:'textarea',required:false,default:'',help:'填写参考图职责或人物外形约束。'},{key:'补充限制',type:'textarea',required:false,default:''}],
+example:{'镜头内容':'固定中近景。人物靠在窗边，听到门外轻微的脚步声后，眼睛先看向门口，随后缓慢抬头。自然侧光落在脸上。','片段时长':'10','画面比例':'16:9','人物参考':'参考图 1 只锁定人物面部与发型，不继承背景。','补充限制':'不增加人物，不改变服装；避免夸张表情和突然推近。'},
+body:'请将以下镜头整理为一份可直接用于 AI 视频生成的中文提示词。\n\n【原始镜头】\n{{镜头内容}}\n\n【基础参数】\n片段时长：{{片段时长}} 秒\n画面比例：{{画面比例}}\n\n【人物参考】\n{{人物参考}}\n\n【补充限制】\n{{补充限制}}\n\n【固定要求】\n忠实保留镜头的动作、运镜和对白，不擅自补写情节。\n人物参考只在开头统一定义，具体镜头中使用人物名称。\n将动作拆成时间上连续的阶段，明确第一帧与结束状态。\n说明空间关系、光线、机位和运动方式，保持声音连续。\n\n【输出格式】\n依次输出：素材锁定、一句话概述、全局设定、时间轴分镜、全局补充。\n只输出最终提示词；原始信息不足的部分列为待确认，不编造。'},
+{id:'review',name:'分镜审阅与优化',description:'检查节奏和连续性，给出具体修改建议',category:'影视创作',icon:'check',version:1,
+fields:[{key:'分镜内容',type:'textarea',required:true,default:''},{key:'重点检查',type:'select',required:true,default:'动作与空间连续性',options:['动作与空间连续性','情绪与微表情','运镜与剪辑节奏','全部检查']},{key:'目标时长',type:'number',required:true,default:'80'},{key:'不可改动内容',type:'textarea',required:false,default:''}],
+example:{'分镜内容':'镜 01：人物用右手拿起桌上的杯子，镜头固定。\n镜 02：近景，杯子出现在人物左手，人物低头看向杯中。\n镜 03：人物放下杯子，望向窗外。','重点检查':'动作与空间连续性','目标时长':'12','不可改动内容':'保留人物望向窗外的结尾。'},
+body:'请审阅下面的分镜，给出能直接用于修改的建议。\n\n【分镜内容】\n{{分镜内容}}\n\n【检查目标】\n重点：{{重点检查}}\n目标总时长：{{目标时长}} 秒\n\n【不可改动内容】\n{{不可改动内容}}\n\n【审阅规则】\n先区分明确问题与可选优化，不把个人偏好当作错误。\n定位到具体镜号，说明问题、原因与最小修改方法。\n不擅自改写剧情、人物关系或对白。\n\n【输出格式】\n问题清单：镜号｜问题｜影响｜建议。\n最后提供整体节奏评价和待确认事项。'},
+{id:'writing',name:'内容文案生成',description:'把主题、受众和语气组合成稳定的写作要求',category:'通用',icon:'file',version:1,
+fields:[{key:'内容主题',type:'textarea',required:true,default:''},{key:'目标受众',type:'text',required:true,default:''},{key:'文案语气',type:'select',required:true,options:['自然真诚','简洁专业','轻松有趣'],default:'自然真诚'},{key:'目标字数',type:'number',required:true,default:'300'},{key:'必须包含',type:'textarea',required:false,default:''}],
+example:{'内容主题':'分享一个让工作桌面更舒适的小改变。','目标受众':'长时间在电脑前工作的创作者','文案语气':'自然真诚','目标字数':'300','必须包含':'一个具体场景、一个容易执行的小建议。'},
+body:'请按照以下要求撰写一篇中文文案。\n\n【内容主题】\n{{内容主题}}\n\n【写作参数】\n目标受众：{{目标受众}}\n语气：{{文案语气}}\n目标字数：{{目标字数}} 字左右\n\n【必须包含】\n{{必须包含}}\n\n【固定规则】\n使用具体、自然的语言，避免空泛口号和夸张承诺。\n不编造事实、数据或使用经历；信息不足时保留待确认项。\n\n【输出格式】\n给出 3 个标题选项和 1 份正文。只输出可直接使用的文案。'}];

@@ -2,12 +2,14 @@ import React, { useEffect, useRef } from "react";
 import { X, RotateCcw, Check } from "lucide-react";
 import { THEME_LIST, type ThemeId } from "./theme-list";
 import { REFRESH_INTERVALS } from "./refresh-preferences";
+import type { BrowserMemory } from "./browser-preferences";
+import type { StoryboardAppearance } from "./storyboard/preferences";
 
 /**
  * 界面设置：界面风格（主题）+ 导航栏目显隐。
  * 风格切换只写 <html data-theme>，配色由 themes.css 的 token 覆盖完成，因此即时生效、无需刷新。
  */
-export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, refreshSeconds, setRefreshSeconds, close }: {
+export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, refreshSeconds, setRefreshSeconds, storyboardAppearance, setStoryboardAppearance, memory, setMemory, resetBrowserPreferences, close }: {
   items: [string, string][];
   hidden: string[];
   toggle: (id: string) => void;
@@ -16,6 +18,11 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
   setTheme: (id: ThemeId) => void;
   refreshSeconds: number;
   setRefreshSeconds: (seconds: number) => void;
+  storyboardAppearance?: StoryboardAppearance;
+  setStoryboardAppearance?: (value: StoryboardAppearance) => void;
+  memory?: BrowserMemory;
+  setMemory?: (value: BrowserMemory) => void;
+  resetBrowserPreferences?: () => void;
   close: () => void;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
@@ -64,6 +71,21 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
             </select>
           </label>
         </section>
+        {memory && setMemory && <section className="settings-section browser-memory-settings">
+          <div className="settings-section-head"><h3>浏览器记忆</h3><small>只保存在当前浏览器</small></div>
+          <div className="navigation-options">
+            <label><input type="checkbox" checked={memory.location} onChange={e => setMemory({ ...memory, location: e.target.checked })}/><span>从首页继续上次栏目</span></label>
+            <label><input type="checkbox" checked={memory.navigation} onChange={e => setMemory({ ...memory, navigation: e.target.checked })}/><span>记住侧栏展开状态</span></label>
+            <label><input type="checkbox" checked={memory.display} onChange={e => setMemory({ ...memory, display: e.target.checked })}/><span>记住显示与搜索偏好</span></label>
+          </div>
+          <p className="settings-memory-note">栏目网址始终可刷新、收藏和分享。显示偏好包括各栏目的列表/网格、关键词匹配、仅搜索名称、筛选区展开与试听音量；不会自动恢复播放或已选素材。主题、排序等原有设置继续保存。</p>
+          {resetBrowserPreferences && <button className="plain" onClick={resetBrowserPreferences}><RotateCcw size={14}/>重置导航与浏览偏好</button>}
+        </section>}
+        {storyboardAppearance && setStoryboardAppearance && <section className="settings-section">
+          <div className="settings-section-head"><h3>分镜工作台</h3><small>与素材库共享配色，调整即时生效</small></div>
+          <label className="field">分镜表密度<select aria-label="分镜表密度" value={storyboardAppearance.density} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, density: e.target.value as StoryboardAppearance['density'] })}><option value="comfortable">舒适 · 展示更多内容</option><option value="compact">紧凑 · 同屏更多镜头</option></select></label>
+          <div className="navigation-options"><label><input type="checkbox" checked={storyboardAppearance.showScenes} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, showScenes: e.target.checked })}/><span>显示分镜场景目录</span></label><label><input type="checkbox" checked={storyboardAppearance.showDetails} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, showDetails: e.target.checked })}/><span>显示镜头详情面板</span></label></div>
+        </section>}
         <section className="settings-section">
           <div className="settings-section-head">
             <h3>导航栏目</h3>

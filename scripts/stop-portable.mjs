@@ -1,7 +1,13 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { dataDirectory } from "../server/runtime.mjs";
+// Windows signal delivery cannot establish application resource settlement.
+// Refuse before importing runtime/config helpers or performing any IO.
+if (process.platform === "win32") {
+  console.error("WINDOWS_SAFE_SHUTDOWN_UNSUPPORTED：当前尚不支持 Windows 安全停止，未读取运行记录或向任何进程发送信号。");
+  process.exitCode = 1;
+} else {
+  const { default: fs } = await import("node:fs/promises");
+  const { default: path } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { dataDirectory } = await import("../server/runtime.mjs");
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 try {
   const data = dataDirectory(project, { ...process.env, MEDIA_PORTABLE: "1" });
@@ -22,3 +28,4 @@ try {
   }
   throw Error("停止超时，请核对运行记录，未强制终止进程");
 } catch (e) { console.error(e.code === "ENOENT" || e.code === "ESRCH" ? "没有找到正在运行的分享版服务。" : e.message); process.exitCode = 1; }
+}

@@ -25,7 +25,9 @@ import {
 import { describeFailure, displayTime, type CloudAuthController, type CloudLastError } from "./cloud-auth";
 import { CloudUploadApprovalSettings } from "./CloudUploadApprovalSettings";
 import { CloudAudioDownload } from "./CloudAudioDownload";
+import { CloudTagsSync } from "./CloudTagsSync";
 import type { LocalRequest } from "./OpenAISettings";
+import "./cloud-workspace.css";
 
 /**
  * T-LOCAL-008：账户 / 小组 / 授权管理工作区。
@@ -282,7 +284,7 @@ export function CloudWorkspace({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"security" | "groups" | "audio" | "accounts" | "roles" | "audit" | "upload-settings" | "audio-maintenance">(initialTab);
+  const [tab, setTab] = useState<"security" | "groups" | "audio" | "tags" | "accounts" | "roles" | "audit" | "upload-settings" | "audio-maintenance">(initialTab);
   const generation = useRef(0);
   /** 只读最新 controller，避免把整个 auth 对象放进 effect 依赖导致父级重渲染即重取。 */
   const authRef = useRef(auth);
@@ -387,6 +389,7 @@ export function CloudWorkspace({
       { id: "security", label: "个人安全" },
       { id: "groups", label: "小组与成员" },
       { id: "audio", label: "云端音频" },
+      { id: "tags", label: "标签同步" },
     ];
     if (system.has("account:read") || system.has("account:create"))
       list.push({ id: "accounts", label: "账户管理" });
@@ -511,6 +514,7 @@ export function CloudWorkspace({
               />
             )}
             {tab === "audio" && <AudioWorkspacePanel key={`${accountKey}:${auth.view?.deviceId || ""}:${auth.view?.sessionId || ""}`} request={request} onOpenUploadTasks={onOpenUploadTasks} />}
+            {tab === "tags" && <CloudTagsSync key={`${accountKey}:${auth.view?.sessionId || ""}`} request={request} groups={profile.capabilities.groups} accountId={profile.me.accountId} />}
             {tab === "accounts" && (
               <AccountsPanel
                 capabilities={profile.capabilities}
@@ -672,20 +676,43 @@ export function AudioMaintenancePanel({ request, identityKey }: { request: Local
     const result = await request<MaintenanceView>("/cloud-management/audio-maintenance/runs/" + known.runId + "/apply", { operationId: saved.operationId, manifestFingerprint: known.manifestFingerprint, recoverBound: recovery, clientIdentity: saved.identityKey });
     accept(result, pending, live);
   });
-  return <section className="cw-panel" aria-label="云端音频维护" style={{ overflowWrap: "anywhere" }}>
-    <h2>云端音频维护</h2><p>仅由当前负责人明确操作。生成计划不会启用上传；必须先交总监核对原对象范围，再确认采用。</p>
-    {error && <p role="alert">{error}</p>}
-    {storageError && <p role="alert">原维护记录无法读取。已停止操作，请保留现场交管理员核对，不会自动清除或重建。</p>}
-    {foreign && <p role="alert">存在其他会话的维护记录，已保留。当前会话不能查询、接管或继续原操作。</p>}
-    {!intent && !storageError && <><label>协议状态版本<input aria-label="协议状态版本" value={protocol} onChange={e => setProtocol(e.target.value)} disabled={busy}/></label><label>存储状态版本<input aria-label="存储状态版本" value={storage} onChange={e => setStorage(e.target.value)} disabled={busy}/></label><p>请使用本次核对的实际版本；版本冲突时保留原操作，不自动换号重试。</p><button disabled={busy} onClick={() => void create()}>明确生成维护计划（不启写）</button></>}
-    {intent && !foreign && <><dl><dt>原操作ID</dt><dd>{intent.operationId}</dd>{view && <><dt>运行ID</dt><dd>{view.runId}</dd><dt>计划指纹</dt><dd>{view.manifestFingerprint}</dd><dt>状态</dt><dd>{view.state}</dd><dt>对象数量 / 字节</dt><dd>{view.objects} / {view.bytes}</dd><dt>计划到期</dt><dd>{view.expiresAt}</dd></>}</dl>
-      {intent.phase !== "KNOWN" && <p role="status">原请求结果尚未核清，只能查询原运行；不会重新生成计划或自动重发采用。</p>}
-      {!view && <label>管理员核对的原运行ID<input aria-label="管理员核对的原运行ID" value={lookupRun} onChange={e => setLookupRun(e.target.value)} disabled={busy}/></label>}
-      <button disabled={busy || storageError} onClick={() => void query()}>查询原维护运行</button>
-      {view && view.state !== "ENABLED" && <><p>请将上述运行ID、操作ID、指纹、数量及字节交总监。数量相同不能证明对象相同；收到原范围核对确认前不要采用。</p><label>总监确认的原计划指纹<input aria-label="总监确认的原计划指纹" value={verifiedFingerprint} onChange={e => setVerifiedFingerprint(e.target.value)} disabled={busy}/></label><label><input type="checkbox" checked={scopeConfirmed} onChange={e => setScopeConfirmed(e.target.checked)} disabled={busy}/>已收到总监对原对象与撤共享语义的核对确认</label>
-        {bound && <label><input type="checkbox" checked={recover} onChange={e => setRecover(e.target.checked)} disabled={busy}/>明确恢复同一已绑定计划，仅继续结算</label>}
-        <button disabled={busy || storageError || intent.phase !== "KNOWN" || !scopeConfirmed || verifiedFingerprint !== view.manifestFingerprint || (bound ? !recover : view.state !== "PLANNED" || recover || Date.parse(view.expiresAt) <= Date.now())} onClick={() => void apply()}>{bound ? "明确恢复原计划结算" : "明确采用已核对计划"}</button></>}
-      {view?.state === "ENABLED" && <p role="status">原计划已取得启用回执：READY / READY。回执是历史事实；后续上传仍需实际权限、库和存储就绪。当前本地 MySQL 批量任务不因此变为可用。</p>}
+  return <section className="cw-panel cw-maintenance" aria-label="云端音频维护">
+    <div className="cw-pagebar"><div className="cw-pagebar-title">
+      <h2>云端音频维护</h2><p>仅由当前负责人明确操作。生成计划不会启用上传；必须先交总监核对原对象范围，再确认采用。</p>
+    </div></div>
+    {error && <p className="cw-maintenance-notice danger" role="alert">{error}</p>}
+    {storageError && <p className="cw-maintenance-notice danger" role="alert">原维护记录无法读取。已停止操作，请保留现场交管理员核对，不会自动清除或重建。</p>}
+    {foreign && <p className="cw-maintenance-notice danger" role="alert">存在其他会话的维护记录，已保留。当前会话不能查询、接管或继续原操作。</p>}
+    {!intent && !storageError && <div className="cw-maintenance-prepare">
+      <div className="cw-maintenance-versions">
+        <label className="field">协议状态版本<input aria-label="协议状态版本" value={protocol} onChange={e => setProtocol(e.target.value)} disabled={busy}/></label>
+        <label className="field">存储状态版本<input aria-label="存储状态版本" value={storage} onChange={e => setStorage(e.target.value)} disabled={busy}/></label>
+      </div>
+      <p className="cw-hint">请使用本次核对的实际版本；版本冲突时保留原操作，不自动换号重试。</p>
+      <div className="cw-maintenance-actions"><button className="primary" disabled={busy} onClick={() => void create()}>明确生成维护计划（不启写）</button></div>
+    </div>}
+    {intent && !foreign && <>
+      <dl className="cw-maintenance-facts">
+        <div><dt>原操作ID</dt><dd>{intent.operationId}</dd></div>
+        {view && <>
+          <div><dt>运行ID</dt><dd>{view.runId}</dd></div>
+          <div className="cw-maintenance-fingerprint"><dt>计划指纹</dt><dd>{view.manifestFingerprint}</dd></div>
+          <div><dt>状态</dt><dd className="cw-maintenance-state">{view.state}</dd></div>
+          <div><dt>对象数量 / 字节</dt><dd>{view.objects} / {view.bytes}</dd></div>
+          <div><dt>计划到期</dt><dd>{view.expiresAt}</dd></div>
+        </>}
+      </dl>
+      {intent.phase !== "KNOWN" && <p className="cw-maintenance-notice" role="status">原请求结果尚未核清，只能查询原运行；不会重新生成计划或自动重发采用。</p>}
+      {!view && <label className="field">管理员核对的原运行ID<input aria-label="管理员核对的原运行ID" value={lookupRun} onChange={e => setLookupRun(e.target.value)} disabled={busy}/></label>}
+      <div className="cw-maintenance-actions"><button className="plain" disabled={busy || storageError} onClick={() => void query()}>查询原维护运行</button></div>
+      {view && view.state !== "ENABLED" && <div className="cw-maintenance-confirm">
+        <p className="cw-hint">请将上述运行ID、操作ID、指纹、数量及字节交总监。数量相同不能证明对象相同；收到原范围核对确认前不要采用。</p>
+        <label className="field">总监确认的原计划指纹<input aria-label="总监确认的原计划指纹" value={verifiedFingerprint} onChange={e => setVerifiedFingerprint(e.target.value)} disabled={busy}/></label>
+        <label className="cw-maintenance-check"><input type="checkbox" checked={scopeConfirmed} onChange={e => setScopeConfirmed(e.target.checked)} disabled={busy}/>已收到总监对原对象与撤共享语义的核对确认</label>
+        {bound && <label className="cw-maintenance-check"><input type="checkbox" checked={recover} onChange={e => setRecover(e.target.checked)} disabled={busy}/>明确恢复同一已绑定计划，仅继续结算</label>}
+        <div className="cw-maintenance-actions"><button className="primary" disabled={busy || storageError || intent.phase !== "KNOWN" || !scopeConfirmed || verifiedFingerprint !== view.manifestFingerprint || (bound ? !recover : view.state !== "PLANNED" || recover || Date.parse(view.expiresAt) <= Date.now())} onClick={() => void apply()}>{bound ? "明确恢复原计划结算" : "明确采用已核对计划"}</button></div>
+      </div>}
+      {view?.state === "ENABLED" && <p className="cw-maintenance-notice ok" role="status">原计划已取得启用回执：READY / READY。回执是历史事实；后续上传仍需实际权限、库和存储就绪。当前本地 MySQL 批量任务不因此变为可用。</p>}
     </>}
   </section>;
 }

@@ -1,5 +1,7 @@
 # Instructions for AI Maintainers
 
+Current cross-project coordination (2026-10-31): use `../拾光云端后台/collab/COLLAB-EFFICIENCY.md` when working in the shared local workspace. The user requires functional batches instead of per-helper approvals and repeated audits; preserve the safety boundaries below. If the sibling project is absent, this coordination link is optional and must not prevent a fresh clone from starting.
+
 Read `AI_HANDOFF.md` and `START_HERE.md` before changing or starting the application.
 For a new computer or a repository-link installation request, begin with `AI_QUICK_START.md`; clone `main`, then use `npm run setup` and `npm run portable` for a fresh local SQLite library.
 For classification work read `DIRECTORY_CLASSIFICATION.md`: production classification is derived from the first two relative folder levels; pending status follows location, and duplicate-name prefixes are frontend-only.

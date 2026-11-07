@@ -1,0 +1,51 @@
+import express from 'express';
+import {ProjectScripts} from '../project-scripts/store.mjs';
+import {streamImage} from './image-import.mjs';
+export function projectAssetRouter(store, asyncRoute) {
+  const router = express.Router(),scripts=new ProjectScripts(store).init();
+  router.post('/assets/:id/voice',express.json({limit:'15mb'}),asyncRoute(async(req,res)=>{
+    const id=req.params.id;
+    const guard=()=>{const a=store.get(id);store.project(a.project_id);store.expected(a,req.body.expected_revision);if(a.archived_at||a.kind!=='character')throw Object.assign(Error('请先选择未归档人物'),{status:409});store.generationLocks?.assertWritable(a.project_id);if(store.lib.migrating)throw Object.assign(Error('数据库正在迁移'),{status:423});};
+    guard();res.json({clip:await store.voices.upload(store.get(id),req.body,guard)});
+  }));
+  router.put('/image-imports/:id/content',asyncRoute(async(req,res)=>{if(!req.is('application/octet-stream'))return res.status(415).json({error:'请发送所选图片原文件'});res.json(await store.imageImports.upload(req.params.id,req));}));
+  router.use(express.json({ limit: '8mb' }));
+  const route = (method, url, fn) => router[method](url, asyncRoute(async (req, res) => res.json(await fn(req))));
+  route('post','/image-imports',req=>store.imageImports.start(req.body));
+  route('get','/image-imports/:id',req=>store.imageImports.dto(store.imageImports.get(req.params.id)));
+  route('post','/image-imports/:id/cancel',req=>store.imageImports.cancel(req.params.id));
+  route('post','/image-imports/:id/resolve',req=>store.imageImports.resolve(req.params.id,req.body));
+  router.get('/image-imports/:id/candidates/:candidateId/preview',asyncRoute((req,res)=>store.imageImports.preview(req.params.id,req.params.candidateId,res)));
+  router.get('/media/:id/preview',asyncRoute(async(req,res)=>{const h=await store.inspect(req.params.id);if(h.state!=='available')return res.status(409).json({error:h.label});const a=store.lib.asset(req.params.id);await streamImage(await store.lib.checked(a.path,a.root_id),h.sha256,res);}));
+  route('get','/projects/:id/script',req=>scripts.get(req.params.id));
+  route('put','/projects/:id/script',req=>scripts.put(req.params.id,req.body));
+  route('get', '/scopes', () => store.scopes());
+  route('get', '/assets', req => store.list(req.query));
+  route('post', '/assets', req => store.create(req.body));
+  route('get', '/assets/:id', req => store.get(req.params.id));
+  router.get('/assets/:id/voice/:voiceId',asyncRoute(async(req,res)=>{const result=await store.voices.preview(store.get(req.params.id),req.params.voiceId);res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});res.type(result.mime).send(result.bytes);}));
+  route('put', '/assets/:id', req => store.save(req.params.id, req.body.asset, req.body.expected_revision));
+  route('post', '/assets/:id/archive', req => store.archive(req.params.id, req.body.archived === true, req.body.expected_revision));
+  route('get', '/assets/:id/health', req => store.health(req.params.id));
+  route('get', '/assets/:id/shots', req => store.associatedShots(req.params.id));
+  route('get', '/assets/:id/versions', req => store.versions(req.params.id));
+  route('get', '/assets/:id/versions/:version', req => store.version(req.params.id, req.params.version));
+  route('get', '/assets/:id/copy-preview', req => store.copyPreview(req.params.id, req.query.project_id));
+  route('post', '/assets/:id/copy', req => store.copy(req.params.id, req.body));
+  route('get', '/copies/:id', req => store.copyStatus(req.params.id));
+  route('get', '/media/:id/inspect', req => store.inspect(req.params.id));
+  route('get', '/media/:id/usage', req => store.usage(req.params.id));
+  router.get('/bindings/:id/preview', asyncRoute(async (req, res) => {
+    const b = store.db.prepare('SELECT * FROM creative_image_bindings WHERE id=?').get(req.params.id);
+    if (!b) return res.status(404).end();
+    const health = await store.inspect(b.media_asset_id, b.expected_sha256);
+    if (health.state !== 'available') return res.status(409).json({ error: health.label });
+    const media = store.lib.asset(b.media_asset_id), file = await store.lib.checked(media.path, media.root_id);
+    await streamImage(file,b.expected_sha256,res);
+  }));
+  route('get', '/backup', () => store.backup());
+  route('post', '/restore', req => store.restore(req.body));
+  router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
+  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.current_revision ? { current_revision: error.current_revision } : {}) }); });
+  return router;
+}

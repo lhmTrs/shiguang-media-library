@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { PHOTO, VIDEO, AUDIO, rootIdentity } from "./fs-identity.mjs";
+import { PHOTO, VIDEO, AUDIO, rootIdentity, indexFileIdentity } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";
 import { observeDatabase } from "./read-cache.mjs";
@@ -480,7 +480,12 @@ export class Library {
                 ? "music"
                 : "sfx"
               : null;
-        if (!kind) continue;
+        // Explicit single-image imports remain managed even when this browser cannot decode their format.
+        if (!kind) {
+          const imported=this.db.prepare("SELECT id FROM assets WHERE path=? AND root_id=? AND kind='photo' AND basis='参考图片导入'").get(p,root.id);
+          if(!imported)continue;
+          kind='photo';
+        }
         try {
           const real = await this.checked(p, root.id);
           const s = await fs.stat(real);
@@ -511,8 +516,8 @@ export class Library {
                 changed ? null : old.codec,
                 changed ? "" : old.error,
                 // 扫描时就记下 dev:ino：否则"扫描完立刻在访达里改名"拿不到任何认领线索
-                s.dev,
-                s.ino,
+                indexFileIdentity(s).dev,
+                indexFileIdentity(s).ino,
                 old.id,
               );
             if (changed && !old.capture_source?.startsWith("手动"))
@@ -559,8 +564,8 @@ export class Library {
                 c?.basis || (inferred ? "原音乐目录分类" : "文件格式"),
                 c?.review ? 1 : 0,
                 // 扫描时就记下 dev:ino：外部改名/移动后靠它认领回同一条素材
-                s.dev,
-                s.ino,
+                indexFileIdentity(s).dev,
+                indexFileIdentity(s).ino,
               );
           }
           job.count++;
@@ -1213,8 +1218,8 @@ export class Library {
               s.mtimeMs,
               s.size,
               fileCreated(s),
-              s.dev,
-              s.ino,
+              indexFileIdentity(s).dev,
+              indexFileIdentity(s).ino,
               p.id,
             );
         }
@@ -1287,8 +1292,8 @@ export class Library {
             s.mtimeMs,
             s.size,
             fileCreated(s),
-            s.dev,
-            s.ino,
+            indexFileIdentity(s).dev,
+            indexFileIdentity(s).ino,
             a.id,
           );
         this.db.prepare("UPDATE operations SET undone=1 WHERE id=?").run(op.id);

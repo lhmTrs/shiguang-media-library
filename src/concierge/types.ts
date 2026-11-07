@@ -1,0 +1,17 @@
+export type Item = {id:string;type:'user'|'assistant'|'tool'|'info';text:string;attachmentIds?:string[]};
+export type Turn = {id:string;status:string;createdAt?:number|string;items:Item[];error?:string;turnId?:string|null};
+export type Task = Turn & {scope:string;title:string;threadId:string|null;turnId:string|null;model:string;effort:string;createdAt:number|string;updatedAt:number|string;error?:string;attachmentIds:string[]};
+export type Scope = {scope:string;title:string;projectId:string|null;threadId:string|null;phase:'empty'|'ready'|'creating'|'unavailable';activeTask:Task|null;recoveryNotice?:string;error?:string};
+export type Model = {id:string;name:string;efforts:{id:string;description:string}[];defaultEffort:string;inputModalities?:string[]};
+export type Status = {connected:boolean;authenticated:boolean;models:Model[];activeCount:number;unsettled:boolean;error?:string};
+export type Attachment = {id:string;name:string;size:number;mime:string;kind:'image'|'text'|'document'|'video';status:'pending'|'uploading'|'ready'|'failed';error?:string;description?:string;analysis?:Record<string,unknown>;sent?:boolean};
+export type LocalAttachment = Attachment & {localBusy?:boolean};
+export type Rules = {scope:string;text:string;revision:string|number;globalText:string;globalRevision:string|number;defaultText:string};
+export type Session = {token:string;instanceId:string;app?:string};
+export type Pending = {createdAt?:number;id:string;text:string;attachmentIds:string[]};
+export type ScopeState = {info:Scope|null;loaded:boolean;loading:boolean;text:string;model:string;effort:string;allowWrites:boolean;attachments:LocalAttachment[];turns:Turn[];nextCursor:string|null;historyLoading:boolean;task:Task|null;pending:Pending|null;operation:string;error:string;notice:string;storageError:string;scrollTop:number|null;draftRevision:number};
+export const running = (task:Task|null) => !!task && ['starting','running','stop_requested'].includes(task.status);
+export const taskLabel = (status:string) => ({sending:'正在发送',awaiting_confirmation:'待核对',starting:'已发送 · 准备中',running:'运行中',stop_requested:'正在中止',completed:'已完成',interrupted:'已中断',failed:'失败',unknown:'状态待核对'}[status]||status);
+export const scopeQuery = (scope:string) => '?scope='+encodeURIComponent(scope);
+export const errorText = (e:unknown) => e instanceof Error ? e.message : String(e);
+export const blankScope = ():ScopeState => ({info:null,loaded:false,loading:false,text:'',model:'',effort:'',allowWrites:false,attachments:[],turns:[],nextCursor:null,historyLoading:false,task:null,pending:null,operation:'',error:'',notice:'',storageError:'',scrollTop:null,draftRevision:0});

@@ -1,8 +1,10 @@
+import { Users } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { KeywordSearch, KeywordTokens, type SearchMode } from "./KeywordSearch";
 import {
   Aperture,
+  Clapperboard,
   Library,
   Pencil,
   RotateCcw,
@@ -54,7 +56,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import "./style.css";
+import {ProjectSelector} from "./ProjectSelector";
+import {useLibraryStats} from "./useLibraryStats";
+import {hostReads,hostBusyMessage} from "./host-read";
+import {BackgroundReadStatus} from "./BackgroundReadStatus";
 import "./themes.css";
+import "./library-workspace.css";
 import { applyTheme, readTheme } from "./theme";
 import type { ThemeId } from "./theme-list";
 import { AuditionControls } from "./AuditionControls";
@@ -76,6 +83,7 @@ import { CategoryFilter } from "./CategoryFilter";
 import { CategoryPairFields } from "./CategoryPairFields";
 import { AssetCategoryDialog } from "./AssetCategoryDialog";
 import { AssetActions } from "./AssetActions";
+import {MediaViewer, assetMediaView, mediaDoubleClick} from './MediaViewer';
 import { QuickTagDialog } from "./QuickTagDialog";
 import { MissingCleanupDialog, type CleanupResult } from "./MissingCleanupDialog";
 import { readMergePairs } from "./AssetMergeDialog";
@@ -90,6 +98,23 @@ import { displayDirectoryOptions, type DirectoryOption } from "./directory-label
 import { MetadataBatchHistory } from "./MetadataBatchHistory";
 import { SeriesAssetList, type AssetSeries } from "./SeriesAssetList";
 import { PaginationControls } from "./PaginationControls";
+import type {GenerationFocus,GenerationTask} from './storyboard/generation-types';
+import {ProjectVideoWorkspace} from "./project-videos/ProjectVideoWorkspace";
+import { StoryboardWorkspace } from "./StoryboardWorkspace";
+import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemplateWorkspace";
+import {CodexTaskEntry,useCodexTasks} from './CodexTaskDrawer';
+import {ConciergeWorkspace} from './concierge';
+import type {CodexTask} from './codex-task-types';
+import { ProjectAssetWorkspace } from "./ProjectAssetWorkspace";
+import { readStoryboardAppearance, storyboardAppearanceKey } from "./storyboard/preferences";
+import type {ShotFocus} from "./storyboard/shot-navigation";
+import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, readGroups, groupDefaults, navigationGroupsKey, readLayouts, defaultLayout, readSearchPreferences, readVolume, saveStored, removeStored } from "./browser-preferences";
+
+const navigationGroups = [
+  { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
+  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
+  { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
+];
 
 export type Asset = {
   id: string;
@@ -214,34 +239,54 @@ type Modal =
   | "zoom"
   | null;
 let token = "";
-async function api<T = unknown>(
-  url: string,
-  body?: unknown,
-  method?: string,
-): Promise<T> {
-  const verb = method || (body ? "POST" : "GET");
-  const headers: Record<string, string> = {};
-  if (body) headers["Content-Type"] = "application/json";
-  // 非 GET 一律带本机会话令牌，包括没有请求体的 DELETE。
-  if (verb.toUpperCase() !== "GET") headers["X-Local-Token"] = token;
-  const r = await fetch("/api" + url, {
-    method: verb,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const result = await r.json();
-  if (!r.ok)
-    throw Object.assign(Error(result.error || "请求失败"), {
-      diagnostic: result.diagnostic,
-      // 云端认证只回固定公开码；保留状态码与冷却时间用于区分 401/429/证书/离线。
-      code: result.code,
-      kind: result.kind,
-      status: r.status,
-      retryAfterMs: result.retryAfterMs,
-      requestId: result.requestId,
+type LocalSession = { token: string; app: string; instanceId: string; trashAvailable: boolean; folderPickerAvailable?: boolean };
+let localSession: LocalSession | null = null;
+let sessionEstablishing: Promise<LocalSession> | null = null;
+async function establishLocalSession(force = false): Promise<LocalSession> {
+  if (sessionEstablishing) return sessionEstablishing;
+  if (!force && localSession && token) return localSession;
+  sessionEstablishing = (async () => {
+    const response = await hostReads.fetch('/api/session', { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw Error('无法建立本机会话，请检查素材管理器服务后重试');
+    const next = await response.json() as LocalSession;
+    if (next.app !== 'shiguang-local-media' || typeof next.token !== 'string' || !next.token || typeof next.instanceId !== 'string') throw Error('本机服务身份无法确认，请检查地址后刷新页面');
+    if (localSession && next.instanceId !== localSession.instanceId) {window.dispatchEvent(new Event('shiguang-library-identity-changed'));throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });}
+    localSession = next; token = next.token; return next;
+  })();
+  try { return await sessionEstablishing; }
+  finally { sessionEstablishing = null; }
+}
+async function readLibraryIdentity(){return(await establishLocalSession(true)).instanceId;}
+async function api<T = unknown>(url: string, body?: unknown, method?: string, options?: { signal?: AbortSignal }): Promise<T> {
+  const verb = (method || (body ? 'POST' : 'GET')).toUpperCase();
+  if (url === '/session' && verb === 'GET') return await establishLocalSession() as T;
+  const expectedInstance = (await establishLocalSession()).instanceId;
+  const assertCurrent = async () => {
+    if (await readLibraryIdentity() !== expectedInstance) throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });
+  };
+  const perform = async (recovered = false): Promise<T> => {
+    const sentToken = token, headers: Record<string, string> = {};
+    const binary = body instanceof Blob;
+    if (body) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
+    if (verb !== 'GET') headers['X-Local-Token'] = sentToken;
+    const response = await hostReads.fetch('/api' + url, { method: verb, headers, body: binary ? body : body ? JSON.stringify(body) : undefined, signal: options?.signal }, assertCurrent);
+    const result = await response.json();
+    // Only these exact local middleware refusals prove the handler never ran.
+    // Never replay a generation or another business write after re-establishing a session.
+    const localRefusal = !result.code && (response.status === 401 && result.error === '本机会话失效，请刷新页面' || response.status === 403 && result.error === '本机会话校验失败');
+    if (!recovered && localRefusal) {
+      await establishLocalSession(sentToken === token);
+      if (verb === 'GET' || url === '/prompt-codex/connect' && verb === 'POST') return perform(true);
+      throw Object.assign(Error('本机会话已恢复，刚才的操作未执行。请核对后再次点击；生成请求不会自动重发。'), { code: 'LOCAL_SESSION_RESTORED', status: 409 });
+    }
+    if (!response.ok) throw Object.assign(Error(hostBusyMessage(result.code,result.error || '请求失败')), {
+      diagnostic: result.diagnostic, code: result.code, kind: result.kind, status: response.status, accepted:result.accepted,
+      retryAfterMs: result.retryAfterMs, requestId: result.requestId,
     });
-  if ((method || (body ? "POST" : "GET")).toUpperCase() !== "GET") clearTagFacetCache();
-  return result;
+    if (verb !== 'GET') clearTagFacetCache();
+    return result;
+  };
+  return verb === 'GET' ? hostReads.track(() => perform()) : perform();
 }
 const kindNames: Record<string, string> = {
   photo: "摄影照片",
@@ -396,7 +441,7 @@ function UploadTaskEntry({ onClose }: { onClose: () => void }) {
     localStorage.removeItem(storageKey); if (alive.current) setPending(false); await readStatus();
   }
   const admission = status?.local?.proofAdmission, disabled = busy || pending;
-  return <main aria-label="批量上传入口" style={{ height: "100dvh", overflowY: "auto", overflowX: "hidden", padding: "16px", boxSizing: "border-box", overflowWrap: "anywhere" }}><header className="section-head"><h1>批量上传</h1><button onClick={onClose}>返回账户</button></header>
+  return <main aria-label="批量上传入口" style={{ height: "100%", overflowY: "auto", overflowX: "hidden", padding: "16px", boxSizing: "border-box", overflowWrap: "anywhere" }}><header className="section-head"><h1>批量上传</h1><button onClick={onClose}>返回账户</button></header>
     <section className="card"><h2>环境与扫描证明</h2><p>打开此页不登记、不扫描、不恢复或启动任务。每一步均需明确操作。</p>
       <button disabled={busy} onClick={() => void run(readStatus)}>核对当前上传状态</button>
       <button disabled={busy || !status?.identityKey || pending} onClick={() => void run(async () => { const result = await request<{known:boolean;allowed:boolean}>("session-check", {}); if (!result.known || !result.allowed) throw Error("云端会话或本地环境尚未核清"); await readStatus(); })}>明确核对云端会话</button>
@@ -439,6 +484,8 @@ function UploadTaskEntry({ onClose }: { onClose: () => void }) {
 }
 
 function App() {
+  const codexNavigation=useRef(0);
+  const cancelCodexNavigation=useCallback(()=>{codexNavigation.current++;},[]);
   const [uploadTasksOpen, setUploadTasksOpen] = useState(false);
   const [workspaceInitialTab, setWorkspaceInitialTab] = useState<"security" | "audio">("security");
   const cloudAuth = useCloudAuth(api);
@@ -449,26 +496,30 @@ function App() {
   const loginClosing = useRef(false);
   useEffect(() => {
     const sync = () => {
+      cancelCodexNavigation();
       const next = location.hash === "#/login";
       setLoginOpen(next);
       setWorkspaceOpen(location.hash === "#/account");
       if (!next) loginClosing.current = false;
     };
     window.addEventListener("hashchange", sync);
-    return () => window.removeEventListener("hashchange", sync);
+    window.addEventListener("popstate",sync);
+    return () => {window.removeEventListener("hashchange", sync);window.removeEventListener("popstate",sync);};
   }, []);
   const closeLogin = useCallback(() => {
+    cancelCodexNavigation();
     if (loginClosing.current) return;
     loginClosing.current = true;
     cloudAuthRef.current.invalidate();
     if (history.state?.shiguangLogin) {
       history.back();
     } else if (location.hash === "#/login") {
-      history.replaceState(null, "", location.pathname + location.search);
+      history.replaceState({ shiguangView: viewRef.current }, "", viewHash(viewRef.current));
     }
     setLoginOpen(false);
   }, []);
   const openLogin = useCallback(() => {
+    cancelCodexNavigation();
     loginClosing.current = false;
     cloudAuthRef.current.invalidate();
     setModal(null);
@@ -482,15 +533,17 @@ function App() {
     setLoginOpen(true);
   }, []);
   const closeWorkspace = useCallback(() => {
+    cancelCodexNavigation();
     cloudAuthRef.current.invalidate();
     if (history.state?.shiguangWorkspace) {
       history.back();
     } else if (location.hash === "#/account") {
-      history.replaceState(null, "", location.pathname + location.search);
+      history.replaceState({ shiguangView: viewRef.current }, "", viewHash(viewRef.current));
     }
     setWorkspaceOpen(false);
   }, []);
   const openWorkspace = useCallback(() => {
+    cancelCodexNavigation();
     setModal(null);
     setMobileNav(false);
     if (location.hash !== "#/account") {
@@ -498,17 +551,7 @@ function App() {
     }
     setWorkspaceOpen(true);
   }, []);
-  const [ready, setReady] = useState(false),
-    [stats, setStats] = useState<Stats>({
-      total: 0,
-      kinds: [],
-      favorites: 0,
-      review: 0,
-      offline: 0,
-      missing: 0,
-      categories: [],
-      formats: [],
-    });
+  const [ready,setReady]=useState(false),[sessionError,setSessionError]=useState(''),[sessionRetry,retrySession]=useState(0);
   // 「素材目录管理」专用的全量列表（含已注销）；侧栏导航与筛选仍用 roots（只在管的）
   const [allRoots, setAllRoots] = useState<Root[]>([]);
   const [rootEdit, setRootEdit] = useState<{ id: string; name: string; kind: string; path: string } | null>(null);
@@ -522,11 +565,13 @@ function App() {
     [allCategories, setAllCategories] = useState<(DirectoryOption & { id: string; name: string })[]>([]),
     [total, setTotal] = useState(0),
     [pages, setPages] = useState(0);
-  const [view, setView] = useState("all"),
+  const [memory, setMemory] = useState(readMemory);
+  const [layoutPreferences, setLayoutPreferences] = useState(readLayouts);
+  const [view, setView] = useState(initialView),
     [q, setQ] = useState(""),
     [search, setSearch] = useState(""),
-    [searchMode, setSearchMode] = useState<SearchMode>("all"),
-    [nameOnly, setNameOnly] = useState(false),
+    [searchMode, setSearchMode] = useState<SearchMode>(() => readSearchPreferences().mode),
+    [nameOnly, setNameOnly] = useState(() => readSearchPreferences().nameOnly),
     [rootFilter, setRootFilter] = useState<string[]>([]),
     [category, setCategory] = useState(""),
     [ext, setExt] = useState(""),
@@ -538,7 +583,9 @@ function App() {
     [sort, setSort] = useState(() => { try { const saved = localStorage.getItem("shiguang.assetSort"); return saved && ["name", "revealCount", "projectCount", "recent", "createdNewest", "createdOldest", "capturedNewest", "capturedOldest", "size"].includes(saved) ? saved : "revealCount"; } catch { return "revealCount"; } }),
     [onlyFavorites, setOnlyFavorites] = useState(false),
     [page, setPage] = useState(1),
-    [layout, setLayout] = useState<"list" | "grid">("list");
+    [layout, setLayout] = useState<"list" | "grid">(() => readLayouts()[initialView()] || defaultLayout(initialView()));
+  const viewRef = useRef(view);
+  const navigateRef = useRef<(value: string, fromHistory?: boolean) => void>(() => {});
   const [selected, setSelected] = useState<Asset | null>(null),
     [checked, setChecked] = useState<Set<string>>(new Set()),
     [busy, setBusy] = useState(false),
@@ -547,26 +594,71 @@ function App() {
     [showWork, setShowWork] = useState(false),
     // 素材列表正在重新读取：只做内联提示，不遮挡已显示的内容
     [refreshing, setRefreshing] = useState(false),
-    [loading, setLoading] = useState(false),
+    [loading, setLoading] = useState(true),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
+  const [mediaPreview, setMediaPreview] = useState<{asset: Asset; scope: string} | null>(null);
   const [tagRules, setTagRules] = useState<TagRules>(emptyTagRules);
   const [detailsHidden, setDetailsHidden] = useState(() => { try { return localStorage.getItem("shiguang.detailsHidden") === "true"; } catch { return false; } });
   const [detailsWidth, setDetailsWidth] = useState(() => { try { const n = Number(localStorage.getItem("shiguang.detailsWidth")); return Number.isFinite(n) && n >= 280 ? Math.min(n, 600) : 340; } catch { return 340; } });
   const [playerHeight, setPlayerHeight] = useState(0);
   const [topbarHeight, setTopbarHeight] = useState(72);
+  const specialFrame=useRef<HTMLDivElement>(null),[specialTaskTop,setSpecialTaskTop]=useState(124);
+  useEffect(()=>{
+    const frame=specialFrame.current;if(!frame)return;
+    const header=frame.querySelector('.codex-special-content header');
+    const measure=()=>setSpecialTaskTop(Math.ceil((header||frame.firstElementChild)?.getBoundingClientRect().bottom||72));
+    measure();const observer=new ResizeObserver(measure);observer.observe(frame);if(header)observer.observe(header);
+    return()=>observer.disconnect();
+  },[loginOpen,workspaceOpen,uploadTasksOpen]);
   const playerRef = useRef<HTMLDivElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
+  const [projectAssetFocus,setProjectAssetFocus]=useState({id:"",request:0});
+  const [generationFocus,setGenerationFocus]=useState<GenerationFocus|null>(null);
+  const [projectVideoBusy,setProjectVideoBusy]=useState(false);
+  const [storyboardShotFocus,setStoryboardShotFocus]=useState<ShotFocus|null>(null),[storyboardDirty,setStoryboardDirty]=useState(false);
+  const [projectAssetSelectorHost, setProjectAssetSelectorHost] = useState<HTMLElement | null>(null);
+  useEffect(()=>{const host=projectAssetSelectorHost;if(!host)return;const cancel=()=>cancelCodexNavigation();host.addEventListener('change',cancel,true);return()=>host.removeEventListener('change',cancel,true);},[projectAssetSelectorHost,cancelCodexNavigation]);
+  const codexTasks=useCodexTasks(api,setNotice),promptWorkspace=useRef<PromptWorkspaceHandle>(null);
+  const openUploadTasks=()=>{cancelCodexNavigation();setWorkspaceInitialTab('audio');setUploadTasksOpen(true);};
+  const closeUploadTasks=()=>{cancelCodexNavigation();setUploadTasksOpen(false);};
+  async function openCodexTask(task:CodexTask){
+    const request=++codexNavigation.current,isCurrent=()=>codexNavigation.current===request;
+    if(task.type==='storyboard'){
+      const [detail,session]=await Promise.all([api<GenerationTask>('/storyboard-generation/tasks/'+encodeURIComponent(task.taskId)),api<{instanceId:string}>('/session')]);if(!isCurrent())return;
+      if(detail.taskId!==task.taskId||detail.projectId!==task.projectId)throw Error('分镜任务目标不符，未跳转');
+      await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
+      if(storyboardDirty&&activeProject!==detail.projectId&&!confirm('当前分镜有未保存草稿，切换后保留在原项目。继续查看目标任务？'))throw Error('已取消跳转，原分镜草稿保留');
+      setActiveProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
+    }
+    if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
+    if(!promptWorkspace.current)throw Error('工作台暂未就绪，请重试');
+    try{await promptWorkspace.current.openTask({templateId:task.templateId,conversationId:task.conversationId,turnId:task.taskId,request},isCurrent);}catch(error){if(isCurrent())throw error;return;}
+    if(!isCurrent())return;
+    setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('promptTemplates',false,true);codexTasks.setOpen(false);
+  }
   useEffect(() => { try { localStorage.setItem("shiguang.detailsHidden", String(detailsHidden)); localStorage.setItem("shiguang.detailsWidth", String(detailsWidth)); } catch {} }, [detailsHidden, detailsWidth]);
-  const [advancedFilters, setAdvancedFilters] = useState(false);
+  const [advancedFilters, setAdvancedFilters] = useState(() => readSearchPreferences().expanded);
   const folderView = true;
   const filterMemory = useRef(new Map<string, {
     q: string; searchMode: SearchMode; nameOnly: boolean; rootFilter: string[]; category: string; tagRules: TagRules; ext: string;
     duration: string; createdFrom: string; createdTo: string; dateField: "created" | "captured";
     captureUnknown: boolean; onlyFavorites: boolean;
   }>());
-  const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem("shiguang.navCollapsed") === "true"; } catch { return false; } });
+  const [navCollapsed, setNavCollapsed] = useState(() => { try { return readMemory().navigation && localStorage.getItem("shiguang.navCollapsed") === "true"; } catch { return false; } });
   const [hiddenNav, setHiddenNav] = useState<string[]>(() => { try { const value = JSON.parse(localStorage.getItem("shiguang.hiddenNav") || "[]"); return Array.isArray(value) ? value.filter((v: unknown): v is string => typeof v === "string" && v !== "all") : []; } catch { return []; } });
+  const [expandedNavGroups, setExpandedNavGroups] = useState(readGroups);
+  useEffect(() => { saveStored(memoryKey, memory); }, [memory]);
+  useEffect(() => { if (memory.navigation) saveStored(navigationGroupsKey, expandedNavGroups); else removeStored(navigationGroupsKey, 'shiguang.navCollapsed'); }, [expandedNavGroups, memory.navigation]);
+  useEffect(() => {
+    if (memory.location) { try { localStorage.setItem('shiguang.lastView', view); } catch {} }
+    else removeStored('shiguang.lastView');
+  }, [view, memory.location]);
+  useEffect(() => { setLayoutPreferences(old => old[view] === layout ? old : { ...old, [view]: layout }); }, [view, layout]);
+  useEffect(() => { if (memory.display) saveStored('shiguang.assetLayouts.v1', layoutPreferences); else removeStored('shiguang.assetLayouts.v1', 'shiguang.searchPreferences.v1', 'shiguang.volume'); }, [layoutPreferences, memory.display]);
+  useEffect(() => { if (memory.display) saveStored('shiguang.searchPreferences.v1', { mode: searchMode, nameOnly, expanded: advancedFilters }); }, [searchMode, nameOnly, advancedFilters, memory.display]);
+  const [storyboardAppearance, setStoryboardAppearance] = useState(readStoryboardAppearance);
+  useEffect(() => { try { localStorage.setItem(storyboardAppearanceKey, JSON.stringify(storyboardAppearance)); } catch {} }, [storyboardAppearance]);
   const [navSettings, setNavSettings] = useState(false);
   const closeNavSettings = useCallback(() => setNavSettings(false), []);
   const [refreshSeconds, setRefreshSeconds] = useState(readRefreshSeconds);
@@ -574,10 +666,11 @@ function App() {
   // 界面风格：值由 localStorage 驱动、写在 <html data-theme> 上，切换只影响 CSS 变量。
   const [theme, setTheme] = useState<ThemeId>(() => readTheme());
   useEffect(() => { applyTheme(theme); }, [theme]);
-  useEffect(() => { try { localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed]);
+  useEffect(() => { try { if (memory.navigation) localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed, memory.navigation]);
   useEffect(() => { try { localStorage.setItem("shiguang.hiddenNav", JSON.stringify(hiddenNav)); } catch {} }, [hiddenNav]);
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
   const [projects, setProjects] = useState<Project[]>([]), [projectRevision, setProjectRevision] = useState(0);
+  const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
   const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
   const [projectMembers, setProjectMembers] = useState<{ asset_id: string; status: string }[]>([]);
   const [projectUsageCounts,setProjectUsageCounts] = useState<Record<string,number>>({});
@@ -586,7 +679,8 @@ function App() {
   useEffect(() => {
     if (!ready) return;
     let live = true;
-    api<Project[]>("/projects").then(rows => { if (live) { setProjects(rows); setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || ""); } }).catch(e => { if (live) fail(e); });
+    setProjectsError('');
+    api<Project[]>("/projects").then(rows => { if (live) { setProjects(rows); setProjectsKnown(true); setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || ""); } }).catch(e => { if (live) setProjectsError(e.message||'项目列表读取失败'); });
     return () => { live = false; };
   }, [ready, projectRevision]);
   useEffect(() => {
@@ -730,6 +824,7 @@ function App() {
   const [repairIds, setRepairIds] = useState<string[] | null>(null);
   const [fileChecking, setFileChecking] = useState(false);
   const fileCheckInFlight = useRef(false);
+  const [fileCheckFeedback, setFileCheckFeedback] = useState<{ kind: 'success' | 'warning' | 'error'; message: string } | null>(null);
   const [editRevision, setEditRevision] = useState(0);
   const [mysqlState, setMysqlState] = useState<MysqlState | null>(null);
   const [mysqlFeedback, setMysqlFeedback] = useState("");
@@ -773,7 +868,7 @@ function App() {
     [isPlaying, setIsPlaying] = useState(false),
     [position, setPosition] = useState(0),
     [length, setLength] = useState(0),
-    [volume, setVolume] = useState(0.7),
+    [volume, setVolume] = useState(readVolume),
     [proxy, setProxy] = useState(false),
     [videoProxy, setVideoProxy] = useState(false),
     [mediaError, setMediaError] = useState(""),
@@ -827,7 +922,7 @@ function App() {
     primed: false,
   });
   const refreshRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(async () => {});
-  const foregroundRequests = useRef(0), foregroundRevision = useRef(0), backgroundRequest = useRef(false);
+  const foregroundRequests = useRef(0), foregroundRevision = useRef(0), backgroundRequest = useRef(false), browseRead = useRef<AbortController|null>(null);
   const pauseBackground = useRef(false);
   pauseBackground.current = busy || loading || Boolean(selected && (
     tagText !== selected.tags.join("，") || note !== selected.note || editCategory !== selected.category ||
@@ -836,9 +931,12 @@ function App() {
   ));
   function backgroundBlocked() {
     return pauseBackground.current || foregroundRequests.current > 0 || document.visibilityState !== "visible" ||
-      Boolean(document.querySelector('[role="dialog"], .modal-backdrop')) ||
+      Boolean(document.querySelector('[role="dialog"], dialog[open], .modal-backdrop')) ||
       Boolean(document.activeElement?.matches('textarea, select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), [contenteditable="true"]'));
   }
+  const globalStats=useLibraryStats<Stats>({ready,request:api,readIdentity:readLibraryIdentity,refreshSeconds,blocked:backgroundBlocked}),stats=globalStats.stats;
+  const previousJobsActive=useRef(jobsActive);
+  useEffect(()=>{if(previousJobsActive.current&&!jobsActive)void globalStats.refresh(true);previousJobsActive.current=jobsActive;},[jobsActive,globalStats.refresh]);
   function fail(e: unknown) {
     setError(e instanceof Error ? e.message : String(e));
   }
@@ -861,6 +959,7 @@ function App() {
     } finally {
       setWorkLabels((prev) => prev.slice(0, -1));
       setBusy(false);
+      void globalStats.refresh(true);
     }
   }
   function databaseAction(fn: () => Promise<void>) {
@@ -907,12 +1006,20 @@ function App() {
     if (onlyFavorites) params.set("favorite", "1");
     return params;
   }
+  const [listError,setListError]=useState(''),[auxiliaryError,setAuxiliaryError]=useState('');
   const browseKey = useRef("");
   browseKey.current = assetParams().toString();
+  const previewContext = view + ':' + activeProject + ':' + browseKey.current;
+  const previewAsset = mediaPreview?.scope === previewContext ? mediaPreview.asset : null;
+  useEffect(() => setMediaPreview(null), [previewContext]);
+  function openAssetPreview(asset: Asset) {
+    if (['photo', 'video'].includes(asset.kind)) setMediaPreview({asset, scope: previewContext});
+  }
   const [categoryChoicesRevision, setCategoryChoicesRevision] = useState(0);
   const facetQuery = assetParams(1).toString();
   useEffect(() => {
     let live = true;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
     const timer = setTimeout(() => {
       void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
         if (live) setFilterTags(result.items);
@@ -943,28 +1050,37 @@ function App() {
    * `silent: true` 用于后台同步：不显示列表蒙层，避免外部变化引起的刷新把界面
    * 周期性地"变成加载中"（用户会以为一直在读盘）。
    */
-  async function refresh(opts: { silent?: boolean } = {}) {
+  async function refresh(opts: { silent?: boolean; stats?: boolean } = {}) {
+    if(opts.stats!==false)void globalStats.refresh();
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
     if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
+    browseRead.current?.abort();
+    const controller = new AbortController(); browseRead.current = controller;
     const foreground = !opts.silent;
     const foregroundId = foreground ? ++foregroundRevision.current : 0;
-    if (foreground) { foregroundRequests.current++; setRefreshing(true); }
+    if (foreground) { foregroundRequests.current++; setRefreshing(true); if(listError&&error===listError)setError(''); setListError(''); }
     else backgroundRequest.current = true;
     const seq = ++requestSeq.current;
     const params = assetParams();
     try {
-    const [data, s, r, j] = await Promise.all([
-      api<{
+    // Auxiliary status must not gate or discard a successful primary list.
+    void Promise.allSettled([api<Root[]>("/roots",undefined,undefined,{signal:controller.signal}),api<{jobs:Job[];metadata:{pending:number}}>("/jobs",undefined,undefined,{signal:controller.signal})]).then(([rootsRead,jobsRead])=>{
+      if(controller.signal.aborted)return;
+      if(seq!==requestSeq.current||params.toString()!==browseKey.current)return;
+      if(rootsRead.status==='fulfilled')setRoots(rootsRead.value);
+      if(jobsRead.status==='fulfilled'){setJobs(jobsRead.value.jobs);setPending(jobsRead.value.metadata.pending);}
+      const failures=[rootsRead,jobsRead].filter(r=>r.status==='rejected') as PromiseRejectedResult[];
+      setAuxiliaryError(failures.map(r=>r.reason instanceof Error?r.reason.message:'目录或任务信息读取失败').join('；'));
+      if(rootsRead.status==='fulfilled'&&jobsRead.status==='fulfilled')lastSync.current={revisions:new Map(rootsRead.value.map(root=>[root.id,Number(root.revision)])),running:jobsRead.value.jobs.filter(j=>j.status==='running').length,pending:jobsRead.value.metadata.pending,primed:true};
+    });
+    const data = await api<{
         items: Asset[];
         total: number;
         page: number;
         pages: number;
         categories: Stats["categories"];
         groups?: AssetSeries[]; revision?: string; entries?: number; seriesCount?: number;
-      }>((params.get("series") === "1" ? "/asset-series?" : "/assets?") + params),
-      api<Stats>("/stats"),
-      api<Root[]>("/roots"),
-      api<{ jobs: Job[]; metadata: { pending: number } }>("/jobs"),
-    ]);
+      }>((params.get("series") === "1" ? "/asset-series?" : "/assets?") + params,undefined,undefined,{signal:controller.signal});
     if (seq !== requestSeq.current || params.toString() !== browseKey.current || (opts.silent && backgroundBlocked())) return;
     setFilterCategories(data.categories);
     setCategoryChoicesRevision(n => n + 1);
@@ -1020,16 +1136,10 @@ function App() {
     setTotal(data.total);
     setPages(data.pages);
     setPage(data.page);
-    setStats(s);
-    setRoots(r);
-    setJobs(j.jobs);
-    setPending(j.metadata.pending);
-    lastSync.current = {
-      revisions: new Map(r.map((root) => [root.id, Number(root.revision)])),
-      running: j.jobs.filter((x) => x.status === "running").length,
-      pending: j.metadata.pending,
-      primed: true,
-    };
+    setListError('');
+    } catch(e) {
+      if(controller.signal.aborted||seq!==requestSeq.current||params.toString()!==browseKey.current)return;
+      setListError(e instanceof Error?e.message:'素材列表读取失败');throw e;
     } finally {
       if (foreground) {
         foregroundRequests.current--;
@@ -1038,49 +1148,45 @@ function App() {
     }
   }
   refreshRef.current = refresh;
-  async function checkFiles(force = false) {
-    if (fileCheckInFlight.current || (!force && backgroundBlocked())) return;
-    fileCheckInFlight.current = true; setFileChecking(true);
+  // Full-library inspection is an explicit action, never a page-refresh side effect.
+  async function checkFiles() {
+    if (fileCheckInFlight.current) return;
+    fileCheckInFlight.current = true; setFileChecking(true); setFileCheckFeedback(null);
     try {
-      const result = await api<{ checked: number; cached: number; missing: number; deferred?: boolean }>("/maintenance/files", { force });
-      if (result.deferred) { if (force) setNotice("素材任务进行中，请稍后检查"); return; }
-      if (force) setEditRevision(n => n + 1);
-      await refreshRef.current({ silent: !force });
-      if (force) setNotice(`已检查 ${result.checked} 条，发现 ${result.missing} 条疑似失效，已归入失效素材；未删除任何记录`);
-    } catch { setError("文件状态检查未完成，素材数据已保留"); }
+      const result = await api<{ checked: number; cached: number; missing: number; deferred?: boolean }>("/maintenance/files", { force:true });
+      if (result.deferred) { setFileCheckFeedback({ kind: 'warning', message: '素材任务进行中，本次未执行完整检查，请稍后重试。' }); return; }
+      const message = `已检查 ${result.checked} 条，发现 ${result.missing} 条疑似失效，已归入失效素材；未删除任何记录。`;
+      setFileCheckFeedback({ kind: 'success', message });
+      setEditRevision(n => n + 1);
+      try { await refreshRef.current(); }
+      catch { setFileCheckFeedback({ kind: 'warning', message: `${message} 页面数据未能更新，请重新读取。` }); }
+    } catch (e) { setFileCheckFeedback({ kind: 'error', message: `文件状态检查未完成：${e instanceof Error ? e.message : '请稍后重试'}。素材记录已保留。` }); }
     finally { fileCheckInFlight.current = false; setFileChecking(false); }
   }
   useEffect(() => {
+    let current=true;setSessionError('');
     api<{ token: string; trashAvailable: boolean; folderPickerAvailable?: boolean }>("/session")
       .then((s) => {
+        if(!current)return;
         token = s.token;
         setTrashAvailable(s.trashAvailable);
         setFolderPickerAvailable(s.folderPickerAvailable !== false);
         setReady(true);
       })
-      .catch(fail);
-  }, []);
-  useEffect(() => {
-    if (!ready || !refreshSeconds) return;
-    const check = () => { if (document.visibilityState === "visible") void checkFiles(); };
-    // 打开页面时不要立刻检查全部文件状态：它有 7000+ 个文件要 stat，
-    // 与首屏那几个接口抢同一条数据库通道，会把"打开"整体拖慢（实测约 1s）。
-    // 推迟到界面稳定之后，随后跟随刷新设置，文件检查最短间隔 60 秒。
-    const kickoff = setTimeout(check, 5000);
-    const timer = setInterval(() => void check(), Math.max(60000, refreshSeconds * 1000));
-    document.addEventListener("visibilitychange", check);
-    return () => { clearTimeout(kickoff); clearInterval(timer); document.removeEventListener("visibilitychange", check); };
-  }, [ready, refreshSeconds]);
+      .catch(e=>{if(current)setSessionError(e instanceof Error?e.message:'素材库连接未能建立');});
+    return()=>{current=false;};
+  }, [sessionRetry]);
   useEffect(() => {
     const t = setTimeout(() => setSearch(q), 220);
     return () => clearTimeout(t);
   }, [q]);
   useEffect(() => {
     if (!ready) return;
-    setLoading(true);
-    refresh()
-      .catch(fail)
-      .finally(() => setLoading(false));
+    let current=true;setLoading(true);
+    refresh({stats:false})
+      .catch(e=>{if(current)fail(e);})
+      .finally(() => {if(current)setLoading(false);});
+    return()=>{current=false;browseRead.current?.abort();};
   }, [
     ready,
     view,
@@ -1194,17 +1300,21 @@ function App() {
       return () => clearTimeout(t);
     }
   }, [notice]);
+  useEffect(() => { if (memory.display) saveStored('shiguang.volume', volume); }, [volume, memory.display]);
   useEffect(() => {
     if (audio.current) audio.current.volume = volume;
   }, [volume, playing]);
-  function navigate(v: string) {
+  function navigate(v: string, fromHistory = false, fromCodexTask = false) {
+    if (!Object.hasOwn(viewPaths, v)) return;
+    if(!fromCodexTask)cancelCodexNavigation();
+    if (!fromHistory && location.hash !== viewHash(v)) history.pushState({ shiguangView: v }, "", viewHash(v));
     if (v !== view) {
       filterMemory.current.set(view, { q, searchMode, nameOnly, rootFilter, category, tagRules, ext, duration, createdFrom, createdTo, dateField, captureUnknown, onlyFavorites });
       const saved = filterMemory.current.get(v);
       setQ(saved?.q || "");
       setSearch(saved?.q || "");
-      setSearchMode(saved?.searchMode || "all");
-      setNameOnly(saved?.nameOnly || false);
+      setSearchMode(saved?.searchMode || searchMode);
+      setNameOnly(saved?.nameOnly ?? nameOnly);
       setRootFilter(saved?.rootFilter || []);
       setCategory(saved?.category || "");
       setTagRules(saved?.tagRules || emptyTagRules());
@@ -1216,13 +1326,35 @@ function App() {
       setCaptureUnknown(saved?.captureUnknown || false);
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(v)) pauseAudition();
+    viewRef.current = v;
     setView(v);
-    setAdvancedFilters(false);
     setRootMenuOpen(false);
     setPage(1);
     setSelected(null);
+    setMediaPreview(null);
     setMobileNav(false);
-    setLayout(v === "photo" || v === "video" ? "grid" : "list");
+    setLayout(layoutPreferences[v] || defaultLayout(v));
+  }
+  navigateRef.current = navigate;
+  useEffect(() => {
+    const sync = (initial = false) => {
+      if (['#/login', '#/account'].includes(location.hash)) return;
+      const next = viewFromHash(location.hash) || (initial && !location.hash ? viewRef.current : 'all');
+      if (next !== viewRef.current) navigateRef.current(next, true);
+      if (location.hash !== viewHash(next)) history.replaceState(history.state, '', viewHash(next));
+    };
+    const changed = () => sync();
+    window.addEventListener('hashchange', changed); window.addEventListener('popstate', changed);
+    // Reconcile the current address in case it changed between render and effect setup.
+    sync(true);
+    return () => { window.removeEventListener('hashchange', changed); window.removeEventListener('popstate', changed); };
+  }, []);
+  function resetBrowserPreferences() {
+    setExpandedNavGroups({ ...groupDefaults }); setNavCollapsed(false); setLayoutPreferences({}); setLayout(defaultLayout(view));
+    setSearchMode('all'); setNameOnly(false); setAdvancedFilters(false); setVolume(.7);
+    setSort('revealCount'); setSeriesMode(true); setPageSize(60); setCompactActions(true); setDetailsHidden(false); setDetailsWidth(340);
+    setNotice('导航与浏览偏好已恢复默认，模板、项目和素材数据保留');
   }
   async function patch(a: Asset, patch: unknown) {
     const updated = await api<Asset>("/assets/" + a.id, patch, "PATCH");
@@ -1240,7 +1372,7 @@ function App() {
   function play(a: Asset, automatic = false) {
     if (automatic && !wantsPlayback.current) return;
     if (a.ext === "ncm") {
-      setError("NCM 格式暂不支持直接试听，仍可分类及在访达中定位原文件。");
+      setError("NCM 格式暂不支持直接试听，仍可分类及在文件管理器中定位原文件。");
       return;
     }
     video.current?.pause();
@@ -1286,7 +1418,7 @@ function App() {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > length + 0.01 || end - start < 0.05) return;
     setInPoint(start); setOutPoint(Math.min(length, end));
   }
-  const libraryView = !["projects", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
+  const libraryView = !["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
   const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
@@ -1421,18 +1553,21 @@ function App() {
   }
   function assetActions(asset: Asset, grid = false) {
     if (view === "missing" || view === "offline") return <div className={"asset-quick-actions" + (grid ? " asset-card-actions" : "")} onClick={e => e.stopPropagation()}>
+      {['photo', 'video'].includes(asset.kind) && <IconButton icon={asset.kind === 'photo' ? Image : Film} title={'查看素材：' + asset.name} onClick={() => openAssetPreview(asset)}/>}
       {!folderView && <IconButton icon={FilePenLine} title={"修改分类：" + asset.name} onClick={() => setCategoryAsset(asset)}/>}
       <IconButton icon={Search} title={"尝试修复：" + asset.name} disabled={busy || fileChecking} onClick={() => setRepairIds([asset.id])}/>
       <IconButton icon={Trash2} title={"核对并清理库内记录：" + asset.name} disabled={busy || fileChecking} onClick={() => setCleanupIds([asset.id])}/>
     </div>;
     let hasMergeRecord = false; try { hasMergeRecord = readMergePairs(asset.id).length > 0; } catch { hasMergeRecord = true; }
-    return <><AssetActions asset={asset} grid={grid} compact={compactActions} busy={busy} canTrash={trashAvailable}
+    return <AssetActions asset={asset} grid={grid} compact={compactActions} busy={busy} canTrash={trashAvailable}
+      preview={['photo', 'video'].includes(asset.kind) ? () => openAssetPreview(asset) : undefined}
       reveal={() => void run(() => revealAsset(asset))} trash={() => trashAsset(asset)}
       tags={() => setTagAsset(asset)} category={!folderView ? () => setCategoryAsset(asset) : undefined}
       extraCategory={!folderView ? () => setQuickCategory(asset) : undefined}
       move={folderView ? () => moveAsset(asset) : undefined}
       project={() => void run(() => addToProject([asset.id]))} inProject={projectMembers.some(m => m.asset_id === asset.id)}
-      favorite={() => void run(() => patch(asset, { favorite: !asset.favorite }))}/>{(hasMergeRecord || selected?.id === asset.id) && <button disabled={busy} onClick={() => setRepairIds([asset.id])}>核对合并结果</button>}</>;
+      favorite={() => void run(() => patch(asset, { favorite: !asset.favorite }))}
+      reviewMerge={(hasMergeRecord || selected?.id === asset.id) ? () => setRepairIds([asset.id]) : undefined}/>;
   }
   function operationInput() {
     return {
@@ -1463,21 +1598,21 @@ function App() {
       });
   }
   const title =
-    view === "projects" ? "项目" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
         : view === "all"
           ? "全部素材"
           : view === "favorites"
-            ? "我的收藏"
+            ? "收藏"
             : view === "review"
               ? "待确认素材"
               : view === "missing" ? "失效素材" : view === "offline"
                 ? "离线素材"
                 : kindNames[view];
   const count = (v: string) =>
-    v === "all"
+    !stats ? "—" : v === "all"
       ? stats.total
       : v === "favorites"
         ? stats.favorites
@@ -1492,11 +1627,15 @@ function App() {
     ["video", "视频素材", Film],
     ["sfx", "音效", AudioLines],
     ["music", "音乐", Music2],
-    ["categoryManagement", "分类管理", FolderOpen],
     ["projects", "项目", FolderKanban],
+    ["projectAssets", "项目资产", Users],
+    ["projectVideos", "生成视频", Film],
+    ["storyboard", "分镜设计", Clapperboard],
+    ["promptTemplates", "提示词模板", Sparkles],
+    ["favorites", "收藏", Star],
+    ["categoryManagement", "分类管理", FolderOpen],
     ["tagManagement", "标签管理", Tag],
     ["duplicates", "重复音频", Copy],
-    ["favorites", "我的收藏", Star],
     ["review", "待确认", CircleHelp],
     ["offline", "离线素材", HardDrive],
     ["missing", "失效素材", CircleAlert],
@@ -1529,8 +1668,7 @@ function App() {
   function resizeDetails(clientX: number) {
     setDetailsWidth(Math.max(280, Math.min(600, window.innerWidth - 80, window.innerWidth - clientX)));
   }
-  if (loginOpen) {
-    return (
+  const specialPage=loginOpen ? (
       <CloudLoginPage
         auth={cloudAuth}
         onBack={closeLogin}
@@ -1539,11 +1677,7 @@ function App() {
           setModal("settings");
         }}
       />
-    );
-  }
-  if (uploadTasksOpen) return <UploadTaskEntry key={`${cloudAuth.view?.accountId || "signed-out"}:${cloudAuth.view?.deviceId || ""}:${cloudAuth.view?.sessionId || ""}`} onClose={() => setUploadTasksOpen(false)}/>;
-  if (workspaceOpen) {
-    return (
+    ) : uploadTasksOpen ? <UploadTaskEntry key={`${cloudAuth.view?.accountId || "signed-out"}:${cloudAuth.view?.deviceId || ""}:${cloudAuth.view?.sessionId || ""}`} onClose={closeUploadTasks}/> : workspaceOpen ? (
       <CloudWorkspace
         auth={cloudAuth}
         request={api}
@@ -1551,16 +1685,16 @@ function App() {
         onLogin={openLogin}
         onNotice={setNotice}
         initialTab={workspaceInitialTab}
-        onOpenUploadTasks={() => { setWorkspaceInitialTab("audio"); setUploadTasksOpen(true); }}
+        onOpenUploadTasks={openUploadTasks}
       />
-    );
-  }
+    ) : null;
   return (
-    <div className={"app" + (navCollapsed ? " nav-collapsed" : "") + (detailsHidden ? " details-hidden" : "")} style={{ "--details-width": `${detailsWidth}px`, "--player-height": `${playerHeight}px`, "--inspector-top": `${topbarHeight}px` } as React.CSSProperties}>
+    <><div hidden={!!specialPage} className={"app library-workspace" + (navCollapsed ? " nav-collapsed" : "") + (detailsHidden ? " details-hidden" : "")} style={{ "--details-width": `${detailsWidth}px`, "--player-height": `${playerHeight}px`, "--inspector-top": `${topbarHeight}px` } as React.CSSProperties}>
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
       {navSettings && <NavigationSettings items={[...navs.map(([id, label]): [string, string] => [id, label]), ["roots", "素材目录"]]} hidden={hiddenNav}
         toggle={id => { setHiddenNav(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]); if (view === id) navigate("all"); }}
-        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} refreshSeconds={refreshSeconds} setRefreshSeconds={setRefreshSeconds} close={closeNavSettings}/>}
+        memory={memory} setMemory={setMemory} resetBrowserPreferences={resetBrowserPreferences}
+        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} refreshSeconds={refreshSeconds} setRefreshSeconds={setRefreshSeconds} storyboardAppearance={storyboardAppearance} setStoryboardAppearance={setStoryboardAppearance} close={closeNavSettings}/>}
       <aside className={"sidebar " + (mobileNav ? "visible" : "")}>
         <div className="brand">
           <span className="brand-icon">
@@ -1576,41 +1710,49 @@ function App() {
           <button className="icon-button sidebar-collapse" title={navCollapsed ? "展开侧栏" : "折叠侧栏"} aria-label={navCollapsed ? "展开侧栏" : "折叠侧栏"} aria-expanded={!navCollapsed} onClick={() => setNavCollapsed(v => !v)}>{navCollapsed ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}</button>
           <button className="icon-button" title="界面设置" aria-label="界面设置" onClick={() => setNavSettings(true)}><SlidersHorizontal size={17}/></button>
         </div>
+        {(globalStats.error||globalStats.reading&&!stats)&&<div className="sidebar-statistics" role={globalStats.error?'alert':'status'}><span>{globalStats.error?(stats?'数量暂未更新，保留上次确认值':'数量未读到，请重试'):'正在读取数量…'}</span>{globalStats.error&&<button disabled={globalStats.reading} title={globalStats.error} aria-label={globalStats.identityChanged?'刷新页面核对素材库':'重试侧栏数量'} onClick={()=>globalStats.identityChanged?location.reload():void globalStats.refresh()}><RefreshCw size={14}/><span>{globalStats.identityChanged?'核对素材库':'重试'}</span></button>}</div>}
         <div className="sidebar-scroll">
         <nav aria-label="主导航">
-          {navs.filter(([v]) => !hiddenNav.includes(v)).map(([v, label, Icon]) => (
-            <React.Fragment key={v}>
-              <button
-                title={label}
-                aria-label={label}
-                aria-current={view === v ? "page" : undefined}
-                className={view === v ? "nav-item selected" : "nav-item"}
-                onClick={() => navigate(v)}
-              >
-                <Icon size={19} />
+          {navigationGroups.map(({ id, label, icon: GroupIcon, items }) => {
+            const visibleItems = navs.filter(([value]) => items.includes(value) && !hiddenNav.includes(value));
+            if (!visibleItems.length) return null;
+            const expanded = expandedNavGroups[id];
+            return <section key={id} className="sidebar-nav-group" aria-label={label}>
+              <button type="button" className={"nav-item nav-group-toggle" + (!expanded && items.includes(view) ? " has-current" : "")}
+                title={label} aria-label={label} aria-expanded={expanded} aria-controls={`navigation-${id}`}
+                onClick={() => setExpandedNavGroups(previous => ({ ...previous, [id]: !previous[id] }))}>
+                <ChevronRight size={14} className="nav-group-chevron" aria-hidden="true"/>
+                <GroupIcon size={18} aria-hidden="true"/>
                 <span>{label}</span>
-                {v !== "projects" && v !== "categoryManagement" && v !== "tagManagement" && v !== "duplicates" && (
-                  <small>{count(v).toLocaleString()}</small>
-                )}
               </button>
-            </React.Fragment>
-          ))}
+              <div id={`navigation-${id}`} className="nav-group-items" hidden={!expanded}>
+                {visibleItems.map(([value, itemLabel, Icon]) => <button key={value} type="button"
+                  title={itemLabel} aria-label={itemLabel} aria-current={view === value ? "page" : undefined}
+                  className={view === value ? "nav-item selected" : "nav-item"} onClick={() => navigate(value)}>
+                  <Icon size={19} aria-hidden="true"/>
+                  <span>{itemLabel}</span>
+                  {!["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
+                </button>)}
+              </div>
+            </section>;
+          })}
         </nav>
         {!hiddenNav.includes("roots") && <>
-        <div className="side-heading">
-          素材目录
-          <IconButton
-            icon={FolderPlus}
-            title="管理素材目录"
-            onClick={() => void openModal("folders")}
-          />
+        <section className="sidebar-nav-group sidebar-roots" aria-label="素材目录">
+        <div className="roots-heading">
+          <button type="button" className="nav-item nav-group-toggle" aria-label="素材目录" aria-expanded={expandedNavGroups.roots} aria-controls="navigation-roots" title="素材目录"
+            onClick={() => setExpandedNavGroups(previous => ({ ...previous, roots: !previous.roots }))}>
+            <ChevronRight size={14} className="nav-group-chevron" aria-hidden="true"/><FolderOpen size={18} aria-hidden="true"/><span>素材目录</span>
+          </button>
+          <IconButton icon={FolderPlus} title="管理素材目录" onClick={() => void openModal("folders")}/>
         </div>
-        <div className="root-nav">
+        <div id="navigation-roots" className="root-nav nav-group-items" hidden={!expandedNavGroups.roots}>
           {roots.map((r) => (
             <button
               key={r.id}
               title={r.path}
               onClick={() => {
+                if (!libraryView) navigate("all");
                 setRootFilter(
                   rootFilter.length === 1 && rootFilter[0] === r.id
                     ? []
@@ -1628,6 +1770,7 @@ function App() {
             </button>
           ))}
         </div>
+        </section>
         </>}
         </div>
         <div className="sidebar-bottom">
@@ -1646,35 +1789,51 @@ function App() {
         </div>
       </aside>
       <main aria-busy={refreshing || showWork || undefined}>
-        <header ref={topbarRef} className="topbar">
+        <header ref={topbarRef} className="topbar library-topbar">
           <IconButton
             icon={Menu}
             title={mobileNav ? "关闭导航" : "展开导航"}
             onClick={() => setMobileNav(!mobileNav)}
           />
           <div className="breadcrumb">
-            素材库<span>/</span>
+            {["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
           </div>
-          <span className="local-label">
-            <HardDrive size={14} />
-            LOCAL LIBRARY
-          </span>
-          {libraryView && <button className="icon-button details-toggle" title={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-label={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-expanded={!detailsHidden} aria-controls="asset-details" onClick={() => { if (detailsHidden && !selected && assets[0]) setSelected(assets[0]); setDetailsHidden(v => !v); }}>{detailsHidden ? <PanelRightOpen size={18}/> : <PanelRightClose size={18}/>}</button>}
-          {jobsActive && (
+          <BackgroundReadStatus/>
+          <div className="topbar-actions">
+          {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy} label="当前项目" onChange={id=>{cancelCodexNavigation();setActiveProject(id);}}/></div>}
+          <CodexTaskEntry controller={codexTasks}/>
+          <div className="file-check-entry">
+            <button className="plain file-check-button" aria-label="检查文件状态" aria-busy={fileChecking || undefined} aria-describedby={fileCheckFeedback ? 'file-check-feedback' : undefined} disabled={!ready || fileChecking} title={fileChecking ? '正在核对整个素材库，可切换栏目；请勿重复发起。' : '手动完整检查整个素材库的文件状态，可能耗时；不会删除原文件或记录。'} onClick={() => void checkFiles()}>
+              <RefreshCw size={16} className={fileChecking ? 'spin' : ''} aria-hidden="true"/>
+              <span className="file-check-label">{fileChecking ? '检查中…' : '检查文件状态'}</span>
+            </button>
+            {fileCheckFeedback && <div id="file-check-feedback" className="file-check-feedback" data-kind={fileCheckFeedback.kind} role={fileCheckFeedback.kind === 'error' ? 'alert' : 'status'}>
+              {fileCheckFeedback.kind === 'success' ? <Check size={17} aria-hidden="true"/> : <CircleAlert size={17} aria-hidden="true"/>}
+              <p>{fileCheckFeedback.message}</p>
+              <IconButton icon={X} title="关闭文件检查提示" onClick={() => setFileCheckFeedback(null)}/>
+            </div>}
+          </div>
+          {jobs.some(j=>j.type!=="codex-generation"&&["running","queued"].includes(j.status)) && (
             <span className="work-pill" role="status" aria-live="polite">
               <span className="spinner" aria-hidden="true" />
-              {jobs.some((j) => j.status === "running") ? "正在读取文件…" : "正在读取参数…"}
+              {jobs.some((j) => j.type !== "codex-generation" && j.status === "running") ? "正在读取文件…" : "正在读取参数…"}
             </span>
           )}
-          <label className="current-project"><FolderKanban size={16}/><select aria-label="当前项目" value={activeProject} disabled={busy} onChange={e => setActiveProject(e.target.value)}><option value="">选择项目</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-          <button className="primary add-root-button" aria-label="添加素材目录" onClick={() => void openModal("folders")}>
+          {libraryView && <button className="icon-button details-toggle" title={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-label={detailsHidden ? "显示素材详情" : "隐藏素材详情"} aria-expanded={!detailsHidden} aria-controls="asset-details" onClick={() => { if (detailsHidden && !selected && assets[0]) setSelected(assets[0]); setDetailsHidden(v => !v); }}>{detailsHidden ? <PanelRightOpen size={18}/> : <PanelRightClose size={18}/>}</button>}
+          {libraryView && <button className="primary add-root-button" aria-label="添加素材目录" onClick={() => void openModal("folders")}>
             <FolderPlus size={17} />
             <span className="add-root-label">添加素材目录</span>
-          </button>
+          </button>}
           <AccountEntry auth={cloudAuth} onLogin={openLogin} onWorkspace={openWorkspace} onNotice={setNotice} />
+          </div>
         </header>
-        {view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
+        {projectsError&&["projects","storyboard","promptTemplates"].includes(view)&&<div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={()=>setProjectRevision(n=>n+1)}>重试项目列表</button></div>}
+        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={setActiveProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(storyboardDirty&&activeProject!==target.projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
+        <ProjectVideoWorkspace onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
+        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
+        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" && !projectsKnown ? <div className="empty" role="status">{projectsError?"项目列表未能读取，请重试":"正在读取项目…"}</div> : view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
@@ -1699,28 +1858,32 @@ function App() {
               <div>
                 <h1>{title}</h1>
                 <p>
-                  <strong>{total.toLocaleString()}</strong> 个素材
+                  <strong>{(listLoading||listError)&&!assets.length?"—":total.toLocaleString()}</strong> 个素材
                   {category && <> · {categoryLabel(category)}</>}
                 </p>
               </div>
               <div className="heading-tools">
                 <IconButton
                   icon={RefreshCw}
-                  title="刷新索引显示"
-                  onClick={() => void run(refresh)}
+                  title="刷新列表（不扫描硬盘）"
+                  onClick={() => void refresh().catch(fail)}
                 />
+                <button className="plain" disabled={busy} title="打开素材目录与任务，选择对应目录后点击重新扫描" onClick={() => void openModal("folders")}>
+                  <FolderOpen size={16} />检查新增文件
+                </button>
                 <ToolbarPopover label="更多素材操作" icon={MoreHorizontal}>{close => <>
-                  <button disabled={fileChecking} onClick={() => { close(); void checkFiles(true); }}><RefreshCw size={16} className={fileChecking ? "spin" : ""}/>{fileChecking ? "检查中…" : "检查文件状态"}</button>
                   <button onClick={() => { close(); window.location.href = "/api/export" + (checked.size ? "?ids=" + [...checked].join(",") : ""); }}><Download size={16}/>导出清单{checked.size ? `（${checked.size} 项）` : ""}</button>
                 </>}</ToolbarPopover>
                 {(view === "missing" || view === "offline") && <button title="尝试修复所选记录（每次最多50条，仅预览候选）" disabled={busy || !checked.size || fileChecking || checked.size > 50} onClick={() => setRepairIds([...checked])}><Search size={16}/>尝试修复所选</button>}
                 {(view === "missing" || view === "offline") && <button className="danger" disabled={!checked.size || fileChecking || checked.size > 200} onClick={() => setCleanupIds([...checked])}><Trash2 size={16}/>清理所选记录</button>}
               </div>
             </section>
+            {auxiliaryError&&<div className="banner error" role="alert"><span>{auxiliaryError}。素材列表独立显示，目录或任务信息保留上次确认值。</span><button aria-label="重试目录和任务信息" onClick={()=>void refresh({stats:false}).catch(fail)}>重新读取</button></div>}
             {error && (
               <div className="banner error" role="alert">
                 <CircleAlert size={17} />
                 <span>{error}</span>
+                {listError&&<button aria-label="重试素材列表" onClick={()=>void refresh({stats:false}).catch(fail)}>重新读取列表</button>}
                 <IconButton
                   icon={X}
                   title="关闭提示"
@@ -1836,7 +1999,7 @@ function App() {
                 onChange={(e) => setExt(e.target.value)}
               >
                 <option value="">全部格式</option>
-                {stats.formats.map((f) => (
+                {(stats?.formats??[]).map((f) => (
                   <option key={f} value={f}>
                     {f.toUpperCase()}
                   </option>
@@ -2016,10 +2179,10 @@ function App() {
               </div>
             )}
             <div className="content-toolbar">
-              <div>
-                <span className="result-count" role="status">{loading ? "搜索中…" : `${total.toLocaleString()} 条结果${grouped && seriesCount ? ` · ${seriesCount} 个系列 · ${seriesEntries - seriesCount} 个独立素材` : ""}`}</span>
+              <div className="library-results-summary">
+                <span className="result-count" role="status">{listLoading ? "搜索中…" : listError&&!assets.length ? "结果未能读取" : `${total.toLocaleString()} 条结果${grouped && seriesCount ? ` · ${seriesCount} 个系列 · ${seriesEntries - seriesCount} 个独立素材` : ""}`}</span>
               </div>
-              <div>
+              <div className="library-view-controls">
                 {layout === "list" && <div className="segmented series-mode" aria-label="素材分组方式">
                   <button aria-pressed={!seriesMode} onClick={() => setSeriesMode(false)}>平铺</button>
                   <button aria-pressed={seriesMode} onClick={() => setSeriesMode(true)}>同系列分组</button>
@@ -2030,7 +2193,7 @@ function App() {
                   onChange={(e) => setSort(e.target.value)}
                 >
                   <option value="name">名称排序</option>
-                  <option value="revealCount">访达次数：从多到少</option>
+                  <option value="revealCount">定位次数：从多到少</option>
                   <option value="projectCount">项目使用次数：从多到少</option>
                   <option value="recent">最近修改</option>
                   <option value="createdNewest">创建时间最新</option>
@@ -2117,12 +2280,12 @@ function App() {
                     <p>正在读取…</p>
                   </div>
                 )}
-                {loading && !assets.length ? (
+                {listLoading && !assets.length ? (
                   <div className="empty">
                     <LoaderCircle className="spin" />
                     <h3>读取素材库</h3>
                   </div>
-                ) : !assets.length ? (
+                ) : listError && !assets.length ? <div className="empty" role="status"><h3>素材列表未能读取</h3><p>请重新读取，当前并未确认素材库为空。</p></div> : !assets.length ? (
                   <div className="empty">
                     <Library size={40} />
                     <h3>
@@ -2178,6 +2341,7 @@ function App() {
                             (selected?.id === a.id ? "selected" : "")
                           }
                           onClick={() => setSelected(a)}
+                          onDoubleClick={event => { if (mediaDoubleClick(event)) openAssetPreview(a); }}
                         >
                           <input
                             aria-label={"选择 " + a.name}
@@ -2192,7 +2356,7 @@ function App() {
                               title={audioAsset(a) ? "试听" : "查看素材"}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                audioAsset(a) ? play(a) : setSelected(a);
+                                audioAsset(a) ? play(a) : openAssetPreview(a);
                               }}
                             >
                               {playing?.id === a.id && auditionActive ? (
@@ -2209,7 +2373,7 @@ function App() {
                                 {a.ext.toUpperCase()}
                                 <i>·</i>
                                 {kindNames[a.kind]}
-                                <i>·</i>访达 {a.reveal_count || 0} 次
+                                <i>·</i>定位 {a.reveal_count || 0} 次
                                 {!!projectUsageCounts[a.id]&&<><i>·</i>已用于 {projectUsageCounts[a.id]} 个项目</>}
                                 {projectMembers.some(m => m.asset_id === a.id) && <b className="project-member-badge">已加入项目</b>}
                                 {!a.online && <b>离线</b>}
@@ -2242,6 +2406,7 @@ function App() {
                         }
                         key={a.id}
                         onClick={() => setSelected(a)}
+                        onDoubleClick={event => { if (mediaDoubleClick(event)) openAssetPreview(a); }}
                       >
                         <div className="card-top">
                           <input
@@ -2286,8 +2451,8 @@ function App() {
                 </div>
                 <footer className="pagination">
                   <span>
-                    共 {total.toLocaleString()} 项
-                    {grouped && <small> · {seriesEntries.toLocaleString()} 个列表条目</small>}
+                    {(listLoading||listError)&&!assets.length?'数量尚未读到':`共 ${total.toLocaleString()} 项`}
+                    {grouped && !(listLoading||listError) && <small> · {seriesEntries.toLocaleString()} 个列表条目</small>}
                     {refreshing && (
                       <span className="inline-loading" role="status">
                         <span className="spinner" aria-hidden="true" />读取中…
@@ -2303,7 +2468,7 @@ function App() {
                         {[20,50,60,100,200].map(size => <option key={size} value={size}>{size} 条/页</option>)}
                       </select>
                     </label>
-                    <PaginationControls page={page} pages={pages} change={setPage} disabled={loading || refreshing}/>
+                    {(listLoading||listError)&&!assets.length?null:<PaginationControls page={page} pages={pages} change={setPage} disabled={loading || refreshing}/>}
                   </div>
                 </footer>
               </section>
@@ -2357,11 +2522,12 @@ function App() {
                       ) : selected.kind === "photo" ? (
                         <button
                           className="image-preview"
-                          onClick={() => setModal("zoom")}
+                          aria-label={'查看原图：' + selected.name}
+                          onClick={() => openAssetPreview(selected)}
                         >
                           <Thumbnail asset={selected} large />
                         </button>
-                      ) : selected.online ? (
+                      ) : selected.online && !previewAsset ? (
                         <video
                           ref={video}
                           key={selected.id + String(videoProxy)}
@@ -2383,6 +2549,7 @@ function App() {
                       ) : (
                         <Thumbnail asset={selected} />
                       )}
+                      {selected.kind === 'video' && <button type="button" className="plain" aria-haspopup="dialog" onClick={() => openAssetPreview(selected)}>大窗查看原视频</button>}
                       {mediaError && (
                         <div className="preview-error">
                           <span>{mediaError}</span>
@@ -2428,7 +2595,7 @@ function App() {
                         />
                         <IconButton
                           icon={ExternalLink}
-                          title="在访达中显示"
+                          title="在文件管理器中显示"
                           disabled={busy}
                           onClick={() =>
                             void run(() => revealAsset(selected))
@@ -2482,11 +2649,11 @@ function App() {
                           }}
                         />
                       </div>
-                      <div className="detail-facts"><div><small>时长</small><strong>{time(selected.duration)}</strong></div><div><small>文件大小</small><strong>{bytes(selected.size)}</strong></div><div><small>访达次数</small><strong>{selected.reveal_count || 0}<span> 次</span></strong></div></div>
+                      <div className="detail-facts"><div><small>时长</small><strong>{time(selected.duration)}</strong></div><div><small>文件大小</small><strong>{bytes(selected.size)}</strong></div><div><small>定位次数</small><strong>{selected.reveal_count || 0}<span> 次</span></strong></div></div>
                       <details className="detail-file-info"><summary>文件信息<ChevronDown size={14}/></summary><dl>
                         <dt>文件状态</dt><dd>{({ online: "文件存在", missing: "疑似失效，待人工清理", offline: "目录离线", unavailable: "暂时无法访问", unknown: "尚未检查" } as Record<string, string>)[selected.file_status] || "尚未检查"}</dd>
                         <dt>最后检查</dt><dd>{selected.file_checked_ms ? new Date(selected.file_checked_ms).toLocaleString("zh-CN") : "尚未检查"}</dd>
-                        <dt>访达打开次数</dt>
+                        <dt>文件位置打开次数</dt>
                         <dd>{selected.reveal_count || 0} 次</dd>
                         <dt>格式</dt>
                         <dd>{selected.ext.toUpperCase()}</dd>
@@ -2773,6 +2940,8 @@ function App() {
           }}
         />
       )}
+      {previewAsset && <MediaViewer target={assetMediaView(previewAsset)} label="素材原图或视频预览" onClose={() => setMediaPreview(null)} onPlay={pauseAudition}
+        repairLabel="返回素材详情核对" onRepair={() => { setSelected(previewAsset); setDetailsHidden(false); }}/>}
       {playing && (
         <div ref={playerRef} className="player audition-player">
           <AuditionControls asset={playing} playing={auditionActive} position={position} length={length} volume={volume} inPoint={inPoint} outPoint={outPoint} loop={loop}
@@ -2838,7 +3007,7 @@ function App() {
           }}
         >
           <section
-            className={"modal " + (modal === "zoom" ? "zoom-modal" : modal === "move" ? "move-modal" : "")}
+            className={"modal " + (modal === "folders" ? "library-folders-dialog" : modal === "zoom" ? "zoom-modal" : modal === "move" ? "move-modal" : "")}
             role="dialog"
             aria-modal="true"
             aria-label={
@@ -2879,7 +3048,7 @@ function App() {
             <div className="modal-body">
               {modal === "folders" && (
                 <>
-                  <div className="add-folder">
+                  <div className="add-folder library-folder-picker">
                     <select
                       aria-label="新增目录类型"
                       value={folderKind}
@@ -2908,16 +3077,16 @@ function App() {
                       {busy ? "等待文件夹选择…" : "选择文件夹"}
                     </button>
                   </div>
-                  <div className="folder-path-entry"><input aria-label="素材文件夹绝对路径" placeholder="输入素材文件夹绝对路径" value={folderPath} onChange={e => setFolderPath(e.target.value)}/><button className="plain" disabled={busy || !folderPath.trim()} onClick={() => void run(async () => { await api("/roots", { path: folderPath.trim(), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
+                  <div className="folder-path-entry"><label className="library-folder-path-field"><span>文件夹绝对路径</span><input aria-label="素材文件夹绝对路径" dir="ltr" placeholder="例如 D:\素材\音乐 或 /Volumes/素材" value={folderPath} onChange={e => setFolderPath(e.target.value)}/></label><button className="plain" disabled={busy || !folderPath.trim()} onClick={() => void run(async () => { await api("/roots", { path: folderPath.trim(), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
                   {allRoots.map((r) => (
                     <div className={"folder-record" + (r.retired ? " is-retired" : "")} key={r.id}>
                       <FolderOpen size={21} />
-                      <div>
+                      <div className="library-folder-info">
                         <strong>
                           {r.name}
                           {!r.retired && <small>{kindNames[r.kind]}</small>}
                         </strong>
-                        <p>{r.path}</p>
+                        <p className="library-folder-path" title={r.path} dir="ltr">{r.path}</p>
                         <span>{r.retired ? "已注销（可恢复）" : r.online ? "在线" : "离线"}</span>
                         <small className="root-management-info">{r.managed_added_ms ? `加入管理：${new Date(r.managed_added_ms).toLocaleString("zh-CN")}` : "历史加入时间未知"}{r.management_order ? ` · 保留顺序 ${r.management_order}` : ""}</small>
                       </div>
@@ -3095,7 +3264,7 @@ function App() {
                     <div className="job" key={j.id}>
                       {j.status === "running" && <span className="spinner" aria-hidden="true" />}
                       <strong>
-                        {allRoots.find((r) => r.id === j.rootId)?.name ||
+                        {j.type === "codex-generation" ? "Codex 生成" : allRoots.find((r) => r.id === j.rootId)?.name ||
                           roots.find((r) => r.id === j.rootId)?.name ||
                           "素材扫描"}
                       </strong>
@@ -3103,7 +3272,9 @@ function App() {
                         {
                           (
                             {
-                              running: "扫描中",
+                              running: j.type === "codex-generation" ? "生成中" : "扫描中",
+                              interrupted: "已停止",
+                              cancelled: "已取消",
                               done: "完成",
                               partial: "部分完成",
                               failed: "失败",
@@ -3340,6 +3511,7 @@ function App() {
                         }
                         onClick={() =>
                           databaseAction(async () => {
+                            globalStats.invalidate();
                             const state = await api<MysqlState>(
                               "/mysql/config",
                               {
@@ -3628,10 +3800,9 @@ function App() {
       )}
       {/* 首次读取素材库：全屏转圈，避免看到空壳 */}
       {!ready && (
-        <div className="work-overlay" role="status" aria-live="polite">
+        <div className="work-overlay" role={sessionError?'alert':'status'} aria-live="polite">
           <div className="work-card">
-            <span className="spinner spinner-lg" aria-hidden="true" />
-            <p>正在读取素材库…</p>
+            {sessionError?<><p>{sessionError}</p><button onClick={()=>retrySession(n=>n+1)}>重试连接素材库</button></>:<><span className="spinner spinner-lg" aria-hidden="true"/><p>正在读取素材库…</p></>}
           </div>
         </div>
       )}
@@ -3644,7 +3815,7 @@ function App() {
           </div>
         </div>
       )}
-    </div>
+    </div>{specialPage&&<div ref={specialFrame} className="codex-special-page"><div className="codex-task-overlaybar"><CodexTaskEntry controller={codexTasks}/></div><div className="codex-special-content">{specialPage}</div></div>}<div className="codex-task-host" style={{"--inspector-top":`${specialPage?specialTaskTop:topbarHeight}px`} as React.CSSProperties}><ConciergeWorkspace controller={codexTasks} request={api} activeProject={activeProject} projects={projects} onNavigate={openCodexTask}/></div></>
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);

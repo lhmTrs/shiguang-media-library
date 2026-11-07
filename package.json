@@ -14,7 +14,21 @@
     "stop:portable": "node scripts/stop-portable.mjs",
     "package": "node scripts/package.mjs",
     "update:check": "node scripts/update-code.mjs --check",
-    "update:code": "node scripts/update-code.mjs"
+    "update:code": "node scripts/update-code.mjs",
+    "test:storyboard": "node --test tests/storyboard-*.test.mjs",
+    "test:storyboard:browser": "node tests/storyboard-database-ui.mjs",
+    "test:prompts": "node --test tests/prompt-templates.test.mjs",
+    "test:prompts:browser": "node tests/prompt-templates-ui.mjs",
+    "test:prompts:mysql": "node tests/prompt-templates-mysql.mjs",
+    "test:codex": "node --test tests/prompt-codex*.test.mjs",
+    "test:codex:browser": "node tests/prompt-codex-ui.mjs",
+    "test:codex:mysql": "node tests/prompt-codex-mysql.mjs",
+    "test:navigation:browser": "node tests/navigation-preferences-ui.mjs",
+    "test:codex:connection:browser": "node tests/codex-connection-ui.mjs",
+    "test:project-assets": "node --test tests/project-assets.test.mjs",
+    "test:project-assets:browser": "node tests/project-assets-ui.mjs",
+    "test:project-assets:mysql": "node tests/project-assets-mysql.mjs",
+    "test:storyboard:mysql": "node tests/storyboard-database-mysql.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

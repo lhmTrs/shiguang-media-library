@@ -14,6 +14,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeCloudAudioFailureDetails } from "./cloud-audio-receiver.mjs";
+import { isCloudAudioRootPath } from "./cloud-audio-path.mjs";
 
 export const JOB_STATES = Object.freeze([
   "queued",
@@ -51,7 +52,7 @@ function safeTimestamp(value) {
 }
 
 /** 只保留明确允许的任务字段；未知字段一律丢弃，避免把令牌/路径写进持久文件。 */
-function normalizeJob(raw) {
+function normalizeJob(raw, pathPlatform) {
   if (!isPlain(raw)) return null;
   const id = safeId(raw.id);
   const audioId = safeId(raw.audioId);
@@ -70,7 +71,7 @@ function normalizeJob(raw) {
     originHost: safeText(raw.originHost, 255),
     rootId,
     rootName: safeText(raw.rootName, 80),
-    rootPath: typeof raw.rootPath === "string" && raw.rootPath.startsWith("/") && raw.rootPath.length <= 1024 && !CONTROL_RE.test(raw.rootPath) ? raw.rootPath : "",
+    rootPath: isCloudAudioRootPath(raw.rootPath, pathPlatform) ? raw.rootPath : "",
     rootGeneration: safeText(raw.rootGeneration, 128),
     epoch: Number.isSafeInteger(raw.epoch) && raw.epoch >= 0 ? raw.epoch : 0,
     category: safeText(raw.category, 60),
@@ -121,6 +122,7 @@ function normalizeProvenance(raw) {
 
 export class CloudAudioJobStore {
   #dataDir;
+  #pathPlatform;
   #jobsFile;
   #provenanceFile;
   #jobs = new Map();
@@ -129,9 +131,10 @@ export class CloudAudioJobStore {
   #closed = false;
   #interrupted = 0;
 
-  constructor(dataDir) {
+  constructor(dataDir, { pathPlatform = process.platform } = {}) {
     if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) throw new Error("dataDir must be absolute");
     this.#dataDir = dataDir;
+    this.#pathPlatform = pathPlatform;
     this.#jobsFile = path.join(dataDir, "cloud-audio-jobs.json");
     this.#provenanceFile = path.join(dataDir, "cloud-audio-provenance.json");
   }
@@ -145,7 +148,7 @@ export class CloudAudioJobStore {
     const jobs = await this.#readJson(this.#jobsFile);
     if (isPlain(jobs) && Array.isArray(jobs.jobs)) {
       for (const raw of jobs.jobs) {
-        const record = normalizeJob(raw);
+        const record = normalizeJob(raw, this.#pathPlatform);
         if (!record) continue;
         if (ACTIVE_STATES.has(record.state)) {
           record.state = "interrupted";
@@ -214,7 +217,7 @@ export class CloudAudioJobStore {
       updatedAt: now,
       startedAt: 0,
       completedAt: 0,
-    });
+    }, this.#pathPlatform);
     if (!record) throw new Error("invalid job");
     this.#jobs.set(record.id, record);
     this.#prune();
@@ -226,7 +229,7 @@ export class CloudAudioJobStore {
     if (this.#closed) return null;
     const current = this.#jobs.get(id);
     if (!current) return null;
-    const next = normalizeJob({ ...current, ...patch, id, updatedAt: Date.now() });
+    const next = normalizeJob({ ...current, ...patch, id, updatedAt: Date.now() }, this.#pathPlatform);
     if (!next) throw new Error("invalid job update");
     this.#jobs.set(id, next);
     await this.#persistJobs();

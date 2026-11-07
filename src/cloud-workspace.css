@@ -1,0 +1,192 @@
+/* Cloud workspace presentation only; all selectors stay inside this workspace. */
+.cloud-workspace .cw-audio-workspace { min-width: 0; }
+.cloud-workspace .cw-audio-heading {
+  align-items: center;
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+}
+.cloud-workspace .cw-audio-heading .cw-subtabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+  gap: 3px;
+}
+.cloud-workspace .cw-audio-heading .cw-subtabs button {
+  min-height: 34px;
+  padding: 7px 12px;
+  justify-content: center;
+  font-size: 12px;
+}
+.cloud-workspace .cw-audio-heading .cw-subtabs svg { flex: none; }
+.cloud-workspace .cw-audio { gap: 16px; }
+.cloud-workspace .cw-audio .manual-audio {
+  margin: 0;
+  padding: 0 0 20px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+.cloud-workspace .cw-audio .manual-audio h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.cloud-workspace .cw-audio .manual-audio > p {
+  margin: 6px 0 14px;
+  line-height: 1.65;
+  font-size: 12px;
+}
+.cloud-workspace .cw-audio .manual-audio-fields { gap: 8px; }
+.cloud-workspace .cw-audio .manual-audio-fields input,
+.cloud-workspace .cw-audio .manual-audio-fields select {
+  min-height: 34px;
+  border-radius: 5px;
+  background: var(--c-fff);
+  padding: 7px 9px;
+  font-size: 12px;
+}
+.cloud-workspace .cw-audio .manual-audio > form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(210px, 1.2fr);
+}
+.cloud-workspace .cw-audio .manual-audio-intents {
+  gap: 0;
+  margin: 16px 0 0;
+  border-top: 1px solid var(--line);
+}
+.cloud-workspace .cw-audio .manual-audio-intents li {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 12px 0;
+}
+.cloud-workspace .cw-audio .manual-audio-intents li > strong { font-size: 12px; }
+.cloud-workspace .cw-audio .manual-audio-intents li > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.cloud-workspace .cw-audio .manual-audio-intents li > [role="alert"] { color: var(--c-b94f49); }
+.cloud-workspace .cw-audio .cw-audio-search {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 260px) auto auto;
+  margin: 0;
+  align-items: center;
+}
+.cloud-workspace .cw-audio-search > [role="status"] {
+  color: var(--muted);
+  font-size: 11px;
+}
+.cloud-workspace .cw-audio-toolbar { gap: 8px; }
+.cloud-workspace .cw-audio-add-root { margin-top: 0; }
+.cloud-workspace .cw-audio-list { border-radius: 5px; }
+.cloud-workspace .cw-audio-list-head { min-height: 34px; }
+.cloud-workspace .cw-audio-row { min-height: 62px; padding-top: 10px; padding-bottom: 10px; }
+.cloud-workspace .cw-audio-job-list { gap: 0; }
+.cloud-workspace .cw-audio-job {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 12px 0;
+  background: transparent;
+}
+.cloud-workspace .cw-audio-job-title { gap: 8px; flex-wrap: wrap; }
+.cloud-workspace .cw-audio-job-title strong { max-width: 100%; }
+.cloud-workspace .cw-audio-job-actions { flex-wrap: wrap; }
+.cloud-workspace .cw-upload-overview { max-width: 960px; }
+.cloud-workspace .cw-upload-overview > .cw-pagebar { margin-bottom: 0; }
+.cloud-workspace .cw-upload-facts { padding: 18px 0; gap: 16px; }
+.cloud-workspace .cw-upload-unavailable { margin: 16px 0; }
+.cloud-workspace .cw-upload-overview > .cw-pagebar-actions { justify-content: flex-start; }
+
+/* One maintenance surface: original facts, query, then explicit adoption. */
+.cloud-workspace .cw-maintenance {
+  width: 100%;
+  max-width: 1040px;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--c-fff);
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+.cloud-workspace .cw-maintenance .cw-pagebar { margin: 0; padding: 0 0 16px; border-bottom: 1px solid var(--line); }
+.cloud-workspace .cw-maintenance .cw-pagebar-title { max-width: 760px; }
+.cloud-workspace .cw-maintenance h2 { font-size: 16px; margin: 0 0 6px; }
+.cloud-workspace .cw-maintenance p { margin: 0; line-height: 1.7; }
+.cloud-workspace .cw-maintenance .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+}
+.cloud-workspace .cw-maintenance .field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: inherit;
+  background: var(--c-fff);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.cloud-workspace .cw-maintenance-prepare { display: grid; gap: 14px; }
+.cloud-workspace .cw-maintenance-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 220px)); gap: 14px; }
+.cloud-workspace .cw-maintenance-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px 24px;
+  margin: 0;
+  padding: 2px 0 6px;
+}
+.cloud-workspace .cw-maintenance-facts > div { min-width: 0; }
+.cloud-workspace .cw-maintenance-facts dt { font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+.cloud-workspace .cw-maintenance-facts dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.cloud-workspace .cw-maintenance-fingerprint { grid-column: 1 / -1; }
+.cloud-workspace .cw-maintenance-facts .cw-maintenance-state {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 650;
+}
+.cloud-workspace .cw-maintenance-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cloud-workspace .cw-maintenance-actions button { min-height: 34px; white-space: normal; text-align: left; }
+.cloud-workspace .cw-maintenance-confirm { display: grid; gap: 14px; border-top: 1px solid var(--line); padding-top: 18px; }
+.cloud-workspace .cw-maintenance-check { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.65; cursor: pointer; }
+.cloud-workspace .cw-maintenance-check input { flex: none; width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--green); }
+.cloud-workspace .cw-maintenance-notice { border-left: 3px solid var(--green); padding: 10px 12px; background: var(--soft); font-size: 12px; }
+.cloud-workspace .cw-maintenance-notice.danger { border-color: var(--c-b94f49); color: var(--c-b94f49); }
+@media (max-width: 1000px) {
+  .cloud-workspace .cw-audio .cw-audio-search { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .cloud-workspace .cw-maintenance-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .cloud-workspace .cw-audio-heading { gap: 12px; margin-bottom: 16px; }
+  .cloud-workspace .cw-audio-heading .cw-subtabs { width: 100%; }
+  .cloud-workspace .cw-audio-heading .cw-subtabs button { font-size: 11px; padding: 7px 6px; }
+  .cloud-workspace .cw-audio .manual-audio > form,
+  .cloud-workspace .cw-audio .cw-audio-search { grid-template-columns: minmax(0, 1fr); }
+  .cloud-workspace .cw-audio .manual-audio-fields input,
+  .cloud-workspace .cw-audio .manual-audio-fields select { width: 100%; max-width: 100%; }
+  .cloud-workspace .cw-audio-job-title strong { white-space: normal; overflow-wrap: anywhere; }
+  .cloud-workspace .cw-audio-row { gap: 7px; }
+  .cloud-workspace .cw-audio-actions { flex-wrap: wrap; }
+  .cloud-workspace .cw-maintenance { padding: 16px 14px; }
+  .cloud-workspace .cw-maintenance-versions,
+  .cloud-workspace .cw-maintenance-facts { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .cloud-workspace .cw-maintenance-actions button { max-width: 100%; }
+}

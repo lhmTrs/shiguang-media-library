@@ -37,7 +37,7 @@ const api=async(url,body,method)=>{const r=await fetch('/api'+url,{method:method
 const originalSet=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(window.failStorage&&key.startsWith('asset-merge-intent:'))throw Error('controlled storage failure');return originalSet.call(this,key,value);};
 ${extract.IconButton}
 ${extract.useMergeDetails}
-function AssetActions(){return <span>原在线操作组件在此夹具不启动</span>;}
+function AssetActions({reviewMerge,busy}){return reviewMerge ? <button disabled={busy} onClick={reviewMerge}>核对合并结果</button> : <span>原在线操作组件在此夹具不启动</span>;}
 function Fixture(){const[open,setOpen]=useState(false),[assets,setAssets]=useState(all),[selected,setSelected]=useState(all[0]),[checked,setChecked]=useState(new Set(all.map(a=>a.id))),[editRevision,setEditRevision]=useState(0),[repairIds,setRepairIds]=useState(null);
  const[note,setNote]=useState('未保存详情草稿'),[tagText,setTagText]=useState(''),[captureEdit,setCaptureEdit]=useState(''),editCategory='类别',editSub='',editKind='music',editingAsset=null,view=new URLSearchParams(location.search).has('online')?'all':'offline',folderView=true,busy=false,fileChecking=false;const compactActions=true,trashAvailable=false,projectMembers=[];
  const setNotice=value=>window.events.notice=value,setCategoryAsset=()=>{},setCleanupIds=()=>{},refreshRef={current:async()=>{window.events.refreshes++;}},fail=e=>window.events.errors.push(String(e));

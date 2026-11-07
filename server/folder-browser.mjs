@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { folderCreationName } from "./folder-creation-name.mjs";
 import { PENDING_DIRECTORY, PENDING_NAMES, directoryClass } from "./directory-classification.mjs";
 
 export function folderScope(lib, rootId, directory = "") {
@@ -26,13 +27,11 @@ export function folderPredicate(lib, query) {
 
 // Folder browsing and explicit creation do not write legacy categories.
 export class FolderBrowser {
-  constructor(lib) { this.lib = lib; }
+  constructor(lib, { platform = process.platform } = {}) { this.lib = lib; this.platform = platform; }
   async create(input) {
     if (process.env.MEDIA_READONLY_FILES === "1") throw Error("当前为原文件只读模式，不允许新建文件夹");
     const { root, directory, absolute } = folderScope(this.lib, input.root, input.directory || "");
-    const name = typeof input.name === "string" ? input.name.trim() : "";
-    if (!name || name.startsWith(".") || /[/\\:\x00-\x1f]/.test(input.name) || Buffer.byteLength(name) > 255)
-      throw Error("请输入有效文件夹名称，不能包含斜线、冒号或以点开头");
+    const name = folderCreationName(input.name, this.platform);
     const realRoot = await this.lib.checked(root.path, root.id);
     const parent = await this.lib.checked(absolute, root.id);
     if (realRoot !== root.path || parent !== absolute) throw Error("不允许在符号链接目录内新建文件夹");

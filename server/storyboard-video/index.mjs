@@ -1,0 +1,2 @@
+import {VideoMedia} from './media.mjs';import {StoryboardVideo} from './store.mjs';import {storyboardVideoRouter} from './router.mjs';
+export function createStoryboardVideo(options){const media=options.media??new VideoMedia({...options,command:options.command??process.env.MEDIA_STORYBOARD_FFPROBE??'ffprobe'}),store=new StoryboardVideo({...options,media}).init(),entry=storyboardVideoRouter(store,options);return{store,media,...entry};}

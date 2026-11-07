@@ -17,7 +17,7 @@ import { repairRootState, mergeAlias } from "./asset-repair.mjs";
 import { watch as fsWatch } from "node:fs";
 import path from "node:path";
 import { fileCreated, id } from "./library.mjs";
-import { kindForExt, readAssetId, rootIdentity, sha256File, walkFiles, within, writeAssetId } from "./fs-identity.mjs";
+import { kindForExt, indexFileIdentity, readAssetId, rootIdentity, sha256File, walkFiles, within, writeAssetId } from "./fs-identity.mjs";
 import {
   emptyManifest,
   entryFromAsset,
@@ -404,8 +404,8 @@ async function reconcileRootWork(lib, root, opts = {}) {
       !["missing", "offline", "unavailable"].includes(rowNow.file_status) &&
       Number(rowNow.size) === file.size &&
       Math.abs(Number(rowNow.mtime) - file.mtimeMs) < 1 &&
-      Number(rowNow.dev) === file.dev &&
-      Number(rowNow.ino) === file.ino;
+      indexFileIdentity(rowNow).dev === file.dev &&
+      indexFileIdentity(rowNow).ino === file.ino;
     if (unchanged) report.skipped++;
     try {
       if (!unchanged)
@@ -426,13 +426,13 @@ async function reconcileRootWork(lib, root, opts = {}) {
     }
     if (digest) {
       setDigest.run(digest, entryId);
-    } else if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || Number(rowNow.dev) !== file.dev || Number(rowNow.ino) !== file.ino || bindingChanged)) {
+    } else if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || indexFileIdentity(rowNow).dev !== file.dev || indexFileIdentity(rowNow).ino !== file.ino || bindingChanged)) {
       // 文件内容原地变了（size/mtime 变）而本轮没重算哈希：**必须清掉旧哈希**，
       // 否则将来跨盘移动时会拿过期哈希去匹配，认不回来。
       lib.db.prepare("UPDATE assets SET sha256=NULL WHERE id=?").run(entryId);
       delete entry.sha256;
     }
-    if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || Number(rowNow.dev) !== file.dev || Number(rowNow.ino) !== file.ino) || digest || bindingChanged) delete entry.fingerprintBinding;
+    if (rowNow && (rowNow.path !== file.abs || Number(rowNow.size) !== file.size || Number(rowNow.mtime) !== file.mtimeMs || indexFileIdentity(rowNow).dev !== file.dev || indexFileIdentity(rowNow).ino !== file.ino) || digest || bindingChanged) delete entry.fingerprintBinding;
     entry.relPath = file.relPath;
     entry.size = file.size;
     entry.dev = file.dev;
@@ -654,14 +654,15 @@ async function reconcilePathsWork(lib, root, relPaths, opts = {}) {
       report.needFullReconcile = true;
       continue;
     }
+    const identity = indexFileIdentity(stat);
     const ext = path.extname(rel).slice(1).toLowerCase();
     const current = byPath.get(abs);
     if (current) {
       if (!current.trashed) {
         lib.db
           .prepare("UPDATE assets SET size=?,mtime=?,dev=?,ino=?,online=1,file_checked_ms=0,file_status='unknown' WHERE id=?")
-          .run(stat.size, stat.mtimeMs, stat.dev, stat.ino, current.id);
-        if (Number(current.size) !== stat.size || Number(current.mtime) !== stat.mtimeMs || Number(current.dev) !== stat.dev || Number(current.ino) !== stat.ino || manifest.entries[current.id]?.fingerprintBinding?.file?.ctimeMs !== undefined && manifest.entries[current.id].fingerprintBinding.file.ctimeMs !== stat.ctimeMs) {
+          .run(stat.size, stat.mtimeMs, identity.dev, identity.ino, current.id);
+        if (Number(current.size) !== stat.size || Number(current.mtime) !== stat.mtimeMs || indexFileIdentity(current).dev !== identity.dev || indexFileIdentity(current).ino !== identity.ino || manifest.entries[current.id]?.fingerprintBinding?.file?.ctimeMs !== undefined && manifest.entries[current.id].fingerprintBinding.file.ctimeMs !== stat.ctimeMs) {
           lib.db.prepare('UPDATE assets SET sha256=NULL WHERE id=?').run(current.id);
           if (manifest.entries[current.id]) { delete manifest.entries[current.id].sha256; delete manifest.entries[current.id].fingerprintBinding; }
         }
@@ -670,33 +671,33 @@ async function reconcilePathsWork(lib, root, relPaths, opts = {}) {
       continue;
     }
     // ① 先按 dev:ino 精确认领：外部改名时旧记录仍是旧名字，只有 inode 能对上
-    let candidates = lib.db
+    let candidates = identity.ino === null ? [] : lib.db
       .prepare("SELECT * FROM assets WHERE root_id=? AND trashed=0 AND dev=? AND ino=?")
-      .all(root.id, stat.dev, stat.ino);
+      .all(root.id, identity.dev, identity.ino);
     // Weak name/size matches need the full reconciler's evidence, never quick-path adoption.
     if (candidates.length === 1) {
       const target = candidates[0];
       try {
         lib.db
           .prepare("UPDATE assets SET path=?,name=?,ext=?,size=?,mtime=?,dev=?,ino=?,sha256=NULL,online=1,file_checked_ms=0,file_status='unknown' WHERE id=?")
-          .run(abs, path.basename(rel), ext, stat.size, stat.mtimeMs, stat.dev, stat.ino, target.id);
+          .run(abs, path.basename(rel), ext, stat.size, stat.mtimeMs, identity.dev, identity.ino, target.id);
       } catch {
         report.needFullReconcile = true; // 目标路径被别的记录占着，交给全量对账精确处理
         continue;
       }
       if (manifest?.entries?.[target.id]) {
         delete manifest.entries[target.id].sha256; delete manifest.entries[target.id].fingerprintBinding;
-        Object.assign(manifest.entries[target.id], { relPath: rel, size: stat.size, dev: stat.dev, ino: stat.ino });
+        Object.assign(manifest.entries[target.id], { relPath: rel, size: stat.size, dev: identity.dev, ino: identity.ino });
       }
       if (opts.tagFiles !== false) await writeAssetId(abs, target.id);
       report.adopted++;
       report.handled++;
       continue;
     }
-    const moved = await adoptMovedFromRoot(lib, root, { abs, relPath: rel, size: stat.size, mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino });
+    const moved = await adoptMovedFromRoot(lib, root, { abs, relPath: rel, size: stat.size, mtimeMs: stat.mtimeMs, dev: identity.dev, ino: identity.ino });
     if (!rootRegistrationUnchanged(lib, targetRegistration)) return { ...report, registrationChanged: true };
     if (moved) {
-      manifest.entries[moved.id] = { ...entryFromAsset(moved), relPath: rel, dev: stat.dev, ino: stat.ino, size: stat.size };
+      manifest.entries[moved.id] = { ...entryFromAsset(moved), relPath: rel, dev: identity.dev, ino: identity.ino, size: stat.size };
       report.adopted++;
       report.handled++;
       continue;
@@ -988,7 +989,7 @@ export async function relocateRoot(lib, rootId, input, opts = {}) {
   // 预检：新位置与原根的重合度（同盘靠 dev:ino，跨盘退化为"相对位置相同 + 同大小"）
   const rows = lib.db.prepare("SELECT id,path,size,dev,ino FROM assets WHERE root_id=? AND trashed=0").all(rootId);
   const files = await walkFiles({ path: next, name: root.name, kind: root.kind });
-  const byIno = new Map(files.map((f) => [`${f.dev}:${f.ino}`, f]));
+  const byIno = new Map(files.filter(f => f.dev && f.ino).map((f) => [`${f.dev}:${f.ino}`, f]));
   const byRel = new Map(files.map((f) => [f.relPath, f]));
   let matched = 0;
   for (const row of rows) {

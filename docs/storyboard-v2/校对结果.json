@@ -1,0 +1,110 @@
+{
+  "scope": "仅设计Schema关键字子集及合成示例自检；不代表应用、完整JSON Schema元规范或数据库功能已验收。",
+  "checks": [
+    {
+      "name": "Schema内部引用与关键字检查",
+      "result": "pass",
+      "schema_references": 101,
+      "evaluated_keywords": [
+        "$ref",
+        "additionalProperties",
+        "const",
+        "enum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minLength",
+        "minimum",
+        "multipleOf",
+        "pattern",
+        "properties",
+        "required",
+        "type",
+        "uniqueItems"
+      ]
+    },
+    {
+      "name": "合成双镜示例：结构、身份、父子关系、对白承接与时间轴",
+      "result": "pass"
+    },
+    {
+      "name": "JSON序列化再读取一致",
+      "result": "pass"
+    },
+    {
+      "name": "未知字段结构接受并可往返保留",
+      "result": "pass"
+    },
+    {
+      "name": "镜头永久ID重复",
+      "result": "correctly_rejected",
+      "reason": "duplicate id"
+    },
+    {
+      "name": "人物引用不存在",
+      "result": "correctly_rejected",
+      "reason": "unknown character"
+    },
+    {
+      "name": "造型属于另一人物",
+      "result": "correctly_rejected",
+      "reason": "wrong look parent"
+    },
+    {
+      "name": "场景状态不存在",
+      "result": "correctly_rejected",
+      "reason": "wrong state parent"
+    },
+    {
+      "name": "道具持有人未出场",
+      "result": "correctly_rejected",
+      "reason": "holder not present"
+    },
+    {
+      "name": "时间轴不一致",
+      "result": "correctly_rejected",
+      "reason": "shot end"
+    },
+    {
+      "name": "跨镜对白编号不存在",
+      "result": "correctly_rejected",
+      "reason": "unknown dialogue"
+    },
+    {
+      "name": "默认造型不属于人物",
+      "result": "correctly_rejected",
+      "reason": "invalid default"
+    },
+    {
+      "name": "非法UUID文档编号",
+      "result": "correctly_rejected",
+      "reason": "$.文档编号 pattern"
+    },
+    {
+      "name": "时长超过毫秒精度",
+      "result": "correctly_rejected",
+      "reason": "$.场景[0].镜头[0].时长秒 multipleOf"
+    },
+    {
+      "name": "继承场景的每镜采用导出字段与引用规格",
+      "result": "pass"
+    },
+    {
+      "name": "当前共享规范化器：UTF-16键序、小数与负零校验向量",
+      "result": "pass",
+      "input": {
+        "z": 0,
+        "😀": {
+          "zoom": 1.25,
+          "x": 0.1
+        },
+        "": "原文"
+      },
+      "canonical": "{\"z\":0,\"😀\":{\"x\":0.1,\"zoom\":1.25},\"\":\"原文\"}",
+      "sha256": "8d72de83e321ba44af11940bc30890f0ce7841e3cbf7a76b9c6d9dfa803563ea"
+    }
+  ],
+  "total": 16,
+  "failed": 0
+}

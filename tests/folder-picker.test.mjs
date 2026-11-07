@@ -84,3 +84,40 @@ test("unsupported platforms and invalid system roots never execute a command", a
   await assert.rejects(createFolderPicker({ platform: "win32", env: { SystemRoot: "relative" }, run })(), /绝对路径/);
   assert.equal(calls, 0);
 });
+
+test("Windows directory paths require a full drive or server/share UNC, not current-drive or device paths", async () => {
+  const invalid = ["\\current-drive\\media", "/current-drive/media", "C:relative", "\\\\server", "\\\\server\\", "\\\\server\\\\share", "//server/share", "\\\\?\\C:\\media", "\\\\.\\C:\\media", "\\??\\C:\\media", "\\\\?\\UNC\\server\\share", "C:\\a\\..\\media", "\\\\server\\share\\.\\media", "C:\\media:stream", "C:\\bad\nname", "C:\\bad\rname", "C:\\bad\tname", "C:\\bad\x7fname"];
+  for (const selected of invalid) {
+    const choose = createFolderPicker({ platform: "win32", env: {}, run: async () => ({ stdout: JSON.stringify({ path: selected }) }) });
+    await assert.rejects(choose(), error => /填写文件夹绝对路径/.test(error.message) && !error.message.includes(selected), JSON.stringify(selected));
+  }
+});
+
+test("Windows directory validation preserves full drive/UNC case, Unicode, spaces and exact length boundary", async () => {
+  const valid = ["d:\\素材 空格\\MiXeD & '项目'", "E:/素材/音乐", "\\\\NaS\\中文共享", "\\\\NaS\\中文共享\\音效 空格", "D:\\" + "x".repeat(8189)];
+  for (const selected of valid) {
+    const choose = createFolderPicker({ platform: "win32", env: {}, run: async () => ({ stdout: JSON.stringify({ path: selected }) }) });
+    assert.deepEqual(await choose(), { cancelled: false, path: selected });
+  }
+  const tooLong = "D:\\" + "x".repeat(8190);
+  await assert.rejects(createFolderPicker({ platform: "win32", env: {}, run: async () => ({ stdout: JSON.stringify({ path: tooLong }) }) })(), /绝对路径/);
+});
+
+test("Windows SystemRoot must be fully drive-rooted and rejects unsafe roots before invoking the runner", async () => {
+  let calls = 0;
+  for (const SystemRoot of ["C:Windows", "\\Windows", "\\\\server\\share", "\\\\?\\C:\\Windows", "\\\\.\\C:\\Windows", "C:\\..\\Windows", "C:\\Windows\nprivate", "C:\\Windows\x7fprivate"]) {
+    await assert.rejects(createFolderPicker({ platform: "win32", env: { SystemRoot }, run: async () => { calls++; return { stdout: '{"path":null}' }; } })(), /绝对路径/);
+  }
+  assert.equal(calls, 0);
+  const choose = createFolderPicker({ platform: "win32", env: { SYSTEMROOT: "d:\\wInDoWs" }, run: async (program, args, options) => {
+    calls++; assert.equal(program, "d:\\wInDoWs\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"); assert.equal(options.shell, false); return { stdout: '{"path":null}' };
+  } });
+  assert.deepEqual(await choose(), { cancelled: true }); assert.equal(calls, 1);
+});
+
+test("Windows chooser bounds raw output bytes before JSON parsing, not only selected character count", async () => {
+  for (const stdout of [" ".repeat(16384) + '{"path":null}', JSON.stringify({ path: "D:\\" + "界".repeat(6000) })]) {
+    assert.ok(Buffer.byteLength(stdout) > 16384);
+    await assert.rejects(createFolderPicker({ platform: "win32", env: {}, run: async () => ({ stdout }) })(), /绝对路径/);
+  }
+});

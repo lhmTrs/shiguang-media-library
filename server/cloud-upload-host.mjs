@@ -1,3 +1,4 @@
+import { cloudAudioPlatformCapability, requireCloudAudioPlatform } from "./cloud-audio-platform.mjs";
 // Passive ownership/registration only. No scheduler/router construction, recovery,
 // default DDL, network, uploads, or ownership of the shared application DB.
 import fs from 'node:fs/promises';
@@ -14,29 +15,33 @@ const fail=(code,status=409)=>{throw Object.assign(Error(code),{code,status});};
 const sizes=Object.freeze({registration:4096,before:65536});
 const tableNames=Object.keys(UPLOAD_TABLES), sourceSchema=sha(UPLOAD_TABLES);
 export class CloudUploadHost {
+ #platform=cloudAudioPlatformCapability();
+ assertPlatform(){requireCloudAudioPlatform();}
  constructor(lib,{upload,sourceId,readMaintenance,hook=async()=>{}}={}){
   this.lib=lib;this.upload=upload;this.sourceId=sourceId;this.readMaintenance=readMaintenance;this.hook=hook;
   this.db=lib.db;this.active=0;this.exclusive=false;this.closed=false;this.registration=null;this.loadCode=null;this.store=null;
+  if(!this.#platform.supported){this.repair=null;this.merge=null;this.fieldRegistration=Object.freeze(Object.fromEntries(["readiness","preview","confirm","result","finish"].map(name=>[name,()=>{requireCloudAudioPlatform();}])));return;}
   this.fieldRegistration=new FieldRegistration(this);
   this.repair=new AssetRepair(lib,{upload,batchStore:null});this.merge=new AssetMerge(lib,{upload,batchStore:null});
  }
  async init(){
+  if(!this.#platform.supported)return this;
   // Merely read a bounded registration; absence never creates tables or a ledger.
   try{this.base=await fs.realpath(this.lib.dataDir);this.file=path.join(this.base,'cloud-upload-host-registration.json');this.registration=await this.readRegistration();}
   catch(e){this.loadCode=e.code==='ENOENT'?null:'REGISTRATION_UNKNOWN';}
   return this;
  }
- async readRegistration(){
+ async readRegistration(){ this.assertPlatform();
   const h=await fs.open(this.file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try{const st=await h.stat();if(!st.isFile()||st.nlink!==1||st.size>sizes.registration||(st.mode&0o077))fail('REGISTRATION_UNKNOWN');const b=Buffer.alloc(st.size);let n=0;while(n<b.length){const r=await h.read(b,n,b.length-n,n);if(!r.bytesRead)fail('REGISTRATION_UNKNOWN');n+=r.bytesRead;}const after=await h.stat(),named=await fs.lstat(this.file);if([after,named].some(v=>v.dev!==st.dev||v.ino!==st.ino||v.size!==st.size||v.mtimeMs!==st.mtimeMs||v.ctimeMs!==st.ctimeMs))fail('REGISTRATION_UNKNOWN');const v=JSON.parse(b.toString());if(!v||v.format!==1||!UUID.test(v.sourceId||'')||!UUID.test(v.generation||'')||!UUID.test(v.commandId||'')||!Number.isSafeInteger(v.version)||v.version<1||!['INIT_PENDING','READY'].includes(v.phase)||typeof v.dbIdentity!=='object'||!Number.isSafeInteger(v.dbIdentity?.dev)||!Number.isSafeInteger(v.dbIdentity?.ino)||v.schema!==sourceSchema||!(/^[a-f0-9]{64}$/).test(v.requestSha256||''))fail('REGISTRATION_UNKNOWN');return v;}finally{await h.close();}
  }
- descriptor(allowClosed=false){
+ descriptor(allowClosed=false){ this.assertPlatform();
   if(this.closed&&!allowClosed)fail('HOST_CLOSED',503);if(this.lib.db!==this.db)fail('STORE_BINDING_CHANGED');if(this.db.kind==='mysql')fail('MYSQL_REGISTRATION_NOT_VALIDATED');
   if(!UUID.test(this.sourceId||'')||!this.base||realpathSync(this.lib.dataDir)!==this.base)fail('STORE_BINDING_CHANGED');
   const name=this.db.name;if(typeof name!=='string'||!path.isAbsolute(name)||realpathSync(name)!==name||!name.startsWith(this.base+path.sep))fail('STORE_BINDING_CHANGED');
   const st=lstatSync(name);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)fail('STORE_BINDING_CHANGED');return{engine:'sqlite',dev:st.dev,ino:st.ino,birthtimeMs:st.birthtimeMs};
  }
- schema(){
+ schema(){ this.assertPlatform();
   const present=this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN (${tableNames.map(()=>'?').join(',')}) ORDER BY name`).all(...tableNames);
   if(!present.length)return{state:'ABSENT',before:[]};if(present.length!==tableNames.length)fail('STORE_SCHEMA_PARTIAL');
   const before=[];let bytes=0;
@@ -52,8 +57,9 @@ export class CloudUploadHost {
   }
   return{state:'VALID',before};
  }
- clearStore(){this.store=null;this.repair.batchStore=null;this.merge.batchStore=null;}
+ clearStore(){this.store=null;if(this.repair)this.repair.batchStore=null;if(this.merge)this.merge.batchStore=null;}
  async readiness(){
+  if(!this.#platform.supported)return{ready:false,phase:"UNKNOWN",version:0,code:this.#platform.code,canRegister:false,statisticsKnown:false,historyState:"UNINSPECTED"};
   const version=this.registration?.version||0;
   try{if(this.exclusive)return{ready:false,phase:'REGISTERING',version,code:'MAINTENANCE_BUSY'};if(this.loadCode)fail(this.loadCode);const identity=this.descriptor(),schema=this.schema();
    if(!this.upload?.repairInitialized||this.upload.disposing){this.clearStore();return{ready:false,phase:'UNKNOWN',version,code:'UPLOAD_STATE_UNKNOWN',canRegister:false};}
@@ -63,11 +69,11 @@ export class CloudUploadHost {
    return{ready:true,phase:'READY',version,code:'STORE_READY'};
   }catch(e){this.clearStore();return{ready:false,phase:'UNKNOWN',version,code:publicHostCode(e),canRegister:false};}
  }
- baseGuard(identity,lock){
+ baseGuard(identity,lock){ this.assertPlatform();
   if(!same(this.descriptor(),identity))fail('STORE_BINDING_CHANGED');
   if(this.lib.locks.size!==1||!this.lib.locks.has(lock)||this.lib.workers!==0||this.lib.metadataPending.size||this.lib.metadataQueue.length||(this.lib.repairIndexReaders??0)!==0||[...this.lib.jobs.values()].some(j=>['running','queued','cancelling'].includes(j.status)))fail('HOST_BUSY',423);
  }
- async quiet(assetIds,identity,lock,guard=()=>this.baseGuard(identity,lock)){
+ async quiet(assetIds,identity,lock,guard=()=>this.baseGuard(identity,lock)){ this.assertPlatform();
   guard();if(!this.upload?.repairInitialized)fail('UPLOAD_STATE_UNKNOWN');
   if(this.upload.jobs.length||this.upload.busy||this.upload.controllers.size||this.upload.operations.size||this.upload.settledTasks.size)fail('BLOCKED_UPLOAD_REFERENCE');
   const proof=await this.upload.repairState(assetIds);guard();if(!proof.known||proof.state!=='idle')fail('UPLOAD_STATE_UNKNOWN');
@@ -75,10 +81,10 @@ export class CloudUploadHost {
   const maintenance=await this.readMaintenance?.();guard();if(maintenance?.known!==true||maintenance.allowed!==true)fail('MAINTENANCE_BUSY',423);
   const current=this.upload.repairDiskState(assetIds);if(!current.known||!same(current,proof))fail('UPLOAD_STATE_CHANGED');return proof;
  }
- async write(name,value,limit,guard,{exclusive=false}={}){
+ async write(name,value,limit,guard,{exclusive=false}={}){ this.assertPlatform();
   const raw=Buffer.from(JSON.stringify(value)+'\n');if(raw.length>limit)fail('REGISTRATION_LIMIT');guard();const target=path.join(this.base,name),temp=exclusive?target:path.join(this.base,`.host-registration-${crypto.randomUUID()}.tmp`);const h=await fs.open(temp,'wx',0o600);try{guard();await h.writeFile(raw);guard();await h.sync();guard();}finally{await h.close();}guard();if(!exclusive){await fs.rename(temp,target);guard();}const d=await fs.open(this.base,'r');try{guard();await d.sync();guard();}finally{await d.close();}guard();
  }
- async register(input,options={}){
+ async register(input,options={}){ this.assertPlatform();
   if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(k=>k!=='assertCurrent')||options.assertCurrent!==undefined&&typeof options.assertCurrent!=='function')fail('HOST_ASSERT_INVALID',400);
   const capability=options.assertCurrent;
   const assertCurrent=()=>{if(capability===undefined)return;const result=capability();if(result&&typeof result.then==='function'){Promise.resolve(result).catch(()=>{});fail('HOST_ASSERT_ASYNC');}if(result!==true)fail('HOST_IDENTITY_UNKNOWN');};
@@ -108,12 +114,12 @@ export class CloudUploadHost {
   if(this.closed||this.exclusive||maintenance&&this.active)fail('HOST_BUSY',423);this.active++;if(maintenance)this.exclusive=true;
   try{return await work();}finally{this.active--;if(maintenance)this.exclusive=false;}
  }
- async repairCall(method,args){
+ async repairCall(method,args){ this.assertPlatform();
   const readiness=await this.readiness();if(['preview','confirm','recover'].includes(method)&&!readiness.ready)fail(readiness.code==='STORE_NOT_REGISTERED'?'UPLOAD_STATE_UNKNOWN':readiness.code);
   const result=await this.repair[method](...args);
   return result?.operationId?{...result,...this.repair.get(result.operationId)}:result;
  }
- async mergeCall(method,args){
+ async mergeCall(method,args){ this.assertPlatform();
   const readiness=await this.readiness();const mutation=['preview','confirm','recover'].includes(method);
   if(mutation&&!readiness.ready)fail(readiness.code==='STORE_NOT_REGISTERED'?'UPLOAD_STATE_UNKNOWN':readiness.code);
   const exclusive=['confirm','recover'].includes(method);if(exclusive&&(this.exclusive||this.active>1))fail('HOST_BUSY',423);

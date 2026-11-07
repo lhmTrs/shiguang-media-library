@@ -1,0 +1,680 @@
+// Generated from server/storyboard/project.schema.json. Keep both artifacts in sync.
+export const schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jingxu.local/schema/project-1.0.0.json",
+  "title": "镜序标准分镜项目 1.0.0",
+  "description": "稳定 ID 与完整内容保存契约；所有未识别字段保留。ID 全局唯一与跨对象引用由运行时校验器进一步检查。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "synopsis": {
+      "type": "string"
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
+    },
+    "characters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/character"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "global_rules": {
+      "type": "object"
+    },
+    "scenes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/scene"
+      }
+    },
+    "reference_bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "generation_batches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/batch"
+      }
+    },
+    "generation_runs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "asset_manifest": {
+      "type": "object",
+      "properties": {
+        "character": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manifestEntry"
+          }
+        },
+        "scene": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manifestEntry"
+          }
+        },
+        "prop": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manifestEntry"
+          }
+        }
+      },
+      "required": [
+        "character",
+        "scene",
+        "prop"
+      ],
+      "additionalProperties": true
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$"
+    },
+    "bound_project_id": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "project_id",
+    "revision",
+    "title",
+    "synopsis",
+    "settings",
+    "characters",
+    "assets",
+    "global_rules",
+    "scenes",
+    "generation_batches",
+    "generation_runs"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "settings": {
+      "type": "object",
+      "properties": {
+        "aspect_ratio": {
+          "type": "string"
+        },
+        "fps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "platform": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "aspect_ratio",
+        "fps",
+        "target_duration_ms"
+      ],
+      "additionalProperties": true
+    },
+    "character": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "age": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "role": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "appearance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "additionalProperties": true
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^(image|audio|video)/"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "embedded_data": {
+          "type": "string",
+          "pattern": "^data:(image/(png|jpeg|webp|gif)|video/(mp4|webm)|audio/(mpeg|wav|ogg));base64,[A-Za-z0-9+/=]+$"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "media_type",
+        "content_hash"
+      ],
+      "additionalProperties": true
+    },
+    "scene": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "story_time": {
+          "type": "string"
+        },
+        "interior_exterior": {
+          "type": "string"
+        },
+        "spatial_setup": {
+          "type": "string"
+        },
+        "shots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shot"
+          }
+        },
+        "scene_asset_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "location",
+        "story_time",
+        "interior_exterior",
+        "spatial_setup",
+        "shots"
+      ],
+      "additionalProperties": true
+    },
+    "dialogue": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "character_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "text": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "performance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "character_id",
+        "text",
+        "source",
+        "performance"
+      ],
+      "additionalProperties": true
+    },
+    "binding": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "subject_id": {
+          "type": "string"
+        },
+        "locks": {
+          "type": "string"
+        },
+        "ignores": {
+          "type": "string"
+        },
+        "scene_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "shot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        }
+      },
+      "required": [
+        "asset_id",
+        "locks",
+        "ignores"
+      ],
+      "additionalProperties": true
+    },
+    "presence": {
+      "type": "object",
+      "properties": {
+        "character_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "mode": {
+          "enum": [
+            "visible",
+            "offscreen",
+            "voice_only",
+            "unspecified"
+          ]
+        }
+      },
+      "required": [
+        "character_id",
+        "mode"
+      ],
+      "additionalProperties": true
+    },
+    "continuation": {
+      "type": "object",
+      "properties": {
+        "source_shot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "dialogue_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_shot_id",
+        "dialogue_id",
+        "note"
+      ],
+      "additionalProperties": true
+    },
+    "shot": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "framing": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "camera": {
+          "type": "string"
+        },
+        "sound": {
+          "type": "string"
+        },
+        "transition": {
+          "type": "string"
+        },
+        "continuity": {
+          "type": "string"
+        },
+        "design_note": {
+          "type": "string"
+        },
+        "first_frame": {
+          "type": "string"
+        },
+        "physical_feedback": {
+          "type": "string"
+        },
+        "environment_feedback": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "character_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "uniqueItems": true
+        },
+        "character_presence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/presence"
+          }
+        },
+        "reference_bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "dialogue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dialogue"
+          }
+        },
+        "audio_continuations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/continuation"
+          }
+        },
+        "scene_asset_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prop_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "duration_ms",
+        "framing",
+        "action",
+        "camera",
+        "sound",
+        "transition",
+        "character_ids",
+        "reference_bindings",
+        "dialogue",
+        "audio_continuations"
+      ],
+      "additionalProperties": true
+    },
+    "batch": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "shot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "template_version": {
+          "type": "string"
+        },
+        "input_snapshot": {
+          "type": "object"
+        },
+        "input_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "prompt_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "requires_sync": {
+          "type": "boolean"
+        },
+        "reference_map": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "generation_duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "trim_range_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "id",
+        "shot_ids",
+        "template_version",
+        "input_snapshot",
+        "input_hash",
+        "prompt"
+      ],
+      "additionalProperties": true
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "submitting",
+            "pending",
+            "succeeded",
+            "failed",
+            "unknown"
+          ]
+        },
+        "platform_task_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_snapshot": {
+          "type": "object"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "platform_status": {
+          "type": "string"
+        },
+        "query_error": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "generation_error": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "selected_result_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "batch_id",
+        "status"
+      ],
+      "additionalProperties": true
+    },
+    "manifestEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "additionalProperties": true
+    }
+  }
+};

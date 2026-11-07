@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { TimelineImports } from "./timeline-imports.mjs";
 import { ProjectRenders } from "./project-renders.mjs";
+import { ensureCreativeProjects } from "./project-assets/schema.mjs";
 
 export class Projects {
   constructor(lib) { this.lib = lib; }
@@ -13,6 +14,7 @@ export class Projects {
          "CREATE TABLE IF NOT EXISTS project_assets (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,asset_id TEXT NOT NULL,status TEXT NOT NULL,note TEXT NOT NULL,source TEXT NOT NULL,added_at REAL NOT NULL,used_at REAL,updated_at REAL NOT NULL,snapshot TEXT NOT NULL,UNIQUE(project_id,asset_id))",
          "CREATE INDEX IF NOT EXISTS project_assets_asset ON project_assets(asset_id)"];
     for (const sql of definitions) this.lib.db.exec(sql);
+    ensureCreativeProjects(this.lib);
     this.imports = new TimelineImports(this).init();
     this.renders = new ProjectRenders(this).init();
     return this;
@@ -24,6 +26,7 @@ export class Projects {
   get(id) {
     const p = this.lib.db.prepare("SELECT * FROM media_projects WHERE id=?").get(id);
     if (!p) throw Error("项目不存在或已删除");
+    if (p.project_kind === 'public') throw Object.assign(Error('公共项目请在项目资产中管理人物'), { status: 409 });
     return p;
   }
   list() {
@@ -31,9 +34,13 @@ export class Projects {
       SUM(CASE WHEN a.status='candidate' THEN 1 ELSE 0 END) candidates,
       SUM(CASE WHEN a.status='used' THEN 1 ELSE 0 END) used
       FROM media_projects p LEFT JOIN project_assets a ON a.project_id=p.id
-      GROUP BY p.id ORDER BY p.updated_at DESC,p.id`).all().map(p => ({ ...p, candidates: Number(p.candidates), used: Number(p.used), total: Number(p.total) }));
+      WHERE p.project_kind='normal' GROUP BY p.id ORDER BY p.updated_at DESC,p.id`).all().map(p => ({ ...p, candidates: Number(p.candidates), used: Number(p.used), total: Number(p.total) }));
   }
   save(id, input) {
+    if(this.generationLocks&&id)return this.lib.db.transaction(()=>{this.lib.db.prepare("SELECT id FROM media_projects WHERE id=?"+(this.lib.db.kind==="mysql"?" FOR UPDATE":"")).get(id);this.generationLocks.assertWritable(id);return this.saveUnlocked(id,input);})();
+    return this.saveUnlocked(id,input);
+  }
+  saveUnlocked(id, input) {
     if (id) this.get(id);
     const name = this.text(input.name, 120, "项目名称", true), note = this.text(input.note ?? "", 2000, "项目备注");
     const software = input.software ?? "";
@@ -51,9 +58,23 @@ export class Projects {
   remove(id) {
     this.get(id);
     this.lib.db.transaction(() => {
+      this.lib.db.prepare('SELECT id FROM media_projects WHERE id=?' + (this.lib.db.kind === 'mysql' ? ' FOR UPDATE' : '')).get(id);
+      this.generationLocks?.assertWritable(id);
+      const hasCreative = this.lib.db.kind === 'mysql'
+        ? this.lib.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='creative_assets'").get()
+        : this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='creative_assets'").get();
+      if (hasCreative && this.lib.db.prepare('SELECT id FROM creative_assets WHERE project_id=? LIMIT 1').get(id)) throw Object.assign(Error('项目仍有创作资产（含归档记录），不能永久删除'), { status: 409 });
+      const hasStoryboard = this.lib.db.kind === 'mysql'
+        ? this.lib.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='storyboard_documents'").get()
+        : this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='storyboard_documents'").get();
+      if (hasStoryboard && this.lib.db.prepare('SELECT id FROM storyboard_documents WHERE project_id=?').get(id)) throw Object.assign(Error('项目仍有分镜，不能永久删除'), { status: 409 });
+      if(this.lib.storyboardVideos?.sources(id).length)throw Object.assign(Error('项目仍有视频记录，请先在生成视频页面处理；不会自动删除媒体'),{status:409});
+      this.lib.storyboardVideos?.removeProject(id);
       this.imports.removeProject(id);
       this.lib.db.prepare("DELETE FROM project_renders WHERE project_id=?").run(id);
       this.lib.db.prepare("DELETE FROM project_assets WHERE project_id=?").run(id);
+      const hasScript=this.lib.db.kind==='mysql'?this.lib.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_scripts'").get():this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_scripts'").get();
+      if(hasScript)this.lib.db.prepare('DELETE FROM project_scripts WHERE id=?').run(id);
       this.lib.db.prepare("DELETE FROM media_projects WHERE id=?").run(id);
     })();
     return { removed: true };

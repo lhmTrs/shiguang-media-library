@@ -1,0 +1,27 @@
+{
+  "skill": "film-storyboard-director",
+  "rulesVersion": "2026-11-04-json-v2",
+  "initializationFormat": "2.0.0",
+  "files": [
+    {
+      "file": "SKILL.md",
+      "sha256": "7fd2259468ba39f56038f586c316be56e7b8698071bb4e8584e7a74602a7229c"
+    },
+    {
+      "file": "agents/openai.yaml",
+      "sha256": "199bf189889d020263ade1117203dd72b3c65dca8a822a8871f64c1f28601458"
+    },
+    {
+      "file": "references/storyboard-json.md",
+      "sha256": "99fd5686a41dac6db87d26cdfa15719853357d4ad23352464213e67c39f1f206"
+    },
+    {
+      "file": "references/initialization.schema.json",
+      "sha256": "8c7a0a95cefc50442c89dd296cbc8ba75c67377931706188cfb02eebb167a69f"
+    },
+    {
+      "file": "references/original-director-brief.txt",
+      "sha256": "31288a82af64294c6cb157949bae3381cfa2b90ebd2974195d794548dca10d63"
+    }
+  ]
+}

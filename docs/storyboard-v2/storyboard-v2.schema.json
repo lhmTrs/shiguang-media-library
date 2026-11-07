@@ -1,0 +1,1114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shiguang.local/schemas/storyboard-2.0.0.json",
+  "title": "拾光分镜交换格式 2.0.0",
+  "description": "设计规格；中文导演分镜、项目资产与采用快照。项目归属、跨对象引用、时间轴和快照摘要必须另做语义校验。未知字段保留。",
+  "type": "object",
+  "properties": {
+    "格式": {
+      "const": "shiguang-storyboard"
+    },
+    "格式版本": {
+      "const": "2.0.0"
+    },
+    "文档编号": {
+      "$ref": "#/$defs/uuid"
+    },
+    "内容修订": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "项目名称": {
+      "$ref": "#/$defs/name"
+    },
+    "版本说明": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "类型": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "画幅": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "帧率": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 240
+    },
+    "形式": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "故事核心": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "时间轴说明": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "目标时长秒": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0.001,
+      "maximum": 9007199254740,
+      "multipleOf": 0.001
+    },
+    "总时长秒": {
+      "$ref": "#/$defs/seconds"
+    },
+    "镜头总数": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "输出范围": {
+      "$ref": "#/$defs/scope"
+    },
+    "素材清单": {
+      "$ref": "#/$defs/catalog"
+    },
+    "全片设定": {
+      "$ref": "#/$defs/anyObject"
+    },
+    "场景": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sequence"
+      },
+      "maxItems": 1000
+    },
+    "连续性与时长锁定": {
+      "$ref": "#/$defs/anyObject"
+    },
+    "应用数据": {
+      "$ref": "#/$defs/appData"
+    },
+    "扩展": {
+      "$ref": "#/$defs/anyObject"
+    }
+  },
+  "required": [
+    "格式",
+    "格式版本",
+    "文档编号",
+    "内容修订",
+    "项目名称",
+    "版本说明",
+    "类型",
+    "画幅",
+    "帧率",
+    "形式",
+    "故事核心",
+    "时间轴说明",
+    "目标时长秒",
+    "总时长秒",
+    "镜头总数",
+    "输出范围",
+    "素材清单",
+    "全片设定",
+    "场景",
+    "连续性与时长锁定"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "nullableId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "nullableUuid": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "seconds": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 9007199254740,
+      "multipleOf": 0.001
+    },
+    "duration": {
+      "type": "number",
+      "minimum": 0.001,
+      "maximum": 86400,
+      "multipleOf": 0.001
+    },
+    "anyObject": {
+      "type": "object"
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "类型": {
+          "enum": [
+            "全片",
+            "片段"
+          ]
+        },
+        "全片起始秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "起始镜号": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "结束镜号": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "类型",
+        "全片起始秒"
+      ],
+      "additionalProperties": true
+    },
+    "look": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "名称": {
+          "$ref": "#/$defs/name"
+        },
+        "说明": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "需要参考图": {
+          "type": "boolean"
+        },
+        "参考图要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "限制要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "已归档": {
+          "type": "boolean"
+        },
+        "类型标签": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "maxItems": 30
+        }
+      },
+      "required": [
+        "编号",
+        "名称",
+        "说明",
+        "需要参考图",
+        "参考图要求",
+        "限制要求",
+        "类型标签"
+      ],
+      "additionalProperties": true
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "名称": {
+          "$ref": "#/$defs/name"
+        },
+        "说明": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "需要参考图": {
+          "type": "boolean"
+        },
+        "参考图要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "限制要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "已归档": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "编号",
+        "名称",
+        "说明",
+        "需要参考图",
+        "参考图要求",
+        "限制要求"
+      ],
+      "additionalProperties": true
+    },
+    "character": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "名称": {
+          "$ref": "#/$defs/name"
+        },
+        "基础资料": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "需要参考图": {
+          "type": "boolean"
+        },
+        "参考图要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "限制要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "已归档": {
+          "type": "boolean"
+        },
+        "性格与表演": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "默认造型编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "造型": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/look"
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "编号",
+        "名称",
+        "基础资料",
+        "需要参考图",
+        "参考图要求",
+        "限制要求",
+        "性格与表演",
+        "默认造型编号",
+        "造型"
+      ],
+      "additionalProperties": true
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "名称": {
+          "$ref": "#/$defs/name"
+        },
+        "基础资料": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "需要参考图": {
+          "type": "boolean"
+        },
+        "参考图要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "限制要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "已归档": {
+          "type": "boolean"
+        },
+        "默认状态编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "状态": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/state"
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "编号",
+        "名称",
+        "基础资料",
+        "需要参考图",
+        "参考图要求",
+        "限制要求",
+        "默认状态编号",
+        "状态"
+      ],
+      "additionalProperties": true
+    },
+    "prop": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "名称": {
+          "$ref": "#/$defs/name"
+        },
+        "基础资料": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "需要参考图": {
+          "type": "boolean"
+        },
+        "参考图要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "限制要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "已归档": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "编号",
+        "名称",
+        "基础资料",
+        "需要参考图",
+        "参考图要求",
+        "限制要求"
+      ],
+      "additionalProperties": true
+    },
+    "catalog": {
+      "type": "object",
+      "properties": {
+        "人物": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/character"
+          },
+          "maxItems": 1000
+        },
+        "场景": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/location"
+          },
+          "maxItems": 1000
+        },
+        "道具": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/prop"
+          },
+          "maxItems": 2000
+        }
+      },
+      "required": [
+        "人物",
+        "场景",
+        "道具"
+      ],
+      "additionalProperties": true
+    },
+    "locationUse": {
+      "type": "object",
+      "properties": {
+        "场景编号": {
+          "$ref": "#/$defs/id"
+        },
+        "状态编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "采用快照编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "参考图编号": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "场景编号",
+        "状态编号"
+      ],
+      "additionalProperties": true
+    },
+    "nullableLocationUse": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "场景编号": {
+          "$ref": "#/$defs/id"
+        },
+        "状态编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "采用快照编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "参考图编号": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "场景编号",
+        "状态编号"
+      ],
+      "additionalProperties": true
+    },
+    "characterUse": {
+      "type": "object",
+      "properties": {
+        "人物编号": {
+          "$ref": "#/$defs/id"
+        },
+        "造型编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "出场方式": {
+          "enum": [
+            "画内",
+            "画外",
+            "仅声音",
+            "待确认"
+          ]
+        },
+        "表演补充": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "采用快照编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "参考图编号": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "人物编号",
+        "造型编号",
+        "出场方式",
+        "表演补充"
+      ],
+      "additionalProperties": true
+    },
+    "propUse": {
+      "type": "object",
+      "properties": {
+        "道具编号": {
+          "$ref": "#/$defs/id"
+        },
+        "使用人物编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "状态说明": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "位置说明": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "采用快照编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "参考图编号": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "道具编号",
+        "使用人物编号",
+        "状态说明",
+        "位置说明"
+      ],
+      "additionalProperties": true
+    },
+    "dialogue": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "人物编号": {
+          "$ref": "#/$defs/id"
+        },
+        "声源": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "台词": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100000
+        },
+        "表演要求": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "扩展": {
+          "$ref": "#/$defs/anyObject"
+        }
+      },
+      "required": [
+        "编号",
+        "人物编号",
+        "声源",
+        "台词",
+        "表演要求"
+      ],
+      "additionalProperties": true
+    },
+    "continuation": {
+      "type": "object",
+      "properties": {
+        "来源镜头编号": {
+          "$ref": "#/$defs/id"
+        },
+        "对白编号": {
+          "$ref": "#/$defs/id"
+        },
+        "说明": {
+          "type": "string",
+          "maxLength": 100000
+        }
+      },
+      "required": [
+        "来源镜头编号",
+        "对白编号",
+        "说明"
+      ],
+      "additionalProperties": true
+    },
+    "sound": {
+      "type": "object",
+      "properties": {
+        "环境与动作声": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "对白": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dialogue"
+          },
+          "maxItems": 1000
+        },
+        "承接对白": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/continuation"
+          },
+          "maxItems": 1000
+        }
+      },
+      "required": [
+        "环境与动作声",
+        "对白",
+        "承接对白"
+      ],
+      "additionalProperties": true
+    },
+    "shot": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "镜号": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "景别与角度": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "画面与人物动作": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "摄影机设计": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "声音与对白": {
+          "$ref": "#/$defs/sound"
+        },
+        "开始秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "结束秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "时长秒": {
+          "$ref": "#/$defs/duration"
+        },
+        "剪辑衔接": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "出场人物": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/characterUse"
+          },
+          "maxItems": 1000
+        },
+        "使用道具": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/propUse"
+          },
+          "maxItems": 2000
+        },
+        "场景覆盖": {
+          "$ref": "#/$defs/nullableLocationUse"
+        },
+        "扩展": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "首帧状态": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "物理反馈": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "环境反馈": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "段落结果": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "连续性": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "设计说明": {
+          "type": "string",
+          "maxLength": 100000
+        }
+      },
+      "required": [
+        "编号",
+        "镜号",
+        "景别与角度",
+        "画面与人物动作",
+        "摄影机设计",
+        "声音与对白",
+        "开始秒",
+        "结束秒",
+        "时长秒",
+        "剪辑衔接",
+        "出场人物",
+        "使用道具",
+        "场景覆盖"
+      ],
+      "additionalProperties": true
+    },
+    "sequence": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "场次": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "地点": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "时间": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "内外景": {
+          "enum": [
+            "内",
+            "外",
+            "内/外",
+            "不适用"
+          ]
+        },
+        "空间设定": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "场景引用": {
+          "$ref": "#/$defs/nullableLocationUse"
+        },
+        "开始秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "结束秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "时长秒": {
+          "$ref": "#/$defs/seconds"
+        },
+        "镜头": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shot"
+          },
+          "maxItems": 10000
+        },
+        "扩展": {
+          "$ref": "#/$defs/anyObject"
+        }
+      },
+      "required": [
+        "编号",
+        "场次",
+        "地点",
+        "时间",
+        "内外景",
+        "空间设定",
+        "场景引用",
+        "开始秒",
+        "结束秒",
+        "时长秒",
+        "镜头"
+      ],
+      "additionalProperties": true
+    },
+    "crop": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "zoom": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "zoom"
+      ],
+      "additionalProperties": true
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "造型编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "场景状态编号": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "原图片绑定编号": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "媒体编号": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "原文件名": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "内容摘要": {
+          "$ref": "#/$defs/hash"
+        },
+        "参考类型": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "用途说明": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "锁定内容": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "忽略内容": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "确认状态": {
+          "type": "boolean"
+        },
+        "裁切参数": {
+          "$ref": "#/$defs/crop"
+        },
+        "扩展": {
+          "$ref": "#/$defs/anyObject"
+        }
+      },
+      "required": [
+        "编号",
+        "造型编号",
+        "场景状态编号",
+        "原图片绑定编号",
+        "媒体编号",
+        "原文件名",
+        "内容摘要",
+        "参考类型",
+        "用途说明",
+        "锁定内容",
+        "忽略内容",
+        "确认状态",
+        "裁切参数"
+      ],
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "编号": {
+          "$ref": "#/$defs/id"
+        },
+        "资产编号": {
+          "$ref": "#/$defs/id"
+        },
+        "资产修订号": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "来源实例编号": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "来源资产编号": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "子项修订号": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "资料": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "图片绑定": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/image"
+          },
+          "maxItems": 1000
+        },
+        "内容摘要": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "required": [
+        "编号",
+        "资产编号",
+        "资产修订号",
+        "来源实例编号",
+        "来源资产编号",
+        "子项修订号",
+        "资料",
+        "图片绑定",
+        "内容摘要"
+      ],
+      "additionalProperties": true
+    },
+    "externalDialogue": {
+      "type": "object",
+      "properties": {
+        "来源镜头编号": {
+          "$ref": "#/$defs/id"
+        },
+        "对白": {
+          "$ref": "#/$defs/dialogue"
+        }
+      },
+      "required": [
+        "来源镜头编号",
+        "对白"
+      ],
+      "additionalProperties": true
+    },
+    "appData": {
+      "type": "object",
+      "properties": {
+        "资产快照": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/snapshot"
+          },
+          "maxItems": 20000
+        },
+        "历史素材清单": {
+          "$ref": "#/$defs/catalog"
+        },
+        "外部对白": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/externalDialogue"
+          },
+          "maxItems": 1000
+        },
+        "提示词批次": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/anyObject"
+          },
+          "maxItems": 20000
+        },
+        "生成记录": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/anyObject"
+          },
+          "maxItems": 20000
+        },
+        "归档镜头": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/anyObject"
+          },
+          "maxItems": 20000
+        },
+        "原始导入": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "本机线索": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "扩展": {
+          "$ref": "#/$defs/anyObject"
+        },
+        "镜头场景采用": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inheritedLocation"
+          },
+          "maxItems": 10000
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "inheritedLocation": {
+      "type": "object",
+      "properties": {
+        "镜头编号": {
+          "$ref": "#/$defs/id"
+        },
+        "场景引用": {
+          "$ref": "#/$defs/locationUse"
+        }
+      },
+      "required": [
+        "镜头编号",
+        "场景引用"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

@@ -133,10 +133,10 @@ test('real preflight handler holds HOST; automatic and force maintenance cannot 
     await preview;
 });
 
-test('original five-second kickoff crossed while explicit queue is active preserves FULL', async t => {
+test('legacy five-second automatic caller while explicit queue is active preserves FULL', async t => {
     const x = await fixture(t); await x.register(); await x.full(); await x.batch(); await x.runtime.start(x.startInput());
-    const source = await fs.readFile(new URL('../src/main.tsx', import.meta.url), 'utf8');
-    assert.match(source, /const kickoff = setTimeout\(check, 5000\)/); // Existing UI timing is unchanged.
+    // Older open tabs may still call this endpoint. The server must retain its
+    // original exclusion even though the current UI no longer schedules it.
     const before = proof(x), timer = new Promise((resolve, reject) => setTimeout(() => x.maintenance().then(resolve, reject), 5000));
     deferredResult(await x.maintenance(true)); deferredResult(await timer);
     assert.deepEqual(proof(x), before); assert.equal(x.control.calls.filter(r => r.path === '/media/upload-requests').length, 0);

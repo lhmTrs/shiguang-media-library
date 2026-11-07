@@ -1,0 +1,4 @@
+interface:
+  display_name: "拾光分镜发布"
+  short_description: "把当前导演对话确认的分镜读取、校验并提交到拾光指定项目"
+  default_prompt: "使用 $shiguang-storyboard-publish，将当前对话确认的分镜更新到拾光指定项目。"

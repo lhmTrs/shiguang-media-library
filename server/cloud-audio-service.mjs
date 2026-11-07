@@ -1,3 +1,4 @@
+import { cloudAudioPlatformCapability, requireCloudAudioPlatform, CLOUD_AUDIO_PLATFORM_UNSUPPORTED } from "./cloud-audio-platform.mjs";
 /**
  * T-LOCAL-014B：本地手动云端音频下载服务。
  *
@@ -55,6 +56,7 @@ const REGISTRATION_POLL_MS = 50;
 
 export const CLOUD_AUDIO_MESSAGES = Object.freeze({
   [CLOUD_AUDIO_DISABLED]: "云端音频下载未启用",
+  [CLOUD_AUDIO_PLATFORM_UNSUPPORTED]: "Windows 云端文件保护与持久化能力尚未完成验证，原有记录保持未检查",
   NOT_CONFIGURED: "云端连接尚未配置",
   NOT_LOGGED_IN: "需要登录云端账户",
   INVALID_REQUEST: "请求参数不合法",
@@ -247,25 +249,29 @@ export class CloudAudioService {
   #capacityChain = Promise.resolve();
   #disposed = false;
   #initialized = false;
+  #ioStarted = false;
+  #ownedWork = 0;
+  #platform = cloudAudioPlatformCapability();
 
   constructor(lib, { dataDir, cloudAuth, enabled = false } = {}) {
     this.#lib = lib;
     this.#dataDir = dataDir || lib.dataDir;
     this.#auth = cloudAuth;
     this.#enabled = enabled === true;
-    this.#installer = new CloudAudioInstaller({ dataDir: this.#dataDir });
+    this.#installer = this.#platform.supported ? new CloudAudioInstaller({ dataDir: this.#dataDir }) : null;
   }
 
   get enabled() {
-    return this.#enabled;
+    return this.#enabled && this.#platform.supported;
   }
 
   async init() {
     if (this.#initialized) return this;
-    if (!this.#enabled) {
+    if (!this.#platform.supported || !this.#enabled) {
       this.#initialized = true;
       return this;
     }
+    this.#ioStarted = true; // Monotonic: even a partially failed init may have started I/O.
     try {
       // 先验证 dataDir/workDir 的真实目录身份，再建目录、chmod、遍历或清理；
       // 任何一步发现符号链接都固定失败，绝不触碰链接目标。
@@ -540,15 +546,18 @@ export class CloudAudioService {
       const pending = this.#store.countActive();
       if (!Number.isSafeInteger(pending) || pending < 0 || typeof this.#receiverFaulted !== "boolean" || !Number.isSafeInteger(this.#tempReservedBytes) || this.#tempReservedBytes < 0) return unknown();
       const active = this.#active.size, reservations = this.#tempReservations.size;
-      const allowed = !receiver.disposed && !receiver.faulted && !this.#receiverFaulted && receiver.active === 0 && receiver.artifacts === 0 && receiver.orphans === 0 && pending === 0 && active === 0 && reservations === 0 && this.#tempReservedBytes === 0 && this.#rootLocks.size === 0 && this.#startLocks.size === 0;
-      return { known: true, allowed, active, pending, reservations, receiverActive: receiver.active, receiverArtifacts: receiver.artifacts, receiverOrphans: receiver.orphans, receiverFaulted: receiver.faulted || this.#receiverFaulted, receiverDisposed: receiver.disposed };
+      const allowed = this.#ownedWork === 0 && !receiver.disposed && !receiver.faulted && !this.#receiverFaulted && receiver.active === 0 && receiver.artifacts === 0 && receiver.orphans === 0 && pending === 0 && active === 0 && reservations === 0 && this.#tempReservedBytes === 0 && this.#rootLocks.size === 0 && this.#startLocks.size === 0;
+      return { known: true, allowed, active, pending, reservations, serviceOperations: this.#ownedWork, receiverActive: receiver.active, receiverArtifacts: receiver.artifacts, receiverOrphans: receiver.orphans, receiverFaulted: receiver.faulted || this.#receiverFaulted, receiverDisposed: receiver.disposed };
     } catch { return unknown(); }
   }
 
-  async status() {
-    if (!this.#enabled) {
+  async status() { return this.#trackWork(async () => {
+    if (this.#disposed || !this.#platform.supported || !this.#enabled) {
       return {
         enabled: false,
+        platformCode: this.#platform.code,
+        statisticsKnown: false,
+        historyState: "UNINSPECTED",
         configured: false,
         loggedIn: false,
         active: 0,
@@ -562,6 +571,7 @@ export class CloudAudioService {
         staleTempUnreadable: false,
       };
     }
+    this.#ioStarted = true;
     const state = this.#auth.getState();
     const tempUsage = await this.#tempUsage();
     let identity = null;
@@ -586,9 +596,11 @@ export class CloudAudioService {
       staleTempBytes: tempUsage.bytes,
       staleTempUnreadable: tempUsage.unreadable,
     };
+  
+    });
   }
 
-  roots() {
+  roots() { this.#assertPlatform();
     this.#assertEnabled();
     return this.#lib
       .roots()
@@ -596,7 +608,7 @@ export class CloudAudioService {
       .map((root) => ({ id: root.id, name: root.name, kind: root.kind }));
   }
 
-  async registerRoot(input) {
+  async registerRoot(input) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     this.#currentIdentity();
     if (!isPlain(input)) fail("INVALID_REQUEST");
@@ -621,6 +633,8 @@ export class CloudAudioService {
     }
     if (!ROOT_KINDS.has(root.kind) || root.retired) fail("ROOT_KIND", 409);
     return { id: root.id, name: root.name, kind: root.kind };
+  
+    });
   }
 
   async #rootSnapshot(rootId) {
@@ -683,7 +697,7 @@ export class CloudAudioService {
     }
   }
 
-  async catalog(query = {}) {
+  async catalog(query = {}) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     const { epoch } = this.#currentIdentity();
     const { limit, offset } = validatePage(query);
@@ -702,9 +716,11 @@ export class CloudAudioService {
       limit,
       offset,
     };
+  
+    });
   }
 
-  async search(query = {}) {
+  async search(query = {}) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     const { epoch } = this.#currentIdentity();
     if (!isPlain(query) || Object.keys(query).some(key => !["q","groupId","limit","offset"].includes(key))) fail("INVALID_REQUEST");
@@ -718,9 +734,11 @@ export class CloudAudioService {
     if (!isPlain(data) || !Array.isArray(data.items) || data.items.length > limit
       || typeof data.hasMore !== "boolean" || !Number.isSafeInteger(data.total) || data.total < 0) fail("CLOUD_UNAVAILABLE", 502);
     return { items: data.items.map(mapCatalogItem), total: data.total, hasMore: data.hasMore, limit, offset };
+  
+    });
   }
 
-  async details(audioId, query = {}) {
+  async details(audioId, query = {}) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     validateUuid(audioId);
     const { epoch } = this.#currentIdentity();
@@ -736,6 +754,8 @@ export class CloudAudioService {
     if (!Array.isArray(data.shares) || data.shares.length > limit) fail("CLOUD_UNAVAILABLE", 502);
     const shares = data.shares.map(mapShare);
     return { audio, shares, hasMore: shares.length === limit, limit, offset };
+  
+    });
   }
 
   /**
@@ -743,13 +763,15 @@ export class CloudAudioService {
    * 云端 revoke 的成功体是 ApiResponse<Void>（data=null），因此这里只回 withdrawn，
    * 不编造 version/state；需要最新状态请重读 details。
    */
-  async withdrawShare(shareId, expectedVersion) {
+  async withdrawShare(shareId, expectedVersion) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertUsable();
     validateUuid(shareId);
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) fail("INVALID_REQUEST");
     const { epoch } = this.#currentIdentity();
     await this.#proxy("POST", `/media/shares/${shareId}/revoke`, epoch, { expectedVersion });
     return { shareId, withdrawn: true };
+  
+    });
   }
 
   /** 在显式选择/下载前重新读取详情，分页查找所选 share；不缓存、不逐行预取。 */
@@ -832,7 +854,7 @@ export class CloudAudioService {
     };
   }
 
-  listJobs() {
+  listJobs() { this.#assertPlatform();
     this.#assertEnabled();
     const identity = this.#currentIdentity();
     return this.#store
@@ -840,13 +862,13 @@ export class CloudAudioService {
       : [];
   }
 
-  getJob(id) {
+  getJob(id) { this.#assertPlatform();
     this.#assertEnabled();
     validateUuid(id);
     return this.#jobDto(this.#ownedJob(id));
   }
 
-  async startDownload(request) {
+  async startDownload(request) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertUsable();
     const body = pickActive(request);
     const audioId = validateUuid(body.audioId);
@@ -866,6 +888,8 @@ export class CloudAudioService {
       release();
       if (this.#startLocks.get(key) === gate) this.#startLocks.delete(key);
     }
+  
+    });
   }
 
   async #startDownloadInner(body, identity) {
@@ -954,7 +978,7 @@ export class CloudAudioService {
     return job;
   }
 
-  async retry(id) {
+  async retry(id) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     validateUuid(id);
     const job = this.#ownedJob(id);
@@ -964,9 +988,11 @@ export class CloudAudioService {
     const snapshot = await this.#rootSnapshot(job.rootId);
     if (snapshot.generation !== job.rootGeneration || snapshot.root.path !== job.rootPath) fail("ROOT_CHANGED", 409);
     return this.startDownload({ audioId: job.audioId, shareId: job.shareId, rootId: job.rootId });
+  
+    });
   }
 
-  async cancel(id) {
+  async cancel(id) { return this.#trackWork(async () => { this.#assertPlatform();
     this.#assertEnabled();
     validateUuid(id);
     const job = this.#ownedJob(id);
@@ -998,6 +1024,8 @@ export class CloudAudioService {
     }
     const next = await this.#store.update(id, { cancelRequested: true });
     return this.#jobDto(next);
+  
+    });
   }
 
   #schedule() {
@@ -1318,7 +1346,22 @@ export class CloudAudioService {
     });
   }
 
+  neverStartedIO() { return !this.#ioStarted && this.#ownedWork === 0 && !this.#store && !this.#receiver && this.#active.size === 0 && this.#tempReservations.size === 0 && this.#rootLocks.size === 0 && this.#startLocks.size === 0; }
+
+  #assertPlatform() { requireCloudAudioPlatform(); if (this.#disposed || !this.#enabled) fail(CLOUD_AUDIO_DISABLED, 503); this.#ioStarted = true; }
+
+  async #trackWork(work) {
+    this.#ownedWork++;
+    try { return await work(); }
+    finally { this.#ownedWork--; }
+  }
+
   async dispose() {
+    if (this.neverStartedIO()) { this.#disposed = true; return { closed: true, unknown: false, neverStarted: true }; }
+    if (!this.#initialized) return { closed: false, unknown: true };
+    // Receiver idleness cannot account for pre-receive metadata/start work.
+    const activity = this.currentActivity();
+    if (activity.known !== true || activity.allowed !== true) return { closed: false, unknown: true };
     this.#disposed = true;
     for (const entry of this.#active.values()) {
       try {
@@ -1337,5 +1380,7 @@ export class CloudAudioService {
     this.#tempReservations.clear();
     this.#tempReservedBytes = 0;
     if (this.#store) await this.#store.close();
+    const closed = !this.#receiverFaulted && this.#ownedWork === 0 && this.#active.size === 0 && this.#startLocks.size === 0 && this.#rootLocks.size === 0 && this.#tempReservations.size === 0 && this.#tempReservedBytes === 0;
+    return { closed, unknown: !closed };
   }
 }

@@ -1,5 +1,7 @@
 # AI 接手、识别与运行说明
 
+2026-11-07 代码发布范围见 [README.md](README.md)；项目资产、分镜和 Codex 分别见 [PROJECT_ASSETS.md](PROJECT_ASSETS.md)、[STORYBOARD.md](STORYBOARD.md) 与 [CODEX_CHAT.md](CODEX_CHAT.md)。本机开发交接与验收现场不随新代码发布，文中历史 `collab/results/` 链接不能作为新电脑已有验证的证明。MySQL 候选适配与当前可下载产品须分别判断，新安装默认 SQLite。
+
 ## 1. 先识别项目
 
 本项目是“拾光素材库”，本地单用户素材管理工具。技术栈：React 18 + TypeScript + Vite，Express 4 + Node.js 22；主数据支持 SQLite 或本机 MySQL，两者不是同步双写。无需账号注册、无需云服务器。
@@ -18,7 +20,7 @@ npm run doctor
 npm run portable
 ```
 
-Node 需为 22.x；`setup` 在缺少本机依赖时执行锁定版本的 `npm ci`，缺少 dist 时构建，不安装 MySQL、不修改系统包管理器。预构建网页已包含，源码修改后仍需 `npm run build`。
+Node 需为 22.x；`setup` 在缺少本机依赖时执行锁定版本的 `npm ci`，随后始终构建当前源码，即使已有 dist；构建失败不会进入 doctor 或自动启动。不安装 MySQL、不修改系统包管理器。直接修改源码后若不运行 setup，仍需 `npm run build`。
 
 应用地址从启动输出读取（默认 4317，原生端口冲突时自动递增）。分享模式数据在根目录 `data/`，不读取原作者原生库。若需要前台调试，使用 `node scripts/portable.mjs --foreground`，Ctrl+C 停止；普通 `portable`/`start` 会启动后台服务，需 `npm run stop:portable` 停止。
 
@@ -47,6 +49,10 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 | `server/directory-classification.mjs`、`src/directory-labels.ts` | 当前目录投影及仅前端的跨根重名显示；正式服务启用 directoryClassification，历史模块留作兼容 |
 | `server/read-cache.mjs` | 历史分类计数缓存与数据库写入观察，当前目录投影统计不使用旧分类缓存 |
 | `server/tags.mjs` | 标签注册、统计、批量增删 |
+| `server/prompt-templates/`、`src/prompts/`、`src/PromptTemplateWorkspace.tsx` | 原生提示词模板；先读 `PROMPT_TEMPLATES.md`。四张表共享当前 SQLite/MySQL，软删除与不可变历史，created_at/updated_at 为 UTC 毫秒；模板拼接本身不调用模型 |
+| `server/prompt-codex/`、`src/prompts/CodexChat.tsx` | 本机 Codex app-server 私有 stdio、动态模型/effort、持久化图文对话、原图与备份；先读 `CODEX_CHAT.md`。新增三张表共享 SQLite/MySQL，时间为 UTC 毫秒，生成必须显式发送；测试使用合成 JSON-RPC，禁止用作者账号做额度验收 |
+| `server/concierge/`、`src/concierge/` | 顶栏自由管家：按项目/全局绑定本机持久 Codex thread，历史原生分页，不镜像回答或重发历史；自定义规则、附件副本、单轮中止与有限业务工具。目录/文档/参数验证/执行必须同一注册表维护；新增三张表只存绑定/规则/回执。见 `CODEX_CHAT.md` 自由管家节。模型/跨平台/新增MySQL原生未测，不自动调用真实模型验收 |
+| `server/project-videos/`、`src/project-videos/` | 项目生成视频目录：单视频复制、可选参考提示词、重复选择与元数据、旧来源显式复制升级；分镜仅绑定管理视频。详见 `STORYBOARD.md` 项目生成视频节。三个新资料表沿用当前库，测试使用自有合成资源 |
 | `server/projects.mjs` | 项目、候选/已使用、首次使用时间、快照历史、类型统计 |
 | `server/resolve-xml.mjs`、`server/timeline-imports.mjs`、`src/TimelineImportDialog.tsx` | 本地达芬奇 FCP7 XML 预览/确认/撤销；先读 `DAVINCI_IMPORT.md`，时间线与手动记录独立，禁止撤销覆盖后续手动编辑 |
 | `server/duplicate-audio.mjs` | 文件大小 + SHA-256 重复检测、报告、重复标签与删除后孤立标签清理 |
@@ -76,7 +82,7 @@ MEDIA_DATA_DIR=/tmp/shiguang-ai-test-unique MEDIA_SKIP_IMPORT=1 PORT=4517 node s
 - `roots` 登记允许访问的素材目录，`assets` 保存原绝对路径、类型、分类、标签、备注、状态、媒体参数及计数。
 - **权威方向：文件系统是存在性与位置的真相，`.shiguang/manifest.json` 是身份与元数据的载体，SQLite 只是可重建投影。** 外部整理（访达/脚本/GPT）后由 `server/reconcile.mjs` 认领回原 id；任何"清理"都必须停在"标离线"，**永远不要自动删除 assets 行或清单条目**（那是用户唯一能找回标签的线索）。新增写文件系统的功能时，要一并考虑"这算不算一次外部变更、对账能不能认出来"。
 - 列表容器蒙层：`listLoading = loading || refreshing`，且需 `assets.length > 0`（空列表首次加载已有自己的大转圈，别叠两层）；因为页面整体滚动、列表常高于一屏，蒙层用 `position: fixed` + 实测 `getBoundingClientRect()` 贴合可见区域（`resultsBodyRef`），滚动/缩放时重算——用 `absolute inset:0` 会把转圈甩到屏幕外。
-- 自动刷新使用 `refresh({ silent: true })`，不设置 `refreshing`；先探测 `/roots` 修订号与 `/jobs`，变化时才读取完整数据。`src/refresh-preferences.ts` 定义本浏览器偏好 `shiguang.refreshSeconds`（默认 30 秒，可选 0/15/30/60/120/300），「界面设置」可改；0 同时停用自动文件检查，但手动操作与活动任务进度轮询仍保留。文件检查间隔最短 60 秒。后台请求不重叠，前台请求优先，输入/未保存详情/弹窗/页面隐藏时暂缓，响应提交前再次校验；不能用自动更新覆盖草稿。前台 `refresh` 的加载状态必须在 `finally` 释放。
+- 自动刷新使用 `refresh({ silent: true })`，不设置 `refreshing`；先探测 `/roots` 修订号与 `/jobs`，变化时才读取完整数据。`src/refresh-preferences.ts` 定义本浏览器偏好 `shiguang.refreshSeconds`（默认 30 秒，可选 0/15/30/60/120/300），「界面设置」可改；0 停用周期数据刷新，但手动操作与活动任务进度轮询仍保留。2026-11-05 起，所有页面均不再自动发起全库文件检查；完整检查只由各栏目共用的顶部导航“检查文件状态”显式执行；检查中的按钮状态、检查回执、暂缓或失败原因均在顶栏保留，切换栏目仍可见，提示可手动关闭。现有服务的目录变化增量对账保持，不新增监听；普通刷新只更新数据库里的列表、数量与状态。后台读取遇忙短于800ms不显示提示，较长时复用页头固定位置显示“后台更新中”，真实失败仍在相应操作处显示。后台请求不重叠，前台请求优先，输入/未保存详情/弹窗/页面隐藏时暂缓，响应提交前再次校验；不能用自动更新覆盖草稿。前台 `refresh` 的加载状态必须在 `finally` 释放。
 - 界面耗时操作一律走 `run(fn, label)` / `runWith(label, fn)`：它同时负责禁用按钮（`busy`）与显示"正在做什么"的全屏遮罩；列表重新读取只用 `refreshing` 做内联提示（不遮内容）；有扫描任务时 `jobsActive` 驱动 1.5 秒轮询。新增重操作请用 `runWith("正在…", fn)`，不要另造一套 loading 状态。
 - 清单写入必须过三道闸：`writeManifest` 里串行化 + 唯一临时名（防并发踩踏）、`prepareManifestDir` 的符号链接/越界校验与"绝不代建登记目录"、（`MEDIA_READONLY_FILES=1` 时直接跳过）。只读模式下对账仍会索引，只是不写登记目录。
 - 根的生死：**注销只置 `roots.retired=1`，绝不 DELETE roots 行** —— 删了 `checked()` 会抛"未登记的素材目录"，那批资产的试听/预览会全部坏掉。`roots()` 只返回在管的根（扫描/监听/导航/重叠校验都用它），`allRoots()` 才含已注销的。迁移根路径（`relocateRoot`）**保持 root_id**、只改 `roots.path`，再靠对账按身份认领，所以不需要迁移任何关联表。
@@ -136,3 +142,28 @@ Docker 配置仅做静态 Compose 验证，本次没有可用守护进程来执�
 项目列表的 `TimelineUsage compact` 默认折叠文件路径、日期和位置明细，保留时间点击播放。`ProjectTimelineOverview` 按轨道展示完整时间线的音效，可包含音乐及缩放；数据来自 `/api/projects/:id/timeline-overview`，不能只取当前列表页或当前筛选结果。旧快照以最后引用作参考范围并明确标示，不伪造成片总长。
 
 后续可做：真实 Windows/Linux 验收、原生跨平台废纸篓、项目导出。尚未实现剪映草稿解析、自动判断项目实际使用、版权识别、云同步或安装器级免环境分发。不要把这些当成已有功能。
+
+## 内置分镜工作台（2026-11-04 数据库版）
+
+入口：项目设计和管理 → 分镜设计。前后端已完整迁入本仓库，共用素材服务进程、端口和本机会话，不再启动相邻分镜工程或读取其文件。旧 `shiguang.storyboardOrigin` 设置不再生效。
+
+- 前端：`src/StoryboardWorkspace.tsx` 懒加载 `src/storyboard/StoryboardEditor.tsx`，共享外层主题、密度、面板显隐、自动刷新偏好，栏目切换保留编辑状态。
+- 后端：`server/storyboard/router.mjs` 挂载 `/api/storyboard`，沿用原 Host/Origin、cookie 和 `X-Local-Token` 校验。分镜的 100MB JSON 解析位于会话校验之后；不扩大其他 API 的 256KB 限额。
+- 数据：普通项目绑定唯一当前分镜，正文在当前 SQLite/MySQL 的 `storyboard_documents`，完整清单关系在 `storyboard_asset_links`，初始化技术回执在 `storyboard_import_requests`。完整 JSON 只用于初始化覆盖；后续编辑走数据库，不监视或回写源文件、不新增分镜历史。旧 `storyboards/` 目录保留只读，需用户选目标项目并确认导入。
+- 模型：`server/storyboard/shared/` 是浏览器和服务端共用的唯一实现；不再维持两套副本。公开 schema 位于 `server/storyboard/project.schema.json`。
+- 分享：通用合成示例位于 `server/storyboard/example.json`，不包含作者真实剧本。打包白名单包含整个内置模块；`data/`、`.workspace/` 等运行数据不作为输入。
+- 关闭：应用正常关闭前停止接收分镜请求，等待在途分镜请求与数据库事务完成；不可用 PID 消失代替安全结清。
+
+运行及旧版数据迁移见 `STORYBOARD.md`。验收：`npm run test:storyboard`、`npm run test:storyboard:browser`；真实素材服务 + 全新临时 SQLite/分镜数据目录，不使用作者库，测试结束必须取得 `APPLICATION_CLOSED_KNOWN`。分享验证复用本机依赖，不声称已做全新 npm 安装或 Windows/Docker 实机验收。
+
+
+导航/偏好补充（2026-11-04）：`src/browser-preferences.ts` 定义固定栏目 hash 与类型校验过的浏览器记忆，`src/main.tsx` 对 hashchange/popstate 协调并保留 login/account。不要在渲染后无条件将旧 view 写回地址；首轮 effect 必须核对最新地址。折叠的当前分组不自动展开。`library-workspace.css` 中 content-toolbar 必须保持 height:auto，照片/视频网格没有 series-mode，旧全局 height:34px 会使下方卡片遮住控件。「浏览器记忆」只写本模块偏好，不清除 auth、未结操作或业务数据；Codex 的轻量 UI 偏好读写也要容忍 localStorage 不可用。定向验收 `npm run test:navigation:browser` 使用全新合成库。
+
+
+## 项目资产库（2026-11-04，切换状态见交付记录）
+
+实现说明见 `PROJECT_ASSETS.md`，范围依据 `PROJECT_ASSET_LIBRARY_PLAN.md`。新增 `server/project-assets/`、`src/project-assets/` 与 `src/ProjectAssetWorkspace.tsx`，通过原生 `#/project-assets` 栏目和 `/api/project-assets` 同源接口工作。六张 `creative_` 表共享当前数据库；项目表增加普通/公共身份，原项目删除需检查创作资产。公共人物与跨项目人物只复制，不共享引用；名称在项目/类型内唯一，镜头等未来关系应使用永久ID。
+
+图片绑定保存预期SHA-256，文件缺失/内容改变显示失效，不保存历史原图副本。修改采用资产整体修订号并保留子项修订号；旧版本保存返回409，前端保留输入。内部备份恢复不会覆盖不同内容的同ID数据；其格式不是携带媒体的资产包。新表已纳入当前MySQL迁移；新增表/唯一键/版本链须一起维护。
+
+原资产阶段未修改分镜；后续分镜数据库阶段已落地清单保护和资产主档0/时间戳归档，见 STORYBOARD.md 及 collab/results/STORYBOARD-DATABASE-20261104/DELIVERY.md。测试命令 `test:project-assets`、`test:project-assets:browser`、`test:project-assets:mysql`，仅全新合成库；浏览器验收候选通过 `CREATIVE_TEST_PROJECT_ROOT` 指定，原4317未切换前不能直接替换其前端产物。准确部署及资源结清记录见 `collab/results/PROJECT-ASSET-LIBRARY-20261104/DELIVERY.md`。

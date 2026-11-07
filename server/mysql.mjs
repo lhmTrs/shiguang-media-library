@@ -1,3 +1,11 @@
+import {VIDEO_TABLES,videoColumnType} from './storyboard-video/schema.mjs';
+import {SCRIPT_TABLES,scriptColumnType} from './project-scripts/schema.mjs';
+import {TABLES as GENERATION_TABLES,generationColumnType,generationConstraints} from './storyboard-generation/schema.mjs';
+import { PROMPT_TABLES, promptMysqlColumnType, promptConstraints } from "./prompt-templates/schema.mjs";
+import { CREATIVE_TABLES, creativeColumnType, creativeConstraints } from "./project-assets/schema.mjs";
+import { STORYBOARD_TABLES, storyboardColumnType, storyboardConstraints } from "./storyboard/db-schema.mjs";
+import { CODEX_TABLES, codexColumnType, codexConstraints } from "./prompt-codex/schema.mjs";
+import {CONCIERGE_TABLES,conciergeColumnType} from './concierge/schema.mjs';
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -6,6 +14,9 @@ import { MysqlDatabase } from "./mysql-db.mjs";
 import { observeDatabase } from "./read-cache.mjs";
 import { UPLOAD_TABLES, uploadMysqlColumnType, uploadConstraints, uploadOrderBy } from "./cloud-upload-batch-store.mjs";
 const TABLES = ["roots", "assets", "operations"];
+// Some existing metadata tables have a named/composite primary key, not `id`.
+const migrationKeys = table => ['concierge_scopes','concierge_rules'].includes(table)?['scope']:table === "asset_repair_journal" ? ["operation_id"] : table === "asset_metadata_clock" ? ["singleton_id"] : table === "asset_metadata_fields" ? ["asset_id", "field"] : ["id"];
+const migrationOrder = table => Object.hasOwn(UPLOAD_TABLES, table) ? uploadOrderBy(table) : migrationKeys(table).map(k => "`" + k + "`").join(",");
 export function validateConfig(input, previous = {}) {
   const port = Number(input.port ?? 3306);
   if (!["127.0.0.1", "localhost", "::1"].includes(input.host))
@@ -69,6 +80,14 @@ function checksum(rows, columns) {
  * 独立导出是为了能脱离数据库单测这条映射。
  */
 export function mysqlColumnType(table, col) {
+  if(Object.hasOwn(CONCIERGE_TABLES,table))return conciergeColumnType(table,col);
+  if(Object.hasOwn(VIDEO_TABLES,table))return videoColumnType(table,col);
+  if(Object.hasOwn(SCRIPT_TABLES,table))return scriptColumnType(table,col);
+  if(Object.hasOwn(GENERATION_TABLES,table))return generationColumnType(table,col);
+  if (Object.hasOwn(STORYBOARD_TABLES,table)) return storyboardColumnType(table,col);
+  if (Object.hasOwn(CREATIVE_TABLES,table)) return creativeColumnType(table,col) + (table === 'creative_schema' && col.name === 'id' ? ' PRIMARY KEY' : '');
+  if (Object.hasOwn(CODEX_TABLES,table)) return codexColumnType(table,col);
+  if (Object.hasOwn(PROMPT_TABLES,table)) return promptMysqlColumnType(table,col);
   if (["asset_metadata_clock", "asset_metadata_fields"].includes(table)) {
     if (col.name === "singleton_id") return "BIGINT PRIMARY KEY";
     if (["asset_id", "domain_id"].includes(col.name)) return "VARCHAR(36)";
@@ -90,6 +109,8 @@ export function mysqlColumnType(table, col) {
   if (/(sha256|sha1|md5|_hash|hash)$/i.test(String(col.name))) return "VARCHAR(64)";
   if (table === "asset_subcategories" && col.name === "name") return "VARCHAR(120)";
   if (table === "media_projects" && col.name === "name") return "VARCHAR(120)";
+  if (table === 'media_projects' && col.name === 'project_kind') return "VARCHAR(16)";
+  if (table === 'media_projects' && col.name === 'system_key') return "VARCHAR(40)";
   if (table === "project_assets" && ["project_id", "asset_id"].includes(col.name)) return "VARCHAR(36)";
   if (["project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders"].includes(table) && ["project_id", "timeline_id", "asset_id", "revision", "head_id"].includes(col.name)) return "VARCHAR(36)";
   if (table === "music_category_links" || (table === "asset_subcategories" && col.name === "category_id")) return "VARCHAR(36)";
@@ -274,6 +295,14 @@ export class MysqlStorage {
         tables.push("music_category_links");
       for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches", "project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders", "asset_repair_journal", "asset_metadata_clock", "asset_metadata_fields"])
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
+      for(const table of Object.keys(PROMPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(VIDEO_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(SCRIPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(CREATIVE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(STORYBOARD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(GENERATION_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(CODEX_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(CONCIERGE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(UPLOAD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       const snapshot = this.lib.db.transaction(() =>
         Object.fromEntries(
@@ -283,7 +312,7 @@ export class MysqlStorage {
               columns: this.lib.db.prepare(`PRAGMA table_info(${t})`).all(),
               rows: this.lib.db
                 .prepare(
-                  `SELECT * FROM ${t} ORDER BY ${Object.hasOwn(UPLOAD_TABLES,t)?uploadOrderBy(t):t === "asset_repair_journal" ? "operation_id" : t === "operations" ? "rowid" : "id"}`,
+                  `SELECT * FROM ${t} ORDER BY ${t === "operations" ? "rowid" : migrationOrder(t)}`,
                 )
                 .all(),
             },
@@ -322,10 +351,23 @@ export class MysqlStorage {
       for (const t of tables) {
         const defs = snapshot[t].columns.map((col) => {
           const type = mysqlColumnType(t, col);
+          if(Object.hasOwn(GENERATION_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(VIDEO_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(SCRIPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(CREATIVE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${t==='creative_assets'&&col.name==='archived_at'?" DEFAULT 0":""}`;
+          if(Object.hasOwn(STORYBOARD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(UPLOAD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${col.dflt_value!==null?" DEFAULT "+col.dflt_value:""}`;
-          return `\`${col.name}\` ${type}${col.name === "id" ? "" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
+          return `\`${col.name}\` ${type}${/PRIMARY KEY/.test(type) ? " NOT NULL" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
         if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
+        if(Object.hasOwn(PROMPT_TABLES,t))defs.push(...promptConstraints(t));
+        if(Object.hasOwn(CREATIVE_TABLES,t))defs.push(...creativeConstraints(t));
+        if(Object.hasOwn(STORYBOARD_TABLES,t))defs.push(...storyboardConstraints(t));
+        if(t === 'media_projects' && snapshot[t].columns.some(c=>c.name==='system_key')) defs.push('UNIQUE(system_key)', 'UNIQUE(name)');
+        if(Object.hasOwn(GENERATION_TABLES,t))defs.push(...generationConstraints(t));
+        if(Object.hasOwn(CODEX_TABLES,t))defs.push(...codexConstraints(t));
         if (t === "asset_metadata_fields") defs.push("PRIMARY KEY(asset_id,field)");
         // Evidence is retained by migration, but MySQL latest remains unsupported.
         if (t === "operations")
@@ -376,12 +418,13 @@ export class MysqlStorage {
           );
         }
         const [copied] = await conn.query(
-          `SELECT ${columns.map((c) => "`" + c + "`").join(",")} FROM ${t} ORDER BY ${Object.hasOwn(UPLOAD_TABLES,t)?uploadOrderBy(t):"id"}`,
+          `SELECT ${columns.map((c) => "`" + c + "`").join(",")} FROM ${t} ORDER BY ${migrationOrder(t)}`,
         );
         // Upload snapshots were read using these same typed PKs (including numeric ordinal).
-        const source = Object.hasOwn(UPLOAD_TABLES,t) ? snapshot[t].rows : [...snapshot[t].rows].sort((a, b) =>
-          a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-        );
+        const source = Object.hasOwn(UPLOAD_TABLES,t) ? snapshot[t].rows : [...snapshot[t].rows].sort((a, b) => {
+          for (const key of migrationKeys(t)) { if (a[key] < b[key]) return -1; if (a[key] > b[key]) return 1; }
+          return 0;
+        });
         if (checksum(copied, columns) !== checksum(source, columns))
           throw error("迁移校验未通过，未切换数据库");
       }

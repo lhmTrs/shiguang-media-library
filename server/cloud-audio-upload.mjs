@@ -1,3 +1,4 @@
+import { cloudAudioPlatformCapability, requireCloudAudioPlatform } from "./cloud-audio-platform.mjs";
 // Manual, account-bound upload intents. Never schedules uploads or imports at startup.
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -57,10 +58,15 @@ const fileIdentity=s=>({dev:s.dev,ino:s.ino,size:s.size,mtimeMs:s.mtimeMs,ctimeM
 async function closeUploadStream(stream){if(!stream||stream.closed)return;const closed=new Promise(resolve=>stream.once('close',resolve));stream.destroy();await closed;}
 const exactKeys=(value,keys)=>plain(value)&&!Object.keys(value).some(k=>!keys.includes(k));
 export class CloudAudioUpload {
+    #ioStarted = false;
+    #platform = cloudAudioPlatformCapability();
+    #assertPlatform() { requireCloudAudioPlatform(); if (!this.enabled) fail('CLOUD_AUDIO_DISABLED', 503); this.#ioStarted = true; }
+    neverStartedIO() { return !this.#ioStarted && !this.dir && this.jobs.length === 0 && !this.busy && this.controllers.size === 0 && this.operations.size === 0 && this.settledTasks.size === 0 && this.inspections.size === 0; }
     constructor(lib, { dataDir = lib.dataDir, cloudAuth, enabled = false } = {}) { this.lib = lib; this.dataDir = dataDir; this.auth = cloudAuth; this.enabled = enabled; this.jobs = []; this.controllers = new Map(); this.operations = new Set(); this.busy = false; this.chain = Promise.resolve(); this.settledTasks=new Set();this.inspections=new Map();this.disposing=false; }
     async init() {
-        if (!this.enabled)
+        if (!this.#platform.supported || !this.enabled)
             return this;
+        this.#ioStarted = true;
         const base = await fs.realpath(this.dataDir);
         this.dir = path.join(base, 'cloud-upload-intents');
         try {
@@ -112,15 +118,15 @@ export class CloudAudioUpload {
         this.repairInitialized=true;
         return this;
     }
-    guard() { if (!this.enabled)
+    guard() { this.#assertPlatform(); if (!this.enabled)
         fail('CLOUD_AUDIO_DISABLED', 503); return identity(this.auth); }
-    async dirGuard() { const s = await fs.lstat(this.dir); if (s.isSymbolicLink() || !s.isDirectory() || `${s.dev}:${s.ino}` !== this.dirKey || (s.mode & 0o077))
+    async dirGuard() { this.#assertPlatform(); const s = await fs.lstat(this.dir); if (s.isSymbolicLink() || !s.isDirectory() || `${s.dev}:${s.ino}` !== this.dirKey || (s.mode & 0o077))
         fail('UPLOAD_STORAGE', 503); }
-    async syncIntentDirectory() {
+    async syncIntentDirectory() { this.#assertPlatform();
         const h=await fs.open(this.dir,constants.O_RDONLY|constants.O_NOFOLLOW);
         try{const stat=await h.stat();if(!stat.isDirectory()||`${stat.dev}:${stat.ino}`!==this.dirKey)fail('UPLOAD_STORAGE',503);await h.sync();}finally{await h.close();}
     }
-    async save({omitIntentId=null,validate=null}={}) {
+    async save({omitIntentId=null,validate=null}={}) { this.#assertPlatform();
         if(omitIntentId!==null)batchId(omitIntentId);
         if(validate!==null&&typeof validate!=='function')fail('UPLOAD_STATE');
         const check=()=>{if(validate)validate();};
@@ -144,20 +150,20 @@ export class CloudAudioUpload {
         };
         const next=this.chain.then(write);this.chain=next.catch(()=>{});await next.catch(()=>fail('UPLOAD_STORAGE',503));
     }
-    view(j) { return { id: j.id, assetId: j.assetId, fileName: j.fileName, bytes: j.bytes, sha256: j.sha256, mediaKind: j.mediaKind, visibility: j.visibility, groupId: j.groupId, category: j.category, subcategory: j.subcategory, state: j.state, status: j.status || null, version: j.version ?? null, requestId: j.serverId || null, receipt: j.receipt ? this.receipt(j, j.receipt) : null, error: j.error ? message[j.error] || '操作未完成，请刷新状态后核对' : null }; }
-    list() { const who = this.guard(); return this.jobs.filter(j => j.owner === who.owner).map(j => this.view(j)); }
-    owned(id) { const who = this.guard(); const j = this.jobs.find(j => j.id === id && j.owner === who.owner); if (!j)
+    view(j) { this.#assertPlatform(); return { id: j.id, assetId: j.assetId, fileName: j.fileName, bytes: j.bytes, sha256: j.sha256, mediaKind: j.mediaKind, visibility: j.visibility, groupId: j.groupId, category: j.category, subcategory: j.subcategory, state: j.state, status: j.status || null, version: j.version ?? null, requestId: j.serverId || null, receipt: j.receipt ? this.receipt(j, j.receipt) : null, error: j.error ? message[j.error] || '操作未完成，请刷新状态后核对' : null }; }
+    list() { this.#assertPlatform(); const who = this.guard(); return this.jobs.filter(j => j.owner === who.owner).map(j => this.view(j)); }
+    owned(id) { this.#assertPlatform(); const who = this.guard(); const j = this.jobs.find(j => j.id === id && j.owner === who.owner); if (!j)
         fail('NOT_FOUND', 404); return { j, who }; }
-    check(who) { const now = this.guard(); if (now.owner !== who.owner || now.epoch !== who.epoch)
+    check(who) { this.#assertPlatform(); const now = this.guard(); if (now.owner !== who.owner || now.epoch !== who.epoch)
         fail('AUTH_CHANGED', 409); }
-    repairMemoryState(assetIds) {
+    repairMemoryState(assetIds) { this.#assertPlatform();
         if(!Array.isArray(assetIds)||!assetIds.length||assetIds.length>50||assetIds.some(id=>!UUID.test(id||''))||!this.repairInitialized||!this.dir||!this.dirKey||this.disposing)return {known:false,state:'unknown'};
         if(this.jobs.length>50)return {known:false,state:'unknown'};
         const relevant=this.jobs.filter(j=>assetIds.includes(j.assetId));
         const busy=this.busy||this.controllers.size>0||this.operations.size>0||this.settledTasks.size>0||relevant.length>0;
         return {known:true,state:busy?'blocked':'idle',version:crypto.createHash('sha256').update(batchCanonical(this.jobs)).digest('hex')};
     }
-    async repairState(assetIds) {
+    async repairState(assetIds) { this.#assertPlatform();
         const before=this.repairMemoryState(assetIds);if(!before.known||before.state!=='idle')return before;
         let handle;
         try{
@@ -179,7 +185,7 @@ export class CloudAudioUpload {
             return {known:true,state:'idle',version};
         }catch{return {known:false,state:'unknown'};}finally{await handle?.close();}
     }
-    repairDiskState(assetIds) {
+    repairDiskState(assetIds) { this.#assertPlatform();
         const ram=this.repairMemoryState(assetIds),proof=this.repairDiskProof;
         if(!ram.known||ram.state!=='idle'||!proof||ram.version!==proof.ramVersion)return {known:false,state:'unknown'};
         try{const dir=lstatSync(this.dir);if(!dir.isDirectory()||dir.isSymbolicLink()||`${dir.dev}:${dir.ino}`!==this.dirKey||realpathSync(this.dir)!==this.dir)return {known:false,state:'unknown'};
@@ -192,7 +198,7 @@ export class CloudAudioUpload {
     // existing namespace/item/attempt/claim and immutable payload from the same
     // actual store before choosing the batch-only read path. No queue/domain is
     // created, repaired or updated by these bounded reads.
-    _batchSourceBinding(j) {
+    _batchSourceBinding(j) { this.#assertPlatform();
         try {
             if(this.disposing||!this.jobs.includes(j)||!HASH.test(j.batchBinding||'')||this.lib.db.kind==='mysql'||this.lib.db.inTransaction)fail('BATCH_SOURCE_BINDING_UNKNOWN');
             const {j:owned,who}=this.owned(j.id);if(owned!==j||!this.auth.config?.origin)fail('BATCH_SOURCE_BINDING_UNKNOWN');
@@ -224,13 +230,13 @@ export class CloudAudioUpload {
             })();
         } catch(error) { if(error instanceof CloudUploadError)throw error;fail('BATCH_SOURCE_BINDING_UNKNOWN'); }
     }
-    async source(j,check=()=>{},{readOnly=false}={}) {
+    async source(j,check=()=>{},{readOnly=false}={}) { this.#assertPlatform();
         const batch=Object.hasOwn(j,'batchBinding')?this._batchSourceBinding(j):null;
         const current=()=>{check();if(batch!==null&&this._batchSourceBinding(j)!==batch)fail('BATCH_SOURCE_BINDING_UNKNOWN');};
         current();if(this.lib.locks?.has(j.assetId))fail('SOURCE_CHANGED');const a=this.lib.asset(j.assetId),root=this.lib.rootById(a.root_id);if(root.retired||a.trashed||!['music','sfx'].includes(a.kind))fail('SOURCE_CHANGED');
         const src=await this.lib.source(j.assetId,readOnly||batch!==null?{readOnly:true}:undefined);current();if(this.lib.locks?.has(j.assetId))fail('SOURCE_CHANGED');const rootKey=await rootIdentity(root);current();if(this.lib.locks?.has(j.assetId))fail('SOURCE_CHANGED');return{...src,root,rootKey};
     }
-    async verifySource(j) { const src = await this.source(j); if (src.rootKey !== j.rootKey || statKey(src.stat) !== j.sourceKey)
+    async verifySource(j) { this.#assertPlatform(); const src = await this.source(j); if (src.rootKey !== j.rootKey || statKey(src.stat) !== j.sourceKey)
         fail('SOURCE_CHANGED'); const f = await fs.open(src.p, constants.O_RDONLY | constants.O_NOFOLLOW); try {
         if (statKey(await f.stat()) !== j.sourceKey)
             fail('SOURCE_CHANGED');
@@ -241,7 +247,7 @@ export class CloudAudioUpload {
     finally {
         await f.close();
     } }
-    async prepare(input) {
+    async prepare(input) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         const who = this.guard();
         if (!plain(input) || Object.keys(input).some(k => !['assetId', 'mediaKind', 'visibility', 'groupId', 'category', 'subcategory'].includes(k)) || !['MUSIC', 'SFX'].includes(input.mediaKind) || !['PRIVATE', 'GROUP'].includes(input.visibility) || !segment(input.category, 60, true) || !segment(input.subcategory, 60, true) || (!input.category && input.subcategory) || (input.visibility === 'GROUP' && !UUID.test(input.groupId || '')) || (input.visibility === 'PRIVATE' && input.groupId))
@@ -316,7 +322,7 @@ export class CloudAudioUpload {
             this.busy = false;
         }
     }
-    async proxy(j, who, method, url, body = null) { this.check(who); let result; try {
+    async proxy(j, who, method, url, body = null) { this.#assertPlatform(); this.check(who); let result; try {
         result = await this.auth.proxy(method, url, { body, epoch: who.epoch });
     }
     catch (e) {
@@ -324,9 +330,9 @@ export class CloudAudioUpload {
             await this.auth.forgetSession?.(e.toPublic?.(), { epoch: who.epoch });
         throw e;
     } this.check(who); return result; }
-    applyRequest(j, row) { if (!plain(row) || !UUID.test(row.id || '') || row.requestId !== (j.clientRequestId || j.id) || row.declaredSha256 !== j.sha256 || row.declaredBytes !== j.bytes || !['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXPIRED'].includes(row.status) || !Number.isSafeInteger(row.version))
+    applyRequest(j, row) { this.#assertPlatform(); if (!plain(row) || !UUID.test(row.id || '') || row.requestId !== (j.clientRequestId || j.id) || row.declaredSha256 !== j.sha256 || row.declaredBytes !== j.bytes || !['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXPIRED'].includes(row.status) || !Number.isSafeInteger(row.version))
         fail('UPLOAD_UNKNOWN'); j.serverId = row.id; j.status = row.status; j.version = row.version; }
-    async _request(id) { const { j, who } = this.owned(id); if (!['prepared', 'unknown'].includes(j.state) || j.serverId)
+    async _request(id) { this.#assertPlatform(); const { j, who } = this.owned(id); if (!['prepared', 'unknown'].includes(j.state) || j.serverId)
         fail('UPLOAD_STATE'); j.state = 'requesting'; await this.save(); try {
         const r = await this.proxy(j, who, 'POST', '/media/upload-requests', { requestId: j.clientRequestId || j.id, mediaKind: j.mediaKind, fileName: j.fileName, bytes: j.bytes, sha256: j.sha256, visibility: j.visibility, groupId: j.groupId, category: j.category, subcategory: j.subcategory });
         this.applyRequest(j, r);
@@ -337,13 +343,13 @@ export class CloudAudioUpload {
         j.state = 'unknown';
         j.error = 'UPLOAD_UNKNOWN';
     } await this.save(); return this.view(j); }
-    async _refresh(id) { const { j, who } = this.owned(id); if (this.controllers.has(id))
+    async _refresh(id) { this.#assertPlatform(); const { j, who } = this.owned(id); if (this.controllers.has(id))
         fail('BUSY', 429); if (!j.serverId)
         return this._request(id); const r = await this.proxy(j, who, 'GET', `/media/upload-requests/${j.serverId}`); this.applyRequest(j, r); if (j.state !== 'unknown' && j.state !== 'completed')
         j.state = r.status === 'CANCELLED' ? 'cancelled' : 'ready'; await this.save(); return this.view(j); }
-    receipt(j, r) { if (!plain(r) || !UUID.test(r.audioId || '') || !UUID.test(r.shareId || '') || r.sha256 !== j.sha256 || r.bytes !== j.bytes)
+    receipt(j, r) { this.#assertPlatform(); if (!plain(r) || !UUID.test(r.audioId || '') || !UUID.test(r.shareId || '') || r.sha256 !== j.sha256 || r.bytes !== j.bytes)
         fail('UPLOAD_UNKNOWN'); return { audioId: r.audioId, shareId: r.shareId, sha256: r.sha256, bytes: r.bytes }; }
-    async _reconcile(id) { const { j, who } = this.owned(id); if (!j.serverId || this.controllers.has(id))
+    async _reconcile(id) { this.#assertPlatform(); const { j, who } = this.owned(id); if (!j.serverId || this.controllers.has(id))
         fail('UPLOAD_STATE'); try {
         const r = await this.proxy(j, who, 'GET', `/media/upload-requests/${j.serverId}?includeTransfer=true`);
         if (!plain(r.transfer) || !['COMMITTED', 'NOT_COMMITTED'].includes(r.transfer.commitState))
@@ -368,7 +374,7 @@ export class CloudAudioUpload {
         await this.save();
         return this.view(j);
     } }
-    async _upload(id) {
+    async _upload(id) { this.#assertPlatform();
         const { j, who } = this.owned(id);
         if (j.settledCleanup || (j.privateRootKey&&j.privateRootKey!==this.dirKey))fail('UPLOAD_STATE');
         if (j.state !== 'ready' || j.status !== 'APPROVED' || this.busy || this.controllers.size)
@@ -435,7 +441,7 @@ export class CloudAudioUpload {
         }
         return this.view(j);
     }
-    async _cancel(id) {
+    async _cancel(id) { this.#assertPlatform();
         const { j, who } = this.owned(id);
         const control = this.controllers.get(id);
         control?.abort();
@@ -473,9 +479,9 @@ export class CloudAudioUpload {
         }
         return this.view(j);
     }
-    async _forget(id) { const { j } = this.owned(id); if ((j.batchBinding && !j.batchReceiptRecorded) || !['completed', 'cancelled'].includes(j.state))
+    async _forget(id) { this.#assertPlatform(); const { j } = this.owned(id); if ((j.batchBinding && !j.batchReceiptRecorded) || !['completed', 'cancelled'].includes(j.state))
         fail('UPLOAD_STATE'); await this.removeSnapshot(j); this.jobs = this.jobs.filter(v => v !== j); await this.save(); return { removed: true }; }
-    async action(id, method) {
+    async action(id, method) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         if (!['request', 'refresh', 'reconcile', 'upload', 'cancel', 'forget'].includes(method))
             fail('INVALID_REQUEST', 400);
@@ -499,13 +505,13 @@ export class CloudAudioUpload {
         }
     }
     // Internal UQ-01 adaptation: never registered as a browser route and never creates an HTTP request.
-    lookupByClientRequestId(clientRequestId) {
+    lookupByClientRequestId(clientRequestId) { this.#assertPlatform();
         batchId(clientRequestId);
         const who=this.guard();
         const j=this.jobs.find(row=>(row.clientRequestId||row.id)===clientRequestId&&row.owner===who.owner);
         return j?this.view(j):null;
     }
-    async inspectForBatch(assetId,{budget,signal}={}) {
+    async inspectForBatch(assetId,{budget,signal}={}) { this.#assertPlatform();
         if(budget!==undefined&&!isPreviewReadBudget(budget)||signal!==undefined&&!(signal instanceof AbortSignal))fail('INVALID_REQUEST',400);
         if(this.disposing)fail('UPLOAD_STATE');batchId(assetId);const who=this.guard(),operationId=`inspection:${crypto.randomUUID()}`,controller=new AbortController(),record={handle:null,unknown:false};
         const abort=()=>controller.abort();if(signal?.aborted)controller.abort();signal?.addEventListener('abort',abort,{once:true});
@@ -524,7 +530,7 @@ export class CloudAudioUpload {
         }catch(error){if(error instanceof CloudUploadError)throw error;if(['PREVIEW_BUDGET_EXCEEDED','PREVIEW_CANCELLED','INVALID_REQUEST'].includes(error?.code))throw new CloudUploadError(error.code,error.status??409);throw new CloudUploadError('SOURCE_CHANGED',409);}
         finally{signal?.removeEventListener('abort',abort);if(!record.unknown){this.inspections.delete(operationId);this.controllers.delete(operationId);this.operations.delete(operationId);}}
     }
-    async prepareWithIdentity(ids, sourceVersion, confirmedMetadata) {
+    async prepareWithIdentity(ids, sourceVersion, confirmedMetadata) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         if(!plain(ids)||Object.keys(ids).some(k=>!['intentId','clientRequestId'].includes(k)))fail('INVALID_REQUEST');
         batchId(ids.intentId);batchId(ids.clientRequestId);batchSourceVersion(sourceVersion);
@@ -549,7 +555,7 @@ export class CloudAudioUpload {
             this.jobs.push(j);await this.save();this.check(who);return this.view(j);
         } finally {this.busy=false;}
     }
-    async releasePayloadForApproval(intentId) {
+    async releasePayloadForApproval(intentId) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         const {j,who}=this.owned(intentId);
         if(!j.batchBinding||j.status!=='PENDING'||this.controllers.has(intentId)||this.operations.has(intentId)||this.busy)fail('UPLOAD_STATE');
@@ -557,7 +563,7 @@ export class CloudAudioUpload {
         try {await this.removeSnapshot(j);this.check(who);j.payloadReleased=true;await this.save();return this.view(j);}
         finally {this.operations.delete(intentId);}
     }
-    async _rebuildBatchPayload(j,who) {
+    async _rebuildBatchPayload(j,who) { this.#assertPlatform();
         if(!j.batchBinding||j.settledCleanup||(j.privateRootKey&&j.privateRootKey!==this.dirKey)||j.state!=='ready'||j.status!=='APPROVED')fail('UPLOAD_STATE');
         await this.verifySource(j);this.check(who);await this.dirGuard();
         const deadline=Date.now()+120000;
@@ -582,25 +588,25 @@ export class CloudAudioUpload {
             await out.sync();await this.verifySource(j);this.check(who);j.payloadOwnership={...j.payloadOwnership,state:'OWNED',fileIdentity:fileIdentity(await out.stat())};j.payloadReleased=false;await this.save();created=false;
         } finally {await input?.close();await out?.close();/* Failed/ambiguous creations are retained for registered recovery, never path-cleaned here. */}
     }
-    async rebuildPayload(intentId) {
+    async rebuildPayload(intentId) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         const {j,who}=this.owned(intentId);if(this.busy||this.controllers.has(intentId)||this.operations.has(intentId))fail('UPLOAD_STATE');
         this.busy=true;try{if(j.payloadReleased===true)await this._rebuildBatchPayload(j,who);else await this.verifySource(j);return this.view(j);}finally{this.busy=false;}
     }
-    _scopeForSettled(value) {
+    _scopeForSettled(value) { this.#assertPlatform();
         if(!exactKeys(value,['identity','batchId','itemId','localAttemptId','intentId','clientRequestId','metadataFingerprint']))fail('SETTLED_BINDING_INVALID');
         batchIdentity(value.identity);for(const k of ['batchId','itemId','localAttemptId','intentId','clientRequestId'])batchId(value[k]);
         if(!HASH.test(value.metadataFingerprint||''))fail('SETTLED_BINDING_INVALID');
         return cloneBatch(value);
     }
-    async acceptBatchRequest(intentId,row) {
+    async acceptBatchRequest(intentId,row) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         const {j,who}=this.owned(intentId);
         if(!j.batchBinding||j.settledCleanup||j.receipt||this.busy||this.controllers.size||this.operations.size)fail('UPLOAD_STATE');
         this.operations.add(intentId);
         try{await this.dirGuard();this.check(who);this.applyRequest(j,row);j.state=row.status==='CANCELLED'?'cancelled':'ready';await this.save();this.check(who);return this.view(j);}finally{this.operations.delete(intentId);}
     }
-    async registeredResources() {
+    async registeredResources() { this.#assertPlatform();
         this.guard();await this.dirGuard();
         const ids=new Set(this.jobs.map(j=>j.id)),present=new Map(),held=new Map(),encoded=new Map();
         const include=j=>{batchId(j.id);encoded.set(j.id,Math.max(encoded.get(j.id)||0,Buffer.byteLength(JSON.stringify(j))));if(j.settledCleanup){if(j.settledCleanup.version!==1||!Number.isSafeInteger(j.settledCleanup.heldBytes)||j.settledCleanup.heldBytes<0||j.settledCleanup.heldBytes>MAX)fail('RESOURCE_STATE_UNKNOWN');held.set(j.id,Math.max(held.get(j.id)||0,j.settledCleanup.heldBytes));}};
@@ -621,7 +627,7 @@ export class CloudAudioUpload {
         intentBytes=Math.max(intentBytes,2+Math.max(0,encoded.size-1)+[...encoded.values()].reduce((n,b)=>n+b,0));
         await this.dirGuard();return{known:true,activeIntents:ids.size,intentBytes,snapshotBytes};
     }
-    async proofForReuse(intentId,challenge,attemptId) {
+    async proofForReuse(intentId,challenge,attemptId) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');batchId(attemptId);
         const {j,who}=this.owned(intentId);
         if(this.busy||this.controllers.size||this.operations.size||j.settledCleanup||j.state!=='ready'||j.status!=='APPROVED')fail('UPLOAD_STATE');
@@ -642,7 +648,7 @@ export class CloudAudioUpload {
             return crypto.createHash('sha256').update(Buffer.concat(parts)).digest('hex');
         }finally{try{await file?.close();}finally{this.operations.delete(intentId);this.busy=false;}}
     }
-    async bindSettledContext(ids,context) {
+    async bindSettledContext(ids,context) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');batchId(ids.intentId);batchId(ids.clientRequestId);
         const {j,who}=this.owned(ids.intentId),scope=this._scopeForSettled({...context,intentId:ids.intentId,clientRequestId:ids.clientRequestId});
         const auth=this.auth.getState();
@@ -655,13 +661,13 @@ export class CloudAudioUpload {
         this.operations.add(j.id);
         try{await this.dirGuard();this.check(who);j.settledBinding=scope;await this.save();this.check(who);return this.view(j);}finally{this.operations.delete(j.id);}
     }
-    _registeredPayload(record,stat,bytes) {
+    _registeredPayload(record,stat,bytes) { this.#assertPlatform();
         if(!record||record.version!==1||!['OWNED','CREATING'].includes(record.state)||!record.fileIdentity)fail('PAYLOAD_OWNERSHIP_UNKNOWN');
         const expected=record.fileIdentity;
         if(!stat.isFile()||stat.isSymbolicLink?.()||stat.nlink!==1||(stat.mode&0o077)||stat.size!==bytes||stat.dev!==expected.dev||stat.ino!==expected.ino||stat.birthtimeMs!==expected.birthtimeMs)fail('PAYLOAD_CHANGED');
         if(record.state==='OWNED'&&batchCanonical(fileIdentity(stat))!==batchCanonical(expected))fail('PAYLOAD_CHANGED');
     }
-    _settledEnvelope(value) {
+    _settledEnvelope(value) { this.#assertPlatform();
         const keys=['version','identity','batchId','itemId','localAttemptId','intentId','clientRequestId','serverRequestId','serverAttemptId','stateVersion','admissionEpoch','sha256','bytes','metadataFingerprint','sourceVersion','intentBinding','terminalEvidence','localExit','ownership'];
         if(!exactKeys(value,keys)||value.version!==1)fail('SETTLED_BINDING_INVALID');
         const scope=this._scopeForSettled({identity:value.identity,batchId:value.batchId,itemId:value.itemId,localAttemptId:value.localAttemptId,intentId:value.intentId,clientRequestId:value.clientRequestId,metadataFingerprint:value.metadataFingerprint});
@@ -675,27 +681,27 @@ export class CloudAudioUpload {
         batchId(exit.operationId);
         return {evidence:cloneBatch(value),scope};
     }
-    _settledDescriptor(j) {
+    _settledDescriptor(j) { this.#assertPlatform();
         if(!j.settledBinding||!j.privateRootKey)fail('SETTLED_BINDING_UNKNOWN');
         const payload=j.payloadOwnership;
         if(!payload||payload.version!==1||!['ABSENT','OWNED','CREATING'].includes(payload.state)||payload.rootKey!==j.privateRootKey||(payload.state!=='ABSENT'&&!payload.fileIdentity))fail('PAYLOAD_OWNERSHIP_UNKNOWN');
         return{version:1,intentId:j.id,clientRequestId:j.clientRequestId,intentBinding:j.batchBinding,scope:cloneBatch(j.settledBinding),rootKey:j.privateRootKey,payload:cloneBatch(payload),sha256:j.sha256,bytes:j.bytes};
     }
-    async _settledJsonAbsent(intentId,check) {
+    async _settledJsonAbsent(intentId,check) { this.#assertPlatform();
         const h=await fs.open(path.join(this.dir,'intents.json'),constants.O_RDONLY|constants.O_NOFOLLOW);
         try{check();const st=await h.stat();check();if(!st.isFile()||st.nlink!==1||st.size>262144)fail('UPLOAD_STORAGE',503);const raw=await h.readFile('utf8');check();const rows=JSON.parse(raw);if(!Array.isArray(rows)||rows.length>50||rows.some(j=>j.id===intentId))fail('SETTLED_JSON_NOT_REMOVED');}finally{await h.close();}
         check();
     }
-    async _unlinkSettledPayload(destination,expected,check) {
+    async _unlinkSettledPayload(destination,expected,check) { this.#assertPlatform();
         await this.dirGuard();check();const current=await fs.lstat(destination);check();
         if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1||batchCanonical(fileIdentity(current))!==batchCanonical(fileIdentity(expected)))fail('PAYLOAD_CHANGED');
         await this.dirGuard();check();await fs.unlink(destination);check();
     }
-    forgetSettled(ids,evidence,readCommitted,persistOwnership) {
+    forgetSettled(ids,evidence,readCommitted,persistOwnership) { this.#assertPlatform();
         const task=this._forgetSettled(ids,evidence,readCommitted,persistOwnership);
         this.settledTasks.add(task);task.then(()=>this.settledTasks.delete(task),()=>this.settledTasks.delete(task));return task;
     }
-    async _forgetSettled(ids,input,readCommitted,persistOwnership) {
+    async _forgetSettled(ids,input,readCommitted,persistOwnership) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         batchId(ids.intentId);batchId(ids.clientRequestId);
         if(typeof readCommitted!=='function')fail('SETTLED_LEDGER_REQUIRED');
@@ -758,7 +764,7 @@ export class CloudAudioUpload {
             return{cleanupComplete:true,durable:true,evidenceFingerprint:batchFingerprint(evidence),intentRemoved:!!j,payloadRemoved:unlinked,payloadBytesReleased:unlinked?evidence.bytes:0};
         }finally{await file?.close();this.operations.delete(ids.intentId);}
     }
-    async forgetVerified(ids,receipt,readCommitted) {
+    async forgetVerified(ids,receipt,readCommitted) { this.#assertPlatform();
         if(this.disposing)fail('UPLOAD_STATE');
         batchId(ids.intentId);batchId(ids.clientRequestId);
         if(typeof readCommitted!=='function')fail('UPLOAD_STATE');
@@ -778,6 +784,8 @@ export class CloudAudioUpload {
         try{j.receipt=this.receipt(j,stored);j.state='completed';j.batchReceiptRecorded=true;await this.save();return await this._forget(j.id);}finally{this.operations.delete(j.id);}
     }
     async dispose({timeoutMs=5000}={}) {
+        if(this.neverStartedIO()){this.disposing=true;return{closed:true,unknown:false,neverStarted:true};}
+        if(!this.repairInitialized)return{closed:false,unknown:true};
         if(!Number.isSafeInteger(timeoutMs)||timeoutMs<0||timeoutMs>30000)fail('INVALID_REQUEST');
         this.disposing=true;for(const controller of this.controllers.values())controller.abort();
         const end=Date.now()+timeoutMs;
@@ -785,7 +793,7 @@ export class CloudAudioUpload {
         let timer;const settled=await Promise.race([this.chain.then(()=>true,()=>true),new Promise(r=>{timer=setTimeout(()=>r(false),Math.max(0,end-Date.now()));})]);clearTimeout(timer);
         return{closed:settled,unknown:!settled};
     }
-    async removeSnapshot(j) { await this.dirGuard(); await fs.unlink(path.join(this.dir, `payload-${j.id}`)).catch(e => { if (e.code !== 'ENOENT')
+    async removeSnapshot(j) { this.#assertPlatform(); await this.dirGuard(); await fs.unlink(path.join(this.dir, `payload-${j.id}`)).catch(e => { if (e.code !== 'ENOENT')
         throw new CloudUploadError('UPLOAD_STORAGE', 503); }); }
 }
 
@@ -795,16 +803,19 @@ export function manualAudioAdmission(readDownloadStatus) {
     let uploading = false, startingDownloads = 0;
     return {
         async download(work) {
+            requireCloudAudioPlatform();
             if (uploading) fail('BUSY', 429);
             startingDownloads++;
             try { return await work(); }
             finally { startingDownloads--; }
         },
         async upload(work) {
+            requireCloudAudioPlatform();
             if (uploading || startingDownloads) fail('BUSY', 429);
             uploading = true;
             try {
                 const status = await readDownloadStatus();
+                if (status.statisticsKnown === false) fail('UPLOAD_STATE_UNKNOWN', 503);
                 if (status.active || status.queued) fail('BUSY', 429);
                 return await work();
             } finally { uploading = false; }

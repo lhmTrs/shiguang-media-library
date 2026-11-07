@@ -4,6 +4,7 @@ import type { Asset } from "./main";
 import { TimelineImportDialog } from "./TimelineImportDialog";
 import { TimelineUsage, type TimelineReference } from "./TimelineUsage";
 import { ProjectTimelineOverview } from "./ProjectTimelineOverview";
+import {MediaViewer, assetMediaView, mediaDoubleClick} from './MediaViewer';
 
 export type Project = { id: string; name: string; software: string; note: string; total: number; candidates: number; used: number };
 export type ProjectRequest = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
@@ -19,18 +20,14 @@ function ProjectAssetPreview({ asset, unavailable, playing, click }: { asset: As
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [asset.id, asset.mtime]);
   const Icon = mediaTypes.find(t => t.kind === asset.kind)?.icon || Layers, visual = ["photo", "video"].includes(asset.kind);
-  return <button className="project-media-preview" data-kind={asset.kind} title={visual ? "预览素材" : "试听项目素材"} aria-label={(visual ? "预览项目素材：" : "试听项目素材：") + asset.name} disabled={unavailable || (!visual && asset.ext === "ncm")} onClick={click}>
+  return <button className="project-media-preview" data-kind={asset.kind} title={visual ? "查看原图或视频" : "试听项目素材"} aria-label={(visual ? "预览项目素材：" : "试听项目素材：") + asset.name} disabled={!visual && (unavailable || asset.ext === "ncm")} onClick={click}>
     {visual && !failed && !unavailable ? <img src={thumbnail(asset)} alt={asset.name} loading="lazy" onError={() => setFailed(true)}/> : !visual && !unavailable && asset.ext !== "ncm" ? playing ? <Pause size={21}/> : <Play size={21}/> : <Icon size={23}/>}
     {!unavailable && visual && asset.kind !== "photo" && <span className={"project-preview-play" + (playing ? " playing" : "")}>{playing ? <Pause size={17}/> : <Play size={17}/>}</span>}
   </button>;
 }
 
 export function ProjectMediaDialog({ asset, close, stopAudio, label = "项目素材预览" }: { asset: Asset; close: () => void; stopAudio: () => void; label?: string }) {
-  const [failed, setFailed] = useState(false), root = useRef<HTMLDivElement>(null);
-  useEffect(() => { const previous = document.activeElement as HTMLElement; root.current?.querySelector<HTMLButtonElement>("button")?.focus(); return () => previous?.focus(); }, []);
-  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><div className="modal project-media-dialog" role="dialog" aria-modal="true" aria-label={label} ref={root} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); close(); } if (e.key === "Tab") { const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>("button,video") || []), first = nodes[0], last = nodes.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } } }}>
-    <div className="modal-head"><h2 title={asset.name}>{asset.name}</h2><button className="icon-button" aria-label="关闭项目素材预览" title="关闭预览" onClick={close}><X size={18}/></button></div><div className="project-media-stage">{failed ? <p role="status">此格式暂时无法预览，可在访达中查看原文件。</p> : asset.kind === "photo" ? <img src={thumbnail(asset)} alt={asset.name} onError={() => setFailed(true)}/> : <video src={`/api/media/${asset.id}/original`} poster={thumbnail(asset)} controls preload="metadata" onPlay={stopAudio} onError={() => setFailed(true)}/>}</div>
-  </div></div>;
+  return <MediaViewer target={assetMediaView(asset)} label={label} onClose={close} onPlay={stopAudio}/>;
 }
 
 export function ProjectHistory({ assetId, request, revision = 0 }: { assetId: string; request: ProjectRequest; revision?: number }) {
@@ -76,6 +73,13 @@ export function ProjectManager({ projects, activeId, select, request, revision, 
   const [editor, setEditor] = useState<{ project: Project | null } | null>(null), [noteEditor, setNoteEditor] = useState<{ id: string; note: string } | null>(null);
   const [importing,setImporting] = useState(false);
   const [creatingFromXml,setCreatingFromXml] = useState(false);
+  const previewContext = [activeId, tab, search, kind, page, revision].join(':');
+  const previewScope = useRef('');
+  const openPreview = (asset: Asset, unavailable = false) => {
+    previewScope.current = previewContext;
+    setPreview(unavailable ? {...asset, online: 0} : asset);
+  };
+  useEffect(() => setPreview(null), [previewContext]);
   useEffect(() => { const timer = setTimeout(() => setSearch(q), 200); return () => clearTimeout(timer); }, [q]);
   useEffect(() => { setKind(""); setPreview(null); setImporting(false); }, [activeId]);
   useEffect(() => { setPage(1); setChecked([]); setNoteEditor(null); }, [activeId, tab, search, kind]);
@@ -113,9 +117,10 @@ export function ProjectManager({ projects, activeId, select, request, revision, 
         <ProjectTimelineOverview key={active.id} projectId={active.id} projectName={active.name} revision={revision} request={request} stopAudio={stopAudio}/>
         <div className="project-selection"><label className="check-label"><input type="checkbox" aria-label="选择本页项目素材" disabled={loading || !items.length} checked={items.length > 0 && items.every(i => checked.includes(i.asset_id))} onChange={e => setChecked(e.target.checked ? items.map(i => i.asset_id) : [])}/>本页</label><span>{checked.length ? `已选 ${checked.length} 项` : `${total} 个素材`}</span>{checked.length > 0 && <><button className="plain" disabled={busy || loading} onClick={() => void perform(() => update(checked, tab === "used" ? "candidate" : "used"))}><Check size={15}/>{tab === "used" ? "退回候选" : "标记已使用"}</button><button className="icon-button" title="移出所选项目素材" aria-label="移出所选项目素材" disabled={busy || loading} onClick={() => void perform(() => remove(checked))}><X size={16}/></button></>}</div>
         <div className="project-list-heading"><span>素材</span><span>使用与操作</span></div>
-        <div className="project-items" aria-busy={loading}>{loading ? <p className="project-loading" role="status">正在读取…</p> : !items.length ? <div className="project-items-empty"><FolderKanban size={28} strokeWidth={1.5}/><p>{search ? "没有匹配的项目素材" : kind ? `暂无${mediaTypes.find(t => t.kind === kind)?.name || "此类"}素材` : tab === "candidate" ? "暂无候选素材" : "暂无已使用素材"}</p>{search || kind ? <button className="plain" onClick={() => { setQ(""); setKind(""); }}><X size={14}/>清除素材筛选</button> : tab === "used" ? <button className="plain" onClick={() => setTab("candidate")}><Layers size={15}/>查看候选素材</button> : browseLibrary && <button className="plain" onClick={browseLibrary}><Plus size={15}/>添加素材</button>}</div> : items.map(item => <article className="project-item" key={item.asset_id} data-project-asset={item.asset_id}>
+        <div className="project-items" aria-busy={loading}>{loading ? <p className="project-loading" role="status">正在读取…</p> : !items.length ? <div className="project-items-empty"><FolderKanban size={28} strokeWidth={1.5}/><p>{search ? "没有匹配的项目素材" : kind ? `暂无${mediaTypes.find(t => t.kind === kind)?.name || "此类"}素材` : tab === "candidate" ? "暂无候选素材" : "暂无已使用素材"}</p>{search || kind ? <button className="plain" onClick={() => { setQ(""); setKind(""); }}><X size={14}/>清除素材筛选</button> : tab === "used" ? <button className="plain" onClick={() => setTab("candidate")}><Layers size={15}/>查看候选素材</button> : browseLibrary && <button className="plain" onClick={browseLibrary}><Plus size={15}/>添加素材</button>}</div> : items.map(item => <article className="project-item" key={item.asset_id} data-project-asset={item.asset_id}
+          onDoubleClick={event => { if (['photo', 'video'].includes(item.asset.kind) && mediaDoubleClick(event)) openPreview(item.asset, item.unavailable); }}>
           <input type="checkbox" aria-label={"选择项目素材：" + item.asset.name} checked={checked.includes(item.asset_id)} onChange={e => setChecked(ids => e.target.checked ? [...ids, item.asset_id] : ids.filter(id => id !== item.asset_id))}/>
-          <ProjectAssetPreview asset={item.asset} unavailable={item.unavailable} playing={playingId === item.asset_id && isPlaying} click={() => ["photo", "video"].includes(item.asset.kind) ? setPreview(item.asset) : ["mp4", "mov", "m4v", "mkv", "avi", "mts", "m2ts", "webm"].includes(item.asset.ext) ? setPreview({ ...item.asset, kind: "video" }) : play(item.asset)}/>
+          <ProjectAssetPreview asset={item.asset} unavailable={item.unavailable} playing={playingId === item.asset_id && isPlaying} click={() => ["photo", "video"].includes(item.asset.kind) ? openPreview(item.asset, item.unavailable) : ["mp4", "mov", "m4v", "mkv", "avi", "mts", "m2ts", "webm"].includes(item.asset.ext) ? openPreview({ ...item.asset, kind: "video" }, item.unavailable) : play(item.asset)}/>
           <div className="project-item-info"><button className="asset-name-button" title={item.asset.name} disabled={item.unavailable} onClick={() => edit(item.asset)}>{item.asset.name}</button><div className="project-item-meta"><span className="project-kind-label" data-kind={item.asset.kind}>{mediaTypes.find(t => t.kind === item.asset.kind)?.name || "素材"}</span><span>{item.asset.ext.toUpperCase()}</span>{item.asset.duration != null && <span>{duration(item.asset.duration)}</span>}{!!item.asset.width && <span>{item.asset.width} × {item.asset.height}</span>}<span>{item.source==="resolve"?"达芬奇导入":item.source==="mixed"?"手动＋时间线":item.status === "used" ? "手动确认" : "手动加入"}</span>{item.unavailable && <span className="project-offline">离线 / 原文件不可用</span>}</div>
             <TimelineUsage references={item.timelineReferences} projectId={active.id} projectName={active.name} request={request} stopAudio={stopAudio} compact/>
             <details className="project-file-details"><summary>文件信息</summary><div><span>原文件路径</span><p>{item.asset.path}</p><span>{item.status === "used" ? `首次确认 ${date(item.used_at)}` : `加入 ${date(item.added_at)}`}</span></div></details>
@@ -126,7 +131,7 @@ export function ProjectManager({ projects, activeId, select, request, revision, 
       </> : <div className="project-items-empty project-unselected"><FolderKanban size={32} strokeWidth={1.5}/><h2>选择一个项目</h2><button className="plain" onClick={() => select(projects[0].id)}>打开项目<ArrowRight size={15}/></button></div>}
     </section></div>}
     {editor && <ProjectEditor project={editor.project} request={request} close={() => setEditor(null)} saved={id => { setEditor(null); changed(id); }} importXml={()=>{setEditor(null);setCreatingFromXml(true);}}/>}
-    {preview && <ProjectMediaDialog key={preview.id} asset={preview} close={() => setPreview(null)} stopAudio={stopAudio}/>}
+    {preview && previewScope.current === previewContext && <ProjectMediaDialog key={preview.id} asset={preview} close={() => setPreview(null)} stopAudio={stopAudio}/>}
     {importing&&active&&<TimelineImportDialog key={active.id} projectId={active.id} request={request} close={()=>setImporting(false)} changed={changed}/>}
     {creatingFromXml&&<TimelineImportDialog key="create-from-xml" request={request} close={()=>setCreatingFromXml(false)} changed={(id,used)=>{setCreatingFromXml(false);setTab(used?"used":"candidate");changed(id);}}/>}
   </div>;

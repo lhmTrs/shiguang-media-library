@@ -1,0 +1,4 @@
+interface:
+  display_name: "电影导演分镜"
+  short_description: "细化微表演与情绪镜头，只返回兼容拾光初始化2.0.0的完整分镜JSON"
+  default_prompt: "请使用 $film-storyboard-director，将我的剧本设计成细节丰富、情绪递进清楚的完整分镜；只返回符合拾光初始化2.0.0格式的完整JSON对象，不附其他文字，不写文件或运行保存脚本。"

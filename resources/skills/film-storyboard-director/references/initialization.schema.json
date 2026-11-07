@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "拾光完整分镜初始化 JSON 2.0.0",
+  "description": "推荐新输入格式；兼容旧中文格式的转换另由服务端处理。名称唯一、局部引用、时长和数据库绑定由服务端再次校验。",
+  "type": "object",
+  "properties": {
+    "格式版本": {
+      "const": "2.0.0"
+    },
+    "完整分镜": {
+      "const": true
+    },
+    "项目名称": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "故事核心": {
+      "type": "string"
+    },
+    "画幅": {
+      "type": "string"
+    },
+    "总时长秒": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "素材清单": {
+      "type": "object",
+      "properties": {
+        "人物": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "编号": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "名称": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "姓名": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "描述": {
+                "type": "string"
+              },
+              "年龄": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "身份": {
+                "type": "string"
+              },
+              "人物特点": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "编号",
+              "名称"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "场景": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "编号": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "名称": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "姓名": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "描述": {
+                "type": "string"
+              },
+              "年龄": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "身份": {
+                "type": "string"
+              },
+              "人物特点": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "编号",
+              "名称"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "道具": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "编号": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "名称": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "姓名": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "描述": {
+                "type": "string"
+              },
+              "年龄": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "身份": {
+                "type": "string"
+              },
+              "人物特点": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "编号",
+              "名称"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "人物",
+        "场景",
+        "道具"
+      ],
+      "additionalProperties": true
+    },
+    "人物": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "姓名": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "姓名"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "场景": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "场次": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "地点": {
+            "type": "string"
+          },
+          "场景编号": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "时间": {
+            "type": "string"
+          },
+          "内外景": {
+            "type": "string"
+          },
+          "空间设定": {
+            "type": "string"
+          },
+          "镜头": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "镜号": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "时长秒": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 86400
+                },
+                "开始秒": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "结束秒": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "景别与角度": {
+                  "type": "string"
+                },
+                "画面与人物动作": {
+                  "type": "string"
+                },
+                "摄影机设计": {
+                  "type": "string"
+                },
+                "人物编号": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "uniqueItems": true
+                },
+                "场景编号": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "道具编号": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "uniqueItems": true
+                },
+                "声音与对白": {
+                  "type": "object",
+                  "properties": {
+                    "环境与动作声": {
+                      "type": "string"
+                    },
+                    "对白": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "人物编号": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "人物": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "声源": {
+                            "type": "string"
+                          },
+                          "台词": {
+                            "type": "string"
+                          },
+                          "表演要求": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "台词"
+                        ],
+                        "anyOf": [
+                          {
+                            "required": [
+                              "人物编号"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "人物"
+                            ]
+                          }
+                        ],
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "剪辑衔接": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "镜号",
+                "时长秒",
+                "画面与人物动作",
+                "摄影机设计"
+              ],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "镜头"
+        ],
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": [
+    "格式版本",
+    "完整分镜",
+    "项目名称",
+    "总时长秒",
+    "素材清单",
+    "场景"
+  ],
+  "additionalProperties": true
+}

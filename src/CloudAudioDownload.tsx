@@ -27,6 +27,9 @@ import { CloudAudioUpload } from "./CloudAudioUpload";
 import type { LocalRequest } from "./OpenAISettings";
 
 type AudioStatus = {
+  platformCode?: string | null;
+  statisticsKnown?: boolean;
+  historyState?: "UNINSPECTED";
   enabled: boolean;
   configured: boolean;
   loggedIn: boolean;
@@ -465,8 +468,8 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
       <section className="cw-panel cw-audio" aria-label="云端音频下载">
         <div className="cw-audio-empty">
           <CloudOff size={30} />
-          <h2>云端音频下载未启用</h2>
-          <p>本机已关闭云端音频传输，请联系本机管理员启用后重启；当前不会发起音频传输请求。</p>
+          <h2>{status?.platformCode === "WINDOWS_CLOUD_AUDIO_UNSUPPORTED" ? "当前平台尚不支持云端音频传输" : "云端音频下载未启用"}</h2>
+          <p>{status?.platformCode === "WINDOWS_CLOUD_AUDIO_UNSUPPORTED" ? "Windows 云端文件保护与持久化能力尚未完成验证。原有任务与残留已保留且未检查，当前不会传输或恢复；基础素材库仍可使用。" : "本机已关闭云端音频传输，请联系本机管理员启用后重启；当前不会发起音频传输请求。"}</p>
         </div>
       </section>
     );
@@ -496,7 +499,7 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
       )}
 
       <CloudAudioUpload request={request} />
-      <form className="manual-audio-fields" onSubmit={event=>{event.preventDefault();appliedSearch.current={q:query,groupId:groupFilter};closeDetails();void loadCatalog(0);}}>
+      <form className="manual-audio-fields cw-audio-search" onSubmit={event=>{event.preventDefault();appliedSearch.current={q:query,groupId:groupFilter};closeDetails();void loadCatalog(0);}}>
         <input aria-label="云端音频关键词" placeholder="名称或两级分类中的字面关键词" maxLength={128} value={query} onChange={event=>setQuery(event.target.value)} />
         <select aria-label="查找小组" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">全部当前可见（含本人私有）</option>{groups.map(g=><option key={g.groupId} value={g.groupId}>{g.name}</option>)}</select>
         <button className="plain" disabled={catalogLoading}>查找云端音频</button><span role="status">匹配 {total} 个音频对象</span>

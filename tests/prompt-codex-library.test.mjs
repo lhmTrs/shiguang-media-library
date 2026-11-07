@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import express from 'express';
+import {randomUUID} from 'node:crypto';
+import {CodexMedia} from '../server/prompt-codex/media.mjs';
+import {codexRouter} from '../server/prompt-codex/router.mjs';
+
+test('Library copy respects read-only, confirmation, registered roots, symlinks and exclusive creation',async t=>{
+  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'codex-library-'));
+  const originalReadonly=process.env.MEDIA_READONLY_FILES;
+  const directory=path.join(temporary,'photos');await fs.mkdir(directory);
+  const media=await new CodexMedia(path.join(temporary,'data')).init();
+  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=','base64');
+  const row=await media.save(bytes,randomUUID()),root={id:randomUUID(),name:'合成照片',path:await fs.realpath(directory),kind:'photo'};
+  let scans=0;
+  const store={attachment:id=>{assert.equal(id,row.id);return row;},lib:{roots:()=>[root],scan:id=>{assert.equal(id,root.id);scans++;return{status:'running'};}}};
+  const app=express();app.use('/api',codexRouter(store,{},media,{}));
+  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+  t.after(async()=>{if(originalReadonly===undefined)delete process.env.MEDIA_READONLY_FILES;else process.env.MEDIA_READONLY_FILES=originalReadonly;await new Promise(r=>server.close(r));await fs.rm(temporary,{recursive:true,force:true});});
+  const origin='http://127.0.0.1:'+server.address().port;
+  const copy=body=>fetch(origin+'/api/images/'+row.id+'/add-to-library',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  process.env.MEDIA_READONLY_FILES='1';assert.equal((await copy({root_id:root.id,confirm:true})).status,403);assert.deepEqual(await fs.readdir(directory),[]);
+  process.env.MEDIA_READONLY_FILES='0';assert.equal((await copy({root_id:root.id})).status,400);assert.equal((await copy({root_id:'not-registered',confirm:true})).status,400);
+  const actual=root.path;root.path=path.join(temporary,'alias');await fs.symlink(actual,root.path);assert.equal((await copy({root_id:root.id,confirm:true})).status,409);root.path=actual;
+  assert.equal((await copy({root_id:root.id,confirm:true})).status,200);assert.equal(scans,1);
+  const copied=path.join(directory,'Codex-'+row.file_name);assert.deepEqual(await fs.readFile(copied),bytes);
+  assert.equal((await copy({root_id:root.id,confirm:true})).status,409);assert.equal(scans,1);assert.deepEqual(await fs.readFile(copied),bytes);assert.deepEqual(await media.read(row),bytes);
+});
