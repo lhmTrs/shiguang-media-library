@@ -29,7 +29,9 @@ export async function inspectSelection(files) {
     if (!st.isFile() || st.isSymbolicLink() || !formats.has(path.extname(file).toLowerCase()) || st.size < 1)
       throw error('INTAKE_VIDEO_ONLY','只能收纳视频；混合选择、文件夹或链接不会开始导入');
     const real = await fs.realpath(file);
-    result.push({id:randomUUID(),path:real,name:path.basename(real),bytes:st.size,identity:stamp(st)});
+    const parent=await fs.lstat(path.dirname(real));
+    result.push({id:randomUUID(),path:real,name:path.basename(real),bytes:st.size,identity:stamp(st),
+      parentIdentity:{dev:String(parent.dev),ino:String(parent.ino)}});
   }
   return result;
 }

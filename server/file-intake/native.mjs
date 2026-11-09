@@ -58,11 +58,20 @@ export class IntakeNative {
       if(old.owner!=='shiguang-file-intake-v1'||old.dataDir!==this.dataDir)throw error('INTAKE_INSTALL_CONFLICT','同名入口属于其他安装，未替换');
     }catch(e){if(e.code!=='ENOENT')throw e;}
     const source=path.join(import.meta.dirname,'window.swift'),version=createHash('sha256').update(await fs.readFile(source)).digest('hex').slice(0,16);
-    const helper=path.join(native,'intake-window-'+version);
+    const bundle=path.join(native,'ShiguangIntake-'+version+'-v1.app');
+    const helper=path.join(bundle,'Contents/MacOS/ShiguangIntake');
     try {await fs.access(helper);}catch {
-      const temporary=helper+'.'+randomUUID();
-      try {await run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),source,'-o',temporary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536});await fs.chmod(temporary,0o700);await fs.rename(temporary,helper);}
-      catch(e){await fs.unlink(temporary).catch(()=>{});throw error('INTAKE_COMPILER_UNAVAILABLE','无法准备本机窗口组件，请先安装 Mac 命令行工具后再试；未安装右键入口',409);}
+      const temporary=path.join(native,'.intake-window-'+randomUUID()+'.app'),binary=path.join(temporary,'Contents/MacOS/ShiguangIntake');
+      try {
+        await fs.mkdir(path.dirname(binary),{recursive:true,mode:0o700});
+        await run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),source,'-o',binary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536});
+        await fs.chmod(binary,0o700);
+        await fs.writeFile(path.join(temporary,'Contents/Info.plist'),plist({CFBundleIdentifier:'com.shiguang.intake.'+createHash('sha256').update(native).digest('hex').slice(0,12),
+          CFBundleName:'拾光视频收纳',CFBundleDisplayName:'拾光视频收纳',CFBundleExecutable:'ShiguangIntake',CFBundlePackageType:'APPL',CFBundleVersion:'1',
+          NSHighResolutionCapable:true,LSMinimumSystemVersion:'11.0'}));
+        await fs.rename(temporary,bundle);
+      }
+      catch(e){throw error('INTAKE_COMPILER_UNAVAILABLE','无法准备本机窗口组件，请先安装 Mac 命令行工具后再试；未安装右键入口',409);}
     }
     if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，未安装右键入口',503);
     const config=path.join(native,'install-'+randomUUID()+'.json');

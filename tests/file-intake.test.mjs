@@ -134,3 +134,54 @@ test('应用到后续项也处理已到达的重名等待；坏回执不阻止Ap
   assert.equal(next.initializationError,undefined);assert.equal(next.batch(id).items[0].status,'unknown');
   await assert.rejects(next.reconcile(id),e=>e.code==='INTAKE_RECEIPT_INVALID');assert.equal(await fs.readFile(file,'utf8'),'{bad');await next.close();
 });
+
+test('末次目标核验期间原路径被替换：不调用废纸篓，原件与新文件均保留',async t=>{
+  let calls=0;const f=await fixture(t,{trash:async()=>{calls++;assert.fail('replacement must not be trashed');}});
+  const verify=f.catalog.media.verify.bind(f.catalog.media),kept=f.file+'.original-kept';let replaced=false;
+  f.catalog.media.verify=async source=>{
+    await verify(source);
+    if(!replaced&&[...f.intake.batches.values()].some(b=>b.items.some(i=>i.removal==='planned'))) {
+      replaced=true;await fs.rename(f.file,kept);await fs.copyFile(kept,f.file);await fs.appendFile(f.file,'replacement');
+    }
+  };
+  const {batch}=await accept(f,[f.file],'move');await settled(f.intake);
+  assert.equal(replaced,true);assert.equal(calls,0);await fs.access(kept);await fs.access(f.file);
+  assert.equal(f.intake.batch(batch.id).items[0].status,'unknown');
+  assert.equal((await f.catalog.list(f.project.id)).videos.length,1);
+});
+
+test('本次成功副本完成后仅清理自己的stage，目标仍可验证；重名/未知/历史stage保留',async t=>{
+  const f=await fixture(t),{batch}=await accept(f,[f.file]);await settled(f.intake);
+  const item=f.intake.batch(batch.id).items[0],raw=f.catalog.receipt(f.project.id,item.requestId);
+  assert.equal(raw.stageCleanup.complete,true);await assert.rejects(fs.access(raw.cache),e=>e.code==='ENOENT');
+  const source=await f.catalog.verifiedSource(f.project.id,item.videoId);await f.catalog.media.verify(source);
+  assert.notEqual(source.identity.ino,raw.stageStat.ino);
+  const duplicate=await accept(f,[f.file]);await settled(f.intake);
+  const d=f.intake.batch(duplicate.batch.id).items[0],pending=f.catalog.receipt(f.project.id,d.requestId);
+  assert.equal(pending.status,'duplicate');await fs.access(pending.stage);
+  await f.catalog.cleanupIntakeStage(f.project.id,pending.id);await fs.access(pending.stage);
+  for(const change of [{status:'unknown'},{status:'ready',instance:'old-instance'}]){
+    Object.assign(pending,change);f.catalog.persist(pending);await f.catalog.cleanupIntakeStage(f.project.id,pending.id);await fs.access(pending.stage);
+  }
+});
+
+test('临时目录被替换则保留两边文件并显示收尾提示，不影响已成功正式视频',async t=>{
+  const f=await fixture(t),cleanup=f.catalog.cleanupIntakeStage.bind(f.catalog);let saved;
+  f.catalog.cleanupIntakeStage=async(id,request)=>{
+    const raw=f.catalog.receipt(id,request);saved=raw.cache+'-kept';await fs.rename(raw.cache,saved);await fs.mkdir(raw.cache,{mode:0o700});
+    await fs.writeFile(path.join(raw.cache,'original.partial'),'unrelated');return cleanup(id,request);
+  };
+  const {batch}=await accept(f,[f.file]);await settled(f.intake);
+  const item=f.intake.batch(batch.id).items[0];assert.equal(item.status,'ready');assert.match(item.error,/临时副本保留/);
+  await fs.access(path.join(saved,'original.partial'));
+  const raw=f.catalog.receipt(f.project.id,item.requestId);assert.equal(await fs.readFile(path.join(raw.cache,'original.partial'),'utf8'),'unrelated');
+  await f.catalog.media.verify(await f.catalog.verifiedSource(f.project.id,item.videoId));
+});
+
+test('移除计划写入后中断：重启显示未知，不自动再次移除原件',async t=>{
+  const f=await fixture(t),{batch}=await accept(f,[f.file]);await settled(f.intake);
+  const b=f.intake.batch(batch.id);b.mode='move';b.items[0].removal='planned';b.status='running';await f.intake.save(b);
+  const next=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,trash:()=>assert.fail('no automatic removal after restart')}).init();
+  assert.equal(next.batch(b.id).items[0].status,'unknown');assert.equal(next.work,null);await fs.access(f.file);
+  const result=await next.reconcile(b.id);assert.equal(result.items[0].status,'source_retained');await fs.access(f.file);await next.close();
+});

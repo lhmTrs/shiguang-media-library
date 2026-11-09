@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
+import {spawn} from 'node:child_process';
 import {Receipts,uuid,stamp,same,unchanged,error} from './files.mjs';
 
 const stable = value => JSON.stringify(value);
@@ -12,8 +13,8 @@ const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copied
 export class FileIntake {
   constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir}) {
     this.receipts=new Receipts(dataDir);this.catalog=catalog;this.projects=projects;
-    this.withActivity=withActivity;this.trash=trash||catalog.fileOperations.trash;
-    this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.closing=false;
+    this.withActivity=withActivity;this.trash=trash||((file,expected)=>this.boundTrash(file,expected));
+    this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.closing=false;this.finalizing=new Set();
     this.operation=Promise.resolve();this.writes=Promise.resolve();this.work=null;this.instance=randomUUID();this.timer=null;this.libraryId=libraryId;
   }
   async init() {
@@ -25,12 +26,21 @@ export class FileIntake {
           items:[{id:b.id,name:'文件任务回执不可读',bytes:0,status:'unknown',error:'原回执保留，未自动重发或移除原文件'}]};
         this.batches.set(b.id,b);continue;
       }
-      if(b.items.some(i=>pending.has(i.status))) {
+      let removalInterrupted=false;
+      for(const i of b.items)if(b.mode==='move'&&i.status==='ready'&&i.removal!=='complete') {
+        i.status=i.removal==='planned'?'unknown':'source_retained';
+        i.error='上次原件移除结果尚未确认；副本与原回执保留，不自动再次移除';removalInterrupted=true;
+      }
+      if(removalInterrupted||b.items.some(i=>pending.has(i.status))) {
         b.status='interrupted';
         for(const i of b.items)if(['queued','copying'].includes(i.status)) {
           i.status='unknown';i.error='上次运行中断，请核对原回执；尚未自动重发或移除原文件';
         }
         await this.receipts.write('batches',b.id,b);
+      } else if(['running','queued'].includes(b.status)) {
+        // Registration was durable before the last batch summary was saved.
+        // Recover that receipt only; old temporary files are never swept here.
+        this.summarize(b);await this.receipts.write('batches',b.id,b);
       }
       this.batches.set(b.id,b);
     }
@@ -41,12 +51,12 @@ export class FileIntake {
   assertOpen(){if(this.initializationError)throw this.initializationError;if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，已确认的文件任务保留',503);}
   assertLibrary(b){if(b.invalid)throw error('INTAKE_RECEIPT_INVALID','文件任务回执不可读，原件与原回执保留，不能自动继续');if(b.libraryId!==this.libraryId)throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库实例，未继续或移除原文件');}
   dto(b) {return {id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
-    mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,items:b.items.map(publicItem)};}
+    mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
   batch(id) {if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
   list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
   status(){const all=[...this.batches.values()],items=all.flatMap(b=>b.items);
     const last=all.filter(b=>['completed','partial'].includes(b.status)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];return {
-    canTrash:this.canTrash,activeCount:items.filter(i=>['queued','copying'].includes(i.status)).length,
+    canTrash:this.canTrash,activeCount:items.filter(i=>['queued','copying'].includes(i.status)||this.finalizing.has(i.id)).length,
     needsAttention:items.filter(i=>['duplicate','failed','source_retained','unknown'].includes(i.status)).length,
     latestCompletion:last?{id:last.id,updatedAt:last.updatedAt,projectName:last.projectName,status:last.status,
       completed:last.items.filter(i=>['ready','managed'].includes(i.status)).length,
@@ -153,13 +163,13 @@ export class FileIntake {
     try {
       const r=await this.catalog.upload(b.projectId,i.requestId,content());i.sha256=hash.digest('hex');this.applyReceipt(i,r);
       await this.save(b);
-      if(i.status==='ready')await this.finishMove(b,i);
+      if(i.status==='ready')await this.completeReady(b,i);
       else if(i.status==='duplicate'&&b.defaultChoice&&b.items.indexOf(i)>(b.defaultChoiceAfter??-1)) {
         const candidate=i.candidates?.[0];
         const choice=b.defaultChoice;
         if(choice==='import'||choice==='reuse'&&i.candidates?.length===1) {
           const result=await this.catalog.resolve(b.projectId,i.requestId,{choice,candidateId:candidate?.id});
-          this.applyReceipt(i,result);if(i.status==='ready')await this.finishMove(b,i);
+          this.applyReceipt(i,result);if(i.status==='ready')await this.completeReady(b,i);
         }
       }
     } catch(e) {
@@ -167,6 +177,30 @@ export class FileIntake {
       if(r.published||r.status==='unknown'){i.status='unknown';i.error='文件可能已复制，需核对原回执；未重发或移除原文件';}
       throw e;
     } finally {await handle.close();}
+  }
+  async completeReady(b,i) {
+    // Only this instance's durable ready intake stages qualify for removal.
+    // A retained stage is a visible housekeeping warning, never a failed import.
+    this.finalizing.add(i.id);
+    try{return await this.withActivity(()=>this.catalog.media.track(async()=>{
+      let warning;
+      try{await this.catalog.cleanupIntakeStage(b.projectId,i.requestId);}
+      catch(e){warning='视频已收纳；临时副本保留待核对：'+e.message;i.error=warning;}
+      await this.finishMove(b,i);
+      if(warning&&i.status==='ready')i.error=warning;
+    }));}finally{this.finalizing.delete(i.id);}
+  }
+  async boundTrash(file,expected) {
+    const child=spawn(this.catalog.lib.trashBin,[file,JSON.stringify(expected)],{stdio:['ignore','pipe','pipe'],shell:false});
+    let out='',stderr='',spawnError;
+    this.catalog.media.children.add(child);
+    const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+    this.catalog.media.exits.set(child,closed);child.once('error',e=>{spawnError=e;});
+    child.stdout.on('data',b=>{if(out.length<16384)out+=b;});child.stderr.on('data',b=>{if(stderr.length<16384)stderr+=b;});
+    try{const end=await closed;
+      if(spawnError||end.code!==0||end.signal)throw error('INTAKE_TRASH_UNSETTLED',stderr.trim()||'废纸篓组件未正常完成，原结果保留待核对');
+      const destination=JSON.parse(out);if(typeof destination!=='string'||!destination.startsWith('/'))throw error('INTAKE_TRASH_UNKNOWN','废纸篓结果待核对');return destination;
+    }finally{this.catalog.media.children.delete(child);this.catalog.media.exits.delete(child);}
   }
   async finishMove(b,i) {
     if(b.mode!=='move'||i.status!=='ready')return;
@@ -181,8 +215,10 @@ export class FileIntake {
       const d=await this.catalog.hash(source.path,source.identity);
       if(!i.sha256||d.hash!==i.sha256)throw error('INTAKE_COPY_UNVERIFIED','目标不是已完整校验的原文件副本');
       await unchanged(i.path,i.identity);this.assertOpen();
-      i.removal='planned';await this.save(b);await unchanged(i.path,i.identity);await this.catalog.media.verify(source);
-      const target=await this.trash(i.path);i.trashPath=target;await this.save(b);
+      i.removal='planned';await this.save(b);await this.catalog.media.verify(source);
+      await unchanged(i.path,i.identity);
+      if(!i.parentIdentity)throw error('INTAKE_SOURCE_UNBOUND','原文件夹身份未固定，原件保留');
+      const target=await this.trash(i.path,{identity:i.identity,parent:i.parentIdentity,sha256:i.sha256});i.trashPath=target;await this.save(b);
       const st=await fs.lstat(target);
       if(st.isSymbolicLink()||String(st.dev)!==i.identity.dev||String(st.ino)!==i.identity.ino||st.size!==i.bytes||st.mtimeMs!==i.identity.mtimeMs)
         throw error('INTAKE_TRASH_UNKNOWN','废纸篓结果待核对');
@@ -214,12 +250,12 @@ export class FileIntake {
           try {
             const candidate=next.candidates?.[0],result=await this.withActivity(()=>this.catalog.media.track(()=>
               this.catalog.resolve(b.projectId,next.requestId,{choice:b.defaultChoice,candidateId:candidate?.id})));
-            this.applyReceipt(next,result);if(next.status==='ready')await this.finishMove(b,next);
+            this.applyReceipt(next,result);if(next.status==='ready')await this.completeReady(b,next);
           }catch(e){this.applyReceipt(next,this.catalog.receiptDTO(this.catalog.receipt(b.projectId,next.requestId)));next.error=e.message;}
           await this.save(b);
         }
       }
-      if(i.status==='ready')await this.finishMove(b,i);
+      if(i.status==='ready')await this.completeReady(b,i);
     } catch(e) {this.applyReceipt(i,this.catalog.receiptDTO(this.catalog.receipt(b.projectId,i.requestId)));throw e;}
     finally {this.summarize(b);await this.save(b);this.kick();}
     return this.dto(b);

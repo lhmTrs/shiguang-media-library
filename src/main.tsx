@@ -3828,4 +3828,4 @@ function App() {
   );
 }
 const fileIntakeMatch=window.location.hash.match(/^#\/file-intake\/([a-f0-9-]{36})$/i);
-createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary>{fileIntakeMatch?<FileIntakeWindow handoffId={fileIntakeMatch[1]}/>:<App />}</GlobalErrorBoundary><GlobalFeedback /></>);
+createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary>{fileIntakeMatch?<FileIntakeWindow handoffId={fileIntakeMatch[1]}/>:<App />}</GlobalErrorBoundary>{!fileIntakeMatch&&<GlobalFeedback />}</>);
