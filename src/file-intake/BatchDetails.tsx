@@ -37,10 +37,10 @@ export function BatchDetails({batch, busy = false, uncertain = false, resolve, r
   retry?: (item: IntakeItem) => void; reconcile?: () => void; onView?: IntakeView;
 }) {
   const needsSelection = (item: IntakeItem) => item.status === 'failed' && ['INTAKE_SOURCE_CHANGED', 'INTAKE_SOURCE_UNBOUND'].includes(item.code || '');
-  return <section className="fi-batch" aria-label={'收纳批次 ' + batch.projectName}>
-    <div className="fi-batch-title"><strong>{batchLabel[batch.status]}</strong><span>{batch.items.length} 个视频</span></div>
+  return <section className={'fi-batch' + (batch.acknowledged ? ' fi-batch-acknowledged' : '')} aria-label={'收纳批次 ' + batch.projectName}>
+    <div className="fi-batch-title"><strong>{batch.acknowledged ? '已处理 · 原结果：' : ''}{batchLabel[batch.status]}</strong><span>{batch.items.length} 个视频</span></div>
     <Destination batch={batch}/>
-    {batch.items.some(needsSelection) && <p className="fi-warning-copy">部分视频需要从访达重新选择，不能直接重试。请右键“收纳视频到拾光”重新收纳；旧失败记录保留，原件不会自动移除。</p>}
+    {!batch.acknowledged && batch.items.some(needsSelection) && <p className="fi-warning-copy">部分视频需要从访达重新选择，不能直接重试。请右键“收纳视频到拾光”重新收纳；旧失败记录保留，原件不会自动移除。</p>}
     {uncertain && <p className="fi-error" role="alert">操作响应未确认，已保留原任务。请核对原回执；不会重复复制或删除。</p>}
     {(uncertain || batch.status === 'interrupted' || batch.items.some(i => i.status === 'unknown')) && reconcile && <button disabled={busy} onClick={reconcile}>核对原回执</button>}
     <ul className="fi-items">{batch.items.map(item => {
@@ -51,9 +51,9 @@ export function BatchDetails({batch, busy = false, uncertain = false, resolve, r
         {item.status === 'copying' ? <div className="fi-progress"><progress aria-label={'复制进度 ' + item.name} max={Math.max(1, item.bytes)} value={Math.max(0, Math.min(item.bytes, item.copiedBytes))}/><small>已读入 {bytes(item.copiedBytes)} / {bytes(item.bytes)} · 完整核验与登记后才完成</small></div> : <small>{bytes(item.bytes)}{item.status === 'ready' && batch.mode === 'move' ? ' · 原件已入废纸篓' : item.status === 'ready' && batch.mode === 'copy' ? ' · 原文件已保留' : ''}</small>}
         {item.status === 'source_retained' && <p className="fi-warning-copy">目标已登记，原文件未移除。不会重复复制。</p>}
         {item.status === 'managed' && <p className="fi-muted">保留原标签与关联 · {item.managedProjectName || (item.managedProjectId ? '原所属项目' : '全局素材库')}{item.managedProjectId ? '，可进入项目视频使用原移动入口。' : '，可进入素材查找查看。'}</p>}
-        {(item.error || item.code) && <p className="fi-error" role="alert">{item.code && item.code + ' · '}{item.error}</p>}
+        {(item.error || item.code) && <p className={batch.acknowledged ? 'fi-muted' : 'fi-error'} role={batch.acknowledged ? undefined : 'alert'}>{item.code && item.code + ' · '}{item.error}</p>}
         {item.status === 'duplicate' && resolve && <Conflict key={conflictKey} item={item} disabled={busy || uncertain} resolve={input => resolve(item, input)}/>}
-        <div className="fi-actions">{item.status === 'failed' && !needsSelection(item) && retry && <button disabled={busy || uncertain} onClick={() => retry(item)}>重试此失败项</button>}{complete && onView && <button disabled={!viewable} title={!viewable ? '原所属项目尚未返回，请刷新核对' : ''} onClick={() => viewable && void onView(viewProject, viewId)}><FolderOpen size={14}/>{item.status === 'managed' ? item.managedProjectId ? '查看 / 移动已有视频' : '查看已有素材' : '查看项目视频'}</button>}</div>
+        <div className="fi-actions">{item.status === 'failed' && !needsSelection(item) && !batch.acknowledged && retry && <button disabled={busy || uncertain} onClick={() => retry(item)}>重试此失败项</button>}{complete && onView && <button disabled={!viewable} title={!viewable ? '原所属项目尚未返回，请刷新核对' : ''} onClick={() => viewable && void onView(viewProject, viewId)}><FolderOpen size={14}/>{item.status === 'managed' ? item.managedProjectId ? '查看 / 移动已有视频' : '查看已有素材' : '查看项目视频'}</button>}</div>
       </li>;
     })}</ul>
     <details className="fi-receipt"><summary>原批次编号</summary><code>{batch.id}</code></details>

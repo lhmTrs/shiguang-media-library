@@ -250,3 +250,43 @@ test('移除计划写入后中断：重启显示未知，不自动再次移除�
   assert.equal(next.batch(b.id).items[0].status,'unknown');assert.equal(next.work,null);await fs.access(f.file);
   const result=await next.reconcile(b.id);assert.equal(result.items[0].status,'source_retained');await fs.access(f.file);await next.close();
 });
+
+
+test('已处理：持久标记和恢复只影响提醒，保留原失败、完成时间和文件',async t=>{
+  const f=await fixture(t),h=await f.intake.receipts.handoff([f.file]);
+  await fs.rename(f.file,f.file+'.kept');
+  const b=await f.intake.confirm(h.id,{requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'copy',fileIds:h.files.map(i=>i.id)});
+  await settled(f.intake);const raw=f.intake.batch(b.id),before=structuredClone(raw),completion=f.intake.status().latestCompletion;
+  assert.equal(raw.items[0].status,'failed');assert.equal(f.intake.status().needsAttention,1);
+  let result=await f.intake.acknowledge(b.id,{acknowledged:true,resultKey:f.intake.dto(raw).resultKey});
+  assert.equal(result.acknowledged,true);assert.equal(f.intake.status().needsAttention,0);
+  assert.deepEqual(raw.items,before.items);assert.equal(raw.updatedAt,before.updatedAt);assert.deepEqual(f.intake.status().latestCompletion,completion);
+  const reloaded=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects}).init();
+  try{
+    assert.equal(reloaded.dto(reloaded.batch(b.id)).acknowledged,true);assert.equal(reloaded.status().needsAttention,0);
+    result=await reloaded.acknowledge(b.id,{acknowledged:false,resultKey:result.resultKey});
+    assert.equal(result.acknowledged,false);assert.equal(reloaded.status().needsAttention,1);
+    const restored=await reloaded.receipts.read('batches',b.id);assert.deepEqual(restored,before);
+  }finally{await reloaded.close();}
+  await fs.access(f.file+'.kept');assert.equal((await f.catalog.list(f.project.id)).videos.length,0);
+});
+
+test('已处理：拒绝在途、不确定、移除未结清和旧结果；写入失败不隐藏提醒',async t=>{
+  const f=await fixture(t),id=randomUUID(),itemId=randomUUID();
+  const b={id,libraryId:f.intake.libraryId,projectId:f.project.id,folderId:'root',mode:'copy',createdAt:1,updatedAt:2,status:'partial',items:[{id:itemId,status:'failed',code:'SYNTHETIC',bytes:1,copiedBytes:0}]};
+  f.intake.batches.set(id,b);await f.intake.save(b,{touch:false});
+  const input=()=>({acknowledged:true,resultKey:f.intake.dto(b).resultKey});
+  for(const status of ['queued','copying','duplicate','unknown']){
+    b.items[0].status=status;await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');
+  }
+  b.items[0].status='failed';
+  for(const status of ['running','queued','waiting']){b.status=status;await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');}b.status='partial';
+  b.items[0].removal='planned';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');delete b.items[0].removal;
+  f.intake.finalizing.add(itemId);await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');f.intake.finalizing.delete(itemId);
+  const stale=input();b.items[0].error='new failure';await assert.rejects(f.intake.acknowledge(id,stale),e=>e.code==='INTAKE_RESULT_CHANGED');
+  const write=f.intake.receipts.write;f.intake.receipts.write=async()=>{throw Error('synthetic write failure');};
+  await assert.rejects(f.intake.acknowledge(id,input()),/synthetic write failure/);assert.equal(f.intake.status().needsAttention,1);assert.equal(b.acknowledgment,undefined);f.intake.receipts.write=write;
+  await f.intake.acknowledge(id,input());assert.equal(f.intake.status().needsAttention,0);
+  b.items[0].error='later explicit operation failure';assert.equal(f.intake.status().needsAttention,1);assert.equal(f.intake.dto(b).acknowledged,false);
+  b.libraryId='other library';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='LOCAL_INSTANCE_CHANGED');
+});
