@@ -89,7 +89,7 @@ export const PROTECTED = new Set([
   "#1f7a4d", "#2e7d5b", "#e6f4ec", // 成功
   "#8a6d1f", "#fdf6e3", // 提醒
   "#b34747", "#ad4f42", "#ef4444", // 模块 CSS 的危险/错误
-  "#8a6a3a", "#f59e0b", // 模块 CSS 的警告
+  "#785b2d", "#f59e0b", // 模块 CSS 的警告（--c-8a6a3a 的实际取值）
   "#22a06b", // 模块 CSS 的成功
   "#3b82f6", // 模块 CSS 的提示
   "#2f6f5e", "#eaf5f0", // 云端音频：完成徽章
@@ -100,11 +100,14 @@ export const PROTECTED = new Set([
 /**
  * 补充基础色：当初 `--tokenize` 只扫描了 style.css，模块 CSS（分镜、项目资产、全局反馈等）
  * 引用的这些 `--c-*` 从未进入 :root，浏览器只能回退到后备值（危险色因此显示成主题绿）。
- * 生成时并入基础 token，再由 derive() / OVERRIDES 照常派生到每套风格；已存在的 token 不覆盖。
+ * 生成时并入基础 token（以本表取值为准），再由 derive() / OVERRIDES 照常派生到每套风格。
+ * 本表的 token 都不在原 style.css 的 token 化结果里，所以不会改动任何既有颜色。
+ * 名称沿用模块 CSS 里的写法，取值可以和名称不同：例如 --c-8a6a3a 实际取 #785b2d，
+ * 因为分镜警告框（.sb-callout.sb-warning）的底色是 --soft，#8a6a3a 在森林绿和极简灰白下只有 4.44 / 4.38。
  */
 export const EXTRA_BASE_TOKENS = {
   "--c-b34747": "#b34747", // 危险：删除按钮、错误文字
-  "--c-8a6a3a": "#8a6a3a", // 警告：未保存、提醒文字
+  "--c-8a6a3a": "#785b2d", // 警告：未保存、提醒文字、分镜警告框（压在 --soft 底上，需 ≥4.5）
   "--c-ffffff": "#ffffff", // 卡片底色（OVERRIDES 已为深色系定义取值）
   "--c-ef4444": "#ef4444", // 全局反馈：错误
   "--c-f59e0b": "#f59e0b", // 全局反馈：警告
@@ -342,6 +345,9 @@ export const OVERRIDES = {
     "--c-748179": "#8a7b64",
     "--c-356451": "#8a6a3a",
     "--c-315d4b": "#6f5530",
+    // 语义色：自动派生的危险色在 --soft 底（#f2f0ee，如 .prompt-alert、删除按钮 hover）上不足 4.5，钉死加深版本
+    "--c-b34747": "#925757",
+    "--c-ad4f42": "#8c5851",
   },
   graphite: {
     "--c-white-bg": "#ffffff",
@@ -438,7 +444,7 @@ function main() {
 
   tokens = readBaseTokens(fs.readFileSync(THEMES_FILE, "utf8"));
   if (tokens.size === 0) throw new Error("themes.css 里没有 token；请先运行 node scripts/theme-gen.mjs --tokenize");
-  for (const [token, value] of Object.entries(EXTRA_BASE_TOKENS)) if (!tokens.has(token)) tokens.set(token, value);
+  for (const [token, value] of Object.entries(EXTRA_BASE_TOKENS)) tokens.set(token, value);
   const css = generateThemeCss();
   if (args.includes("--check")) {
     const missing = findUndefinedTokens(tokens);

@@ -346,7 +346,7 @@
   --c-white-fg: #ffffff;
   --c-white-bg: #ffffff;
   --c-b34747: #b34747;
-  --c-8a6a3a: #8a6a3a;
+  --c-8a6a3a: #785b2d;
   --c-ffffff: #ffffff;
   --c-ef4444: #ef4444;
   --c-f59e0b: #f59e0b;
@@ -721,7 +721,7 @@ html[data-theme="dark"] {
   --c-6c786f: #8d968f;
   --c-a73939: #c06666;
   --c-6a786f: #8d9891;
-  --c-8a6a3a: #c1a780;
+  --c-8a6a3a: #ceb691;
   --c-22a06b: #6ed5aa;
   --c-172b4d22: #b8c8e522;
   --c-d5b297: #493322;
@@ -1088,7 +1088,7 @@ html[data-theme="midnight"] {
   --c-6c786f: #8d9296;
   --c-a73939: #69be9e;
   --c-6a786f: #8d9398;
-  --c-8a6a3a: #bfa782;
+  --c-8a6a3a: #ccb692;
   --c-22a06b: #71d2a9;
   --c-172b4d22: #b9bee322;
   --c-d5b297: #234840;
@@ -1118,6 +1118,8 @@ html[data-theme="sepia"] {
   --c-748179: #8a7b64;
   --c-356451: #8a6a3a;
   --c-315d4b: #6f5530;
+  --c-b34747: #925757;
+  --c-ad4f42: #8c5851;
   --c-edf3ef: #f2f0ee;
   --c-759c89: #93897e;
   --c-dce3de: #e1dfde;
@@ -1450,14 +1452,12 @@ html[data-theme="sepia"] {
   --c-a73939: #8e5269;
   --c-6a786f: #75716d;
   --c-white-fg: #ffffff;
-  --c-b34747: #9b5f5f;
-  --c-8a6a3a: #78664c;
+  --c-8a6a3a: #67573e;
   --c-ef4444: #c96a6a;
   --c-f59e0b: #c09040;
   --c-22a06b: #3e8467;
   --c-3b82f6: #658ccc;
   --c-172b4d22: #413e2322;
-  --c-ad4f42: #95615a;
   --c-d5b297: #c7a5ad;
   --c-eef4f5: #f3f2f0;
   --c-2f6f5e: #3d6157;
@@ -1818,7 +1818,7 @@ html[data-theme="graphite"] {
   --c-6a786f: #717171;
   --c-white-fg: #ffffff;
   --c-b34747: #b34747;
-  --c-8a6a3a: #8a6a3a;
+  --c-8a6a3a: #785b2d;
   --c-ef4444: #ef4444;
   --c-f59e0b: #f59e0b;
   --c-22a06b: #22a06b;
@@ -2185,7 +2185,7 @@ html[data-theme="ocean"] {
   --c-6a786f: #6b7577;
   --c-white-fg: #ffffff;
   --c-b34747: #ae4c4c;
-  --c-8a6a3a: #86693e;
+  --c-8a6a3a: #745a31;
   --c-ef4444: #e64d4d;
   --c-f59e0b: #e99b17;
   --c-22a06b: #289a6a;
