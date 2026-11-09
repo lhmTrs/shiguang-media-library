@@ -4,31 +4,80 @@ import WebKit
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let args = CommandLine.arguments
-func presentAfterLaunch(_ alert: NSAlert, result: @escaping (NSApplication.ModalResponse) -> Int32) -> Never {
-    // NSApplication.run completes launch before dispatching the queued dialog.
-    // The service-off/error branches need the same lifecycle as the WK window.
-    DispatchQueue.main.async {
+
+final class IntakePrompt: NSObject, NSWindowDelegate {
+    var window: NSWindow!
+    let handoffId: String?
+    var answered = false
+    init(handoffId: String?, message: String) {
+        self.handoffId = handoffId
+        super.init()
+        window = NSWindow(contentRect:NSRect(x:0,y:0,width:520,height:230),
+                          styleMask:[.titled,.closable],backing:.buffered,defer:false)
+        window.title = handoffId == nil ? "尚未开始收纳" : "启动拾光"
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        let content = NSStackView()
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 18
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let title = NSTextField(labelWithString:handoffId == nil ? "尚未开始收纳" : "拾光尚未启动")
+        title.font = .boldSystemFont(ofSize:20)
+        let body = NSTextField(wrappingLabelWithString:message)
+        body.font = .systemFont(ofSize:13)
+        body.maximumNumberOfLines = 4
+        body.lineBreakMode = .byTruncatingTail
+        body.toolTip = message
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.spacing = 10
+        let cancel = NSButton(title:handoffId == nil ? "知道了" : "取消",target:self,action:#selector(cancelled))
+        cancel.bezelStyle = .rounded
+        cancel.keyEquivalent = "\u{1b}"
+        actions.addArrangedSubview(cancel)
+        if handoffId != nil {
+            let start = NSButton(title:"启动拾光并继续",target:self,action:#selector(started))
+            start.bezelStyle = .rounded
+            // A stray Return while this window appears must not consent to start.
+            actions.addArrangedSubview(start)
+        }
+        for view in [title,body,actions] {content.addArrangedSubview(view)}
+        window.contentView!.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo:window.contentView!.leadingAnchor,constant:24),
+            content.trailingAnchor.constraint(equalTo:window.contentView!.trailingAnchor,constant:-24),
+            content.topAnchor.constraint(equalTo:window.contentView!.topAnchor,constant:24),
+            content.bottomAnchor.constraint(lessThanOrEqualTo:window.contentView!.bottomAnchor,constant:-24),
+            body.widthAnchor.constraint(equalTo:content.widthAnchor)
+        ])
+        window.initialFirstResponder = cancel
+        window.center()
+        window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps:true)
-        exit(result(alert.runModal()))
     }
-    app.run()
-    exit(2)
+    @objc func started() {
+        guard !answered, let id = handoffId else {return}
+        answered = true
+        guard let data = try? JSONSerialization.data(withJSONObject:["action":"start","handoffId":id]) else {exit(1)}
+        FileHandle.standardOutput.write(data)
+        exit(0)
+    }
+    @objc func cancelled() {guard !answered else {return};answered = true;exit(handoffId == nil ? 1 : 2)}
+    func windowWillClose(_ notification:Notification) {cancelled()}
 }
 if args.count >= 2 && args[1] == "--start-alert" {
-    let alert = NSAlert()
-    alert.messageText = "拾光尚未启动"
-    alert.informativeText = "本次选择已保留。启动本机素材服务后继续选择项目与文件夹，不会自动导入。"
-    alert.addButton(withTitle: "启动拾光并继续")
-    alert.addButton(withTitle: "取消")
-    presentAfterLaunch(alert) {$0 == .alertFirstButtonReturn ? 0 : 2}
+    guard args.count == 3, UUID(uuidString:args[2]) != nil else {exit(2)}
+    let prompt = IntakePrompt(handoffId:args[2],message:"本次选择已保留。启动本机素材服务后继续选择项目与文件夹，不会自动导入。")
+    app.run()
+    withExtendedLifetime(prompt) {}
+    exit(2)
 }
 if args.count >= 3 && args[1] == "--error" {
-    let alert = NSAlert()
-    alert.alertStyle = .warning
-    alert.messageText = "尚未开始收纳"
-    alert.informativeText = args[2]
-    alert.addButton(withTitle: "知道了")
-    presentAfterLaunch(alert) {_ in 1}
+    let prompt = IntakePrompt(handoffId:nil,message:args[2])
+    app.run()
+    withExtendedLifetime(prompt) {}
+    exit(1)
 }
 guard args.count == 3, args[1] == "--url", let url = URL(string:args[2]),
       url.scheme == "http", url.host == "127.0.0.1", url.port != nil,

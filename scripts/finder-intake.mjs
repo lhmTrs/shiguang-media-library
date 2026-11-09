@@ -31,8 +31,13 @@ export async function intake(config,files,{onWindow}={}) {
   const handoff=await receipts.handoff(files);
   let current=await running(c.dataDir);
   if(!current) {
-    try {await run(c.helper,['--start-alert'],{maxBuffer:8192});}
+    let consent;
+    try {consent=await run(c.helper,['--start-alert',handoff.id],{maxBuffer:8192});}
     catch(e){if(e.code===2)return {cancelled:true,handoffId:handoff.id};throw error('INTAKE_WINDOW_UNAVAILABLE','无法打开收纳窗口，请在拾光文件任务中重新安装右键入口');}
+    let acknowledgement;
+    try{acknowledgement=JSON.parse(consent.stdout);}catch{}
+    if(acknowledgement?.action!=='start'||acknowledgement.handoffId!==handoff.id)
+      throw error('INTAKE_START_NOT_CONFIRMED','没有取得本次选择的明确启动确认，未启动服务；请从访达重新打开');
     await run(c.node,[path.join(c.project,'scripts/launch.mjs')],{cwd:c.project,
       env:{...process.env,MEDIA_DATA_DIR:c.dataDir,MEDIA_PERSONAL_ITEM_DIR:c.personalItemDirectory},timeout:130000,maxBuffer:16384});
     current=await running(c.dataDir);
