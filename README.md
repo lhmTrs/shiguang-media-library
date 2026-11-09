@@ -240,3 +240,25 @@ AI 批量标注标签与备注：见 `AI_METADATA_API.md`。可按明确 ID、�
 照片和视频网格的结果/排序工具栏已改为随内容增高和换行，避免旧固定高度造成遮挡。定向浏览器验收：`npm run test:navigation:browser`；只用新的合成照片/视频/音频与独立 SQLite。可用 `NAV_TEST_EVIDENCE` 指定新证据目录，`NAV_TEST_FILTER` 只执行匹配名称的检查，避免覆盖旧验收证据。
 
 访达选中视频可通过「文件任务 → 安装访达入口」添加右键收纳，支持多视频后台复制与确认后移入废纸篓；详见 [视频收纳与文件任务](FILE_INTAKE.md)。
+
+## PR 自动检查：初始稳定子集
+
+[Local stable checks](.github/workflows/local-stable.yml) 在 PR 和 main 推送时，使用 GitHub 托管 Ubuntu 24.04、Node **22.x** 与当前锁文件，依次运行 `npm ci`、`npm run build`、`node scripts/theme-gen.mjs --check` 和下列明确白名单。两个官方 Action 固定完整提交 SHA；其自带 Node 24 运行时与项目测试使用的 Node 22 分开。
+
+```sh
+node scripts/ci-stable-tests.mjs --list
+node scripts/ci-stable-tests.mjs
+```
+
+初始六文件仅覆盖纯逻辑、合成存储与内存 SQLite，不启动 App、浏览器、系统选择器或真实模型：
+
+- `global-feedback.test.mjs`：反馈分类、队列与虚拟时钟。
+- `read-cache.test.mjs`：内存 SQLite 缓存及事务失效。
+- `search-aliases.test.mjs`：内存搜索、别名与查询组合。
+- `storyboard-model.test.mjs`：合成分镜导入、编辑与引用完整性。
+- `tag-facet-cache.test.mjs`：模拟浏览器存储与请求的缓存。
+- `tag-usage.test.mjs`：模拟浏览器存储的标签计数。
+
+执行器依赖 [#6](https://github.com/lhmTrs/shiguang-media-library/issues/6) 非作者验收后合入的 `scripts/test-suites.mjs`：先用同一白名单 `--list` 核对，再逐文件有界执行（120 秒/文件）。缺失执行器或文件、断言失败、超时、资源关闭 UNKNOWN 都非零失败，不回退到全套 `npm test`。单 job 上限 25 分钟，每步另有上限；同一 PR 的新提交取消旧运行，权限仅 `contents: read`，不保留 Git 凭据，不发布或部署。
+
+`--list` 公开全部选中与未选中文件：`cloud-*.test.mjs`、`device-enrollment.test.mjs` 和云端 UI 不进入常规 CI；附件工具与原生选取相关失败见 [#7](https://github.com/lhmTrs/shiguang-media-library/issues/7)，音频安装并发资格见 [#8](https://github.com/lhmTrs/shiguang-media-library/issues/8)，旧全量失败保留在 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。其余本地/UI/媒体工具测试也不在这组六文件范围，未运行不等于通过。**此子集不表示完整 `npm test` 全绿；Linux CI 也不代表 macOS/Windows 原生行为通过。** 首个真实 PR Actions 运行须回读实际结果后，才决定是否设为必需检查。
