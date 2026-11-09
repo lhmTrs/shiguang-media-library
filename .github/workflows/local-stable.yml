@@ -18,13 +18,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      MEDIA_DATA_DIR: ${{ runner.temp }}/shiguang-ci-data
       MEDIA_SKIP_IMPORT: '1'
       MEDIA_SKIP_RECONCILE: '1'
       MEDIA_NO_WATCH: '1'
       MEDIA_CODEX_AUTOCONNECT: '0'
       SHIGUANG_AUDIO_ANALYSIS: '0'
     steps:
+      - name: Initialize isolated test data path
+        shell: bash
+        run: |
+          printf 'MEDIA_DATA_DIR=%s/shiguang-ci-data\n' "${RUNNER_TEMP:?}" >> "${GITHUB_ENV:?}"
+        timeout-minutes: 1
+
       - name: Check out the PR merge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
