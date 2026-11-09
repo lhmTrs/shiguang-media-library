@@ -99,6 +99,8 @@ export interface ProjectVideoWorkspaceProps {
   onStoryboard: () => void;
   /** Compatibility callback; background tasks do not lock host navigation. */
   onBusyChange?: (busy: boolean) => void;
+  /** Explicit navigation from a completed file task, without replacing drafts. */
+  focusVideo?: {projectId: string; videoId: string; request: number};
 }
 
 export type FolderView = 'all' | 'root' | string;

@@ -131,7 +131,7 @@ export function ProjectVideoWorkspace(props: ProjectVideoWorkspaceProps) {
   </section>;
 }
 
-function ProjectVideoSession({ active, projectId, projects, request, onStoryboard, importOwner, acquireImport, releaseImport }: ProjectVideoWorkspaceProps & {
+function ProjectVideoSession({ active, projectId, projects, request, onStoryboard, importOwner, acquireImport, releaseImport, focusVideo }: ProjectVideoWorkspaceProps & {
   importOwner: string; acquireImport: (id: string) => boolean; releaseImport: (id: string) => void;
 }) {
   const [collection, setCollection] = useState<ProjectVideoCollection | null>(null);
@@ -149,6 +149,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const taskSendingRef = useRef(false);
   const [sending, setSending] = useState('');
   const [selectedId, setSelectedId] = useState('');
+  const focusedRequest = useRef<number>();
   const [expandedId, setExpandedId] = useState('');
   const relinkButton = useRef<HTMLButtonElement>(null);
   const playbackPositions = useRef(new Map<string, {content: string; seconds: number}>());
@@ -294,6 +295,15 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     // request identity changes must not discard inputs or invalidate an in-flight operation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId, folderId]);
+
+  useEffect(() => {
+    if (!active || !focusVideo || focusVideo.projectId !== projectId || focusedRequest.current === focusVideo.request) return;
+    // A specific result may be in another folder. Browse all, preserving every
+    // per-video edit draft, then select only the explicitly requested video.
+    if (folderId !== 'all') {folderRef.current = 'all'; setFolderId('all'); return;}
+    focusedRequest.current = focusVideo.request;
+    void refresh(focusVideo.videoId);
+  }, [active, projectId, folderId, focusVideo]);
 
   async function queryTask() {
     const current = taskRef.current;
