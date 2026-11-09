@@ -1,0 +1,32 @@
+name: Claude / Codex 协作任务
+description: 为一个完整功能明确结果、文件所有权、接口与验收。
+title: "[协作] "
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 用户结果与验收条件
+      description: 描述用户能做什么，以及如何判断完成。
+    validations:
+      required: true
+  - type: textarea
+    id: ownership
+    attributes:
+      label: 负责人、分支与文件范围
+      description: 写明 Claude/Codex 各自范围、基线提交、共享文件唯一负责人、非作者验收方与下一接手方。
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: 接口与依赖
+      description: 请求/响应、状态、错误、权限、兼容方式；没有变化写“无”。依赖其他任务时写准确提交。
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: 验证范围、禁区与遗留项
+      description: 默认只用独立合成数据。真实库、素材、模型调用、MySQL 原生测试与现用服务部署须另有明确授权。不要粘贴私人数据或凭据。
+    validations:
+      required: true

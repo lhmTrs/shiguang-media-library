@@ -1,5 +1,7 @@
 # Instructions for AI Maintainers
 
+For Claude/Codex collaboration, read `CONTRIBUTING.md` first. It defines separate worktrees, per-task file ownership, feature branches, non-author acceptance and PR-only integration. Codex defaults to backend/integration; Claude defaults to frontend. Do not edit the live main checkout or the other contributor's working directory. These defaults do not create tasks or deployment authorization.
+
 Current cross-project coordination (2026-10-31): use `../拾光云端后台/collab/COLLAB-EFFICIENCY.md` when working in the shared local workspace. The user requires functional batches instead of per-helper approvals and repeated audits; preserve the safety boundaries below. If the sibling project is absent, this coordination link is optional and must not prevent a fresh clone from starting.
 
 Read `AI_HANDOFF.md` and `START_HERE.md` before changing or starting the application.

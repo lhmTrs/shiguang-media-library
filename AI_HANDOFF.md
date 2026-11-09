@@ -1,5 +1,7 @@
 # AI 接手、识别与运行说明
 
+Claude/Codex 并行开发先读 [协作约定](CONTRIBUTING.md)；Claude 的入口是 `CLAUDE.md`。每项任务从最新主分支建立独立功能分支，按文件所有权交付 PR，非作者验收后由 Codex 集成。`collab/` 仅保留本机记录，不作为新电脑的必要输入。
+
 2026-11-09 代码发布范围见 [README.md](README.md)；项目资产、分镜和 Codex 分别见 [PROJECT_ASSETS.md](PROJECT_ASSETS.md)、[STORYBOARD.md](STORYBOARD.md) 与 [CODEX_CHAT.md](CODEX_CHAT.md)。本机开发交接与验收现场不随新代码发布，文中历史 `collab/results/` 链接不能作为新电脑已有验证的证明。MySQL 候选适配与当前可下载产品须分别判断，新安装默认 SQLite。
 
 ## 1. 先识别项目
