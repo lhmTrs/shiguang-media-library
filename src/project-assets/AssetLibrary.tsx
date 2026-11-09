@@ -11,6 +11,7 @@ import {CharacterVoice} from './CharacterVoice';
 import {ReferenceImageImport,ReferencePreview} from './ReferenceImageImport';
 import {ProjectSelector} from '../ProjectSelector';
 import {ReferenceImageViewer} from './ReferenceImageViewer';
+import {CropBox,type Crop} from './CropBox';
 
 type Kind = 'character' | 'scene' | 'prop';
 type Look = { id: string; name: string; description: string; tags: string[]; default_image_id: string | null; archived_at: number | null; revision?: number };
@@ -96,6 +97,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const dragDepth = useRef(0), detailScroll = useRef<HTMLDivElement>(null);
   useEffect(() => setImageViewer(null), [active, scope, draft?.id, lookId, kind, scriptView]);
   useEffect(() => setImageId(null), [active, scope, draft?.id, lookId, kind, scriptView]);
+  const [cropOpen, setCropOpen] = useState(false);
+  useEffect(() => setCropOpen(false), [imageId]);
   const modalScroll = useRef<HTMLDivElement>(null);
   const revealingRef=useRef(new Set<string>()),[revealing,setRevealing]=useState<string[]>([]);
   async function revealImage(b:Binding){
@@ -425,6 +428,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const listStatus = !scopesKnown && !rows.length ? (scopesError ? '范围未能读取' : '正在读取项目范围…') : listLoading ? '加载中…' : `${total} 个${archived ? '已归档的' : ''}${labels[kind]}`;
   const dialogImage = imageId ? images.find(b => b.id === imageId) ?? null : null;
   const dialogHealth = dialogImage ? health.find(h => h.id === dialogImage.id) : undefined;
+  const cropAspect = draft?.kind === 'character' ? 3 / 4 : 16 / 10; // 与画廊卡片封面比例一致
   const imageLocked = (b?: Binding | null) => !!draft?.archived_at || !!currentLook?.archived_at || !!b?.archived_at;
   const activeImageIds = images.filter(b => !b.archived_at).map(b => b.id);
   const jump = (id: string) => { const node = detailScroll.current?.querySelector('#' + id) as HTMLElement | null; node?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); };
@@ -561,7 +565,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
         <div className="ca-image-dialog-visual">
-          {dialogHealth && dialogHealth.state !== 'available' ? <span className="ca-tile-state">{dialogHealth.label}</span> : <ReferencePreview src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'}/>}
+          {dialogHealth && dialogHealth.state !== 'available' ? <span className="ca-tile-state">{dialogHealth.label}</span> : cropOpen ? <CropBox src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'} crop={dialogImage.crop} aspect={cropAspect} disabled={imageLocked(dialogImage)} onChange={(c: Crop) => { const id = dialogImage.id; edit(a => { const b = a.images.find(i => i.id === id); if (b) b.crop = c; }); }}/> : <ReferencePreview src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'}/>}
           <div className="ca-image-dialog-tools"><button type="button" onClick={() => setImageViewer({ src: bindingSrc(dialogImage), name: dialogImage.last_known_name || '参考图片' })}><Maximize2 size={15}/>放大</button><button type="button" disabled={!!busy || revealing.includes(dialogImage.id)} aria-busy={revealing.includes(dialogImage.id)} onClick={() => void revealImage(dialogImage)}><FolderOpen size={15}/>{revealing.includes(dialogImage.id) ? '正在定位…' : '在访达中显示'}</button></div>
         </div>
         <div className="ca-image-dialog-side">
@@ -580,7 +584,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
             {dialogHealth?.state === 'changed' && <button disabled={imageLocked(dialogImage)} onClick={() => edit(a => { a.images.find(i => i.id === dialogImage.id)!.accept_current = true; })}>确认采用当前内容</button>}
             <button className="ca-danger-text" disabled={!!draft.archived_at || !!currentLook?.archived_at} onClick={() => { const b = dialogImage; if (!b.archived_at && b.id === representative && images.some(i => !i.archived_at && i.id !== b.id)) { setError('请先选择另一张默认代表图，再解绑当前图片'); return; } edit(a => { const image = a.images.find(i => i.id === b.id)!; image.archived_at = image.archived_at ? null : Date.now(); if (image.archived_at && representative === b.id) setDefault(a, null); if (!image.archived_at && !representative) setDefault(a, image.id); }); }}>{dialogImage.archived_at ? '恢复绑定' : '解绑归档'}</button>
           </div>
-          <details className="ca-crop"><summary>头像裁切与库内使用</summary>{(['x','y','zoom'] as const).map(k => <label key={k} className="ca-field"><span>{k === 'x' ? '水平位置' : k === 'y' ? '垂直位置' : '缩放'}</span><input disabled={imageLocked(dialogImage)} aria-label={'裁切' + k} type="range" min={k === 'zoom' ? 1 : 0} max={k === 'zoom' ? 3 : 100} step={k === 'zoom' ? .05 : 1} value={dialogImage.crop[k]} onChange={e => { const v = Number(e.target.value); edit(a => { a.images.find(i => i.id === dialogImage.id)!.crop[k] = v; }); }}/></label>)}<span className="ca-avatar ca-crop-preview"><CroppedImage binding={dialogImage} alt="头像裁切预览"/></span><button onClick={() => void run('正在查询使用位置…', async () => { const rows = await api<any[]>('/media/' + dialogImage.media_asset_id + '/usage'); setImageId(null); setModal({ type: 'usage', rows }); })}>查看库内使用位置</button></details>
+          <details className="ca-crop" open={cropOpen} onToggle={e => setCropOpen((e.currentTarget as HTMLDetailsElement).open)}><summary>封面裁切与库内使用</summary><p className="ca-muted">在左侧图片上拖动框调整位置，拖四个角缩放（最多 3 倍）；也可以用下面的滑块微调。卡片封面按框显示，方形头像取框的中间部分。</p>{(['x','y','zoom'] as const).map(k => <label key={k} className="ca-field"><span>{k === 'x' ? '水平位置' : k === 'y' ? '垂直位置' : '缩放'}</span><input disabled={imageLocked(dialogImage)} aria-label={'裁切' + k} type="range" min={k === 'zoom' ? 1 : 0} max={k === 'zoom' ? 3 : 100} step={k === 'zoom' ? .05 : 1} value={dialogImage.crop[k]} onChange={e => { const v = Number(e.target.value); edit(a => { a.images.find(i => i.id === dialogImage.id)!.crop[k] = v; }); }}/></label>)}<span className="ca-crop-previews"><span className="ca-crop-card-preview" style={{ aspectRatio: String(cropAspect) }} title="卡片封面"><CroppedImage binding={dialogImage} alt="卡片封面预览"/></span><span className="ca-avatar ca-crop-preview" title="头像"><CroppedImage binding={dialogImage} alt="头像裁切预览"/></span></span><button onClick={() => void run('正在查询使用位置…', async () => { const rows = await api<any[]>('/media/' + dialogImage.media_asset_id + '/usage'); setImageId(null); setModal({ type: 'usage', rows }); })}>查看库内使用位置</button></details>
           <p className="ca-muted">修改在点击详情栏下方“保存”后生效。</p>
         </div>
       </div>
