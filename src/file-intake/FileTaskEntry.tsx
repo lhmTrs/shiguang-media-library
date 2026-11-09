@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
 import {Download, FolderInput, RefreshCw, X} from 'lucide-react';
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {BatchDetails} from './BatchDetails';
@@ -106,7 +107,7 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
   const selected = batches.find(b => b.id === selection) || batches[0];
   return <div className="fi-root fi-entry">
     <button className="fi-entry-button" ref={entry} aria-expanded={open} aria-controls="file-intake-tasks" onClick={() => setOpen(v => !v)}><FolderInput size={17}/><span>文件任务</span>{!!status?.activeCount && <span className="fi-count">{status.activeCount}</span>}{!!status?.needsAttention && <span className="fi-attention">{status.needsAttention} 待处理</span>}</button>
-    {open && <aside className="fi-drawer" role="dialog" aria-label="文件任务" id="file-intake-tasks">
+    {open && createPortal(<aside className="fi-root fi-drawer" role="dialog" aria-label="文件任务" id="file-intake-tasks">
       <header className="fi-heading"><FolderInput size={21}/><div><h2>文件任务</h2><p>确认时的目标固定，关闭抽屉后仍在后台继续</p></div><button ref={close} aria-label="关闭文件任务" onClick={() => {setOpen(false); entry.current?.focus();}}><X size={18}/></button></header>
       <div className="fi-drawer-body">
         {statusError && <p className="fi-error" role="alert">状态读取失败：{statusError}</p>}
@@ -118,6 +119,6 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
         {selected && <BatchDetails batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
         <section className="fi-install"><h3>访达右键入口</h3><p>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.installed ? '入口已安装。若菜单尚未出现，请在系统设置中启用拾光快速操作。' : '安装后可从访达右键收纳视频。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p><button disabled={!status?.supported || !!busy || !!statusError} onClick={() => void install()}><Download size={14}/>{status?.installed ? '重新安装访达入口' : '安装访达入口'}</button>{installedMessage && <p role="status">{installedMessage}</p>}</section>
       </div>
-    </aside>}
+    </aside>, document.body)}
   </div>;
 }

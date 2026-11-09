@@ -8,7 +8,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout'].includes(selectedCase));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(root, '../素材管理器/collab/results/FINDER-VIDEO-INTAKE-20261109', selectedCase === 'completion' ? 'frontend-completion/ui' : selectedCase === 'confirm-binding' ? 'frontend-confirm-binding/ui' : 'frontend-ui'));
 await fs.mkdir(evidence, {recursive: true});
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
@@ -73,13 +73,13 @@ async function routeApi(route) {
   }
   return respond({error: 'Unexpected fixture route ' + endpoint}, 404);
 }
-async function fresh(window = false, initialCompletion = null, firstCompletionAfterMount = false) {
+async function fresh(window = false, initialCompletion = null, firstCompletionAfterMount = false, layout = false) {
   await context?.close(); fixture = setup(); fixture.status.latestCompletion = initialCompletion; fixture.firstCompletionAfterMount = firstCompletionAfterMount;
   context = await browser.newContext({viewport: {width: 1000, height: 780}});
   await context.addInitScript(() => {window.nativeAccepted = []; window.views = []; window.webkit = {messageHandlers: {intake: {postMessage: value => window.nativeAccepted.push(value)}}};});
   await context.route('**/*', route => {const url = new URL(route.request().url()); if (url.protocol.startsWith('http') && url.origin !== origin) {external.push(url.href); return route.abort();} return url.pathname.startsWith('/api/') ? routeApi(route) : route.continue();});
   page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));
-  await page.goto(origin + (window ? '/#intake' : '/'));
+  await page.goto(origin + (window ? '/#intake' : layout || selectedCase === 'drawer-layout' ? '/#drawer-layout' : '/'));
 }
 const drawer = () => page.getByRole('dialog', {name: '文件任务', exact: true});
 const item = id => drawer().locator('.fi-item').filter({has: page.getByText(id + '.mp4', {exact: true})});
@@ -89,11 +89,42 @@ async function check(name, fn) {if (selectedCase !== 'all' && !name.startsWith(s
 try {
   await fs.writeFile(path.join(temp, 'index.html'), '<html><div id="root"></div><script type="module" src="/fixture.tsx"></script></html>');
   await fs.writeFile(path.join(temp, 'fixture.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{FileIntakeWindow,FileTaskEntry}from${JSON.stringify(path.join(root, 'src/file-intake/index.ts'))};import{GlobalFeedback}from${JSON.stringify(path.join(root, 'src/global-feedback.tsx'))};
+import ${JSON.stringify(path.join(root, 'src/style.css'))};import ${JSON.stringify(path.join(root, 'src/themes.css'))};import ${JSON.stringify(path.join(root, 'src/library-workspace.css'))};
 const request=async(url,body,method,options)=>{const response=await fetch('/api'+url,{method:method||(body===undefined?'GET':'POST'),headers:{'content-type':'application/json','x-local-token':'synthetic-token'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:options?.signal});const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error),{...value,status:response.status});return value;};
-createRoot(document.getElementById('root')).render(location.hash==='#intake'?<FileIntakeWindow handoffId="${handoffId}"/>:<><FileTaskEntry request={request} onView={(project,id)=>{window.views.push([project,id]);}}/><GlobalFeedback/></>);`);
+const entry=<FileTaskEntry request={request} onView={(project,id)=>{window.views.push([project,id]);}}/>;
+createRoot(document.getElementById('root')).render(location.hash==='#intake'?<FileIntakeWindow handoffId="${handoffId}"/>:location.hash==='#drawer-layout'?<><div className="app library-workspace"><aside className="sidebar">合成侧栏</aside><main><header className="topbar library-topbar"><div className="breadcrumb">合成页面</div><div className="topbar-actions">{entry}</div></header><section style={{height:1500,padding:30}}><button id="background-action">底层页面操作</button><h1>合成视频页面</h1></section></main></div><GlobalFeedback/></>:<>{entry}<GlobalFeedback/></>);`);
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  await check('drawer-layout actual topbar backdrop and app styles keep viewport drawer, scroll and install reachable', async () => {
+    await fresh(false, null, false, true); await page.setViewportSize({width: 1440, height: 900}); await open();
+    const geometry = await drawer().evaluate(el => {const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,viewport:innerHeight,insideTopbar:!!el.closest('.topbar'),background:getComputedStyle(el).backgroundColor};});
+    await fs.writeFile(path.join(evidence, 'drawer-layout-geometry.json'), JSON.stringify(geometry,null,2));
+    await page.screenshot({path:path.join(evidence, 'drawer-layout-wide.png')});
+    assert.ok(Math.abs(geometry.y) <= 1 && Math.abs(geometry.height - geometry.viewport) <= 1, 'drawer must fill the viewport rather than its backdrop-filtered topbar');
+    assert.equal(geometry.insideTopbar,false); assert.notEqual(geometry.background,'rgba(0, 0, 0, 0)');
+    const install = drawer().getByRole('button',{name:'安装访达入口',exact:true});
+    await install.scrollIntoViewIfNeeded(); await expect(install).toBeInViewport();
+    assert.ok(await drawer().locator('.fi-drawer-body').evaluate(el=>el.scrollHeight>el.clientHeight && el.scrollTop>0));
+    await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0); await expect(page.getByRole('button',{name:/^文件任务/})).toBeFocused();
+    await open(); await drawer().getByRole('button',{name:'关闭文件任务',exact:true}).click(); await expect(drawer()).toHaveCount(0);
+    const matrix=[];
+    for (const theme of ['forest','dark','midnight','sepia','graphite','ocean']) for (const width of [1440,1280,420]) {
+      await page.setViewportSize({width,height:900}); await page.evaluate(value=>document.documentElement.dataset.theme=value,theme); await open();
+      const box=await drawer().boundingBox(); assert.ok(box && Math.abs(box.y)<=1 && Math.abs(box.height-900)<=1 && box.x>=0 && box.x+box.width<=width+1);
+      await install.scrollIntoViewIfNeeded(); await expect(install).toBeInViewport();
+      const coverage=await install.evaluate(el=>{const r=el.getBoundingClientRect();const top=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return !!top && (top===el || el.contains(top));});
+      assert.equal(coverage,true,'install button must receive pointer events above the background page');
+      if (width===1440 || (width===420 && theme==='midnight')) await page.screenshot({path:path.join(evidence,`drawer-layout-${theme}-${width}.png`)});
+      matrix.push({theme,width,...box,installReachable:true}); await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);
+    }
+    await fs.writeFile(path.join(evidence,'drawer-layout-matrix.json'),JSON.stringify(matrix,null,2));
+    fixture.batches=[]; await page.setViewportSize({width:1440,height:900}); await page.getByRole('button',{name:/^文件任务/}).click();
+    await expect(drawer().getByRole('heading',{name:'暂无文件任务',exact:true})).toBeVisible(); await expect(install).toBeInViewport();
+    await page.screenshot({path:path.join(evidence,'drawer-layout-empty.png')});
+    await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);
+    assert.equal(fixture.installCount,0); assert.equal(requests.filter(r=>r.method==='POST').length,0);
+  });
   await check('window selection, default copy, folder race, fixed submitted target, single confirm and native accepted receipt', async () => {
     await fresh(true); await expect(page.getByText('2 个视频', {exact: true})).toBeVisible(); await expect(page.getByRole('radio', {name: /复制并保留/})).toBeChecked();
     await page.getByRole('button', {name: '移除 合成视频甲.mp4', exact: true}).click(); await expect(page.getByText('1 个视频', {exact: true})).toBeVisible(); await page.getByRole('button', {name: '恢复 合成视频甲.mp4', exact: true}).click();
