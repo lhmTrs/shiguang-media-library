@@ -1,9 +1,9 @@
 .global-feedback-region { position: fixed; z-index: 2147483000; top: max(16px, env(safe-area-inset-top)); right: max(20px, env(safe-area-inset-right)); width: min(400px, calc(100vw - 28px)); display: flex; flex-direction: column; gap: 10px; pointer-events: none; font: 13px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--c-24292c, #24292c); text-align: left; }
-.global-feedback-card { --feedback-color: #ef4444; position: relative; display: flex; align-items: flex-start; gap: 11px; min-width: 0; padding: 14px 12px 14px 14px; border: 1px solid color-mix(in srgb, var(--feedback-color) 40%, var(--line, #dbe5e8)); border-left: 4px solid var(--feedback-color); border-radius: 10px; background: color-mix(in srgb, var(--c-fff, white) 93%, var(--feedback-color)); box-shadow: 0 8px 26px #172b4d22; pointer-events: auto; animation: global-feedback-in 180ms ease-out both; }
-.global-feedback-error { --feedback-color: #ef4444; }
-.global-feedback-warning { --feedback-color: #f59e0b; }
-.global-feedback-success { --feedback-color: #22a06b; }
-.global-feedback-info { --feedback-color: #3b82f6; }
+.global-feedback-card { --feedback-color: var(--c-ef4444, #ef4444); position: relative; display: flex; align-items: flex-start; gap: 11px; min-width: 0; padding: 14px 12px 14px 14px; border: 1px solid color-mix(in srgb, var(--feedback-color) 40%, var(--line, #dbe5e8)); border-left: 4px solid var(--feedback-color); border-radius: 10px; background: color-mix(in srgb, var(--c-fff, white) 93%, var(--feedback-color)); box-shadow: 0 8px 26px var(--c-172b4d22, #172b4d22); pointer-events: auto; animation: global-feedback-in 180ms ease-out both; }
+.global-feedback-error { --feedback-color: var(--c-ef4444, #ef4444); }
+.global-feedback-warning { --feedback-color: var(--c-f59e0b, #f59e0b); }
+.global-feedback-success { --feedback-color: var(--c-22a06b, #22a06b); }
+.global-feedback-info { --feedback-color: var(--c-3b82f6, #3b82f6); }
 .global-feedback-icon { color: var(--feedback-color); flex: none; margin-top: 2px; }
 .global-feedback-copy { min-width: 0; flex: 1; }
 .global-feedback-copy strong { display: block; font-size: 14px; font-weight: 650; }
@@ -14,7 +14,7 @@
 .global-feedback-card > button:focus-visible { outline: 2px solid var(--feedback-color); outline-offset: 2px; }
 .global-feedback-card.is-leaving { animation: global-feedback-out 240ms ease-in both; pointer-events: none; }
 .global-feedback-waiting { align-self: flex-end; background: var(--c-fff, white); border: 1px solid var(--line, #dbe5e8); border-radius: 20px; padding: 3px 10px; color: var(--muted, #62717a); font-size: 11px; }
-.global-feedback-fallback { max-width: 600px; margin: 12vh auto; padding: 24px; color: var(--c-24292c, #24292c); background: var(--c-fff, white); border: 1px solid #ef4444; border-radius: 12px; }
+.global-feedback-fallback { max-width: 600px; margin: 12vh auto; padding: 24px; color: var(--c-24292c, #24292c); background: var(--c-fff, white); border: 1px solid var(--c-ef4444, #ef4444); border-radius: 12px; }
 @keyframes global-feedback-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes global-feedback-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-24px); } }
 @media (max-width: 560px) { .global-feedback-region { top: max(12px, env(safe-area-inset-top)); right: 12px; width: calc(100vw - 24px); gap: 8px; } .global-feedback-card { padding: 12px 10px 12px 12px; } }

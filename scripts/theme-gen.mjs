@@ -88,7 +88,67 @@ export const PROTECTED = new Set([
   "#b3261e", "#c0392b", "#d32f2f", "#e05c4a", "#fdecea", "#fbe9e7", // 危险/删除/错误
   "#1f7a4d", "#2e7d5b", "#e6f4ec", // 成功
   "#8a6d1f", "#fdf6e3", // 提醒
+  "#b34747", "#ad4f42", "#ef4444", // 模块 CSS 的危险/错误
+  "#785b2d", "#f59e0b", // 模块 CSS 的警告（--c-8a6a3a 的实际取值）
+  "#22a06b", // 模块 CSS 的成功
+  "#3b82f6", // 模块 CSS 的提示
+  "#2f6f5e", "#eaf5f0", // 云端音频：完成徽章
+  "#8a5a16", "#fdf3e2", // 云端音频：警告徽章
+  "#315f9f", "#eef3fb", // 云端音频：进行中徽章
 ]);
+
+/**
+ * 补充基础色：当初 `--tokenize` 只扫描了 style.css，模块 CSS（分镜、项目资产、全局反馈等）
+ * 引用的这些 `--c-*` 从未进入 :root，浏览器只能回退到后备值（危险色因此显示成主题绿）。
+ * 生成时并入基础 token（以本表取值为准），再由 derive() / OVERRIDES 照常派生到每套风格。
+ * 本表的 token 都不在原 style.css 的 token 化结果里，所以不会改动任何既有颜色。
+ * 名称沿用模块 CSS 里的写法，取值可以和名称不同：例如 --c-8a6a3a 实际取 #785b2d，
+ * 因为分镜警告框（.sb-callout.sb-warning）的底色是 --soft，#8a6a3a 在森林绿和极简灰白下只有 4.44 / 4.38。
+ */
+export const EXTRA_BASE_TOKENS = {
+  "--c-b34747": "#b34747", // 危险：删除按钮、错误文字
+  "--c-8a6a3a": "#785b2d", // 警告：未保存、提醒文字、分镜警告框（压在 --soft 底上，需 ≥4.5）
+  "--c-ffffff": "#ffffff", // 卡片底色（OVERRIDES 已为深色系定义取值）
+  "--c-ef4444": "#ef4444", // 全局反馈：错误
+  "--c-f59e0b": "#f59e0b", // 全局反馈：警告
+  "--c-22a06b": "#22a06b", // 全局反馈：成功
+  "--c-3b82f6": "#3b82f6", // 全局反馈：提示
+  "--c-172b4d22": "#172b4d22", // 全局反馈卡片阴影
+  "--c-ad4f42": "#ad4f42", // 项目资产：错误文字
+  "--c-d5b297": "#d5b297", // 项目资产：导入错误描边
+  "--c-eef4f5": "#eef4f5", // 项目资产：选项浅底
+  // style.css 云端音频区（.cw-audio-*）后加的色值，同样未进入 :root
+  "--c-2f6f5e": "#2f6f5e", // 完成徽章/消息文字
+  "--c-eaf5f0": "#eaf5f0", // 完成徽章底色
+  "--c-8a5a16": "#8a5a16", // 警告徽章文字
+  "--c-fdf3e2": "#fdf3e2", // 警告徽章底色
+  "--c-315f9f": "#315f9f", // 进行中徽章文字
+  "--c-eef3fb": "#eef3fb", // 进行中徽章底色
+  "--c-f0f2f3": "#f0f2f3", // 小标签底色、进度条轨道
+  "--c-fbfcfc": "#fbfcfc", // 列表行悬停底色
+  "--c-f4f9f7": "#f4f9f7", // 已选来源底色
+};
+
+/** 扫描 src 下除 themes.css 外的 CSS，返回引用了但 :root 未定义的 `--c-*` token（按文件分组）。 */
+export function findUndefinedTokens(defined) {
+  const missing = new Map();
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".css") && full !== THEMES_FILE) {
+        for (const [, token] of fs.readFileSync(full, "utf8").matchAll(/var\(\s*(--c-[a-z0-9-]+)/g)) {
+          if (defined.has(token)) continue;
+          const rel = path.relative(project, full);
+          if (!missing.has(rel)) missing.set(rel, new Set());
+          missing.get(rel).add(token);
+        }
+      }
+    }
+  };
+  walk(path.join(project, "src"));
+  return missing;
+}
 
 /* ------------------------------------------------------------ 风格定义与变换 */
 
@@ -244,6 +304,12 @@ export const OVERRIDES = {
     "--c-356451": "#6cc39a",
     "--c-315d4b": "#8ad4b0",
     "--c-white-fg": "#0d1a15",
+    // 语义色：mapLightness 会把亮度 > 0.5 的饱和色压暗，深底上看不清，这里钉死成提亮版本
+    "--c-b34747": "#f28b82",
+    "--c-ad4f42": "#f19a8c",
+    "--c-ef4444": "#f87171",
+    "--c-f59e0b": "#fbbf24",
+    "--c-3b82f6": "#60a5fa",
   },
   midnight: {
     "--c-white-bg": "#161c26",
@@ -260,6 +326,12 @@ export const OVERRIDES = {
     "--c-356451": "#63a9e8",
     "--c-315d4b": "#8cc4f2",
     "--c-white-fg": "#0c1420",
+    // 语义色：同深色风格，深底上钉死成提亮版本
+    "--c-b34747": "#f28b82",
+    "--c-ad4f42": "#f19a8c",
+    "--c-ef4444": "#f87171",
+    "--c-f59e0b": "#fbbf24",
+    "--c-3b82f6": "#60a5fa",
   },
   sepia: {
     "--c-white-bg": "#fffdf7",
@@ -273,6 +345,9 @@ export const OVERRIDES = {
     "--c-748179": "#8a7b64",
     "--c-356451": "#8a6a3a",
     "--c-315d4b": "#6f5530",
+    // 语义色：自动派生的危险色在 --soft 底（#f2f0ee，如 .prompt-alert、删除按钮 hover）上不足 4.5，钉死加深版本
+    "--c-b34747": "#925757",
+    "--c-ad4f42": "#8c5851",
   },
   graphite: {
     "--c-white-bg": "#ffffff",
@@ -369,8 +444,22 @@ function main() {
 
   tokens = readBaseTokens(fs.readFileSync(THEMES_FILE, "utf8"));
   if (tokens.size === 0) throw new Error("themes.css 里没有 token；请先运行 node scripts/theme-gen.mjs --tokenize");
+  for (const [token, value] of Object.entries(EXTRA_BASE_TOKENS)) tokens.set(token, value);
   const css = generateThemeCss();
   if (args.includes("--check")) {
+    const missing = findUndefinedTokens(tokens);
+    if (missing.size) {
+      for (const [file, list] of missing) console.error(`${file} 引用了未定义的 token：${[...list].join("、")}`);
+      console.error("请把它们加入 EXTRA_BASE_TOKENS 后重新运行 node scripts/theme-gen.mjs");
+      process.exitCode = 1;
+      return;
+    }
+    const current = fs.readFileSync(THEMES_FILE, "utf8");
+    if (current !== css) {
+      console.error("src/themes.css 与生成结果不一致：请运行 node scripts/theme-gen.mjs 重新生成，不要手改");
+      process.exitCode = 1;
+      return;
+    }
     console.log(`token ${tokens.size} 个，风格 ${THEMES.length} 套，检查通过`);
     return;
   }
