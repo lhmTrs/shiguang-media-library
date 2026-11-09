@@ -11,11 +11,11 @@ import fssync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { once } from "node:events";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { AudioEngine, AudioEngineError } from "../server/audio-engine.mjs";
+import { runInstallerContention } from "./audio-installer-race-fixture.mjs";
 import {
   delay,
   exists,
@@ -808,102 +808,12 @@ test("tar 元数据预算：PAX 膨胀与多个扩展头在 parser 前被总量�
 });
 
 test("两个进程同时安装：一个成功，另一个明确 BUSY", async (t) => {
-  const archive = await makeTar([{ name: "audio-analyze", data: BINARY }]);
-  const base = await tempDir(t);
-  const dataDir = path.join(base, "data");
-  await fs.mkdir(dataDir, { recursive: true });
-  const tls = await makeTlsFixture(t);
-  let releaseGate;
-  const gate = new Promise((resolve) => {
-    releaseGate = resolve;
+  await t.test("两个任务均已排队后争抢真实锁：异步 ENGINE_BUSY", async (t) => {
+    await runInstallerContention(t, "queued");
   });
-  const server = await startTlsServer(t, tls, async (_req, res) => {
-    res.writeHead(200, { "content-length": archive.length });
-    await gate;
-    if (!res.destroyed) res.end(archive);
+  await t.test("下载请求证明锁已持有：同步 ENGINE_BUSY", async (t) => {
+    await runInstallerContention(t, "held");
   });
-  const release = makeRelease(archive, server.url);
-  const childScript = path.join(base, "child-install.mjs");
-  await fs.writeFile(
-    childScript,
-    `
-import fs from "node:fs";
-import { AudioEngine } from ${JSON.stringify(pathToFileURL(path.join(PROJECT, "server/audio-engine.mjs")).href)};
-const engine = new AudioEngine(process.env.DATA_DIR, {
-  release: JSON.parse(process.env.RELEASE_JSON),
-  ca: fs.readFileSync(process.env.CA_FILE),
-  platform: "darwin",
-  arch: "arm64",
-  idleTimeoutMs: 2000,
-  totalTimeoutMs: 8000,
-  diskFreeBytes: 1024 * 1024 * 1024,
-});
-try {
-  engine.install({ confirm: true });
-  console.log("STARTED");
-  const deadline = Date.now() + 7000;
-  while (Date.now() < deadline) {
-    const status = engine.status();
-    if (status.job && ["installed", "error", "cancelled"].includes(status.job.state)) {
-      console.log("RESULT " + JSON.stringify(status.job));
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-} catch (error) {
-  console.log("BUSY " + error.code);
-} finally {
-  engine.dispose();
-}
-`,
-  );
-  const env = {
-    ...process.env,
-    DATA_DIR: dataDir,
-    RELEASE_JSON: JSON.stringify(release),
-    CA_FILE: path.join(tls.dir, "cert.pem"),
-  };
-  const children = [0, 1].map(() =>
-    spawn(process.execPath, [childScript], { env, stdio: ["ignore", "pipe", "pipe"] }),
-  );
-  const outputs = children.map(() => "");
-  for (const [index, child] of children.entries()) {
-    child.stdout.setEncoding("utf8").on("data", (chunk) => {
-      outputs[index] += chunk;
-    });
-    child.stderr.setEncoding("utf8").on("data", (chunk) => {
-      outputs[index] += chunk;
-    });
-  }
-
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    const started = outputs.filter((output) => output.includes("STARTED")).length;
-    const busy = outputs.filter((output) => output.includes("ENGINE_BUSY")).length;
-    if ((started >= 2 && busy >= 1) || (started >= 1 && busy >= 1)) break;
-    await delay(20);
-  }
-  // 第一个进程已持锁并在等待响应；放行后让两个子进程结束。
-  releaseGate();
-  await Promise.all(
-    children.map((child) =>
-      Promise.race([
-        child.exitCode !== null ? Promise.resolve() : once(child, "exit"),
-        delay(8000).then(() => {
-          child.kill("SIGKILL");
-          return [null, null];
-        }),
-      ]),
-    ),
-  );
-
-  const combined = outputs.join("\n");
-  // 先拿到锁的进程成功；另一个可能在 install 同步阶段直接 BUSY，
-  // 也可能在异步获取跨进程锁时得到带 ENGINE_BUSY 的失败任务。
-  assert.match(combined, /BUSY ENGINE_BUSY|"code":"ENGINE_BUSY"/, combined);
-  assert.equal((combined.match(/"state":"installed"/g) || []).length, 1, combined);
-  assert.equal((combined.match(/"code":"ENGINE_BUSY"/g) || []).length, 1, combined);
-  assertClean(dataDir);
 });
 
 test("公开 CA 随 Git 检出与分享包一致提供，不取消全局私钥忽略", async () => {
