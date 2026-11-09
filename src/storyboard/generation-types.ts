@@ -6,7 +6,7 @@ export type GenerationTask={taskId:string;type:'storyboard';projectId:string;sta
 export type GenerationFocus={projectId:string;taskId:string;request:number;libraryId:string};
 export type GenerationProjectState={projectId:string;locked:boolean;ownerTaskId:string|null;generation:number;task:GenerationTask|null};
 export type GenerationModel={id:string;name:string;description:string;default:boolean;efforts:{id:string;description:string}[];defaultEffort:string};
-export type GenerationConnection={connected:boolean;authenticated:boolean;models:GenerationModel[];active:number;unsettled?:boolean};
+export type GenerationConnection={connecting:boolean;connectionAttempted:boolean;connectionError:string;connectionErrorCode:string;connected:boolean;authenticated:boolean;models:GenerationModel[];active:number;unsettled?:boolean};
 export type GenerationPreflight={valid:true;preflightHash:string;project:{id:string;name:string};expectedRevision:number|null;replacing:boolean;replaceSummary:{scenes:number;shots:number};rules:{id:string;version:number;revision:string;name:string;source:string;contentHash:string;compatibility:string;files:{path:string;text:string}[]}[];snapshotHash:string;format:string;schemaProfile:string;protocol:{supported:boolean;verifiedBy?:string;upstreamAcceptance?:string};warnings:{code:string;message:string}[];snapshot:unknown};
 export const generationActive=(t:GenerationTask)=>['accepted','generating','validating','importing','stopping'].includes(t.status);
 export const generationPhase=(t:Pick<GenerationTask,'phase'>)=>({waitingConnection:'等待连接',generating:'正在生成分镜',validating:'正在严格校验 JSON',importing:'正在导入分镜',completed:'已导入新分镜',stopping:'正在请求停止',stopped:'已停止',failed:'生成失败',timed_out:'已超时 · 不再导入',interrupted:'已中断'}[t.phase]||t.phase);

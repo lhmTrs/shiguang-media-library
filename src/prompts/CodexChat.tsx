@@ -9,7 +9,7 @@ import {CodexStopConfirmation,readStopImpact,stopCodexTask,notifyCodexTasksChang
 import type {CodexTaskTarget,CodexTaskImpact} from '../codex-task-types';
 
 type Model={id:string;name:string;description:string;default:boolean;efforts:{id:string;description:string}[];defaultEffort:string};
-type Connection={connected:boolean;authenticated:boolean;accountType:string|null;models:Model[];active:number};
+type Connection={connecting:boolean;connectionAttempted:boolean;connectionError:string;connectionErrorCode:string;unsettled?:boolean;connected:boolean;authenticated:boolean;accountType:string|null;models:Model[];active:number};
 type Block={type:'text'|'image';itemId:string;text?:string;phase?:string;status?:string;attachmentId?:string;alt?:string;error?:string;library?:{status:string;rootId?:string;assetId?:string;fileName?:string;error?:string;projectName?:string}};
 type Turn={id:string;sequence_no:number;status:string;error_code:string;created_at:number;updated_at:number;request:{model:string;effort:string;text:string;output:string;retry_of:string|null};actual:{model?:string;effort?:string;contextRestored?:boolean;pictureProject?:{id:string;name:string};blockedTool?:{type:string;server?:string;tool?:string}};blocks:Block[];usage:Record<string,unknown>};
 type Head={id:string;title:string;revision:number;deleted_at:number|null;updated_at:number};
@@ -46,7 +46,7 @@ function Dialog({label,children,close}:{label:string;children:React.ReactNode;cl
 }
 export function CodexChat({active,request,template,values,canGenerate,templateIssue,beforeSend,templateBusy,revision,activeProject,projects,taskFocus,registerNavigationGuard,onTaskViewing}:{active:boolean;request:PromptRequest;template:Template|null;values:Values;canGenerate:boolean;templateIssue:string;beforeSend:()=>Promise<boolean>;templateBusy:boolean;revision:number;activeProject:string;projects:{id:string;name:string}[];taskFocus?:CodexTaskFocus|null;registerNavigationGuard?:(fn:()=>void)=>void;onTaskViewing?:(ids:string[])=>void}){
  const api=<T=any,>(p:string,body?:unknown,method?:string,options?:{signal?:AbortSignal})=>request<T>('/prompt-codex'+p,body,method,options);
- const [connection,setConnection]=useState<Connection>({connected:false,authenticated:false,accountType:null,models:[],active:0});
+ const [connection,setConnection]=useState<Connection>({connecting:false,connectionAttempted:false,connectionError:'',connectionErrorCode:'',connected:false,authenticated:false,accountType:null,models:[],active:0});
  const [connectionPhase,setConnectionPhase]=useState<'checking'|'idle'|'connecting'|'connected'|'login-required'|'empty'|'failed'|'unknown'>('checking');
  const [connectionError,setConnectionError]=useState(''),[connectionStarted,setConnectionStarted]=useState(0),[connectionSeconds,setConnectionSeconds]=useState(0);
   useFeedbackToast(connectionError, {source: '提示词模板', active: active});
@@ -65,7 +65,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  function install(next:Conversation|null){const previous=current.current;if(next&&previous?.id===next.id){if(next.revision<previous.revision)return;if(next.revision===previous.revision&&Math.max(next.updated_at,...next.turns.map(t=>t.updated_at))<Math.max(previous.updated_at,...previous.turns.map(t=>t.updated_at)))return;}const key=next?.id||'new:'+templateId;if(key!==draftKey.current){drafts.current.set(draftKey.current,draftRef.current);draftKey.current=key;draftRef.current=drafts.current.get(key)||'';setDraft(draftRef.current);}if(next&&previous?.id===next.id&&next.turns.some(t=>!activeStatuses.includes(t.status)&&activeStatuses.includes(previous.turns.find(old=>old.id===t.id)?.status||'')))notifyCodexTasksChanged();current.current=next;setConversation(next);if(next&&templateId)saveTextPreference('shiguang.codex.conversation.'+templateId,next.id);}
  useEffect(()=>{registerNavigationGuard?.(()=>{if(busyRef.current)throw Error('对话正在提交或处理，请等待回执后再跳转；草稿已保留');if(unconfirmed)throw Error('原提交结果待确认，请先在原对话核对；未自动重发');drafts.current.set(draftKey.current,draftRef.current);});},[unconfirmed,registerNavigationGuard]);
  useEffect(()=>{const changed=()=>setVisible(document.visibilityState==='visible');document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
- function applyConnection(next:Connection){if(!next||typeof next.connected!=='boolean'||typeof next.authenticated!=='boolean'||!Array.isArray(next.models))throw Error('连接状态格式不兼容，请更新 Codex 后重试');setConnection(next);setConnectionError('');setConnectionPhase(!next.connected?'idle':!next.authenticated?'login-required':!next.models.length?'empty':'connected');const chosen=next.models.find(m=>m.id===model)||next.models.find(m=>m.default)||next.models[0];if(chosen){setModel(chosen.id);if(!chosen.efforts.some(e=>e.id===effort))setEffort(chosen.defaultEffort||'');}}
+ function applyConnection(next:Connection){if(!next||typeof next.connected!=='boolean'||typeof next.authenticated!=='boolean'||!Array.isArray(next.models))throw Error('连接状态格式不兼容，请更新 Codex 后重试');setConnection(next);setConnectionError(next.connectionError?((next.connectionErrorCode?next.connectionErrorCode+' · ':'')+next.connectionError):'');if(next.connecting)setConnectionStarted(old=>old||Date.now());else setConnectionStarted(0);setConnectionPhase(next.connecting?'connecting':next.connectionError?'failed':!next.connected?'idle':!next.authenticated?'login-required':!next.models.length?'empty':'connected');const chosen=next.models.find(m=>m.id===model)||next.models.find(m=>m.default)||next.models[0];if(chosen){setModel(chosen.id);if(!chosen.efforts.some(e=>e.id===effort))setEffort(chosen.defaultEffort||'');}}
  async function run(fn:()=>Promise<unknown>){if(busyRef.current)return;busyRef.current=true;setBusy(true);setError('');try{await fn()}catch(e){setError(connectionFailure(e))}finally{busyRef.current=false;setBusy(false);setSendPhase('')}}
  function sendProgress(label:string){setSendPhase(label);setSendStarted(Date.now());setNow(Date.now());setSendResult('');}
  async function sendRequest<T>(label:string,p:string,body?:unknown){sendProgress(label);try{return await api<T>(p,body,undefined,{signal:AbortSignal.timeout(30000)});}catch(e){const failure=e as Error;if(['TimeoutError','AbortError'].includes(failure.name))throw Error(label+'等待超时。请检查本机服务；没有自动重发。');throw e;}}
@@ -80,8 +80,10 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  async function retrySubmission(){const target=unconfirmed;if(!target)return;await sendRequest('正在重试原提交…',target.path,target.body);await checkSubmission();}
  async function list(showDeleted=deleted){const owner=templateRef.current?.id,seq=loadSeq.current;const rows=await api<Head[]>('/conversations?'+new URLSearchParams({...(templateId?{template_id:templateId}:{}),deleted:showDeleted?'1':'0'}),undefined,undefined,{signal:AbortSignal.timeout(15000)});if(seq===loadSeq.current&&owner===templateRef.current?.id)setHeads(rows);return rows;}
  async function reload(){if(current.current)install(await api<Conversation>('/conversations/'+current.current.id,undefined,undefined,{signal:AbortSignal.timeout(15000)}));await list();setError('');}
- useEffect(()=>{void checkConnection();return()=>{connectionSeq.current++;connectionAbort.current?.abort();}},[]);
- useEffect(()=>{if(connectionPhase!=='connecting')return;const update=()=>setConnectionSeconds(Math.floor((Date.now()-connectionStarted)/1000));update();const timer=setInterval(update,1000);return()=>clearInterval(timer);},[connectionPhase,connectionStarted]);
+ useEffect(()=>{if(!active||!visible)return;const controller=new AbortController();void checkConnection(controller.signal);return()=>{connectionSeq.current++;controller.abort();};},[active,visible]);
+ useEffect(()=>()=>{connectionSeq.current++;connectionAbort.current?.abort();},[]);
+ useEffect(()=>{if(!active||!visible||!connection.connecting||connectionAbort.current||connectionPhase==='unknown')return;let stopped=false,timer:ReturnType<typeof setTimeout>;const controller=new AbortController();const tick=async()=>{if(stopped||document.hidden)return;await checkConnection(controller.signal,true);if(!stopped)timer=setTimeout(tick,1200);};timer=setTimeout(tick,1200);return()=>{stopped=true;clearTimeout(timer);controller.abort();};},[active,visible,connection.connecting,connectionPhase]);
+ useEffect(()=>{if(!active||!visible||connectionPhase!=='connecting')return;const update=()=>setConnectionSeconds(Math.floor((Date.now()-connectionStarted)/1000));update();const timer=setInterval(update,1000);return()=>clearInterval(timer);},[active,visible,connectionPhase,connectionStarted]);
  useEffect(()=>{
   const seq=++loadSeq.current;drafts.current.set(draftKey.current,draftRef.current);setError('');setSendResult('');pending.current=null;newId.current=randomId();
   if(taskFocus&&taskFocus.target.templateId===templateId){const next=taskFocus.conversation;install(next);setDeleted(!!next.deleted_at);void list(!!next.deleted_at).catch(e=>{if(seq===loadSeq.current)setError('对话已打开，但历史列表未刷新：'+e.message);});return;}
@@ -107,14 +109,16 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  useEffect(()=>{if(last?.status==='completed')setSendResult('本轮已完成，结果显示在上方对话中。');},[last?.id,last?.status]);
  useEffect(()=>{if(last?.error_code&&!activeStatuses.includes(last.status))void checkConnection();},[last?.id,last?.status,last?.error_code]);
  useEffect(()=>{if(!sendPhase&&!generating)return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[sendPhase,generating]);
- async function checkConnection(){
-  const seq=++connectionSeq.current;setConnectionPhase('checking');setConnectionError('');
-  try{const status=await api<Connection>('/status',undefined,undefined,{signal:AbortSignal.timeout(15000)});if(seq===connectionSeq.current)applyConnection(status);}
-  catch(e){if(seq===connectionSeq.current){setConnectionPhase('failed');setConnectionError('无法读取连接状态：'+connectionFailure(e));setConnection(previous=>({...previous,connected:false,authenticated:false}));}}
+ async function checkConnection(signal?:AbortSignal,background=false){
+  if(connectionAbort.current)return null;
+  const seq=++connectionSeq.current;if(!background){setConnectionPhase('checking');setConnectionError('');}
+  try{const status=await api<Connection>('/status',undefined,undefined,{signal:AbortSignal.any([AbortSignal.timeout(15000),...(signal?[signal]:[])])});if(seq===connectionSeq.current){applyConnection(status);return status;}return null;}
+  catch(e){if(signal?.aborted)return null;if(seq===connectionSeq.current){setConnectionPhase('failed');setConnectionError('无法读取连接状态：'+connectionFailure(e));setConnection(previous=>({...previous,connecting:false,connected:false,authenticated:false}));}return null;}
  }
  function connectionFailure(error:unknown){if(error instanceof Error){if(['AbortError','TimeoutError'].includes(error.name))return'请求超时，请检查本机服务后重试';if(error.message==='Failed to fetch')return'无法连接素材管理器服务，请确认服务仍在运行';return error.message;}return'连接未完成，请检查本机 Codex 后重试';}
  async function connect(){
-  const observed=await api<Connection>('/status',undefined,undefined,{signal:AbortSignal.timeout(15000)});if(observed.active)throw Error('还有生成尚未结清，不能重新连接共享连接。请先检查任务状态。');
+  const observed=await api<Connection>('/status',undefined,undefined,{signal:AbortSignal.timeout(15000)});if(observed.connecting){applyConnection(observed);return observed;}if(observed.active||observed.unsettled||unconfirmed)throw Error('还有生成尚未结清，不能重新连接共享连接。请先检查任务状态。');
+  if(connectionAbort.current||connectionPhase==='unknown')return null;
   const seq=++connectionSeq.current,controller=new AbortController();connectionAbort.current=controller;let timedOut=false;
   setConnectionPhase('connecting');setConnectionError('');setConnectionStarted(Date.now());setConnectionSeconds(0);
   const timer=setTimeout(()=>{timedOut=true;controller.abort();},65000);
@@ -123,10 +127,10 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   finally{clearTimeout(timer);if(connectionAbort.current===controller)connectionAbort.current=null;}
  }
  const connecting=connectionPhase==='connecting',checking=connectionPhase==='checking';
- const connectionTitle={checking:'正在检查连接…',idle:'尚未连接',connecting:'正在连接…',connected:'已连接', 'login-required':'需要本机登录',empty:'未读取到可用模型',failed:'连接失败',unknown:'连接结果待确认'}[connectionPhase];
- const connectionDetail=connecting?(connectionSeconds>=8?'连接较慢，正在等待本机 Codex 响应，请勿重复点击。':'正在建立本机连接、确认登录并读取模型列表…')+' 已等待 '+connectionSeconds+' 秒。':connectionPhase==='connected'?'连接成功 · '+(connection.accountType==='chatgpt'?'ChatGPT 登录':connection.accountType==='apiKey'?'API 登录':'本机已授权')+' · 已读取 '+connection.models.length+' 个可用模型。'+(generating?'正在生成，结果会自动保存。':conversation?.turns.length?'对话已保存，可继续追问。':'点击下方「使用 Codex 生成」发送完整提示词。'):connectionPhase==='login-required'?'已连接本机 Codex，但尚未登录。请在本机 Codex 登录后点击重新连接。':connectionPhase==='empty'?'已确认本机登录，但没有可用模型。请检查账号模型权限，再点击重新连接。':connectionPhase==='checking'?'正在读取当前连接状态，不会发起生成。':connectionError||'点击连接后会在这里显示结果；只有点击生成才会发送模板内容。';
- const sendBlockedReason=template?.deleted_at?'当前模板已删除，请先在上方恢复模板。':!conversation&&!template?'请先在左侧选择模板；没有模板时，可点击上方「新建模板」或「选用内置模板」。':!conversation&&!canGenerate?'请先完成上方模板输入：'+(templateIssue||'检查并补全必填项。'):!selectedProject?'请先在顶部选择图片所属项目。':unconfirmed?'上次提交结果尚未确认，请先检查提交结果。':templateBusy?'模板正在处理，请稍候。':busy?(connecting?'正在连接 Codex，请稍候。':checking?'正在检查连接状态，请稍候。':'正在处理，请稍候。'):connection.connected&&connection.authenticated&&!selectedModel?'请先选择一个可用的对话模型。':'';
- const sendHint=sendBlockedReason||(!connection.connected||!connection.authenticated?(connectionPhase==='login-required'?'请先在本机 Codex 登录；点击发送追问会重新连接，成功后只发送这一次追问。':'请先连接 Codex；点击发送追问会先尝试重新连接，输入内容会保留。'):'');
+ const connectionTitle={checking:'正在检查连接…',idle:'尚未连接',connecting:connection.connecting?'后台正在连接…':'正在连接…',connected:'已连接', 'login-required':'需要本机登录',empty:'未读取到可用模型',failed:'连接失败',unknown:'连接结果待确认'}[connectionPhase];
+ const connectionDetail=connecting?(connectionSeconds>=8?'连接较慢，正在等待本机 Codex 响应，请勿重复点击。':(connection.connecting?'后台正在连接…确认登录并读取模型列表。':'正在建立本机连接、确认登录并读取模型列表…'))+' 已等待 '+connectionSeconds+' 秒。':connectionPhase==='connected'?'连接成功 · '+(connection.accountType==='chatgpt'?'ChatGPT 登录':connection.accountType==='apiKey'?'API 登录':'本机已授权')+' · 已读取 '+connection.models.length+' 个可用模型。'+(generating?'正在生成，结果会自动保存。':conversation?.turns.length?'对话已保存，可继续追问。':'点击下方「使用 Codex 生成」发送完整提示词。'):connectionPhase==='login-required'?'已连接本机 Codex，但尚未登录。请在本机 Codex 登录后点击重新连接。':connectionPhase==='empty'?'已确认本机登录，但没有可用模型。请检查账号模型权限，再点击重新连接。':connectionPhase==='checking'?'正在读取当前连接状态，不会发起生成。':connectionError||'后台连接未就绪。请检查本机安装与登录状态，再点击“重新连接”；输入不会自动发送。';
+ const sendBlockedReason=template?.deleted_at?'当前模板已删除，请先在上方恢复模板。':!conversation&&!template?'请先在左侧选择模板；没有模板时，可点击上方「新建模板」或「选用内置模板」。':!conversation&&!canGenerate?'请先完成上方模板输入：'+(templateIssue||'检查并补全必填项。'):!selectedProject?'请先在顶部选择图片所属项目。':unconfirmed?'上次提交结果尚未确认，请先检查提交结果。':templateBusy?'模板正在处理，请稍候。':busy?(connecting?'正在连接 Codex，请稍候。':checking?'正在检查连接状态，请稍候。':'正在处理，请稍候。'):connecting?'后台正在连接…':checking?'正在读取连接状态…':!connection.connected?'尚未连接，请点击“重新连接”':!connection.authenticated?'请先在本机 Codex 登录后点击“重新连接”':!connection.models.length?'没有可用模型，请检查权限后点击“重新连接”':!selectedModel?'请先选择一个可用的对话模型。':'';
+ const sendHint=sendBlockedReason;
  async function generateFromTemplate(){
   if(unconfirmed)throw Error('上次提交结果尚未确认，请先点击「检查提交结果」。');
   sendProgress('正在准备生成…');
@@ -135,9 +139,9 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   if(!selectedProject)throw Error('请先在顶部选择图片所属项目');const projectId=selectedProject.id;
   if(generating)throw Error('请先等待或停止当前生成');
   loadSeq.current++;
-  const status=connection.connected&&connection.authenticated&&!checking?connection:await connect();
+  const status=await checkConnection();
   if(!status){setSendResult('尚未发送生成请求，请查看连接结果后重试。');return;}
-  if(!status.connected||!status.authenticated)throw Error('请先在本机 Codex 登录后重试');
+  if(status.connecting||!status.connected||!status.authenticated)throw Error(status.connecting?'后台正在连接…尚未发送，输入已保留':status.connectionError||'尚未准备好，请登录并点击“重新连接”；输入已保留');
   const chosen=status.models.find(m=>m.id===model)||status.models.find(m=>m.default)||status.models[0];
   if(!chosen)throw Error('没有可用模型，请检查账号模型权限后重试');
   if(templateRef.current?.id!==snapshot.id||templateRef.current?.revision!==snapshot.revision)throw Error('模板已切换或更新，请核对上方提示词后再次点击生成');
@@ -152,7 +156,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   let head=fresh?null:current.current;
   const text=fresh?'':retry?retry.request.text:draft;
   if(!fresh&&head?.turns.length&&!retry&&!text.trim())throw Error('请填写追问内容');
-  if(!fresh){sendProgress('正在准备发送追问…');if(!connection.connected||!connection.authenticated||checking){const status=await connect();if(!status){setSendResult('尚未发送追问，请查看连接错误后重试；输入内容已保留。');return;}if(!status.connected||!status.authenticated)throw Error('尚未发送追问：请先在本机 Codex 登录，输入内容已保留。');usedModel=status.models.find(m=>m.id===model)||status.models.find(m=>m.default)||status.models[0];usedEffort=usedModel?.efforts.some(e=>e.id===effort)?effort:usedModel?.defaultEffort||'';if(head&&current.current?.id!==head.id)throw Error('对话已切换，尚未发送这次追问，请核对当前对话后重试。');}}
+  if(!fresh){sendProgress('正在只读核对连接…');const status=await checkConnection();if(!status||status.connecting||!status.connected||!status.authenticated)throw Error(status?.connectionError||'连接尚未准备，输入已保留；请核对状态或点击“重新连接”');usedModel=status.models.find(m=>m.id===model);usedEffort=usedModel?.efforts.some(e=>e.id===effort)?effort:usedModel?.defaultEffort||'';if(head&&current.current?.id!==head.id)throw Error('对话已切换，尚未发送这次追问，请核对当前对话后重试。');}
   if(!usedModel)throw Error('请选择当前可用的模型');
   if(!head){const source=fresh?.template||templateRef.current;if(!source||!canGenerate)throw Error('请先完整填写模板的必填项');sendProgress('正在保存模板输入…');if(!await beforeSend())throw Error('尚未发送生成请求：模板输入未能保存，请先处理草稿错误。');
     const target={conversationId:newId.current,path:'/conversations',body:{id:newId.current,template_id:source.id,template_revision:source.revision,values:fresh?.values||values}};
@@ -160,7 +164,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   const payload={model:usedModel.id,effort:usedEffort,output,text,retry_of:retry?.id??null,project_id:projectId},signature=JSON.stringify({conversationId:head.id,...payload});
   if(!pending.current||pending.current.signature!==signature)pending.current={signature,id:randomId()};
   const target={conversationId:head.id,turnId:pending.current.id,path:'/conversations/'+head.id+'/turns',body:{...payload,id:pending.current.id,expected_revision:head.revision}};
-  let accepted:Turn;try{accepted=await sendRequest<Turn>('正在提交生成请求…',target.path,target.body);}catch(e){if(uncertainFailure(e))setUnconfirmed(target);if(['CODEX_DISCONNECTED','CODEX_LOGIN_REQUIRED'].includes((e as {code?:string}).code||''))applyConnection({connected:false,authenticated:false,models:[],accountType:null,active:0});throw e;}
+  let accepted:Turn;try{accepted=await sendRequest<Turn>('正在提交生成请求…',target.path,target.body);}catch(e){if(uncertainFailure(e))setUnconfirmed(target);if(['CODEX_DISCONNECTED','CODEX_LOGIN_REQUIRED'].includes((e as {code?:string}).code||''))applyConnection({connecting:false,connectionAttempted:true,connectionError:'',connectionErrorCode:'',connected:false,authenticated:false,models:[],accountType:null,active:0});throw e;}
   pending.current=null;notifyCodexTasksChanged();if(!retry)changeDraft('');
   // The receipt is enough to show a task immediately; history refresh must not gate feedback.
   const observed=current.current?.id===head.id?current.current:head;
@@ -181,12 +185,12 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   {unconfirmed&&sendPhase&&<p>{sendPhase} 已等待 {Math.max(0,Math.floor((now-sendStarted)/1000))} 秒。</p>}
   {unconfirmed?<><p>提交结果待确认，未自动重发。请检查这次提交，避免重复生成。</p>{sendResult&&<p>{sendResult}</p>}<button disabled={busy} onClick={()=>void run(checkSubmission)}>检查提交结果</button><p>若一直查不到，可手动重试原提交；使用原任务编号和原内容，不会新建重复任务。</p><button disabled={busy} onClick={()=>void run(retrySubmission)}>重试原提交</button></>:sendPhase?<p>{connecting?connectionDetail:sendPhase+' 已等待 '+Math.max(0,Math.floor((now-sendStarted)/1000))+' 秒。'}{!connecting&&now-sendStarted>=8000?'处理较慢，请勿重复点击。':''}</p>:generating?<p>{last.status==='stopping'?'正在停止，已收到的内容会保留。':last.blocks.length?'正在生成，收到的内容持续显示在上方。':'请求已接收，正在等待 Codex 返回内容。'} 已等待 {Math.max(0,Math.floor((now-last.created_at)/1000))} 秒。<button disabled={busy} onClick={()=>void run(reload)}>检查生成进度</button></p>:<>{sendResult&&<p>{sendResult}</p>}{last?.error_code&&<p>{turnFailure(last)}</p>}</>}
   {!unconfirmed&&!sendPhase&&!generating&&connectionError&&<p>{connectionError}</p>}
-  {!unconfirmed&&!generating&&(!connection.connected||!connection.authenticated)&&<button disabled={busy} onClick={()=>void run(connect)}>重新连接 Codex</button>}
+  {!unconfirmed&&!generating&&(!connection.connected||!connection.authenticated)&&<button disabled={busy||connecting||!!connection.unsettled||connectionPhase==='unknown'} onClick={()=>void run(connect)}>重新连接</button>}
  </div>;}
  return <section className="codex-chat" aria-label="Codex 图文对话" ref={section}>
   <header className="codex-chat-heading"><div><span className="codex-eyebrow"><Zap size={13}/>CODEX</span><h2>让模板开始对话</h2><p>选择模型与推理强度，生成文字或图文，继续追问并保留每一版。</p></div><div className="codex-header-actions">
     <span className={'codex-connection '+connectionPhase} role="status" aria-live="polite">{(connecting||checking)&&<LoaderCircle size={14} className="codex-connection-spinner"/>}{connectionPhase==='connected'&&<Check size={14}/>} {connectionTitle}</span>
-    <button className="codex-connect-button" disabled={busy||generating||connection.active>0} aria-busy={connecting} onClick={()=>void run(connect)}>{connecting?<><LoaderCircle size={14} className="codex-connection-spinner"/>正在连接…</>:connectionPhase==='failed'||connectionPhase==='unknown'?'重试连接':connection.connected?'重新连接':'连接 Codex'}</button>
+    <button className="codex-connect-button" disabled={busy||connecting||generating||connection.active>0||connection.unsettled||unconfirmed!==null||connectionPhase==='unknown'} aria-busy={connecting} onClick={()=>void run(connect)}>{connecting?<><LoaderCircle size={14} className="codex-connection-spinner"/>{connectionTitle}</>:'重新连接'}</button>
     <button disabled={busy||connecting||checking} onClick={()=>void run(checkConnection)}>检查连接状态</button>
     {connection.connected&&<button disabled={busy||generating||connection.active>0} onClick={()=>void run(async()=>{const status=await api<Connection>('/status');if(status.active)throw Error('还有生成未结清，不能断开共享连接');applyConnection(await api('/disconnect',{}));})}>断开</button>}
   </div></header>

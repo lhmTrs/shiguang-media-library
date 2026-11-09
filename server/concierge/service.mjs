@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {ConciergeTransport} from './transport.mjs';
+import {connectionFailure} from '../prompt-codex/transport.mjs';
 import {activeStatuses,digest,exact,fault,uuid} from './store.mjs';
 import {conciergeConfig} from './policy.mjs';
 
@@ -29,6 +30,7 @@ export class ConciergeService{
     this.store=store;this.attachments=attachments;this.capabilities=capabilities;this.root=root;
     this.transportFactory=transportFactory??(options=>new ConciergeTransport(options));this.withActivity=withActivity;this.timeoutMs=timeoutMs;this.stopTimeoutMs=stopTimeoutMs;
     this.clients=new Map();this.opening=new Map();this.tasks=new Map();this.work=new Set();this.models=[];this.authenticated=false;this.closing=false;this.directoryPins=new Map();this.ownedClients=new Set();this.retiring=new Map();this.poolTail=Promise.resolve();
+    this.connectionAttempted=false;this.connectionFailure=null;this.startupConnection=null;
   }
   async init(){await fs.mkdir(this.root,{recursive:true,mode:0o700});const stat=await fs.lstat(this.root);if(stat.isSymbolicLink()||!stat.isDirectory())throw fault('管家数据目录状态异常',409);this.root=await fs.realpath(this.root);await this.ownedDirectory();this.defaultText=await fs.readFile(fileURLToPath(new URL('./SKILL.md',import.meta.url)),'utf8');this.store.recoverInterrupted();await this.attachments.init();return this;}
   async ownedDirectory(...parts){
@@ -36,7 +38,7 @@ export class ConciergeService{
     for(const part of ['',...parts]){if(part){if(!/^[a-zA-Z0-9_-]+$/.test(part))throw fault('管家目录无效',409);dir=path.join(dir,part);await fs.mkdir(dir,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e;});}const s=await fs.lstat(dir),identity=s.dev+':'+s.ino;if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(dir)!==dir||this.directoryPins.has(dir)&&this.directoryPins.get(dir)!==identity)throw fault('管家目录身份已变化，未发送',409);this.directoryPins.set(dir,identity);}
     return dir;
   }
-  status(){return{connected:!!this.catalogClient&&!this.catalogClient.closed,authenticated:this.authenticated,models:this.models,activeCount:this.tasks.size,unsettled:this.store.tasks().some(t=>t.status==='unknown')||[...this.ownedClients].some(c=>c.retirementError)};}
+  status(){const connected=!!this.catalogClient&&!this.catalogClient.closed,problem=this.connectionFailure||(!connected&&this.connectionAttempted&&!this.connecting&&!this.closing?connectionFailure({code:'CODEX_DISCONNECTED'}):null);return{connected,authenticated:this.authenticated,models:this.models,activeCount:this.tasks.size,unsettled:this.store.tasks().some(t=>t.status==='unknown')||[...this.ownedClients].some(c=>c.retirementError),connecting:!!this.connecting,connectionAttempted:this.connectionAttempted,connectionError:problem?.message||'',connectionErrorCode:problem?.code||''};}
   async retire(scope,client,{preserveBinding=false}={}){
     if(this.retiring.has(scope))return this.retiring.get(scope);
     const work=Promise.resolve().then(()=>client.close()).then(()=>{this.ownedClients.delete(client);if(this.clients.get(scope)===client)this.clients.delete(scope);if(!preserveBinding&&client.freshThreadId&&!client.hasUserMessage){let binding;try{binding=this.store.binding(scope);}catch(e){if(e.status!==404)throw e;}if(binding?.thread_id===client.freshThreadId)this.store.bindingPhase(scope,'empty','');}},e=>{client.retirementError=true;throw e;});this.retiring.set(scope,work);
@@ -50,19 +52,32 @@ export class ConciergeService{
       const client=this.transportFactory(options);client.conciergeScope=scope;this.ownedClients.add(client);return client;
     });this.poolTail=next.catch(()=>{});return next;
   }
+  startConnection(){
+    if(this.startupConnection)return this.startupConnection.then(()=>this.status());
+    this.startupConnection=this.closing||this.connectionAttempted?Promise.resolve(this.status()):this.connect().catch(()=>this.status());
+    return this.startupConnection.then(()=>this.status());
+  }
   async connect(){
     if(this.closing)throw fault('素材管理器正在关闭，请稍后连接',503);
-    if(this.connecting)return this.connecting;
+    if(this.connecting){await this.connecting;return this.status();}
+    if([...this.ownedClients].some(c=>c.retirementError))throw fault('原管家连接尚未正常结清，请保留当前任务',423,'CODEX_CLOSE_UNSETTLED');
+    this.connectionAttempted=true;this.connectionFailure=null;
     this.connecting=(async()=>{
-      if(!this.catalogClient||this.catalogClient.closed){const client=this.transportFactory({cwd:this.root});this.catalogClient=client;this.ownedClients.add(client);client.on('closed',()=>this.ownedClients.delete(client));try{await client.start();}catch(e){try{await client.close();this.ownedClients.delete(client);}catch{client.retirementError=true;}throw e;}}
-      const client=this.catalogClient,auth=await client.call('account/read',{refreshToken:false});this.authenticated=!!auth.account||auth.requiresOpenaiAuth===false;
-      this.models=[];
-      if(this.authenticated){let cursor=null;for(let n=0;n<30;n++){const page=await client.call('model/list',{cursor,limit:100,includeHidden:false});if(!Array.isArray(page.data))throw fault('当前 Codex 模型接口不兼容，请更新后重连',503);for(const m of page.data)if(!m.hidden&&typeof m.model==='string')this.models.push({id:m.model,name:m.displayName||m.model,default:!!m.isDefault,efforts:(m.supportedReasoningEfforts??[]).map(e=>({id:e.reasoningEffort,description:e.description??''})),defaultEffort:m.defaultReasoningEffort??'',inputModalities:m.inputModalities??[]});cursor=page.nextCursor;if(!cursor)break;}}
-      return this.status();
+      let client=this.catalogClient;
+      if(!client||client.closed){client=this.transportFactory({cwd:this.root});this.catalogClient=client;this.ownedClients.add(client);client.on('closed',()=>this.ownedClients.delete(client));}
+      this.authenticated=false;this.models=[];
+      try{
+        await client.start();if(this.closing)throw fault('素材管理器正在关闭',503,'CODEX_CLOSING');
+        const auth=await client.call('account/read',{refreshToken:false});if(this.closing)throw fault('素材管理器正在关闭',503,'CODEX_CLOSING');this.authenticated=!!auth.account||auth.requiresOpenaiAuth===false;
+        const models=[];
+        if(this.authenticated){let cursor=null;for(let n=0;n<30;n++){const page=await client.call('model/list',{cursor,limit:100,includeHidden:false});if(this.closing)throw fault('素材管理器正在关闭',503,'CODEX_CLOSING');if(!Array.isArray(page.data))throw fault('当前 Codex 模型接口不兼容，请更新后重连',503,'CODEX_PROTOCOL_MISMATCH');for(const m of page.data)if(!m.hidden&&typeof m.model==='string')models.push({id:m.model,name:m.displayName||m.model,default:!!m.isDefault,efforts:(m.supportedReasoningEfforts??[]).map(e=>({id:e.reasoningEffort,description:e.description??''})),defaultEffort:m.defaultReasoningEffort??'',inputModalities:m.inputModalities??[]});cursor=page.nextCursor;if(!cursor)break;}}
+        this.models=models;
+      }catch(e){this.authenticated=false;this.models=[];try{await client.close();this.ownedClients.delete(client);}catch(closeError){client.retirementError=true;throw closeError;}throw e;}
     })();
-    try{return await this.connecting;}catch(e){this.authenticated=false;throw e;}finally{this.connecting=null;}
+    try{await this.connecting;}catch(e){this.connectionFailure=connectionFailure(e);throw e;}finally{this.connecting=null;}
+    return this.status();
   }
-  requireConnection(){if(!this.catalogClient||this.catalogClient.closed||!this.authenticated)throw fault('请先连接并登录本机 Codex',409,'CONCIERGE_NOT_CONNECTED');}
+  requireConnection(){if(this.connecting)throw fault('后台正在连接本机 Codex，请稍候',423,'CODEX_CONNECTING');if(!this.catalogClient||this.catalogClient.closed||!this.authenticated)throw fault('本机 Codex 尚未就绪，请查看连接状态或点击重新连接',409,'CONCIERGE_NOT_CONNECTED');}
   operate(fn){if(this.closing)throw fault('素材管理器正在关闭',503);return this.withActivity(()=>this.store.capture(fn));}
   rules(scope){const current=this.store.rule(scope),global=this.store.rule('global');return{scope,...current,globalText:global.text,globalRevision:global.revision,defaultText:this.defaultText};}
   async ruleSnapshot(scope){
@@ -204,5 +219,5 @@ export class ConciergeService{
   async interrupt(task){if(!task.client||!task.turnId||task.interrupting)return;task.interrupting=true;try{await task.client.call('turn/interrupt',{threadId:task.threadId,turnId:task.turnId});}catch(e){this.store.update(task.id,{error:'中止结果待核对：'+e.message});}finally{task.interrupting=false;}}
   async stop(id,scope){const task=this.tasks.get(id);if(task&&this.store.db!==task.db)return this.store.inDatabase(task.db,()=>this.stop(id,scope));const stored=this.store.task(id,scope);if(!task){if(stored.status==='unknown')throw fault('任务结果待核对，请检查原对话；未发送新的中止或生成。',409);return{task:stored};}if(task.stopRequested)return{task:this.task(id,scope)};task.stopRequested=true;this.store.update(id,{status:'stop_requested'});if(!task.sent)await this.finish(task,'interrupted','已在发送前中止。');else{task.stopTimer=setTimeout(()=>{if(this.tasks.has(task.id)&&!task.finishPromise){this.store.update(task.id,{error:'Codex 尚未确认结束，正在结清这个对话的专用连接；其他对话不受影响。'});void task.client.close().catch(()=>{this.store.update(task.id,{error:'本轮连接未结清，请保留原任务并检查本机 Codex。'});});}},this.stopTimeoutMs);task.stopTimer.unref?.();await this.interrupt(task);}return{task:this.task(id,scope)};}
   beginClose(){this.closing=true;}
-  async close(){this.beginClose();await Promise.allSettled([...this.tasks.values()].map(t=>this.stop(t.id,t.scope)));await Promise.allSettled([...this.opening.values(),this.connecting,...this.retiring.values()].filter(Boolean));const results=await Promise.allSettled([...this.ownedClients].map(async c=>{if(c.conciergeScope)await this.retire(c.conciergeScope,c);else{await c.close();this.ownedClients.delete(c);}}));await Promise.allSettled([...this.tasks.values()].map(t=>this.finish(t,'unknown','应用已关闭，本轮请核对 Codex 原记录。')));await Promise.allSettled([...this.work]);await this.attachments.close();if(results.some(r=>r.status==='rejected'))throw fault('管家连接尚未正常结清',503,'CONCIERGE_WORK_UNSETTLED');}
+  async close(){this.beginClose();await Promise.allSettled([...this.tasks.values()].map(t=>this.stop(t.id,t.scope)));const connecting=this.connecting;if(connecting){try{await this.catalogClient?.close();}catch{if(this.catalogClient)this.catalogClient.retirementError=true;}}await Promise.allSettled([...this.opening.values(),connecting,...this.retiring.values()].filter(Boolean));await this.startupConnection?.catch(()=>{});const results=await Promise.allSettled([...this.ownedClients].map(async c=>{if(c.conciergeScope)await this.retire(c.conciergeScope,c);else{await c.close();this.ownedClients.delete(c);}}));await Promise.allSettled([...this.tasks.values()].map(t=>this.finish(t,'unknown','应用已关闭，本轮请核对 Codex 原记录。')));await Promise.allSettled([...this.work]);await this.attachments.close();if(results.some(r=>r.status==='rejected'))throw fault('管家连接尚未正常结清',503,'CONCIERGE_WORK_UNSETTLED');}
 }

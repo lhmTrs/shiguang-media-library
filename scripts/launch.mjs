@@ -48,7 +48,7 @@ const child = spawn(
   {
     cwd: project,
     detached: true,
-    env: { ...process.env, NODE_ENV: "production" },
+    env: { ...process.env, NODE_ENV: "production", MEDIA_CODEX_AUTOCONNECT: process.env.MEDIA_CODEX_AUTOCONNECT ?? "1" },
     stdio: ["ignore", log, log],
   },
 );
