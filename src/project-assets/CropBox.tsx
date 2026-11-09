@@ -37,6 +37,8 @@ export function CropBox({ src, alt, crop, aspect, disabled, onChange }: { src: s
   function down(e: React.PointerEvent, mode: 'move' | Handle) {
     if (disabled || !r || !scale) return;
     e.preventDefault(); e.stopPropagation(); (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    // preventDefault 会阻止浏览器自动聚焦：显式聚焦裁切框，点击或拖动后可以直接用方向键微调
+    ((e.currentTarget as Element).closest('.ca-crop-box') as HTMLElement | null)?.focus({ preventScroll: true });
     drag.current = { mode, px: e.clientX, py: e.clientY, rect: r }; setDragging(true);
   }
   function move(e: React.PointerEvent) {
