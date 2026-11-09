@@ -290,7 +290,7 @@
 }
 
 /* ===== #20 画廊 + 详情栏（.ca-v2） ===== */
-.ca-v2{--ca-top:64px;--ca-card:var(--c-fff);--ca-ink:var(--c-24292c);--ca-warn:var(--c-8a6a3a);--ca-dot:var(--c-f59e0b);--ca-danger:var(--c-b34747);display:flex;flex-direction:column;height:calc(100dvh - var(--ca-top) - var(--player-height,0px));margin-bottom:-20px;min-height:520px;overflow:hidden}
+.ca-v2{--ca-top:64px;--ca-card:var(--c-fff);--ca-ink:var(--c-24292c);--ca-warn:var(--c-8a6a3a);--ca-dot:var(--c-f59e0b);--ca-danger:var(--c-b34747);display:flex;flex-direction:column;height:calc(100dvh - var(--inspector-top,var(--ca-top)) - var(--player-height,0px));margin-bottom:-20px;min-height:520px;overflow:hidden}
 .ca-v2 [hidden]{display:none!important}
 .ca-v2 .ca-head{flex:none;padding:18px 24px 0;border-bottom:1px solid var(--line);background:var(--c-f7f9fa)}
 .ca-v2 .ca-head-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
@@ -491,3 +491,14 @@
 .ca-v2 #ca-sec-info .ca-edit-fields{grid-template-columns:minmax(0,1fr)}
 .ca-v2 #ca-sec-info .ca-field-grid{gap:12px}
 .ca-v2 #ca-sec-info .ca-field-grid>.ca-field{margin:0}
+
+/* 列表显示：紧凑行，名称/摘要/标签对齐；新建入口也是一行 */
+.ca-v2 .ca-cards.ca-list{max-width:1200px}
+.ca-v2 .ca-list .ca-card{grid-template-columns:40px minmax(0,1fr);min-height:56px}
+.ca-v2 .ca-list .ca-card-cover{width:40px;height:40px}
+.ca-v2 .ca-list .ca-card-body{display:grid!important;grid-template-columns:minmax(120px,200px) minmax(0,1fr) auto;align-items:center;gap:16px}
+.ca-v2 .ca-list .ca-card-body strong{font-size:14px}
+.ca-v2 .ca-list .ca-card-meta{justify-content:flex-end;flex-wrap:nowrap}
+.ca-v2 .ca-cards.ca-list .ca-card.ca-card-add{min-height:48px;flex-direction:row;justify-content:flex-start!important;padding:8px 14px!important;gap:10px!important;grid-template-columns:none}
+.ca-v2 .ca-cards.ca-list .ca-card.ca-card-add span{text-align:left;display:flex!important;align-items:baseline;gap:8px}
+.ca-v2 .ca-cards.ca-list .ca-card.ca-card-add small{margin:0}
