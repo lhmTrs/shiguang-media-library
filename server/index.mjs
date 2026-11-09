@@ -1404,7 +1404,8 @@ if (process.env.NODE_ENV === "production") {
     cacheDir: path.join(dataDir, "vite-entry-cache"),
     esbuild: { jsx: "automatic" },
     optimizeDeps: { include: ["react", "react-dom/client", "react-dom", "react/jsx-dev-runtime", "lucide-react"] },
-    server: { middlewareMode: true, hmr: false },
+    // Vite 6 can still open a separate WebSocket listener with HMR disabled.
+    server: { middlewareMode: true, hmr: false, ws: false },
     appType: "spa",
   });
   viteServer = vite;
