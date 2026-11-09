@@ -66,15 +66,37 @@ try {
     await dialog().getByRole('button', { name: '完成', exact: true }).click(); await page.unrouteAll({ behavior: 'wait' });
   });
 
-  await check('新建资料丢回应：找回刚建立的资料，不重复新建；新人物自动建默认造型', async () => {
+  await check('新建资料丢回应：不自动认领，用户明确选择后才添加；不重复新建，新人物自动建默认造型', async () => {
     const dropped = await dropResponseOnce(r => r.method() === 'POST' && r.url().endsWith('/project-assets/assets')), created = count.create;
     await dropFiles(work().locator('.ca-gallery'), ['新人物乙.png']); await dialog().getByRole('button', { name: /^新建 1 个人物/ }).click();
     await expect(dialog().locator('.ca-drop-list li')).toContainText('结果待核对'); assert.ok(dropped());
-    await dialog().locator('footer').getByRole('button', { name: '核对结果' }).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('已新建');
+    await dialog().locator('footer').getByRole('button', { name: '核对结果' }).click(); const item = dialog().locator('.ca-drop-list li');
+    await expect(item).toContainText('无法确认是否由这次操作建立'); await expect(item.getByRole('group', { name: '待确认的同名资料' })).toContainText('新人物乙');
+    const rows0 = (await api('/project-assets/assets?project_id=' + project.id + '&kind=character&q=' + encodeURIComponent('新人物乙'))).items; assert.equal(rows0.length, 1); assert.equal(live(await api('/project-assets/assets/' + rows0[0].id)).length, 0, '未选择前不改动候选资料'); assert.equal(count.content, 2, '未选择前不上传');
+    page.once('dialog', d => d.accept()); await item.getByRole('button', { name: '使用这份资料并添加图片' }).click(); await expect(item).toContainText('已按你的选择加到所选资料');
     assert.equal(count.create, created + 1, '不应再次新建');
-    const rows = (await api('/project-assets/assets?project_id=' + project.id + '&kind=character&q=' + encodeURIComponent('新人物乙'))).items; assert.equal(rows.length, 1);
-    const a = await api('/project-assets/assets/' + rows[0].id); assert.equal(a.looks.length, 1); assert.equal(a.looks[0].name, '默认'); assert.equal(live(a).length, 1); assert.equal(a.looks[0].default_image_id, live(a)[0].id);
-    await dialog().getByRole('button', { name: '完成', exact: true }).click(); await expect(work().locator('.ca-name-input')).toHaveValue('新人物乙'); await page.unrouteAll({ behavior: 'wait' });
+    const a = await api('/project-assets/assets/' + rows0[0].id); assert.equal(a.looks.length, 1); assert.equal(a.looks[0].name, '默认'); assert.equal(live(a).length, 1); assert.equal(a.looks[0].default_image_id, live(a)[0].id);
+    await dialog().getByRole('button', { name: '完成', exact: true }).click(); await expect(work().locator('.ca-name-input')).toHaveValue('新人物乙'); await expect(work()).toHaveAttribute('aria-busy', 'false'); await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  await check('并发同名：其他会话先建立同名人物、本页 409 回应丢失，核对后不认领、不改动对方资料', async () => {
+    // 复现验收反例：预检查为空 → 其他会话建立同名人物（含默认造型）→ 本页 POST 真实到达后端得到 409 → 只丢弃这份回应
+    let other, dropped = false;
+    await page.route('**/api/project-assets/assets', async route => {
+      if (dropped || route.request().method() !== 'POST') return route.fallback(); dropped = true;
+      other = await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '并发同名' }); const lid = crypto.randomUUID();
+      other = await api('/project-assets/assets/' + other.id, { asset: { ...other, default_look_id: lid, looks: [{ id: lid, name: '对方造型', description: '', tags: [], default_image_id: null, archived_at: null }] }, expected_revision: other.revision }, 'PUT');
+      const response = await route.fetch(); assert.equal(response.status(), 409); await route.abort('failed');
+    });
+    const content = count.content;
+    await dropFiles(work().locator('.ca-gallery'), ['并发同名.png']); await dialog().getByRole('button', { name: /^新建 1 个人物/ }).click();
+    const item = dialog().locator('.ca-drop-list li'); await expect(item).toContainText('结果待核对'); assert.ok(dropped);
+    for (let i = 0; i < 2; i++) { await dialog().locator('footer').getByRole('button', { name: '核对结果' }).click(); await expect(item).toContainText('无法确认是否由这次操作建立'); }
+    let same = await api('/project-assets/assets/' + other.id); assert.equal(same.revision, other.revision, '对方资料版本不变'); assert.equal(live(same).length, 0); assert.equal(same.looks[0].default_image_id, null); assert.equal(count.content, content, '核对时不上传');
+    await dialog().getByLabel('名称：并发同名.png').fill('并发同名-本窗口'); await dialog().locator('footer').getByRole('button', { name: '核对结果' }).click(); await expect(item).toContainText('已新建');
+    same = await api('/project-assets/assets/' + other.id); assert.equal(same.revision, other.revision); assert.equal(live(same).length, 0); assert.equal(same.looks[0].default_image_id, null);
+    const mine = (await api('/project-assets/assets?project_id=' + project.id + '&kind=character&q=' + encodeURIComponent('并发同名-本窗口'))).items.filter(a => a.name === '并发同名-本窗口'); assert.equal(mine.length, 1); assert.equal(live(await api('/project-assets/assets/' + mine[0].id)).length, 1);
+    await dialog().getByRole('button', { name: '完成', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(work()).toHaveAttribute('aria-busy', 'false'); await page.unrouteAll({ behavior: 'wait' });
   });
 
   await check('新建时同名被拒绝：继续处理不会把图片加到已有同名人物，改名后才新建', async () => {
