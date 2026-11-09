@@ -19,7 +19,9 @@ type Asset = { id: string; project_id: string; kind: Kind; name: string; base_in
 type Scope = { id: string; name: string; project_kind: string };
 type Health = { id: string; state: string; label: string };
 type Receipt = { id: string; status: string; mediaAssetId?: string; fileName: string; error?: string; candidates: { id: string; name: string; reason: string; previewUrl: string }[] };
-type DropItem = { key: string; file: File; preview: string; name: string; include: boolean; state: 'waiting' | 'working' | 'duplicate' | 'failed' | 'done'; message: string; assetId?: string; lookId?: string | null; receipt?: Receipt; candidate?: string };
+// 每个拖入项固定导入编号、绑定编号和新造型编号：回应丢失后按原编号核对，不重新上传、不重复绑定。
+type DropStage = 'create' | 'look' | 'import' | 'bind' | 'done';
+type DropItem = { key: string; file: File; preview: string; name: string; include: boolean; state: 'waiting' | 'working' | 'unknown' | 'duplicate' | 'failed' | 'done'; message: string; stage: DropStage; requestId: string; bindingId: string; newLookId: string; startedAt: number; createPending?: boolean; assetId?: string; lookId?: string | null; mediaAssetId?: string; fileName?: string; receipt?: Receipt; candidate?: string };
 type DropJob = { mode: 'create' | 'attach'; kind: Kind; projectId: string; asset?: { id: string; name: string; looks: Look[] }; lookId: string | null; items: DropItem[]; running: boolean };
 const labels: Record<Kind, string> = { character: '人物', scene: '场景', prop: '道具' };
 const date = (v: number) => new Date(v).toLocaleString('zh-CN');
@@ -259,13 +261,13 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     if (accepted.length < files.length) setNotice(`已忽略 ${files.length - accepted.length} 个非图片文件`);
     return accepted.slice(0, 20);
   }
-  const makeItems = (files: File[]): DropItem[] => files.map(f => ({ key: crypto.randomUUID(), file: f, preview: URL.createObjectURL(f), name: baseName(f.name), include: true, state: 'waiting', message: '' }));
+  const makeItems = (files: File[], mode: 'create' | 'attach'): DropItem[] => files.map(f => ({ key: crypto.randomUUID(), file: f, preview: URL.createObjectURL(f), name: baseName(f.name), include: true, state: 'waiting', message: '', stage: mode === 'create' ? 'create' : 'look', requestId: crypto.randomUUID(), bindingId: crypto.randomUUID(), newLookId: crypto.randomUUID(), startedAt: 0 }));
   function dropOnGallery(e: React.DragEvent) {
     e.preventDefault(); dragDepth.current = 0; setDragTarget('');
     if (dropBlocked()) { setError('请先完成当前操作，再拖入图片'); return; }
     if (publicScope && kind !== 'character') return;
     const files = readDropFiles(e); if (!files) return;
-    setDropJob({ mode: 'create', kind, projectId: scope, lookId: null, items: makeItems(files), running: false });
+    setDropJob({ mode: 'create', kind, projectId: scope, lookId: null, items: makeItems(files, 'create'), running: false });
   }
   async function dropOnCard(e: React.DragEvent, a: Asset) {
     e.preventDefault(); e.stopPropagation(); dragDepth.current = 0; setDragTarget('');
@@ -276,69 +278,103 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     await run('正在读取资料…', async () => {
       const full = await api<Asset>('/assets/' + a.id);
       const looks = full.looks.filter(l => !l.archived_at);
-      setDropJob({ mode: 'attach', kind: full.kind, projectId: full.project_id, asset: { id: full.id, name: full.name, looks }, lookId: full.kind === 'character' ? (looks.find(l => l.id === full.default_look_id)?.id ?? looks[0]?.id ?? null) : null, items: makeItems(files), running: false });
+      setDropJob({ mode: 'attach', kind: full.kind, projectId: full.project_id, asset: { id: full.id, name: full.name, looks }, lookId: full.kind === 'character' ? (looks.find(l => l.id === full.default_look_id)?.id ?? looks[0]?.id ?? null) : null, items: makeItems(files, 'attach'), running: false });
     });
   }
   useEffect(() => { if (!dropJob) return; const job = dropJob; return () => { if (dropJobRef.current !== job && dropJobRef.current?.items[0]?.key !== job.items[0]?.key) job.items.forEach(i => URL.revokeObjectURL(i.preview)); }; }, [dropJob?.items[0]?.key]);
   const patchItem = (key: string, patch: Partial<DropItem>) => setDropJob(j => j && { ...j, items: j.items.map(i => i.key === key ? { ...i, ...patch } : i) });
-  async function bindAndSave(assetId: string, lookId: string | null, mediaAssetId: string, fileName: string) {
-    const a = await api<Asset>('/assets/' + assetId);
-    if (a.archived_at) throw Error('资料已归档，图片没有添加');
-    const next = structuredClone(a), id = crypto.randomUUID();
-    if (next.kind === 'character' && !next.looks.some(l => l.id === lookId && !l.archived_at)) throw Error('目标造型已不存在或已归档，请重新选择');
-    next.images.push({ id, look_id: next.kind === 'character' ? lookId : null, media_asset_id: mediaAssetId, reference_type: next.kind === 'character' ? '人物身份' : '', purpose: '', locks: '', ignores: '', confirmed: false, archived_at: null, crop: { x: 50, y: 50, zoom: 1 }, last_known_name: fileName });
-    if (next.kind === 'character') { const l = next.looks.find(l => l.id === lookId)!; if (!l.default_image_id) l.default_image_id = id; } else if (!next.default_image_id) next.default_image_id = id;
-    return api<Asset>('/assets/' + assetId, { asset: next, expected_revision: a.revision }, 'PUT');
+  // 明确的失败（服务器已回应）带 status；没有 status 的是回应丢失，结果未知。
+  const definite = (message: string) => Object.assign(Error(message), { status: 400 });
+  const pendingNote = '结果待核对：没有收到服务器回应，操作可能已经完成。点击“核对结果”会先按原编号查询导入回执和资料，不会重复上传或绑定。';
+  async function findCreated(job: DropJob, it: DropItem) {
+    const r = await api<{ items: Asset[] }>('/assets?' + new URLSearchParams({ project_id: job.projectId, kind: job.kind, q: it.name.trim(), archived: 'false', page: '1' }));
+    return r.items.find(a => a.name === it.name.trim() && a.created_at >= it.startedAt - 60000)?.id;
   }
-  async function ensureLook(assetId: string): Promise<string> {
+  async function ensureLook(assetId: string, fixedId: string): Promise<string> {
     const a = await api<Asset>('/assets/' + assetId);
+    if (a.looks.some(l => l.id === fixedId && !l.archived_at)) return fixedId;
     const existing = a.looks.find(l => l.id === a.default_look_id && !l.archived_at) ?? a.looks.find(l => !l.archived_at);
     if (existing) return existing.id;
-    const id = crypto.randomUUID(), next = structuredClone(a);
-    next.looks.push({ id, name: '默认', description: '', tags: [], default_image_id: null, archived_at: null }); next.default_look_id ??= id;
+    if (a.archived_at) throw definite('资料已归档，图片没有添加');
+    const next = structuredClone(a);
+    next.looks.push({ id: fixedId, name: '默认', description: '', tags: [], default_image_id: null, archived_at: null }); next.default_look_id ??= fixedId;
     await api<Asset>('/assets/' + assetId, { asset: next, expected_revision: a.revision }, 'PUT');
-    return id;
+    return fixedId;
   }
-  async function finishReceipt(item: DropItem, r: Receipt, job: DropJob, assetId: string, lookId: string | null) {
-    if (r.status === 'ready' && r.mediaAssetId) { await bindAndSave(assetId, lookId, r.mediaAssetId, r.fileName || item.file.name); patchItem(item.key, { state: 'done', message: job.mode === 'create' ? '已新建并设为代表图' : '已添加', receipt: undefined }); return true; }
-    if (r.status === 'duplicate') { patchItem(item.key, { state: 'duplicate', receipt: r, candidate: r.candidates[0]?.id, message: '发现同名或相同内容的图片，请选择使用原图或继续导入' }); return false; }
-    if (r.status === 'cancelled') { patchItem(item.key, { state: 'failed', message: '导入已取消', receipt: undefined }); return false; }
-    patchItem(item.key, { state: 'failed', message: r.error || '导入未完成，请重试', receipt: undefined }); return false;
+  // 绑定使用预先分配的编号：资料里已有这条绑定就是之前已保存成功，不再追加。
+  async function bindOnce(it: DropItem, kind: Kind): Promise<'saved' | 'existing'> {
+    const a = await api<Asset>('/assets/' + it.assetId);
+    if (a.images.some(b => b.id === it.bindingId)) return 'existing';
+    if (a.archived_at) throw definite('资料已归档，图片文件已导入但没有绑定');
+    const lookId = kind === 'character' ? it.lookId ?? null : null;
+    if (kind === 'character' && !a.looks.some(l => l.id === lookId && !l.archived_at)) throw definite('目标造型已不存在或已归档，图片文件已导入但没有绑定');
+    const next = structuredClone(a);
+    next.images.push({ id: it.bindingId, look_id: lookId, media_asset_id: it.mediaAssetId!, reference_type: kind === 'character' ? '人物身份' : '', purpose: '', locks: '', ignores: '', confirmed: false, archived_at: null, crop: { x: 50, y: 50, zoom: 1 }, last_known_name: it.fileName || it.file.name });
+    if (kind === 'character') { const l = next.looks.find(l => l.id === lookId)!; if (!l.default_image_id) l.default_image_id = it.bindingId; } else if (!next.default_image_id) next.default_image_id = it.bindingId;
+    await api<Asset>('/assets/' + it.assetId, { asset: next, expected_revision: a.revision }, 'PUT');
+    return 'saved';
   }
-  async function processItem(job: DropJob, item: DropItem) {
-    patchItem(item.key, { state: 'working', message: '' });
-    let assetId = item.assetId, lookId: string | null = item.lookId ?? (job.mode === 'attach' ? job.lookId : null);
+  async function processItem(job: DropJob, item: DropItem, choice?: { choice: 'reuse' | 'import'; candidateId?: string }) {
+    const it: DropItem = { ...item }, retrying = item.state === 'failed';
+    const sync = (patch: Partial<DropItem>) => { Object.assign(it, patch); patchItem(it.key, patch); };
+    sync({ state: 'working', message: '', startedAt: it.startedAt || Date.now() });
     try {
-      if (job.mode === 'create' && !assetId) {
-        const created = await api<Asset>('/assets', { project_id: job.projectId, kind: job.kind, name: item.name });
-        assetId = created.id; patchItem(item.key, { assetId });
+      if (it.stage === 'create') {
+        if (!it.assetId && it.createPending) { const found = await findCreated(job, it); if (found) sync({ assetId: found }); }
+        if (!it.assetId) { sync({ createPending: true }); const created = await api<Asset>('/assets', { project_id: job.projectId, kind: job.kind, name: it.name.trim() }); sync({ assetId: created.id }); }
+        sync({ createPending: false, stage: 'look' });
       }
-      if (job.mode === 'attach') assetId = job.asset!.id;
-      if (job.kind === 'character' && !lookId) { lookId = await ensureLook(assetId!); patchItem(item.key, { lookId }); }
-      const requestId = crypto.randomUUID();
-      await request<Receipt>('/project-assets/image-imports', { requestId, assetId, projectId: job.projectId, lookId: job.kind === 'character' ? lookId : null, fileName: item.file.name, bytes: item.file.size });
-      const r = await request<Receipt>('/project-assets/image-imports/' + requestId + '/content', item.file, 'PUT');
-      await finishReceipt(item, r, job, assetId!, job.kind === 'character' ? lookId : null);
-    } catch (e: any) { patchItem(item.key, { state: 'failed', message: (e.message || '导入未完成') + (assetId && job.mode === 'create' ? '；资料已建立，可重试导入或归档' : '') }); }
+      if (job.mode === 'attach' && !it.assetId) sync({ assetId: job.asset!.id });
+      if (it.stage === 'look') {
+        if (job.kind === 'character' && !it.lookId) { const lookId = job.mode === 'attach' ? job.lookId : await ensureLook(it.assetId!, it.newLookId); if (!lookId) throw definite('请先为这个人物新建造型，再添加图片'); sync({ lookId }); }
+        sync({ stage: 'import' });
+      }
+      if (it.stage === 'import') {
+        const imports = '/project-assets/image-imports';
+        const start = () => request<Receipt>(imports, { requestId: it.requestId, assetId: it.assetId, projectId: job.projectId, lookId: job.kind === 'character' ? it.lookId : null, fileName: it.file.name, bytes: it.file.size });
+        let r: Receipt;
+        if (choice) r = await request<Receipt>(imports + '/' + it.requestId + '/resolve', choice);
+        else {
+          // 同一编号再次发送只会返回原回执，用来核对上次是否已经上传。
+          r = await start();
+          if (retrying && (r.status === 'failed' || r.status === 'cancelled')) { sync({ requestId: crypto.randomUUID() }); r = await start(); }
+          if (r.status === 'waiting') r = await request<Receipt>(imports + '/' + it.requestId + '/content', it.file, 'PUT');
+        }
+        if (r.status === 'duplicate') { sync({ state: 'duplicate', receipt: r, candidate: r.candidates.some(c => c.id === it.candidate) ? it.candidate : r.candidates[0]?.id, message: '发现同名或相同内容的图片，请选择使用原图或继续导入' }); return; }
+        if (r.status === 'preparing' || r.status === 'uploading') { sync({ state: 'unknown', message: '服务器仍在接收或保存这张图片，请稍后点击“核对结果”' }); return; }
+        if (r.status !== 'ready' || !r.mediaAssetId) { sync({ state: 'failed', receipt: undefined, message: (r.status === 'cancelled' ? '导入已取消' : r.error || '导入未完成') + '；可以重试' + (job.mode === 'create' ? '，或归档刚建立的资料' : '') }); return; }
+        sync({ mediaAssetId: r.mediaAssetId, fileName: r.fileName, receipt: undefined, stage: 'bind' });
+      }
+      if (it.stage === 'bind') {
+        const result = await bindOnce(it, job.kind);
+        sync({ stage: 'done', state: 'done', message: result === 'existing' ? '已核对：图片此前已保存，没有重复添加' : job.mode === 'create' ? '已新建并添加参考图' : '已添加' });
+      }
+    } catch (e: any) {
+      if (!e?.status) sync({ state: 'unknown', message: pendingNote });
+      else sync({ state: 'failed', message: (e.message || '未完成') + (/已经更新/.test(e.message || '') ? '；资料在其他地方已更新，重试会重新读取最新资料后再核对绑定' : '') + (it.stage !== 'create' && job.mode === 'create' && it.assetId ? '；资料已建立，可重试或归档' : '') });
+    }
   }
   async function runDropJob() {
     const job = dropJobRef.current; if (!job || job.running) return;
-    const todo = job.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed'));
+    const todo = job.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown'));
     if (job.mode === 'create' && todo.some(i => !i.name.trim())) { setError('请为每张图片填写名称'); return; }
     if (job.kind === 'character' && job.mode === 'attach' && !job.lookId) { setError('请先为这个人物新建造型，再添加图片'); return; }
     setDropJob(j => j && { ...j, running: true }); setBusy('正在导入图片…');
     try { for (const item of todo) await processItem(job, dropJobRef.current?.items.find(i => i.key === item.key) ?? item); }
     finally { setDropJob(j => j && { ...j, running: false }); setBusy(''); }
+    await afterDropChange(job);
+  }
+  async function afterDropChange(job: DropJob) {
     await loadList().catch(e => setError(e.message));
-    if (draft && job.asset?.id === draft.id && !dirtyRef.current) install(await api<Asset>('/assets/' + draft.id));
+    const open = draftRef.current;
+    if (open && !dirtyRef.current && (job.asset?.id === open.id || job.items.some(i => i.assetId === open.id))) install(await api<Asset>('/assets/' + open.id).catch(() => open));
   }
   async function resolveDuplicate(item: DropItem, choice: 'reuse' | 'import') {
-    const job = dropJobRef.current; if (!job || !item.receipt) return;
+    const job = dropJobRef.current; if (!job || job.running || !item.receipt) return;
     setDropJob(j => j && { ...j, running: true }); setBusy('正在导入图片…');
-    try { const r = await request<Receipt>('/project-assets/image-imports/' + item.receipt.id + '/resolve', choice === 'reuse' ? { choice, candidateId: item.candidate } : { choice }); await finishReceipt(item, r, job, item.assetId ?? job.asset!.id, job.kind === 'character' ? (item.lookId ?? job.lookId) : null); }
-    catch (e: any) { patchItem(item.key, { state: 'failed', message: e.message || '导入未完成' }); }
+    try { await processItem(job, item, choice === 'reuse' ? { choice, candidateId: item.candidate } : { choice }); }
     finally { setDropJob(j => j && { ...j, running: false }); setBusy(''); }
-    await loadList().catch(() => {});
+    await afterDropChange(job);
   }
   async function archiveCreated(item: DropItem) {
     if (!item.assetId) return;
@@ -347,6 +383,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   function closeDropJob() {
     const job = dropJobRef.current; if (!job || job.running) return;
+    if (job.items.some(i => i.state === 'unknown') && !window.confirm('还有图片的结果待核对。关闭后请在资料中核对是否已添加，确定关闭吗？')) return;
     const done = job.items.filter(i => i.state === 'done' && i.assetId);
     job.items.forEach(i => URL.revokeObjectURL(i.preview)); setDropJob(null);
     if (job.mode === 'create' && done.length === 1 && !dirtyRef.current) void openAsset(done[0].assetId!);
@@ -525,22 +562,22 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     {dropJob && <div className="ca-modal-backdrop" onKeyDown={e => { if (e.key === 'Escape') closeDropJob(); }}><div className="ca-modal ca-drop-dialog" role="dialog" aria-modal="true" aria-label={dropJob.mode === 'create' ? '拖入图片新建' + labels[dropJob.kind] : '添加参考图'}>
       <header><h2>{dropJob.mode === 'create' ? `用 ${dropJob.items.length} 张图片新建${labels[dropJob.kind]}` : `添加到“${dropJob.asset?.name}”`}</h2><button aria-label="关闭" disabled={dropJob.running} autoFocus onClick={closeDropJob}><X size={18}/></button></header>
       <div className="ca-modal-scroll"><div className="ca-modal-content">
-        {dropJob.mode === 'create' && <label className="ca-field ca-drop-kind"><span>类别</span><select aria-label="新建类别" value={dropJob.kind} disabled={dropJob.running || dropJob.items.some(i => !!i.assetId) || publicScope} onChange={e => { const v = e.target.value as Kind; setDropJob(j => j && { ...j, kind: v }); }}>{(Object.keys(labels) as Kind[]).map(k => <option key={k} value={k}>{labels[k]}</option>)}</select></label>}
-        {dropJob.mode === 'attach' && dropJob.kind === 'character' && (dropJob.asset?.looks.length ? <label className="ca-field ca-drop-kind"><span>放进造型</span><select aria-label="放进造型" value={dropJob.lookId ?? ''} disabled={dropJob.running} onChange={e => { const v = e.target.value; setDropJob(j => j && { ...j, lookId: v }); }}>{dropJob.asset.looks.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label> : <p className="ca-alert">这个人物还没有造型。请先在详情里新增造型，再添加图片。</p>)}
+        {dropJob.mode === 'create' && <label className="ca-field ca-drop-kind"><span>类别</span><select aria-label="新建类别" value={dropJob.kind} disabled={dropJob.running || dropJob.items.some(i => i.state !== 'waiting') || publicScope} onChange={e => { const v = e.target.value as Kind; setDropJob(j => j && { ...j, kind: v }); }}>{(Object.keys(labels) as Kind[]).map(k => <option key={k} value={k}>{labels[k]}</option>)}</select></label>}
+        {dropJob.mode === 'attach' && dropJob.kind === 'character' && (dropJob.asset?.looks.length ? <label className="ca-field ca-drop-kind"><span>放进造型</span><select aria-label="放进造型" value={dropJob.lookId ?? ''} disabled={dropJob.running || dropJob.items.some(i => i.state !== 'waiting')} onChange={e => { const v = e.target.value; setDropJob(j => j && { ...j, lookId: v }); }}>{dropJob.asset.looks.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label> : <p className="ca-alert">这个人物还没有造型。请先在详情里新增造型，再添加图片。</p>)}
         <p className="ca-muted">{dropJob.mode === 'create' ? '每张图片建立一个资料，名称默认取文件名，可以修改。图片会复制到项目的 picture 文件夹，并设为代表图。' : '图片会复制到项目的 picture 文件夹并立即保存到这份资料；还没有代表图时设为代表图。'}</p>
         <ul className="ca-drop-list">{dropJob.items.map(i => <li key={i.key} className={'is-' + i.state}>
-          {dropJob.items.length > 1 && <input type="checkbox" aria-label={'包含 ' + i.file.name} checked={i.include} disabled={dropJob.running || i.state === 'done' || !!i.assetId} onChange={e => { const v = e.target.checked; patchItem(i.key, { include: v }); }}/>}
+          {dropJob.items.length > 1 && <input type="checkbox" aria-label={'包含 ' + i.file.name} checked={i.include} disabled={dropJob.running || i.state !== 'waiting'} onChange={e => { const v = e.target.checked; patchItem(i.key, { include: v }); }}/>}
           <span className="ca-drop-thumb"><ReferencePreview src={i.preview} alt={i.file.name}/></span>
-          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || !!i.assetId || !i.include} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v }); }}/> : <strong>{i.file.name}</strong>}
+          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || i.state !== 'waiting' || !i.include} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v }); }}/> : <strong>{i.file.name}</strong>}
             <small>{i.file.name} · {(i.file.size / 1024 / 1024).toFixed(2)} MB</small>
-            {i.message && <small className={'ca-drop-message' + (i.state === 'failed' ? ' is-error' : '')} role={i.state === 'failed' ? 'alert' : 'status'}>{i.message}</small>}
+            {i.message && <small className={'ca-drop-message' + (i.state === 'failed' ? ' is-error' : '')} role={i.state === 'failed' || i.state === 'unknown' ? 'alert' : 'status'}>{i.message}</small>}
             {i.state === 'duplicate' && i.receipt && <span className="ca-drop-duplicate">{i.receipt.candidates.map(c => <label key={c.id}><input type="radio" name={'dup-' + i.key} checked={i.candidate === c.id} onChange={() => patchItem(i.key, { candidate: c.id })}/><span className="ca-drop-thumb small"><ReferencePreview src={c.previewUrl} alt={c.name}/></span>{c.name}<small>{c.reason}</small></label>)}<span className="ca-actions"><button disabled={dropJob.running || !i.candidate} onClick={() => void resolveDuplicate(i, 'reuse')}>使用原图</button><button disabled={dropJob.running} onClick={() => void resolveDuplicate(i, 'import')}>继续导入（重命名）</button></span></span>}
-            {i.state === 'failed' && i.assetId && dropJob.mode === 'create' && <span className="ca-actions"><button disabled={dropJob.running} onClick={() => void runDropJob()}>重试导入</button><button disabled={dropJob.running} onClick={() => void archiveCreated(i)}>归档刚建立的资料</button></span>}
+            {i.state === 'unknown' && <span className="ca-actions"><button disabled={dropJob.running} onClick={() => void runDropJob()}>核对结果</button></span>}{i.state === 'failed' && i.assetId && dropJob.mode === 'create' && <span className="ca-actions"><button disabled={dropJob.running} onClick={() => void runDropJob()}>重试导入</button><button disabled={dropJob.running} onClick={() => void archiveCreated(i)}>归档刚建立的资料</button></span>}
           </span>
-          <span className="ca-drop-state">{i.state === 'working' ? '处理中…' : i.state === 'done' ? '完成' : i.state === 'failed' ? '未完成' : i.state === 'duplicate' ? '待选择' : i.include ? '待处理' : '不处理'}</span>
+          <span className="ca-drop-state">{i.state === 'working' ? '处理中…' : i.state === 'done' ? '完成' : i.state === 'failed' ? '未完成' : i.state === 'unknown' ? '结果待核对' : i.state === 'duplicate' ? '待选择' : i.include ? '待处理' : '不处理'}</span>
         </li>)}</ul>
       </div></div>
-      <footer>{dropJob.items.some(i => i.include && (i.state === 'waiting' || i.state === 'failed')) && !(dropJob.mode === 'attach' && dropJob.kind === 'character' && !dropJob.lookId) ? <button className="ca-primary" disabled={dropJob.running || !!busy && !dropJob.running} onClick={() => void runDropJob()}>{dropJob.running ? '正在处理…' : dropJob.mode === 'create' ? `新建 ${dropJob.items.filter(i => i.include && i.state !== 'done').length} 个${labels[dropJob.kind]}` : '添加图片'}</button> : null}<button disabled={dropJob.running} onClick={closeDropJob}>{dropJob.items.some(i => i.state === 'done') ? '完成' : '取消'}</button></footer>
+      <footer>{(() => { const todo = dropJob.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown')), checkOnly = todo.length > 0 && todo.every(i => i.state === 'unknown'); return todo.length && !(dropJob.mode === 'attach' && dropJob.kind === 'character' && !dropJob.lookId) ? <button className="ca-primary" disabled={dropJob.running || !!busy && !dropJob.running} onClick={() => void runDropJob()}>{dropJob.running ? '正在处理…' : checkOnly ? '核对结果' : todo.some(i => i.state !== 'waiting') ? '继续处理' : dropJob.mode === 'create' ? `新建 ${todo.length} 个${labels[dropJob.kind]}` : '添加图片'}</button> : null; })()}<button disabled={dropJob.running} onClick={closeDropJob}>{dropJob.items.some(i => i.state === 'done') ? '完成' : '取消'}</button></footer>
     </div></div>}
     {modal && <div className="ca-modal-backdrop"><div className={"ca-modal" + (modal.type === 'media' ? ' ca-media-modal' : '')} role="dialog" aria-modal="true" aria-label={modal.type === 'media' ? '选择素材库图片' : modal.type === 'copy' ? '复制人物' : modal.type === 'import' ? '选择来源人物' : modal.type === 'create' ? '新建资产' : modal.type === 'history' ? '来源与版本' : '资料记录'}><header><h2>{modal.type === 'media' ? '选择素材库图片' : modal.type === 'copy' ? '复制人物' : modal.type === 'import' ? '选择来源人物' : modal.type === 'create' ? '新建' + labels[kind] : modal.type === 'history' ? '来源与版本' : '资料记录'}</h2><button aria-label="关闭弹窗" disabled={!!busy} onClick={() => setModal(null)}><X size={18}/></button></header>
       {modal.type === 'media' && <div className="ca-media-toolbar"><label className="ca-media-search"><Search size={17}/><input aria-label="搜索图片素材" placeholder="按名称搜索素材库图片" value={mediaQ} onChange={e => { setMediaQ(e.target.value); setMediaPage(1); }}/></label><div className="ca-media-info" role="status">{mediaLoading ? '正在查找图片…' : <>共 {mediaTotal} 张图片<span>{modal.replace_id ? '点击图片，替换当前绑定' : '点击图片，绑定到当前资料'}</span></>}</div></div>}
