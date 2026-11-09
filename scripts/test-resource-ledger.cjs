@@ -27,6 +27,16 @@ async function createObservation(env) {
   return {scope, childEnv};
 }
 
+// Explicit test-fixture opt-in for a deliberately minimal App environment.
+// Carry only this runner's observation contexts/preload, not the parent's other
+// environment, NODE_TEST_CONTEXT, or unrelated NODE_OPTIONS preloads.
+function inheritTestObservation(env, source = process.env) {
+  const runs = parseRuns(source[OBSERVATION_ENV]);
+  if (!runs.length) return {...env};
+  return {...env, [OBSERVATION_ENV]:JSON.stringify(runs),
+    NODE_OPTIONS:`${env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}`.trim()};
+}
+
 // Exit/close receipts establish closure. PID/group absence is only an additional
 // check in the runner, never a replacement for an inherited observation chain.
 async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequested = false} = {}) {
@@ -66,7 +76,8 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
     if (!start.mainThread) problem('WORKER_THREAD_UNQUALIFIED', {pid:start.pid});
     const selfExit = node.events.findLast(e => e.event === 'exit');
     const parentClose = parent?.events.findLast(e => e.event === 'child-close' && e.pid === start.pid);
-    const receipt = selfExit ?? parentClose;
+    const syncExit = parent?.events.findLast(e => e.event === 'sync-exit' && e.pid === start.pid);
+    const receipt = selfExit ?? parentClose ?? syncExit;
     const owner = parent?.parent;
     const ownerSpawn = owner?.start.parent && attempts.get(owner.start.parent.spawnId);
     let owningGroupClosed = owner?.start.pid === rootPid && groupAbsent && stopRequested;
@@ -89,19 +100,26 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
     if (!receipt && !stoppedTestWorker) problem('EXIT_RECEIPT_MISSING', {pid:start.pid, nodeId:start.nodeId, detached:parent?.intent.detached ?? null});
     processes.push({pid:start.pid, nodeId:start.nodeId, parentPid:parent?.parent.start.pid ?? null,
       detached:parent?.intent.detached ?? null, rawExit:receipt ? {code:receipt.code, signal:receipt.signal ?? null} : null,
-      proof:selfExit ? 'self-exit-ledger' : parentClose ? 'observed-parent-close' : stoppedTestWorker ? 'aborted-test-worker-group-closed' : null});
+      proof:selfExit ? 'self-exit-ledger' : parentClose ? 'observed-parent-close' : syncExit ? 'observed-sync-exit' : stoppedTestWorker ? 'aborted-test-worker-group-closed' : null});
   }
+  const observedChildren = [];
   for (const [spawnId, attempt] of attempts) {
-    const failed = attempt.events.some(e => (e.event === 'spawn-rejected' && !e.pid) || (e.event === 'child-error' && !e.pid));
+    const failed = attempt.events.some(e => (e.event === 'spawn-rejected' && !e.pid) || (e.event === 'child-error' && !e.pid) || (e.event === 'sync-exit' && e.errorCode && !e.pid));
     if (failed) continue; // Original spawn failed before creating a process.
-    const spawned = attempt.events.find(e => e.event === 'child-spawn');
+    const spawned = attempt.events.find(e => e.event === 'child-spawn' || e.event === 'sync-exit');
+    const exit = attempt.events.findLast(e => e.event === 'child-close' || e.event === 'sync-exit');
     const observed = [...nodes.values()].filter(node => node.start.parent?.spawnId === spawnId && node.start.parent?.nodeId === attempt.parent.start.nodeId);
+    observedChildren.push({pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, executable:attempt.intent.executable,
+      sync:attempt.intent.sync === true, inherited:attempt.intent.inherited, nodeObserver:observed.length === 1,
+      rawExit:exit ? {code:exit.code, signal:exit.signal ?? null} : null});
     if (!attempt.intent.inherited) problem('CHILD_OBSERVER_NOT_INHERITED', {pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, spawnId});
     if (observed.length !== 1 || (spawned && observed[0]?.start.pid !== spawned.pid)) {
-      problem('CHILD_OBSERVER_MISSING', {pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, spawnId});
+      problem('CHILD_OBSERVER_MISSING', {pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, spawnId,
+        executable:attempt.intent.executable, sync:attempt.intent.sync === true,
+        rawExit:exit ? {code:exit.code, signal:exit.signal ?? null} : null});
     }
   }
-  return {protocol:PROTOCOL, state:unknown.length ? 'UNKNOWN' : 'KNOWN', directory:scope.directory, processes, unknown};
+  return {protocol:PROTOCOL, state:unknown.length ? 'UNKNOWN' : 'KNOWN', directory:scope.directory, processes, observedChildren, unknown};
 }
 
-module.exports = {OBSERVATION_ENV, PARENT_ENV, PROTOCOL, parseRuns, createObservation, inspectObservation};
+module.exports = {OBSERVATION_ENV, PARENT_ENV, PROTOCOL, parseRuns, createObservation, inspectObservation, inheritTestObservation};

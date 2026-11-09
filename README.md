@@ -202,7 +202,11 @@ AI 批量标注标签与备注：见 `AI_METADATA_API.md`。可按明确 ID、�
 
 开发：`npm run dev`；构建：`npm run build`；测试：`npm test`（默认仅本地 `.test.mjs`，排除 `cloud-*` 与 `device-enrollment`；每文件及测试 120 秒、逐文件运行）。用 `npm test -- --list` 查看实际清单，`npm test -- --file tags.test.mjs` 定向执行。云端测试只在明确需要时运行 `npm run test:cloud`，云端 UI 脚本须另行显式运行；未运行不代表通过。
 
-测试运行器通过专属继承预加载记录 Node 的真实异步 ChildProcess 启动与退出，保留 detached、stdio、unref 和原始退出结果。超时仍仅向本次自建进程组发送 SIGTERM，不扩大预算、不强杀脱离组的 PID。根进程退出或原进程组消失不等于后代已结清：脱离组后代缺少退出回执、子进程未继承观测、日志缺失或不完整时返回 `resourcesKnown: false` / `resourceObservation.state: "UNKNOWN"` 并停止后续文件，保留临时资源账本路径。显式隔离环境仍保持隔离。同步进程调用、无法观测的原生子进程及 Worker 未取得本轮资格，照常执行但保守返回 UNKNOWN；这不是任意恶意双 fork、原生扩展或篡改观测器的隔离容器。Windows 完整进程树未在本轮实测。
+测试运行器通过专属继承预加载记录 Node 的真实同步/异步子进程启动与退出，保留 detached、stdio、unref、同步返回/异常及原始退出结果。超时仍仅向本次自建进程组发送 SIGTERM，不扩大预算、不强杀脱离组的 PID。根进程退出或原进程组消失不等于后代已结清：脱离组后代缺少退出回执、子进程未继承观测、日志缺失或不完整时返回 `resourcesKnown: false` / `resourceObservation.state: "UNKNOWN"` 并停止后续文件，保留临时资源账本路径。显式隔离环境仍保持隔离。继承观测的同步 Node 子进程可正常通过，其同步创建的脱离组后代仍需退出证据。原生子进程会记录真实 close/status；没有 Node start 的原生后代闭包及 Worker 未取得本轮资格，照常执行但保守返回 UNKNOWN；这不是任意恶意双 fork、原生扩展或篡改观测器的隔离容器。Windows 完整进程树未在本轮实测。
+
+显式最小 App 环境可由测试夹具使用 `inheritTestObservation(minimalEnv)`（导出于 `scripts/test-suites.mjs`），仅追加本运行器的观测上下文和预加载；不合并父环境、`NODE_TEST_CONTEXT` 或无关的父 `NODE_OPTIONS`。未显式接线的隔离 Node 子进程仍为 UNKNOWN。本轮只验证自有合成 HTTP App 接线，未改写或重跑其它批次的 W05 真实 App 测试。
+
+仍有限制：`tests/audio-engine-fixtures.mjs` 的 `makeTar` 是 tar-stream 纯 JS；TLS 夹具实际异步调用的 `openssl` 能记录 close 0，但没有 Node preload start，因此当前经此 runner 的相关目标命令仍会 UNKNOWN，不能宣称已全部可用或已证明任意原生脱离后代受控。
 
 `npm run test:runner:resources` 单独执行资源资格反例：真实 detached HTTP 后代、隔离环境、UNKNOWN 停止后续文件与同步进程边界，测试端用自有 IPC 自愿关闭 HTTP 并核对 exit 0。它们刻意制造观测缺口，故作为显式资格夹具，不放入普通 `.test.mjs` 集合；原有测试未迁出、默认选择规则不变。浏览器验收：`npm run test:browser`（需要 Chrome 和 `npx playwright install webkit`），使用临时副本和独立数据库，不改动真实素材库。服务仅监听 `127.0.0.1`，默认端口 4317，冲突时自动使用后续端口。
 

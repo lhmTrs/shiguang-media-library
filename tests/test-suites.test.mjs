@@ -87,3 +87,52 @@ test('published test runner includes both actual observation dependencies', asyn
     assert.deepEqual(await collectFiles(repo, file), [file]);
   }
 });
+
+test('synchronous Node children keep their real status, stdout and execFileSync exception', async t => {
+  const root = await scene(t), file = path.join(root, 'sync-node.test.mjs');
+  await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import {spawnSync,execFileSync} from 'node:child_process';
+test('normal sync Node',()=>{
+ const result=spawnSync(process.execPath,['-e','process.stdout.write("SYNC_OK");process.exitCode=17'],{encoding:'utf8'});
+ assert.equal(result.status,17);assert.equal(result.signal,null);assert.equal(result.stdout,'SYNC_OK');
+ assert.equal(execFileSync(process.execPath,['-e','process.stdout.write("EXEC_OK")'],{encoding:'utf8'}),'EXEC_OK');
+ assert.throws(()=>execFileSync(process.execPath,['-e','process.exitCode=19']),error=>error.status===19&&error.signal===null);
+});`);
+  const result = await runTestFile(file, {cwd:root, timeoutMs:3000, graceMs:500, output:()=>{}});
+  assert.equal(result.passed, true, JSON.stringify(result));
+  assert.deepEqual(result.rawExit, {code:0, signal:null});
+  for (const code of [17, 0, 19]) assert.ok(result.resourceObservation.observedChildren.some(child => child.sync && child.nodeObserver && child.rawExit?.code === code));
+  t.diagnostic(JSON.stringify(result));
+});
+
+test('an isolated synthetic App explicitly inherits only the runner observation context and closes normally', {skip:process.platform==='win32'}, async t => {
+  const root = await fs.realpath(await fs.mkdtemp('/tmp/sg-i6-app-'));
+  const file = path.join(root, 'minimal-app.test.mjs'), stateFile = path.join(root, 'state.json'), closedFile = path.join(root, 'closed.json');
+  const server = path.join(repo, 'tests/fixtures/test-runner-detached-server.mjs');
+  t.after(async () => {
+    const closed = await fs.readFile(closedFile, 'utf8').then(JSON.parse, () => null);
+    if (closed?.code === 0 && closed.signal === null) await fs.rm(root, {recursive:true});
+    else t.diagnostic(`Unconfirmed synthetic App preserved at ${root}`);
+  });
+  await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import net from 'node:net';import {spawn} from 'node:child_process';import {inheritTestObservation} from ${JSON.stringify(path.join(repo, 'scripts/test-suites.mjs'))};
+test('minimal isolated App',async()=>{
+ const env=inheritTestObservation({PATH:process.env.PATH,MEDIA_DATA_DIR:${JSON.stringify(path.join(root, 'private-data'))},MEDIA_SKIP_IMPORT:'1'});
+ assert.equal(env.HOME,undefined);assert.equal(env.NODE_TEST_CONTEXT,undefined);assert.ok(env.SHIGUANG_TEST_RESOURCE_RUNS);
+ const child=spawn(process.execPath,[${JSON.stringify(server)},${JSON.stringify(stateFile)},${JSON.stringify(path.join(root, 'control.sock'))}],{env,stdio:'ignore'});
+ const exit=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));let state;
+ try{
+  for(let i=0;i<200;i++){try{state=JSON.parse(await fs.readFile(${JSON.stringify(stateFile)},'utf8'));break;}catch{await new Promise(resolve=>setTimeout(resolve,10));}}
+  assert.ok(state);const response=await fetch('http://127.0.0.1:'+state.port);assert.equal(response.status,200);assert.equal(await response.text(),'OWNED_FIXTURE');
+ }finally{
+  if(state)await new Promise((resolve,reject)=>{const socket=net.connect(state.controlPath);socket.once('connect',()=>socket.end('EXIT'));socket.on('data',()=>{});socket.once('error',reject);socket.once('close',resolve);});
+ }
+ const result=await exit;assert.deepEqual(result,{code:0,signal:null});
+ const events=(await fs.readFile(${JSON.stringify(stateFile+'.events')},'utf8')).trim().split('\\n').map(JSON.parse);
+ assert.ok(events.some(event=>event.event==='http-closed'));assert.ok(events.some(event=>event.event==='exit'&&event.code===0));
+ await fs.writeFile(${JSON.stringify(closedFile)},JSON.stringify({...result,events}));
+});`);
+  const result = await runTestFile(file, {cwd:root, timeoutMs:3000, graceMs:500, output:()=>{}});
+  assert.equal(result.passed, true, JSON.stringify(result));
+  const closed = JSON.parse(await fs.readFile(closedFile, 'utf8'));
+  assert.deepEqual({code:closed.code, signal:closed.signal}, {code:0, signal:null});
+  t.diagnostic(JSON.stringify({result, isolatedApp:closed}));
+});

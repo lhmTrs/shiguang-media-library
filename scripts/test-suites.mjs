@@ -4,6 +4,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import ledger from './test-resource-ledger.cjs';
 const {createObservation, inspectObservation} = ledger;
+export const inheritTestObservation = ledger.inheritTestObservation;
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 export const DEFAULT_TIMEOUT_MS = 120_000;

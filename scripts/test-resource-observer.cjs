@@ -38,13 +38,12 @@ if (scopes.length) {
   const originalSpawn = cp.ChildProcess.prototype.spawn;
   const originalEmit = cp.ChildProcess.prototype.emit;
   const originalKill = cp.ChildProcess.prototype.kill;
-  cp.ChildProcess.prototype.spawn = function(options) {
+  function prepareSpawn(options, sync = false) {
     const spawnId = randomUUID();
-    records.set(this, {spawnId});
     const get = key => options?.envPairs?.find(pair => pair.startsWith(`${key}=`))?.slice(key.length + 1);
     let inherited = [];
     try { inherited = parseRuns(get(OBSERVATION_ENV)); } catch {}
-    emit('spawn-intent', {spawnId, detached:options?.detached === true}, writer => ({
+    emit('spawn-intent', {spawnId, sync, executable:typeof options?.file === 'string' ? path.basename(options.file) : null, detached:options?.detached === true}, writer => ({
       inherited:inherited.some(scope => scope.token === writer.token && scope.directory === writer.directory),
     }));
     // Annotate only an already-inherited runner context. An explicit isolated
@@ -54,6 +53,11 @@ if (scopes.length) {
       observedOptions = {...options, envPairs:[...options.envPairs.filter(pair => !pair.startsWith(`${PARENT_ENV}=`)),
         `${PARENT_ENV}=${JSON.stringify({nodeId, spawnId})}`]};
     }
+    return {spawnId, observedOptions};
+  }
+  cp.ChildProcess.prototype.spawn = function(options) {
+    const {spawnId, observedOptions} = prepareSpawn(options);
+    records.set(this, {spawnId});
     try { return originalSpawn.call(this, observedOptions); }
     catch (error) { emit('spawn-rejected', {spawnId, pid:this.pid ?? null}); throw error; }
   };
@@ -73,12 +77,20 @@ if (scopes.length) {
       signal:args[0] ?? 'SIGTERM', accepted:result});
     return result;
   };
-  // Synchronous/native spawns and workers still execute unchanged, but do not
-  // provide the asynchronous Node observation closure qualified by this runner.
-  for (const name of ['spawnSync', 'execSync', 'execFileSync']) {
-    const original = cp[name];
-    cp[name] = function(...args) { emit('unsupported', {reason:'SYNC_PROCESS_UNQUALIFIED'}); return original.apply(this, args); };
-  }
+  // Node 22's normalized sync binding is shared by spawnSync/execFileSync/
+  // execSync. Observe its original return before public APIs convert/throw it.
+  // This does not make an unobserved native child a proven descendant boundary.
+  try {
+    const binding = process.binding('spawn_sync'), original = binding.spawn;
+    binding.spawn = function(options) {
+      const {spawnId, observedOptions} = prepareSpawn(options, true);
+      try {
+        const result = original.call(this, observedOptions);
+        emit('sync-exit', {spawnId, pid:result.pid ?? null, code:result.status, signal:result.signal ?? null, errorCode:result.error ?? null});
+        return result;
+      } catch (error) { emit('sync-throw', {spawnId}); throw error; }
+    };
+  } catch { emit('unsupported', {reason:'SYNC_OBSERVER_UNAVAILABLE'}); }
   syncBuiltinESMExports();
   createHook({init(_id, type) {
     if (type === 'WORKER') emit('unsupported', {reason:'WORKER_THREAD_UNQUALIFIED'});

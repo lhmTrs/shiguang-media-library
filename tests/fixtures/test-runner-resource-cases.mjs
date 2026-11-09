@@ -123,6 +123,35 @@ test('real sync spawn',()=>execFileSync(process.execPath,['-e',${JSON.stringify(
   assert.deepEqual(result.rawExit, {code:0, signal:null});
   assert.equal(await fs.readFile(marker, 'utf8'), 'YES');
   assert.equal(result.resourcesKnown, false); assert.equal(result.passed, false);
-  assert.ok(result.resourceObservation.unknown.some(item => item.reason === 'SYNC_PROCESS_UNQUALIFIED'));
+  assert.ok(result.resourceObservation.unknown.some(item => item.reason === 'CHILD_OBSERVER_NOT_INHERITED'));
+  assert.ok(result.resourceObservation.observedChildren.some(child => child.sync && !child.nodeObserver && child.rawExit?.code === 0));
   t.diagnostic(JSON.stringify(result));
+});
+
+test('a synchronous Node controller cannot hide its detached HTTP descendant', {skip:process.platform==='win32'}, async t => {
+  const fixture = await detachedScene(t), wrapper = path.join(fixture.root, 'sync-controller.test.mjs');
+  await fs.writeFile(wrapper, `import test from 'node:test';import assert from 'node:assert/strict';import {spawnSync} from 'node:child_process';
+test('actual synchronous controller',()=>{const env={...process.env};delete env.NODE_TEST_CONTEXT;const result=spawnSync(process.execPath,['--test',${JSON.stringify(fixture.file)}],{env,stdio:'ignore'});assert.equal(result.status,0);assert.equal(result.signal,null);});`);
+  const result = await runTestFile(wrapper, {cwd:fixture.root, timeoutMs:3000, graceMs:500, output:()=>{}});
+  assert.deepEqual(result.rawExit, {code:0, signal:null});
+  assert.equal(result.resourcesKnown, false); assert.equal(result.passed, false);
+  const state = await fixture.readState(), response = await fetch(`http://127.0.0.1:${state.port}`);
+  assert.equal(response.status, 200); await response.text();
+  assert.ok(result.resourceObservation.observedChildren.some(child => child.sync && child.nodeObserver && child.rawExit?.code === 0));
+  assert.ok(result.resourceObservation.unknown.some(item => item.reason === 'EXIT_RECEIPT_MISSING' && item.pid === state.pid));
+  t.diagnostic(JSON.stringify({result, aliveHttpAfterReturn:200, fixture:state}));
+});
+
+test('the actual TLS helper records native openssl close zero but retains its unproved descendant boundary', async t => {
+  const root = await scene(t), file = path.join(root, 'tls-helper.test.mjs');
+  await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import {makeTlsFixture} from ${JSON.stringify(path.join(repo, 'tests/audio-engine-fixtures.mjs'))};
+test('actual supplied TLS fixture',async t=>{const tls=await makeTlsFixture(t);assert.ok(tls.ca.includes('BEGIN CERTIFICATE'));});`);
+  const result = await runTestFile(file, {cwd:root, timeoutMs:3000, graceMs:500, output:()=>{}});
+  assert.deepEqual(result.rawExit, {code:0, signal:null});
+  const openssl = result.resourceObservation.observedChildren.find(child => child.executable === 'openssl');
+  assert.ok(openssl); assert.equal(openssl.sync, false); assert.equal(openssl.nodeObserver, false);
+  assert.deepEqual(openssl.rawExit, {code:0, signal:null});
+  assert.equal(result.resourcesKnown, false); assert.equal(result.passed, false);
+  assert.ok(result.resourceObservation.unknown.some(item => item.reason === 'CHILD_OBSERVER_MISSING' && item.pid === openssl.pid));
+  t.diagnostic(JSON.stringify({result, nativeToolActualClose:openssl.rawExit, remainingCompatibilityLimit:'OpenSSL has no inherited Node start; arbitrary native detached descendants are NOT_PROVEN'}));
 });
