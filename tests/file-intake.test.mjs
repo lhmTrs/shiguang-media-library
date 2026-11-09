@@ -279,7 +279,9 @@ test('已处理：拒绝在途、不确定、移除未结清和旧结果；写�
   for(const status of ['queued','copying','duplicate','unknown']){
     b.items[0].status=status;await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');
   }
-  b.items[0].status='failed';b.items[0].removal='planned';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');delete b.items[0].removal;
+  b.items[0].status='failed';
+  for(const status of ['running','queued','waiting']){b.status=status;await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');}b.status='partial';
+  b.items[0].removal='planned';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');delete b.items[0].removal;
   f.intake.finalizing.add(itemId);await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='INTAKE_NOT_SETTLED');f.intake.finalizing.delete(itemId);
   const stale=input();b.items[0].error='new failure';await assert.rejects(f.intake.acknowledge(id,stale),e=>e.code==='INTAKE_RESULT_CHANGED');
   const write=f.intake.receipts.write;f.intake.receipts.write=async()=>{throw Error('synthetic write failure');};

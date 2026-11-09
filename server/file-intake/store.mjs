@@ -53,7 +53,7 @@ export class FileIntake {
   assertLibrary(b){if(b.invalid)throw error('INTAKE_RECEIPT_INVALID','文件任务回执不可读，原件与原回执保留，不能自动继续');if(b.libraryId!==this.libraryId)throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库实例，未继续或移除原文件');}
   resultKey(b) {return createHash('sha256').update(stable({libraryId:b.libraryId,projectId:b.projectId,folderId:b.folderId,mode:b.mode,status:b.status,
     items:b.items.map(i=>[i.id,i.status,i.requestId,i.code,i.error,i.videoId,i.assetId,i.copiedBytes,i.removal])})).digest('hex');}
-  canAcknowledge(b) {return !b.invalid&&b.libraryId===this.libraryId&&b.items.length>0&&
+  canAcknowledge(b) {return !b.invalid&&b.libraryId===this.libraryId&&['completed','partial','interrupted'].includes(b.status)&&b.items.length>0&&
     b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
   acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
   dto(b) {return {id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
