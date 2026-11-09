@@ -12,7 +12,7 @@ import {StoryboardDatabase} from '../server/storyboard/database.mjs';
 import {createStoryboardVideo} from '../server/storyboard-video/index.mjs';
 import {ProjectVideos} from '../server/project-videos/store.mjs';
 import {FileIntake} from '../server/file-intake/store.mjs';
-import {Receipts,inspectSelection} from '../server/file-intake/files.mjs';
+import {Receipts,inspectSelection,selectionHash} from '../server/file-intake/files.mjs';
 import {workflow,plist,shellQuote} from '../server/file-intake/native.mjs';
 
 async function fixture(t,{trash}={}) {
@@ -37,6 +37,71 @@ async function settled(store) {
   const end=Date.now()+10000;
   while(store.work||store.status().activeCount){if(Date.now()>end)throw Error('bounded intake timeout');await new Promise(r=>setTimeout(r,10));}
 }
+
+test('选择证明：仅ctime元数据变化可收纳，严格绑定的移除仍使用已验证身份',async t=>{
+  let removed=0;const f=await fixture(t,{trash:async(file,expected)=>{
+    removed++;assert.equal(expected.sha256,(await f.intake.receipts.read('handoffs',handoff.id)).files[0].selectionSha256);
+    assert.equal(expected.identity.ctimeMs,(await fs.lstat(file)).ctimeMs);
+    const target=file+'.owned-trash';await fs.rename(file,target);return target;
+  }});
+  const handoff=await f.intake.receipts.handoff([f.file]),original=structuredClone(handoff.files[0].identity);
+  await fs.chmod(f.file,0o600);assert.notEqual((await fs.lstat(f.file)).ctimeMs,original.ctimeMs);
+  const batch=await f.intake.confirm(handoff.id,{requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'move',fileIds:handoff.files.map(x=>x.id)});
+  await settled(f.intake);const raw=f.intake.batch(batch.id),item=raw.items[0];
+  assert.equal(item.status,'ready');assert.equal(removed,1);assert.deepEqual(item.selectionIdentity,original);
+  assert.deepEqual((await f.intake.receipts.read('handoffs',handoff.id)).files[0].identity,original);
+  assert.equal((await f.catalog.list(f.project.id)).videos.length,1);
+});
+
+test('选择证明：同inode同大小恢复mtime的改字节，以及同内容换inode都拒绝',async t=>{
+  const f=await fixture(t);await fs.utimes(f.file,1700000000,1700000000);
+  const h=await f.intake.receipts.handoff([f.file]),bytes=await fs.readFile(f.file);bytes[bytes.length-1]^=1;
+  await fs.writeFile(f.file,bytes);await fs.utimes(f.file,1700000000,1700000000);
+  const a=await f.intake.confirm(h.id,{requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'copy',fileIds:h.files.map(x=>x.id)});await settled(f.intake);
+  assert.equal(f.intake.batch(a.id).items[0].code,'INTAKE_SOURCE_CHANGED');assert.equal((await f.catalog.list(f.project.id)).videos.length,0);
+  const next=await f.intake.receipts.handoff([f.file]);await fs.rename(f.file,f.file+'.kept');await fs.copyFile(f.file+'.kept',f.file);await fs.utimes(f.file,1700000000,1700000000);
+  const b=await f.intake.confirm(next.id,{requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'copy',fileIds:next.files.map(x=>x.id)});await settled(f.intake);
+  assert.equal(f.intake.batch(b.id).items[0].code,'INTAKE_SOURCE_CHANGED');await fs.access(f.file+'.kept');await fs.access(f.file);
+});
+
+test('选择证明：后台核验完成前不复制，旧选择没有SHA时不能事后补锚',async t=>{
+  const f=await fixture(t),h=await f.intake.receipts.handoff([f.file],{deferFingerprint:true});
+  const input={requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'copy',fileIds:h.files.map(x=>x.id)};
+  await assert.rejects(f.intake.confirm(h.id,input),e=>e.code==='INTAKE_SELECTION_CHECKING');assert.equal(f.intake.batches.size,0);
+  const prepared=await f.intake.receipts.prepareHandoff(h.id);assert.equal(prepared.preparation,'ready');
+  delete prepared.preparation;delete prepared.files[0].selectionSha256;await f.intake.receipts.write('handoffs',h.id,prepared);
+  await fs.chmod(f.file,0o600);const batch=await f.intake.confirm(h.id,input);await settled(f.intake);
+  assert.equal(f.intake.batch(batch.id).items[0].code,'INTAKE_SOURCE_CHANGED');assert.equal((await f.catalog.list(f.project.id)).videos.length,0);
+});
+
+test('选择证明：复制流必须在发布前匹配选择SHA；证明中止不留下可用锚',async t=>{
+  const f=await fixture(t),h=await f.intake.receipts.handoff([f.file]);
+  h.files[0].selectionSha256='0'.repeat(64);await f.intake.receipts.write('handoffs',h.id,h);
+  const batch=await f.intake.confirm(h.id,{requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode:'copy',fileIds:h.files.map(x=>x.id)});await settled(f.intake);
+  assert.equal(f.intake.batch(batch.id).items[0].status,'failed');assert.equal((await f.catalog.list(f.project.id)).videos.length,0);await fs.access(f.file);
+  const file=(await inspectSelection([f.file]))[0],controller=new AbortController();controller.abort();
+  await assert.rejects(selectionHash(file,{signal:controller.signal}),e=>e.name==='AbortError');
+});
+
+test('选择证明：核验过程中修改内容或替换路径都不能生成ready证明',async t=>{
+  const f=await fixture(t),originalOpen=fs.open;
+  for(const replace of [false,true]){
+    const h=await f.intake.receipts.handoff([f.file],{deferFingerprint:true});let changed=false;
+    fs.open=async(file,...args)=>{
+      const handle=await originalOpen(file,...args);
+      if(file===f.file){const read=handle.read.bind(handle);handle.read=async(...a)=>{
+        const result=await read(...a);
+        if(result.bytesRead&&!changed){changed=true;if(replace){await fs.rename(f.file,f.file+'.proof-kept');await fs.copyFile(f.file+'.proof-kept',f.file);}else await fs.appendFile(f.file,'changed');}
+        return result;
+      };}
+      return handle;
+    };
+    try{await assert.rejects(f.intake.receipts.prepareHandoff(h.id),e=>e.code==='INTAKE_SOURCE_CHANGED');}
+    finally{fs.open=originalOpen;}
+    assert.equal(changed,true);assert.equal((await f.intake.receipts.read('handoffs',h.id)).preparation,'failed');await fs.access(f.file);
+  }
+  assert.equal(f.intake.batches.size,0);
+});
 
 test('访达选择只接收单/多视频；混选、目录、链接在任何复制前拒绝',async t=>{
   const f=await fixture(t),txt=path.join(f.dir,'a.txt'),link=path.join(f.dir,'link.mp4');await fs.writeFile(txt,'text');await fs.symlink(f.file,link);

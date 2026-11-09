@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {Receipts,uuid,stamp,same,unchanged,error} from './files.mjs';
+import {Receipts,uuid,stamp,same,unchanged,revalidateSelection,error} from './files.mjs';
 
 const stable = value => JSON.stringify(value);
 const pending = new Set(['queued','copying','duplicate','unknown']);
@@ -67,7 +67,8 @@ export class FileIntake {
     const h=await this.receipts.read('handoffs',id);
     const b=[...this.batches.values()].find(b=>b.handoffId===id);
     return {id:h.id,files:h.files.map(({id,name,bytes,path})=>({id,name,bytes,path})),
-      projects:this.projects.list().filter(p=>!p.archived).map(({id,name})=>({id,name})),canTrash:this.canTrash,batchId:b?.id};
+      projects:this.projects.list().filter(p=>!p.archived).map(({id,name})=>({id,name})),canTrash:this.canTrash,batchId:b?.id,
+      preparation:h.preparation,preparationError:h.preparationError};
   }
   async folders(projectId) {
     this.catalog.project(projectId);
@@ -83,6 +84,9 @@ export class FileIntake {
     const args=stable({handoffId,projectId:input.projectId,folderId:input.folderId||'root',mode:input.mode,fileIds:ids});
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
+    if(h.preparation==='checking')throw error('INTAKE_SELECTION_CHECKING','正在后台核验原视频，完成后即可确认收纳',422);
+    if(h.preparation==='failed')throw error('INTAKE_SELECTION_FAILED',h.preparationError,422);
+    if(h.preparation==='ready'&&h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_FAILED','本次选择的内容证明不完整，请从访达重新选择',422);
     const project=this.catalog.project(input.projectId,true), target=await this.catalog.prepare(input.projectId,input.folderId||'root');
     const folder=(await this.folders(project.id)).folders.find(f=>f.id===(input.folderId||'root'));
     const b={id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:project.id,projectName:project.name,folderId:input.folderId||'root',
@@ -139,7 +143,9 @@ export class FileIntake {
     else i.status='unknown';
   }
   async process(b,i) {
-    this.assertOpen();this.assertLibrary(b);await this.catalog.current(b.projectId,b.target);await unchanged(i.path,i.identity);
+    this.assertOpen();this.assertLibrary(b);await this.catalog.current(b.projectId,b.target);
+    const currentIdentity=await revalidateSelection(i);
+    if(!same(currentIdentity,i.identity)){i.selectionIdentity??={...i.identity};i.identity=currentIdentity;await this.save(b);}
     if(await this.managed(i))return;
     const args={requestId:i.requestId,fileName:i.name,bytes:i.bytes,prompt:{mode:'none'},folderId:b.folderId};
     const started=await this.catalog.startIntake(b.projectId,args,b.target);
@@ -159,6 +165,7 @@ export class FileIntake {
       }
       if(!same(stamp(await handle.stat()),i.identity))throw error('INTAKE_SOURCE_CHANGED','复制期间原视频发生变化，未移除原文件');
       await unchanged(i.path,i.identity);
+      if(i.selectionSha256&&hash.copy().digest('hex')!==i.selectionSha256)throw error('INTAKE_SOURCE_CHANGED','原视频内容与选择时不同，未发布或移除原文件');
     }
     try {
       const r=await this.catalog.upload(b.projectId,i.requestId,content());i.sha256=hash.digest('hex');this.applyReceipt(i,r);

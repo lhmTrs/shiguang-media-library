@@ -8,7 +8,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof'].includes(selectedCase));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(root, '../素材管理器/collab/results/FINDER-VIDEO-INTAKE-20261109', selectedCase === 'completion' ? 'frontend-completion/ui' : selectedCase === 'confirm-binding' ? 'frontend-confirm-binding/ui' : 'frontend-ui'));
 await fs.mkdir(evidence, {recursive: true});
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
@@ -96,6 +96,15 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  await check('selection-proof background check preserves target inputs, never submits early, and enables only when ready',async()=>{
+    await fresh(true);fixture.handoff.preparation='checking';await page.reload();await choose();
+    await expect(page.getByText('正在后台核验原视频，可先选择项目和文件夹；完成后即可确认收纳。',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeDisabled();assert.equal(fixture.confirmBodies.length,0);
+    fixture.handoff.preparation='ready';await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeEnabled();
+    await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-a');await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('root');
+    fixture.handoff.preparation='failed';fixture.handoff.preparationError='合成核验失败';await page.reload();await choose();
+    await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeDisabled();await expect(page.getByText('合成核验失败',{exact:true})).toBeVisible();assert.equal(fixture.confirmBodies.length,0);
+  });
   await check('drawer-layout actual topbar backdrop and app styles keep viewport drawer, scroll and install reachable', async () => {
     await fresh(false, null, false, true); await page.setViewportSize({width: 1440, height: 900}); await open();
     const geometry = await drawer().evaluate(el => {const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,viewport:innerHeight,insideTopbar:!!el.closest('.topbar'),background:getComputedStyle(el).backgroundColor};});

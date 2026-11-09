@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {constants} from 'node:fs';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 
 export const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
 export const stamp = s => ({dev:String(s.dev),ino:String(s.ino),size:s.size,mtimeMs:s.mtimeMs,ctimeMs:s.ctimeMs});
@@ -40,6 +40,40 @@ export async function unchanged(file, identity) {
   const st = await fs.lstat(file);
   if (!st.isFile() || st.isSymbolicLink() || await fs.realpath(file) !== file || !same(stamp(st),identity))
     throw error('INTAKE_SOURCE_CHANGED','原文件在选择后发生变化，未移除原文件；请重新选择');
+}
+
+async function parentUnchanged(file) {
+  const st=await fs.lstat(path.dirname(file.path));
+  if(!st.isDirectory()||st.isSymbolicLink()||String(st.dev)!==file.parentIdentity?.dev||String(st.ino)!==file.parentIdentity?.ino)
+    throw error('INTAKE_SOURCE_CHANGED','原文件夹在选择后发生变化，原件保留；请重新选择');
+}
+
+// A selection proof is made once, from one held descriptor, before it may be
+// used to distinguish later metadata-only changes from changed video bytes.
+export async function selectionHash(file,{signal}={}) {
+  signal?.throwIfAborted();
+  await unchanged(file.path,file.identity);await parentUnchanged(file);
+  const handle=await fs.open(file.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try {
+    if(!same(stamp(await handle.stat()),file.identity))throw error('INTAKE_SOURCE_CHANGED','原视频已变化');
+    const hash=createHash('sha256'),buffer=Buffer.alloc(1024*1024);let bytes=0;
+    while(true){signal?.throwIfAborted();const {bytesRead}=await handle.read(buffer,0,buffer.length,bytes);if(!bytesRead)break;if(bytes+bytesRead>file.bytes)throw error('INTAKE_SOURCE_CHANGED','核验期间原视频长度变化，请重新选择');hash.update(buffer.subarray(0,bytesRead));bytes+=bytesRead;}
+    if(bytes!==file.bytes||!same(stamp(await handle.stat()),file.identity))throw error('INTAKE_SOURCE_CHANGED','核验期间原视频发生变化，请重新选择');
+    await unchanged(file.path,file.identity);await parentUnchanged(file);
+    return hash.digest('hex');
+  } finally {await handle.close();}
+}
+
+export async function revalidateSelection(file) {
+  await parentUnchanged(file);
+  try {await unchanged(file.path,file.identity);return file.identity;}
+  catch(e) {if(e.code!=='INTAKE_SOURCE_CHANGED')throw e;}
+  const st=await fs.lstat(file.path),identity=stamp(st);
+  if(!st.isFile()||st.isSymbolicLink()||!same({...identity,ctimeMs:file.identity.ctimeMs},file.identity)||!/^[a-f0-9]{64}$/.test(file.selectionSha256||''))
+    throw error('INTAKE_SOURCE_CHANGED','原文件在选择后发生变化，未移除原文件；请重新选择');
+  if(await selectionHash({...file,identity})!==file.selectionSha256)
+    throw error('INTAKE_SOURCE_CHANGED','原视频内容在选择后发生变化，原件保留；请重新选择');
+  return identity;
 }
 
 export class Receipts {
@@ -81,8 +115,20 @@ export class Receipts {
     }
     return result;
   }
-  async handoff(files) {
-    const id=randomUUID(), value={id,createdAt:Date.now(),files:await inspectSelection(files)};
-    await this.write('handoffs',id,value,{exclusive:true});return value;
+  async handoff(files,{deferFingerprint=false}={}) {
+    const id=randomUUID(), value={id,createdAt:Date.now(),preparation:'checking',files:await inspectSelection(files)};
+    await this.write('handoffs',id,value,{exclusive:true});
+    return deferFingerprint?value:this.prepareHandoff(id);
+  }
+  async prepareHandoff(id,{signal}={}) {
+    const value=await this.read('handoffs',id);
+    if(value.preparation!=='checking')return value;
+    try {
+      for(const file of value.files)file.selectionSha256=await selectionHash(file,{signal});
+      value.preparation='ready';await this.write('handoffs',id,value);return value;
+    } catch(e) {
+      value.preparation='failed';value.preparationError='原视频核验未完成，未开始收纳；请从访达重新选择。';
+      await this.write('handoffs',id,value);throw e;
+    }
   }
 }

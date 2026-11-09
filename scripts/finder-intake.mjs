@@ -28,7 +28,9 @@ export async function running(dataDir) {
 }
 export async function intake(config,files,{onWindow}={}) {
   const c=await readConfig(config),receipts=await new Receipts(c.dataDir).init();
-  const handoff=await receipts.handoff(files);
+  const handoff=await receipts.handoff(files,{deferFingerprint:true}),controller=new AbortController();
+  const preparation=receipts.prepareHandoff(handoff.id,{signal:controller.signal}).catch(()=>{});
+  try {
   let current=await running(c.dataDir);
   if(!current) {
     let consent;
@@ -44,9 +46,12 @@ export async function intake(config,files,{onWindow}={}) {
     if(!current)throw error('INTAKE_START_FAILED','素材服务尚未就绪。本次选择已保留，请启动拾光后重试');
   }
   const child=spawn(c.helper,['--url',current.url+'/#/file-intake/'+handoff.id],{detached:true,stdio:'ignore'});
+  child.once('exit',()=>controller.abort());
   onWindow?.(child);
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});child.unref();
+  await preparation;
   return {handoffId:handoff.id};
+  } finally {controller.abort();await preparation;}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const [, , flag,config,separator,...files]=process.argv;
