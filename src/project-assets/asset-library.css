@@ -520,3 +520,5 @@
 .ca-crop-card-preview img{position:absolute}
 .ca-crop-previews .ca-crop-preview{margin:0;width:64px;height:64px}
 @media(prefers-reduced-motion:reduce){.ca-crop-thirds{transition:none}}
+.ca-crop-preview-item{display:flex;flex-direction:column;align-items:center;gap:4px}
+.ca-crop-preview-item>small{font-size:11px;color:var(--muted)}
