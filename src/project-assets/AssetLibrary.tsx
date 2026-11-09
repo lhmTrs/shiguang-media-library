@@ -73,10 +73,11 @@ function Cover({ a }: { a: Asset }) { const b = coverOf(a); return <span classNa
 
 export function AssetLibrary({ focusProject, active, projectSelectorHost, request, activeProject, selectProject, refreshSeconds, onSettings, onOpenShot }: ProjectAssetProps) {
   const api = <T = any,>(url: string, body?: unknown, method?: string) => request<T>('/project-assets' + url, body, method);
-  const prefKey = 'shiguang.creative.preferences.v1';
+  // v2：新画廊默认卡片显示，不沿用旧版窄列表时期保存的“列表”偏好。
+  const prefKey = 'shiguang.creative.preferences.v2';
   const remembered = () => readMemory().display ? readStored<{ kind: Kind; layout: string }>(prefKey, { kind: 'character', layout: 'grid' }, (v): v is { kind: Kind; layout: string } => !!v && typeof v === 'object' && ['character', 'scene', 'prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout)) : { kind: 'character' as Kind, layout: 'grid' };
   const [scopes, setScopes] = useState<Scope[]>([]), [scope, setScope] = useState(() => readMemory().display ? readStored('shiguang.creative.lastScope.v1', activeProject, (v): v is string => typeof v === 'string') : activeProject);
-  const readScopePrefs = (id: string) => readMemory().display ? readStored('shiguang.creative.scope.' + id, { ...remembered(), archived: false }, (v): v is { kind: Kind; layout: string; archived: boolean } => !!v && typeof v === 'object' && ['character','scene','prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout) && typeof (v as any).archived === 'boolean') : { kind: 'character' as Kind, layout: 'grid', archived: false };
+  const readScopePrefs = (id: string) => readMemory().display ? readStored('shiguang.creative.scope.v2.' + id, { ...remembered(), archived: false }, (v): v is { kind: Kind; layout: string; archived: boolean } => !!v && typeof v === 'object' && ['character','scene','prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout) && typeof (v as any).archived === 'boolean') : { kind: 'character' as Kind, layout: 'grid', archived: false };
   const [kind, setKind] = useState<Kind>(() => readScopePrefs(scope).kind), [layout, setLayout] = useState(() => readScopePrefs(scope).layout), [q, setQ] = useState(''), [archived, setArchived] = useState(() => readScopePrefs(scope).archived), [page, setPage] = useState(1);
   const [rows, setRows] = useState<Asset[]>([]), [total, setTotal] = useState(0), [draft, setDraft] = useState<Asset | null>(null), [base, setBase] = useState(''), [lookId, setLookId] = useState('');
   const [busy, setBusy] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState(''), [conflict, setConflict] = useState<Asset | null>(null), [health, setHealth] = useState<Health[]>([]);
@@ -182,7 +183,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     }).catch(e => { if (live && scopeRef.current === scope && draftIdRef.current === draft.id) setError(e.message); });
     return () => { live = false; };
   }, [active, scope]);
-  useEffect(() => { if (readMemory().display) { saveStored(prefKey, { kind, layout }); saveStored('shiguang.creative.lastScope.v1', scope); if (scope) saveStored('shiguang.creative.scope.' + scope, { kind, layout, archived }); } }, [kind, layout, scope, archived]);
+  useEffect(() => { if (readMemory().display) { saveStored(prefKey, { kind, layout }); saveStored('shiguang.creative.lastScope.v1', scope); if (scope) saveStored('shiguang.creative.scope.v2.' + scope, { kind, layout, archived }); } }, [kind, layout, scope, archived]);
   useEffect(() => { if (!active || !draft) return; let live = true; void loadHealth(draft).catch(e => { if (live) setError(e.message); }); return () => { live = false; healthGeneration.current++; }; }, [active, draft?.id, draft?.revision]);
   useEffect(() => { const before = (e: BeforeUnloadEvent) => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', before); return () => window.removeEventListener('beforeunload', before); }, []);
   useEffect(() => {
