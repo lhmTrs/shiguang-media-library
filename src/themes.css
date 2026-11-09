@@ -345,6 +345,26 @@
   --c-6a786f: #6a786f;
   --c-white-fg: #ffffff;
   --c-white-bg: #ffffff;
+  --c-b34747: #b34747;
+  --c-8a6a3a: #8a6a3a;
+  --c-ffffff: #ffffff;
+  --c-ef4444: #ef4444;
+  --c-f59e0b: #f59e0b;
+  --c-22a06b: #22a06b;
+  --c-3b82f6: #3b82f6;
+  --c-172b4d22: #172b4d22;
+  --c-ad4f42: #ad4f42;
+  --c-d5b297: #d5b297;
+  --c-eef4f5: #eef4f5;
+  --c-2f6f5e: #2f6f5e;
+  --c-eaf5f0: #eaf5f0;
+  --c-8a5a16: #8a5a16;
+  --c-fdf3e2: #fdf3e2;
+  --c-315f9f: #315f9f;
+  --c-eef3fb: #eef3fb;
+  --c-f0f2f3: #f0f2f3;
+  --c-fbfcfc: #fbfcfc;
+  --c-f4f9f7: #f4f9f7;
 }
 
 /* 2) 每套风格：只覆盖 token，所有 var(--c-*) 引用会自动跟随 */
@@ -355,6 +375,7 @@ html[data-theme="dark"] {
   /* 手工微调：自动派生分不清角色，这几处按语义钉死 */
   --c-white-bg: #1d2325;
   --c-fff: #1d2325;
+  --c-ffffff: #1d2325;
   --c-f7f9fa: #141819;
   --c-f4f7f6: #20272a;
   --c-f8faf9: #1a2022;
@@ -366,6 +387,11 @@ html[data-theme="dark"] {
   --c-356451: #6cc39a;
   --c-315d4b: #8ad4b0;
   --c-white-fg: #0d1a15;
+  --c-b34747: #f28b82;
+  --c-ad4f42: #f19a8c;
+  --c-ef4444: #f87171;
+  --c-f59e0b: #fbbf24;
+  --c-3b82f6: #60a5fa;
   --c-759c89: #3f5349;
   --c-dce3de: #212823;
   --c-303934: #c8d0cb;
@@ -695,6 +721,20 @@ html[data-theme="dark"] {
   --c-6c786f: #8d968f;
   --c-a73939: #c06666;
   --c-6a786f: #8d9891;
+  --c-8a6a3a: #c1a780;
+  --c-22a06b: #6ed5aa;
+  --c-172b4d22: #b8c8e522;
+  --c-d5b297: #493322;
+  --c-eef4f5: #162123;
+  --c-2f6f5e: #98cdbf;
+  --c-eaf5f0: #15261e;
+  --c-8a5a16: #e1ba82;
+  --c-fdf3e2: #332308;
+  --c-315f9f: #6e94c8;
+  --c-eef3fb: #0d182a;
+  --c-f0f2f3: #1a1e1f;
+  --c-fbfcfc: #151b1b;
+  --c-f4f9f7: #14211c;
 }
 /* 午夜蓝 —— 深蓝底色，冷调夜用 */
 html[data-theme="midnight"] {
@@ -702,6 +742,7 @@ html[data-theme="midnight"] {
   /* 手工微调：自动派生分不清角色，这几处按语义钉死 */
   --c-white-bg: #161c26;
   --c-fff: #161c26;
+  --c-ffffff: #161c26;
   --c-f7f9fa: #0f151d;
   --c-f4f7f6: #1a2130;
   --c-f8faf9: #141b24;
@@ -713,6 +754,11 @@ html[data-theme="midnight"] {
   --c-356451: #63a9e8;
   --c-315d4b: #8cc4f2;
   --c-white-fg: #0c1420;
+  --c-b34747: #f28b82;
+  --c-ad4f42: #f19a8c;
+  --c-ef4444: #f87171;
+  --c-f59e0b: #fbbf24;
+  --c-3b82f6: #60a5fa;
   --c-759c89: #3f4952;
   --c-dce3de: #212527;
   --c-303934: #c8cccf;
@@ -1042,6 +1088,20 @@ html[data-theme="midnight"] {
   --c-6c786f: #8d9296;
   --c-a73939: #69be9e;
   --c-6a786f: #8d9398;
+  --c-8a6a3a: #bfa782;
+  --c-22a06b: #71d2a9;
+  --c-172b4d22: #b9bee322;
+  --c-d5b297: #234840;
+  --c-eef4f5: #171a23;
+  --c-2f6f5e: #9acbbe;
+  --c-eaf5f0: #15261e;
+  --c-8a5a16: #dfb985;
+  --c-fdf3e2: #322309;
+  --c-315f9f: #7194c5;
+  --c-eef3fb: #0e1829;
+  --c-f0f2f3: #1a1b1f;
+  --c-fbfcfc: #16171b;
+  --c-f4f9f7: #141a21;
 }
 /* 暖褐纸质 —— 米黄纸感，久看舒服 */
 html[data-theme="sepia"] {
@@ -1049,6 +1109,7 @@ html[data-theme="sepia"] {
   /* 手工微调：自动派生分不清角色，这几处按语义钉死 */
   --c-white-bg: #fffdf7;
   --c-fff: #fffdf7;
+  --c-ffffff: #fffdf7;
   --c-f7f9fa: #faf6ee;
   --c-f4f7f6: #f4eee1;
   --c-e5e9e6: #e6dcc8;
@@ -1389,6 +1450,25 @@ html[data-theme="sepia"] {
   --c-a73939: #8e5269;
   --c-6a786f: #75716d;
   --c-white-fg: #ffffff;
+  --c-b34747: #9b5f5f;
+  --c-8a6a3a: #78664c;
+  --c-ef4444: #c96a6a;
+  --c-f59e0b: #c09040;
+  --c-22a06b: #3e8467;
+  --c-3b82f6: #658ccc;
+  --c-172b4d22: #413e2322;
+  --c-ad4f42: #95615a;
+  --c-d5b297: #c7a5ad;
+  --c-eef4f5: #f3f2f0;
+  --c-2f6f5e: #3d6157;
+  --c-eaf5f0: #ecf3f0;
+  --c-8a5a16: #705630;
+  --c-fdf3e2: #f7f1e8;
+  --c-315f9f: #4a6386;
+  --c-eef3fb: #f1f4f8;
+  --c-f0f2f3: #f2f2f1;
+  --c-fbfcfc: #fcfcfb;
+  --c-f4f9f7: #f8f7f5;
 }
 /* 极简灰白 —— 去色处理，专注内容 */
 html[data-theme="graphite"] {
@@ -1396,6 +1476,7 @@ html[data-theme="graphite"] {
   /* 手工微调：自动派生分不清角色，这几处按语义钉死 */
   --c-white-bg: #ffffff;
   --c-fff: #ffffff;
+  --c-ffffff: #ffffff;
   --c-f7f9fa: #f6f6f6;
   --c-f4f7f6: #f0f0f0;
   --c-e5e9e6: #e4e4e4;
@@ -1736,6 +1817,25 @@ html[data-theme="graphite"] {
   --c-a73939: #707070;
   --c-6a786f: #717171;
   --c-white-fg: #ffffff;
+  --c-b34747: #b34747;
+  --c-8a6a3a: #8a6a3a;
+  --c-ef4444: #ef4444;
+  --c-f59e0b: #f59e0b;
+  --c-22a06b: #22a06b;
+  --c-3b82f6: #3b82f6;
+  --c-172b4d22: #32323222;
+  --c-ad4f42: #ad4f42;
+  --c-d5b297: #b6b6b6;
+  --c-eef4f5: #f2f2f2;
+  --c-2f6f5e: #2f6f5e;
+  --c-eaf5f0: #eaf5f0;
+  --c-8a5a16: #8a5a16;
+  --c-fdf3e2: #fdf3e2;
+  --c-315f9f: #315f9f;
+  --c-eef3fb: #eef3fb;
+  --c-f0f2f3: #f2f2f2;
+  --c-fbfcfc: #fcfcfc;
+  --c-f4f9f7: #f7f7f7;
 }
 /* 海洋青 —— 青蓝点缀，明亮通透 */
 html[data-theme="ocean"] {
@@ -1743,6 +1843,7 @@ html[data-theme="ocean"] {
   /* 手工微调：自动派生分不清角色，这几处按语义钉死 */
   --c-white-bg: #ffffff;
   --c-fff: #ffffff;
+  --c-ffffff: #ffffff;
   --c-f7f9fa: #f2f9fa;
   --c-f4f7f6: #e8f3f5;
   --c-e5e9e6: #d7e7ea;
@@ -2083,4 +2184,23 @@ html[data-theme="ocean"] {
   --c-a73939: #3fa262;
   --c-6a786f: #6b7577;
   --c-white-fg: #ffffff;
+  --c-b34747: #ae4c4c;
+  --c-8a6a3a: #86693e;
+  --c-ef4444: #e64d4d;
+  --c-f59e0b: #e99b17;
+  --c-22a06b: #289a6a;
+  --c-3b82f6: #4484ed;
+  --c-172b4d22: #1a2c4a22;
+  --c-ad4f42: #a85347;
+  --c-d5b297: #9ad2b7;
+  --c-eef4f5: #eef2f5;
+  --c-2f6f5e: #326c5d;
+  --c-eaf5f0: #ebf4f0;
+  --c-8a5a16: #84591c;
+  --c-fdf3e2: #fcf3e3;
+  --c-315f9f: #37609a;
+  --c-eef3fb: #eff3fa;
+  --c-f0f2f3: #f0f1f3;
+  --c-fbfcfc: #fbfcfc;
+  --c-f4f9f7: #f4f8f9;
 }
