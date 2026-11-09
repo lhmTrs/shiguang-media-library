@@ -284,7 +284,7 @@ async function finishedUpgrade(f) {
 test('explicit upgrade: device drift with trusted identical bytes preserves IDs, metadata and adopted offsets',async t=>{
   const f=await fixture(t);initialize(f);
   const first=await imported(f,'old-device.mp4');await bind(f,first);
-  const second=await imported(f,'scanner-current-device.mp4');
+  const nested=await folder(f,'原有子目录'),second=await imported(f,'scanner-current-device.mp4',nested.id);
   const sources=[previousDevice(f,first,true),previousDevice(f,second,true)],before=sources.map(s=>snapshot(f,s.id));
   for(const source of sources){
     await assert.rejects(()=>f.entry.media.open(source),e=>e.code==='SOURCE_CHANGED');
@@ -303,7 +303,8 @@ test('explicit upgrade: device drift with trusted identical bytes preserves IDs,
     await opened(f,()=>f.catalog.open(f.project.id,current.id));
   }
   assert.equal(f.entry.store.sources(f.project.id).length,2);
-  assert.equal((await fs.readdir(path.dirname(first.path))).length,2,'No extra permanent video copy');
+  assert.equal((await fs.readdir(path.dirname(first.path),{withFileTypes:true})).filter(e=>e.isFile()).length,1,'No nested video copy in root');
+  assert.deepEqual(await fs.readdir(nested.path),[second.name],'Nested video remains the only permanent file in its folder');
   assert.equal((await f.catalog.upgradePlan(f.project.id)).completed,true);
 });
 test('explicit upgrade: changed bytes, replaced inode and missing prior authority stay rejected',async t=>{
