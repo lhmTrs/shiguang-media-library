@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import React,{useEffect,useRef,useState} from 'react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
 import type {GenerationDraft} from './generation-state';
@@ -10,6 +11,8 @@ type Version={version:number;revision:string;content_hash:string;name:string;sou
 export function GenerationRules({request,main,aux,onChange,disabled,draft,onConnected}:{draft:GenerationDraft;request:PromptRequest;main:RuleRef;aux:RuleRef[];onChange:(main:RuleRef,aux:RuleRef[])=>void;disabled:boolean;onConnected?:()=>Promise<void>}){
  const [skillPicker,setSkillPicker]=useState(false);
  const [rules,setRules]=useState<Rule[]>([]),[categories,setCategories]=useState<Category[]>([]),[q,setQ]=useState(''),[category,setCategory]=useState(''),[favorite,setFavorite]=useState(false),[kind,setKind]=useState<'main'|'style'>('main'),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[revision,bump]=useState(0),[preview,setPreview]=useState<{id:string;versions:{version:number;revision:string;content_hash:string}[];value:Version}|null>(null),[categoryForm,setCategoryForm]=useState<{id:string;name:string;parent_id:string}>({id:'',name:'',parent_id:''});
+  useFeedbackToast(error, {source: '分镜设计'});
+  useFeedbackToast(notice, {source: '分镜设计', kind: 'auto'});
  const [form,setFormState]=useState<{mode:'new'|'version';rule_id:string;expected_version:number;name:string;source:string;revision:string;use_kind:'main'|'style';category_id:string;raw:string}|null>(()=>draft.ruleEditor as any??null),file=useRef<HTMLInputElement>(null),alive=useRef(true);
  const setForm=(value:typeof form)=>{draft.ruleEditor=value||undefined;setFormState(value);};
  const api=<T=any,>(p:string,body?:unknown,method?:string,signal?:AbortSignal)=>request<T>('/storyboard-generation'+p,body,method,{signal:signal??AbortSignal.timeout(20000)});

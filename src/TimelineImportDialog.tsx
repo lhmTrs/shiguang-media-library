@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { Check, FileUp, LoaderCircle, Search, Undo2, X } from "lucide-react";
 import type { Asset } from "./main";
@@ -15,6 +16,7 @@ type Choice = {key:string;assetId:string|null;used:boolean};
 function MatchRow({ row, choice, change, request, locked }: {row:Row;choice:Choice;change:(value:Choice)=>void;request:ProjectRequest;locked:boolean}) {
   const [query,setQuery] = useState(row.name), [candidates,setCandidates] = useState(row.candidates);
   const [busy,setBusy] = useState(false), [error,setError] = useState("");
+  useFeedbackToast(error, {source: '项目管理'});
   async function search() {
     setBusy(true);setError("");
     try {
@@ -47,6 +49,7 @@ export function TimelineImportDialog({ projectId = "", request, close, changed }
   const [target,setTarget]=useState(""),[name,setName]=useState(""),[filename,setFilename]=useState("");
   const [xml,setXml]=useState(""),[preview,setPreview]=useState<Preview|null>(null),[choices,setChoices]=useState<Record<string,Choice>>({});
   const [busy,setBusy]=useState(false),[error,setError]=useState(""),[message,setMessage]=useState("");
+  useFeedbackToast(error, {source: '项目管理'});
   const [confirmed,setConfirmed]=useState(false),[removeMissing,setRemoveMissing]=useState(false),[page,setPage]=useState(1);
   const root=useRef<HTMLDivElement>(null), fileGeneration=useRef(0), alive=useRef(true);
   const load=()=>creating ? Promise.resolve() : request<State>(`/projects/${projectId}/timelines`).then(value=>{if(alive.current)setState(value);});

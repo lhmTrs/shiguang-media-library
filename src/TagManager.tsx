@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import {
   Tag,
@@ -51,6 +52,8 @@ export function TagManager({ request, preview, stopPreview, changed, edit, revis
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  useFeedbackToast(error, {source: '标签管理'});
+  useFeedbackToast(notice, {source: '标签管理', kind: 'auto'});
   const [editor, setEditor] = useState<{
     mode: "create" | "rename" | "delete";
     id?: string;

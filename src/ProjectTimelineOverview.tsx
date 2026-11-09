@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Layers, RefreshCw } from "lucide-react";
@@ -9,6 +10,7 @@ type Reference = {assetId:string|null;name:string;kind:string;used:boolean;occur
 type Timeline = {id:string;name:string;fps:number;duration:number|null;startTimecode:string|null;references:Reference[]};
 export function ProjectTimelineOverview({projectId,projectName,revision,request,stopAudio}:{projectId:string;projectName:string;revision:number;request:ProjectRequest;stopAudio:()=>void}) {
   const [timelines,setTimelines]=useState<Timeline[]>([]),[timelineId,setTimelineId]=useState(""),[expanded,setExpanded]=useState(true),[music,setMusic]=useState(false),[zoom,setZoom]=useState(1),[error,setError]=useState(""),[reload,setReload]=useState(0),[loading,setLoading]=useState(true);
+  useFeedbackToast(error, {source: '项目管理'});
   const [review,setReview]=useState<{ref:TimelineReference;index:number;name:string}|null>(null);
   useEffect(()=>{
     let live=true;setLoading(true);setError("");setReview(null);

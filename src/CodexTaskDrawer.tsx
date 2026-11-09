@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {CircleAlert,LoaderCircle,RefreshCw,Square,X,Zap} from 'lucide-react';
 import type {PromptRequest} from './PromptTemplateWorkspace';
@@ -9,8 +10,10 @@ const date=(v:number)=>new Date(v).toLocaleString('zh-CN');
 export const notifyCodexTasksChanged=()=>window.dispatchEvent(new Event('shiguang-codex-tasks-changed'));
 export function useCodexTasks(request:PromptRequest,onNotice:(text:string)=>void){
  const [open,setOpen]=useState(false),[items,setItems]=useState<CheckedCodexTask[]>([]),[overview,setOverview]=useState<CodexTaskOverview|null>(null),[error,setError]=useState(''),[reading,setReading]=useState(false),[nextCursor,setNextCursor]=useState<string|null>(null),[unread,setUnread]=useState(0);
+  useFeedbackToast(error, {source: 'Codex 任务', active: open});
  const current=useRef(items),last=useRef<CodexTaskOverview|null>(null),instanceObservedAt=useRef<number|null>(null),pending=useRef<Promise<void>|null>(null),historyStarted=useRef(false),verificationCursor=useRef(0),seen=useRef(new Set<string>()),read=useRef(new Set<string>()),viewing=useRef(new Set<string>()),alive=useRef(true),notice=useRef(onNotice);notice.current=onNotice;
  const library=useRef(''),scopeRevision=useRef(0),identityBlocked=useRef(false),handled=useRef(new Set<string>()),[handledRevision,setHandledRevision]=useState(0),[preferenceError,setPreferenceError]=useState('');
+  useFeedbackToast(preferenceError, {source: 'Codex 任务', active: open});
  const isHandled=(t:CheckedCodexTask)=>canHandleTask(t)&&!!taskIssueKey(t)&&handled.current.has(taskIssueKey(t)!);
  const needsAttention=(t:CheckedCodexTask)=>needsTaskAttention(t)&&!isHandled(t);
  const installHandled=(keys:Set<string>)=>{handled.current=keys;setHandledRevision(n=>n+1);};
@@ -97,6 +100,7 @@ export function CodexStopConfirmation({impact,submit,close,busy}:{impact:CodexTa
 export function CodexTaskEntry({controller}:{controller:CodexTaskController}){return <button className="codex-tasks-entry" title={controller.error?'进度连接中断，显示最后已知状态':undefined} aria-controls="codex-global-task-drawer" aria-expanded={controller.open} onClick={()=>controller.setOpen(!controller.open)}><Zap size={15}/>{controller.overview?.activeCount?'Codex · 生成中 '+controller.overview.activeCount:'Codex 任务'}{controller.error&&<CircleAlert size={13} aria-label="进度待确认"/>}{controller.unread>0&&<span className="codex-task-unread" aria-label={'未查看问题 '+controller.unread}>{controller.unread}</span>}</button>;}
 export function CodexTaskDrawer({controller:c,request,onNavigate,embedded=false}:{controller:CodexTaskController;request:PromptRequest;onNavigate:(t:CodexTask)=>Promise<void>;embedded?:boolean}){
  const [tab,setTab]=useState<'active'|'attention'|'ended'>('active'),[initialized,setInitialized]=useState(false),[operationError,setOperationError]=useState(''),[operating,setOperating]=useState(''),[impact,setImpact]=useState<CodexTaskImpact|null>(null),[now,setNow]=useState(Date.now());
+  useFeedbackToast(operationError, {source: 'Codex 任务'});
  const panel=useRef<HTMLElement>(null),closeButton=useRef<HTMLButtonElement>(null),returnFocus=useRef<HTMLElement|null>(null),operation=useRef(false);
  useEffect(()=>{if(!c.open||embedded)return;returnFocus.current=document.activeElement as HTMLElement|null;closeButton.current?.focus();const key=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!e.defaultPrevented&&!document.querySelector('dialog[open]')){e.preventDefault();c.setOpen(false);}};document.addEventListener('keydown',key);return()=>{document.removeEventListener('keydown',key);returnFocus.current?.isConnected&&returnFocus.current.focus({preventScroll:true});};},[c.open,embedded]);
  useEffect(()=>{if(c.open&&c.overview&&!initialized){setTab(c.overview.activeCount?'active':c.items.some(c.needsAttention)?'attention':'ended');setInitialized(true);}},[c.open,c.overview,c.handledRevision,initialized]);

@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
+import {useFeedbackToast} from '../global-feedback';
 import {BookOpen,Bot,Expand,FileText,Globe,LoaderCircle,MessageSquare,Minimize2,Paperclip,RefreshCw,Send,Settings2,Square,X} from 'lucide-react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
 import type {Project} from '../ProjectManager';
@@ -18,6 +19,11 @@ export function ConciergeWorkspace({request,activeProject,projects,controller:c,
   const scope=selection.project===activeProject?selection.scope:activeProject||'global';
   const [tab,setTab]=useState<'chat'|'tasks'>('chat'),[expanded,setExpanded]=useState(false),[reference,setReference]=useState<'rules'|'docs'|null>(null),[dragging,setDragging]=useState(false);
   const client=useConcierge(request,scope,c.open),s=client.current,closeButton=useRef<HTMLButtonElement>(null),input=useRef<HTMLInputElement>(null),dragDepth=useRef(0),previousFocus=useRef<HTMLElement|null>(null),root=useRef<HTMLElement>(null);
+  useFeedbackToast(s.error,{source:'自由管家',active:c.open});
+  useFeedbackToast(s.task?.error,{source:'管家当前任务',active:c.open});
+  useFeedbackToast(s.storageError,{source:'管家草稿',active:c.open});
+  useFeedbackToast(client.status?.error,{source:'Codex 连接',active:c.open});
+  useFeedbackToast(s.attachments.filter(a=>a.error).map(a=>a.name+'：'+a.error).join('；'),{source:'管家附件',active:c.open});
   const active=running(s.task),unknown=!!s.pending||s.task?.status==='unknown',issue=client.sendIssue();
   const model=client.status?.models.find(m=>m.id===s.model),models=client.status?.models||[];
   const title=scope==='global'?'全局管家':projects.find(p=>p.id===scope)?.name||s.info?.title||'当前项目';

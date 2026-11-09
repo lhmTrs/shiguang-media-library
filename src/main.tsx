@@ -1,3 +1,4 @@
+import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
 import { Users } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -412,6 +413,7 @@ function UploadTaskEntry({ onClose }: { onClose: () => void }) {
   const observedIdentity = useRef<string | null>(null); observedIdentity.current = status?.identityKey || null;
   const [plan, setPlan] = useState<EntryPlan | null>(null), [agreed, setAgreed] = useState(false), [automatic, setAutomatic] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [pending, setPending] = useState(false);
+  useFeedbackToast(error, {source: '素材管理'});
   const [pendingDescription, setPendingDescription] = useState("");
   const alive = useRef(true), generation = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; generation.current++; }; }, []);
@@ -552,6 +554,7 @@ function App() {
     setWorkspaceOpen(true);
   }, []);
   const [ready,setReady]=useState(false),[sessionError,setSessionError]=useState(''),[sessionRetry,retrySession]=useState(0);
+  useFeedbackToast(sessionError, {source: '素材管理'});
   // 「素材目录管理」专用的全量列表（含已注销）；侧栏导航与筛选仍用 roots（只在管的）
   const [allRoots, setAllRoots] = useState<Root[]>([]);
   const [rootEdit, setRootEdit] = useState<{ id: string; name: string; kind: string; path: string } | null>(null);
@@ -597,6 +600,8 @@ function App() {
     [loading, setLoading] = useState(true),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
+  useFeedbackToast(notice, {source: '素材管理', kind: 'auto'});
+  useFeedbackToast(error, {source: '素材管理'});
   const [mediaPreview, setMediaPreview] = useState<{asset: Asset; scope: string} | null>(null);
   const [tagRules, setTagRules] = useState<TagRules>(emptyTagRules);
   const [detailsHidden, setDetailsHidden] = useState(() => { try { return localStorage.getItem("shiguang.detailsHidden") === "true"; } catch { return false; } });
@@ -671,6 +676,7 @@ function App() {
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
   const [projects, setProjects] = useState<Project[]>([]), [projectRevision, setProjectRevision] = useState(0);
   const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
+  useFeedbackToast(projectsError, {source: '素材管理'});
   const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
   const [projectMembers, setProjectMembers] = useState<{ asset_id: string; status: string }[]>([]);
   const [projectUsageCounts,setProjectUsageCounts] = useState<Record<string,number>>({});
@@ -873,6 +879,7 @@ function App() {
     [videoProxy, setVideoProxy] = useState(false),
     [mediaError, setMediaError] = useState(""),
     [proxyLoading, setProxyLoading] = useState(false);
+  useFeedbackToast(mediaError, {source: '素材管理'});
   const audio = useRef<HTMLAudioElement>(null),
     video = useRef<HTMLVideoElement>(null),
     requestSeq = useRef(0);
@@ -1007,6 +1014,8 @@ function App() {
     return params;
   }
   const [listError,setListError]=useState(''),[auxiliaryError,setAuxiliaryError]=useState('');
+  useFeedbackToast(listError, {source: '素材管理'});
+  useFeedbackToast(auxiliaryError, {source: '素材管理'});
   const browseKey = useRef("");
   browseKey.current = assetParams().toString();
   const previewContext = view + ':' + activeProject + ':' + browseKey.current;
@@ -2993,12 +3002,6 @@ function App() {
           />
         </div>
       )}
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={18} />
-          {notice}
-        </div>
-      )}
       {modal && (
         <div
           className="modal-backdrop"
@@ -3818,4 +3821,4 @@ function App() {
     </div>{specialPage&&<div ref={specialFrame} className="codex-special-page"><div className="codex-task-overlaybar"><CodexTaskEntry controller={codexTasks}/></div><div className="codex-special-content">{specialPage}</div></div>}<div className="codex-task-host" style={{"--inspector-top":`${specialPage?specialTaskTop:topbarHeight}px`} as React.CSSProperties}><ConciergeWorkspace controller={codexTasks} request={api} activeProject={activeProject} projects={projects} onNavigate={openCodexTask}/></div></>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary><App /></GlobalErrorBoundary><GlobalFeedback /></>);

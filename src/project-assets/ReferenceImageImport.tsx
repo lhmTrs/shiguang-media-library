@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import React,{useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {ImagePlus,LoaderCircle,X,UploadCloud,FolderOpen,ChevronRight} from 'lucide-react';
@@ -19,6 +20,7 @@ export function ReferenceImageImport({target,context,disabled,libraryAction,requ
   const setPending=(value:PendingDrop|null)=>{pendingRef.current=value;setPendingState(value);};
   const contextKey=JSON.stringify({target,context}),latest=useRef({key:contextKey,available:context.available});latest.current={key:contextKey,available:context.available};
   const [receipt,setReceipt]=useState<Receipt|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[candidate,setCandidate]=useState('');
+  useFeedbackToast(error, {source: '项目资产'});
   const readyRef=useRef(onReady);readyRef.current=onReady;
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;busyCallback.current(false,owner.current);};},[]);
   const consume=(r:Receipt)=>{if(!alive.current)return;setReceipt(r);if(r.status==='ready'){readyRef.current(r);savedFile.current=null;setReceipt(null);}else if(r.status==='cancelled'){setReceipt(null);savedFile.current=null;}else if(r.status==='failed')setError(r.error||'导入未完成，请重新选择原图');else if(r.status==='duplicate')setCandidate(r.candidates[0]?.id||'');};

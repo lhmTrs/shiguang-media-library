@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import {useEffect,useRef,useState} from 'react';
 import {RefreshCw,X} from 'lucide-react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
@@ -9,6 +10,7 @@ const scopeName=(s:string)=>({user:'个人技能',repo:'项目技能',system:'�
 
 export function CodexSkillImport({request,onPick,onClose,onConnected}:{request:PromptRequest;onPick:(value:CodexSkillPreview)=>void;onClose:()=>void;onConnected?:()=>Promise<void>}){
   const [catalog,setCatalog]=useState<Catalog|null>(null),[query,setQuery]=useState(''),[scope,setScope]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[selected,setSelected]=useState(''),[preview,setPreview]=useState<CodexSkillPreview|null>(null),[needsConnection,setNeedsConnection]=useState(false);
+  useFeedbackToast(error, {source: '分镜设计'});
   const alive=useRef(true),sequence=useRef(0),operation=useRef(false),controller=useRef<AbortController|null>(null),panel=useRef<HTMLElement>(null);
   const api=<T,>(p:string,body?:unknown)=>request<T>(p,body,body===undefined?undefined:'POST',{signal:AbortSignal.any([AbortSignal.timeout(20000),...(controller.current?[controller.current.signal]:[])])});
   async function load(connect=false){

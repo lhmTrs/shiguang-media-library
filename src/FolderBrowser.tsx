@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Folder, FolderOpen, FolderInput, FolderPlus, RefreshCw, Search, Tag, X, Play, Pause, Image, Film, Music2 } from "lucide-react";
 import type { Asset } from "./main";
@@ -29,6 +30,7 @@ function FolderNode({ root, directory = "", name, active, choose, request, revis
   const selected = active.root === root.id && active.directory === directory;
   const ancestor = active.root === root.id && (!directory || active.directory.startsWith(directory + "/"));
   const [open, setOpen] = useState(ancestor), [branch, setBranch] = useState<Branch | null>(null), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '素材目录'});
   const leaf = level >= 2 || directory === pendingDirectory;
   const parts = directory.split("/");
   const option = categories.find(c => c.rootId === root.id && c.category === (directory === pendingDirectory ? "待确认" : parts[0]) && (c.sub || "") === (parts[1] || ""));
@@ -62,6 +64,7 @@ export function FolderBrowser({ roots, request, revision, play, playingId, isPla
   const [page, setPage] = useState(1), [newFolder, setNewFolder] = useState<string | null>(null);
   const [result, setResult] = useState<{ items: Asset[]; total: number; pages: number }>({ items: [], total: 0, pages: 0 });
   const [loading, setLoading] = useState(false), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  useFeedbackToast(error, {source: '素材目录'});
   const [scanJob, setScanJob] = useState("");
   const [preview, setPreview] = useState<Asset | null>(null);
   const previewContext = [active.root, active.directory, search, kind, page, revision].join(':');

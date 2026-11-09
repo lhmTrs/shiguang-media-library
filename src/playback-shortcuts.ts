@@ -4,7 +4,7 @@ export function bindPlaybackSpace(root: HTMLElement, toggle: () => void, enabled
   const space = (event: KeyboardEvent) => event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar';
   const down = (event: KeyboardEvent) => {
     if (!space(event) || event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-    if (event.target instanceof Element && event.target.closest('input,textarea,select,video,audio,[role="textbox"],[role="slider"],[role="combobox"],[role="alertdialog"],[contenteditable]:not([contenteditable="false"])')) return;
+    if (event.target instanceof Element && event.target.closest('input,textarea,select,video,audio,[role="textbox"],[role="slider"],[role="combobox"],[role="alertdialog"],[data-global-feedback],[contenteditable]:not([contenteditable="false"])')) return;
     event.preventDefault(); event.stopPropagation();
     if (event.repeat || held) return;
     held = true;

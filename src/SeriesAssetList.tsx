@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import React, { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
 import type { Asset } from "./main";
@@ -19,6 +20,7 @@ function SeriesMembers({ group, query, revision, request, renderAsset, onLoaded,
 }) {
   const [page, setPage] = useState(1), [data, setData] = useState<Members | null>(null);
   const [busy, setBusy] = useState(true), [error, setError] = useState(""), [retry, setRetry] = useState(0);
+  useFeedbackToast(error, {source: '素材管理'});
   const [focusPage, setFocusPage] = useState(focusId);
   useEffect(() => { setFocusPage(focusId); }, [focusId]);
   useEffect(() => {

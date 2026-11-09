@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LocalRequest } from './OpenAISettings';
 import './cloud-audio-manual.css';
@@ -10,6 +11,7 @@ export function CloudAudioUpload({request}:{request:LocalRequest}){
  const [items,setItems]=useState<Asset[]>([]),[jobs,setJobs]=useState<Intent[]>([]),[groups,setGroups]=useState<Group[]>([]);
  const [q,setQ]=useState(''),[page,setPage]=useState(1),[more,setMore]=useState(false),[assetId,setAssetId]=useState('');
  const [category,setCategory]=useState(''),[sub,setSub]=useState(''),[groupId,setGroupId]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(true);
+  useFeedbackToast(error, {source: '云端音频'});
  const activeActions=useRef(0);const hasInFlight=jobs.some(j=>['uploading','requesting'].includes(j.state));
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const refresh=useCallback(async()=>{const rows=await request<Intent[]>('/cloud-audio/uploads');if(alive.current)setJobs(rows);},[request]);

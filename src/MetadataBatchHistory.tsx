@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { ChevronDown, LoaderCircle, Undo2 } from "lucide-react";
 
@@ -7,6 +8,8 @@ type Item = { id: string; before: { name: string; path: string; tags: string[]; 
 type Detail = { items: Item[]; skipped: { id: string; reason: string }[] };
 export function MetadataBatchHistory({ request, changed, runTask }: { request: Request; changed: () => void; runTask: (label: string, fn: () => Promise<void>) => Promise<void> }) {
   const [rows, setRows] = useState<Batch[]>([]), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
+  useFeedbackToast(notice, {source: '素材管理', kind: 'auto'});
   const [open, setOpen] = useState<string | null>(null), [detail, setDetail] = useState<Detail | null>(null), [limit, setLimit] = useState(20);
   useEffect(() => {
     let live = true;

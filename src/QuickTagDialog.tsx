@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { Tag, Search, X, Check, Plus } from "lucide-react";
 import type { Asset } from "./main";
@@ -18,6 +19,7 @@ export function QuickTagDialog({ asset, request, close, changed }: Props) {
     [query, setQuery] = useState(""),
     [busy, setBusy] = useState(true),
     [error, setError] = useState("");
+  useFeedbackToast(error, {source: '标签管理'});
   async function refresh() {
     const [list, a] = await Promise.all([
       request<Item[]>("/tags"),

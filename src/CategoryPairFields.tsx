@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { CategoryFilter } from "./CategoryFilter";
 
@@ -9,6 +10,7 @@ export function CategoryPairFields({ category, sub, categories, request, onChang
 }) {
   const [children, setChildren] = useState<Subcategory[]>([]);
   const [loading, setLoading] = useState(true), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '分类管理'});
   useEffect(() => {
     let live = true;
     request<Subcategory[]>("/subcategories").then(rows => { if (live) setChildren(rows); })

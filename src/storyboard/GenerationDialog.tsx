@@ -1,3 +1,4 @@
+import {useFeedbackToast,useTaskFailureToast} from '../global-feedback';
 import React,{useEffect,useRef,useState} from 'react';
 import {X} from 'lucide-react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
@@ -10,6 +11,9 @@ import './generation.css';
 type Props={projectId:string;projectName:string;libraryId:string;request:PromptRequest;prepare?:()=>Promise<number|null>;dirty?:()=>boolean;projectLocked?:boolean;taskId?:string;onClose:()=>void;onImported?:(taskId:string)=>Promise<void>;onViewing?:(ids:string[])=>void};
 export function GenerationDialog({projectId,projectName,libraryId,request,prepare,dirty,projectLocked=false,taskId,onClose,onImported,onViewing}:Props){
  const scope=generationScope(libraryId,projectId),[entry]=useState<GenerationDraft>(()=>getGenerationDraft(scope)),[,render]=useState(0),[tab,setTab]=useState<'script'|'rules'|'model'>('script'),[connection,setConnection]=useState<GenerationConnection|null>(null),[formats,setFormats]=useState<{formats:{id:string;revision:string;schemaProfile:string;outputSchema:unknown}[];defaultMainRule:{id:string;version:number}}|null>(null),[preflight,setPreflight]=useState<{result:GenerationPreflight;input:GenerationInput}|null>(null),[task,setTask]=useState<GenerationTask|null>(null),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState('正在读取生成设置'),[impact,setImpact]=useState<CodexTaskImpact|null>(null),[snapshot,setSnapshot]=useState<unknown>(null),[output,setOutput]=useState(''),[presets,setPresets]=useState<{id:string;name:string;config:Omit<GenerationConfig,'script'>}[]>([]),[presetName,setPresetName]=useState(''),[pollEpoch,bumpPoll]=useState(0);
+  useFeedbackToast(error, {source: '分镜设计'});
+  useFeedbackToast(notice, {source: '分镜设计', kind: 'auto'});
+  useTaskFailureToast(task?.taskId,!!task&&generationActive(task),task?.status==='failed'?'分镜生成失败：'+(task.errors.map(e=>e.path+'：'+e.message).join('；')||task.errorCode||'请查看本轮任务详情'):'',{source:'分镜生成'});
  const alive=useRef(true),operation=useRef(false),panel=useRef<HTMLDialogElement>(null),latest=useRef(task),inputRevision=useRef(0),completion=useRef(''),viewRef=useRef(onViewing),importRef=useRef(onImported),readSequence=useRef(0),expectedTask=useRef(taskId||entry.taskId);latest.current=task;viewRef.current=onViewing;importRef.current=onImported;
  const api=<T=any,>(p:string,body?:unknown,method?:string)=>request<T>('/storyboard-generation'+p,body,method,{signal:AbortSignal.timeout(20000)});
  function repaint(){if(alive.current)render(n=>n+1);}

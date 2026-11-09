@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
@@ -161,7 +162,9 @@ export function CloudLoginPage({
   const [resetPassword, setResetPassword] = useState("");
   const [resetConfirm, setResetConfirm] = useState("");
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端账户'});
   const [notice, setNotice] = useState("");
+  useFeedbackToast(notice, {source: '云端账户', kind: 'auto'});
   const [autoMode, setAutoMode] = useState(false);
   const [recoverConfirm, setRecoverConfirm] = useState(false);
   const lock = useRef(false);

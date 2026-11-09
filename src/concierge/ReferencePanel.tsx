@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import {useEffect,useRef,useState} from 'react';
 import {BookOpen,Save,Search,X} from 'lucide-react';
 import {errorText,scopeQuery,type Rules} from './types';
@@ -5,6 +6,8 @@ import {errorText,scopeQuery,type Rules} from './types';
 type Client={read:<T>(path:string,signal?:AbortSignal)=>Promise<T>;write:<T>(path:string,body:unknown,method?:string)=>Promise<T>};
 export function ReferencePanel({scope,kind,client,close}:{scope:string;kind:'rules'|'docs';client:Client;close:()=>void}){
   const [rules,setRules]=useState<Rules|null>(null),[text,setText]=useState(''),[catalog,setCatalog]=useState<unknown>(null),[docs,setDocs]=useState<unknown>(null),[query,setQuery]=useState(''),[operationId,setOperationId]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  useFeedbackToast(error, {source: '自由管家'});
+  useFeedbackToast(notice, {source: '自由管家', kind: 'auto'});
   const alive=useRef(true),readVersion=useRef(0),saving=useRef(false),searchController=useRef<AbortController|null>(null),panel=useRef<HTMLDivElement>(null);
   useEffect(()=>{
     alive.current=true;const previous=document.activeElement as HTMLElement|null;panel.current?.focus();const controller=new AbortController();setBusy(true);

@@ -11,5 +11,5 @@ try{
   const dir=await fs.stat('.');if(!dir.isDirectory()||dir.dev!==directory.dev||dir.ino!==directory.ino)throw Error('项目视频文件夹已变化');
   const st=await fs.lstat(stage);if(!st.isFile()||st.isSymbolicLink()||identity(st)!==stageIdentity)throw Error('待导入视频已变化');
   const ext=path.extname(fileName),stem=fileName.slice(0,fileName.length-ext.length);let number=0,rename=suffixed;
-  while(true){const name=rename?stem+'_'+(number++)+ext:fileName;try{try{await fs.link(stage,name);}catch(e){if(e.code!=='EXDEV')throw e;await fs.copyFile(stage,name,constants.COPYFILE_EXCL);}process.stdout.write(JSON.stringify({fileName:name}));break;}catch(e){if(e.code!=='EEXIST')throw e;rename=true;}}
+  while(true){const name=rename?stem+'_'+(number++)+ext:fileName;try{if((await fs.readdir('.')).some(n=>n.normalize('NFC').toLowerCase()===name.normalize('NFC').toLowerCase())){const e=Error('目标同名文件已存在，请重新核对冲突');e.code='EEXIST';throw e;}try{await fs.link(stage,name);}catch(e){if(e.code!=='EXDEV')throw e;await fs.copyFile(stage,name,constants.COPYFILE_EXCL);}process.stdout.write(JSON.stringify({fileName:name}));break;}catch(e){if(e.code!=='EEXIST'||!suffixed)throw e;rename=true;}}
 }catch(e){process.stderr.write(e.message);process.exitCode=1;}

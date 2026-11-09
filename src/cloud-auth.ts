@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LocalRequest } from "./OpenAISettings";
 
@@ -213,6 +214,7 @@ export function useCloudAuth(request: LocalRequest) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<CloudBusy>(null);
   const [loadError, setLoadError] = useState("");
+  useFeedbackToast(loadError, {source: '云端音频'});
   const epoch = useRef(0);
   const lock = useRef(false);
   const alive = useRef(true);

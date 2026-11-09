@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, Settings, X, Check } from "lucide-react";
 import type { Asset } from "./main";
@@ -44,9 +45,11 @@ export function MusicAnalysisPanel({
   const [duration, setDuration] = useState(30);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '音乐分析'});
   const [failure, setFailure] = useState<Diagnostic | null>(null);
   const [settings, setSettings] = useState(false);
   const [notice, setNotice] = useState("");
+  useFeedbackToast(notice, {source: '音乐分析', kind: 'auto'});
   const seq = useRef(0);
   const available = asset.online && asset.ext !== "ncm";
   function accept(r: Analysis | null) {

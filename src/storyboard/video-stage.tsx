@@ -1,12 +1,14 @@
 import React,{useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {VideoPreviewPlayer,type PreviewRun,type PreviewSource,type PlayerSnapshot} from './video-player';
 import {bindPlaybackSpace} from '../playback-shortcuts';
+import {useFeedbackToast} from '../global-feedback';
 export type PreviewShot={id:string;number:string;startMs:number;durationMs:number};
 export const videoClock=(ms:number)=>{const value=Math.max(0,Math.round(ms));return Math.floor(value/60000)+':'+String(Math.floor(value/1000)%60).padStart(2,'0')+'.'+String(value%1000).padStart(3,'0');};
 const positions=new Map<string,number>();
 const ShotStrip=React.memo(function ShotStrip({shots,currentId,onSeek,onManual,strip,disabled}:{disabled:boolean;shots:PreviewShot[];currentId?:string;onSeek:(ms:number)=>void;onManual:()=>void;strip:React.RefObject<HTMLDivElement>}){return <div className="sbv-shot-strip" ref={strip} aria-label="全片镜号条" onWheel={onManual} onPointerDown={onManual} onTouchStart={onManual} onKeyDown={e=>{if(['ArrowDown','ArrowUp','PageDown','PageUp','Home','End'].includes(e.key))onManual();}}>{shots.map(s=><button disabled={disabled} key={s.id} data-preview-shot={s.id} aria-label={'跳转到镜'+s.number} aria-current={currentId===s.id?'true':undefined} onClick={()=>onSeek(s.startMs)}><strong>{s.number}</strong><small>{videoClock(s.startMs)}</small></button>)}</div>;});
 export function VideoStage({scope,version,runs,sources,shots,durationMs,startShot,disabled=false,autoPlay=false,onPosition,seekRequest,pauseSignal,initialPositionMs}:{scope:string;version:string;runs:PreviewRun[];sources:PreviewSource[];shots:PreviewShot[];durationMs:number;startShot?:string;disabled?:boolean;autoPlay?:boolean;onPosition?:(position:number)=>void;seekRequest?:{shotId:string;request:number};pauseSignal?:number;initialPositionMs?:number}){
  const host=useRef<HTMLDivElement>(null),engine=useRef<VideoPreviewPlayer|null>(null),last=useRef(0),strip=useRef<HTMLDivElement>(null),[state,setState]=useState<PlayerSnapshot>({positionMs:0,playing:false,buffering:false,error:'',runIndex:-1}),[manual,setManual]=useState(false);
+ useFeedbackToast(state.error,{source:'视频预览'});
  const callback=useRef(onPosition),initialized=useRef(false);callback.current=onPosition;
  const autoStart=useRef(autoPlay),autoStarted=useRef(false),blocked=useRef(disabled);blocked.current=disabled;
  const seek=useCallback((ms:number)=>{if(!disabled)engine.current?.seek(ms);},[disabled]),browse=useCallback(()=>setManual(true),[]);

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { KeyRound, Save, Trash2, PlugZap, FileText } from "lucide-react";
 import { OpenAIDiagnostics, type Diagnostic } from "./OpenAIDiagnostics";
@@ -26,6 +27,7 @@ export function OpenAISettings({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '音乐分析'});
   const [showLogs, setShowLogs] = useState(false);
   const [revision, setRevision] = useState(0);
   const [testResult, setTestResult] = useState<{

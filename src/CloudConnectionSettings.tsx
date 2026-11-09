@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Cloud, LoaderCircle, Save } from "lucide-react";
 import type { LocalRequest } from "./OpenAISettings";
@@ -27,10 +28,13 @@ export function CloudConnectionSettings({
 }) {
   const [view, setView] = useState<CloudAuthView | null>(null);
   const [loadError, setLoadError] = useState("");
+  useFeedbackToast(loadError, {source: '云端音频'});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [notice, setNotice] = useState("");
+  useFeedbackToast(notice, {source: '云端音频', kind: 'auto'});
   const lock = useRef(false);
 
   const [config, setConfig] = useState({

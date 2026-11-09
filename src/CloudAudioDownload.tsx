@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 /**
  * T-LOCAL-014B：手动云端音频下载页面。
  *
@@ -152,6 +153,7 @@ function jobActive(job: AudioJob): boolean {
 export function CloudAudioDownload({ request }: { request: LocalRequest }) {
   const [status, setStatus] = useState<AudioStatus | null>(null);
   const [statusError, setStatusError] = useState("");
+  useFeedbackToast(statusError, {source: '云端音频'});
   const [roots, setRoots] = useState<AudioRoot[]>([]);
   const [rootId, setRootId] = useState("");
   const [pathInput, setPathInput] = useState("");
@@ -167,14 +169,17 @@ export function CloudAudioDownload({ request }: { request: LocalRequest }) {
   const appliedSearch = useRef({q:"",groupId:""});
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  useFeedbackToast(catalogError, {source: '云端音频'});
   const [detail, setDetail] = useState<DetailState | null>(null);
   const [chosenShare, setChosenShare] = useState("");
   const [jobs, setJobs] = useState<AudioJob[]>([]);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  useFeedbackToast(notice, {source: '云端音频', kind: 'auto'});
   const [myAccountId, setMyAccountId] = useState("");
   const [withdrawingShare, setWithdrawingShare] = useState("");
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const catalogSeq = useRef(0);
   const detailSeq = useRef(0);
   const completedSeen = useRef<Set<string>>(new Set());

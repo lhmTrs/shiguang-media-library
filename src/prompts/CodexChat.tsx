@@ -1,3 +1,4 @@
+import {useFeedbackToast,useTaskFailureToast} from '../global-feedback';
 import React,{useEffect,useId,useRef,useState} from 'react';
 import {ArrowUp,Check,Copy,Download,Image as ImageIcon,LoaderCircle,CircleAlert,MessageSquare,Plus,RotateCcw,Square,Trash2,X,Zap} from 'lucide-react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
@@ -48,9 +49,12 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  const [connection,setConnection]=useState<Connection>({connected:false,authenticated:false,accountType:null,models:[],active:0});
  const [connectionPhase,setConnectionPhase]=useState<'checking'|'idle'|'connecting'|'connected'|'login-required'|'empty'|'failed'|'unknown'>('checking');
  const [connectionError,setConnectionError]=useState(''),[connectionStarted,setConnectionStarted]=useState(0),[connectionSeconds,setConnectionSeconds]=useState(0);
+  useFeedbackToast(connectionError, {source: '提示词模板', active: active});
  const connectionSeq=useRef(0),connectionAbort=useRef<AbortController|null>(null);
  const [model,setModel]=useState(()=>readTextPreference('shiguang.codex.model')||''),[effort,setEffort]=useState(()=>readTextPreference('shiguang.codex.effort')||''),[output,setOutput]=useState('mixed');
  const [heads,setHeads]=useState<Head[]>([]),[conversation,setConversation]=useState<Conversation|null>(null),[deleted,setDeleted]=useState(false),[draft,setDraft]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[reconnecting,setReconnecting]=useState(false),[lightbox,setLightbox]=useState<Block|null>(null),[destination,setDestination]=useState<{imageId:string;roots:{id:string;name:string}[];root:string}|null>(null);
+  useFeedbackToast(error, {source: '提示词模板', active: active});
+  useFeedbackToast(notice, {source: '提示词模板', active: active, kind: 'auto'});
  const section=useRef<HTMLElement>(null),inputRef=useRef<HTMLTextAreaElement>(null),current=useRef<Conversation|null>(null),loadSeq=useRef(0),busyRef=useRef(false),pending=useRef<{signature:string;id:string}|null>(null),newId=useRef(randomId());
  const sendHintId=useId();
  const [stopImpact,setStopImpact]=useState<CodexTaskImpact|null>(null),[highlightTurn,setHighlightTurn]=useState(''),[visible,setVisible]=useState(document.visibilityState==='visible');
@@ -98,6 +102,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  },[active,visible,conversation?.id]);
  useEffect(()=>{if(!active||!visible||!reconnecting||!conversation?.id)return;let pending=false,alive=true;const id=conversation.id;const timer=setInterval(()=>{if(pending)return;pending=true;void api<Conversation>('/conversations/'+id,undefined,undefined,{signal:AbortSignal.timeout(15000)}).then(next=>{if(alive&&current.current?.id===id)install(next)}).catch(()=>{}).finally(()=>pending=false)},2000);return()=>{alive=false;clearInterval(timer)}},[active,visible,reconnecting,conversation?.id]);
  const selectedModel=connection.models.find(m=>m.id===model),last=conversation?.turns.at(-1),generating=!!last&&activeStatuses.includes(last.status),readonly=!!conversation?.deleted_at;
+  useTaskFailureToast(last?.id,generating,last?.error_code&&last.error_code!=='USER_STOPPED'?turnFailure(last):'',{source:'Codex 生成',active});
  const selectedProject=projects.find(p=>p.id===activeProject);
  useEffect(()=>{if(last?.status==='completed')setSendResult('本轮已完成，结果显示在上方对话中。');},[last?.id,last?.status]);
  useEffect(()=>{if(last?.error_code&&!activeStatuses.includes(last.status))void checkConnection();},[last?.id,last?.status,last?.error_code]);

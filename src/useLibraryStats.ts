@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import type {PromptRequest} from './PromptTemplateWorkspace';
 type Shape={total:number;favorites:number;review:number;offline:number;missing:number;kinds:{kind:string;n:number}[];categories:unknown[];formats:string[]};
@@ -9,6 +10,7 @@ function checked<T extends Shape>(value:T):T{
 }
 export function useLibraryStats<T extends Shape>({ready,request,readIdentity,refreshSeconds,blocked}:{ready:boolean;request:PromptRequest;readIdentity:()=>Promise<string>;refreshSeconds:number;blocked:()=>boolean}){
  const [stats,setStats]=useState<T|null>(null),[error,setError]=useState(''),[reading,setReading]=useState(false),[identityChanged,setIdentityChanged]=useState(false);
+  useFeedbackToast(error, {source: '素材管理', active: ready && !blocked()});
  const alive=useRef(true),revision=useRef(0),pending=useRef<{promise:Promise<void>;controller:AbortController}|null>(null),queued=useRef(false),current=useRef(stats),identityFault=useRef(false),blockedRef=useRef(blocked),refreshRef=useRef<(changed?:boolean)=>Promise<void>>(async()=>{});current.current=stats;blockedRef.current=blocked;
  const invalidate=useCallback(()=>{revision.current++;pending.current?.controller.abort();pending.current=null;queued.current=false;current.current=null;setStats(null);setError('');setReading(false);identityFault.current=false;setIdentityChanged(false);},[]);
  const refresh=useCallback((changed=false):Promise<void>=>{

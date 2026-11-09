@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
 import type { Asset } from "./main";
@@ -18,6 +19,7 @@ export function AssetCategoryDialog({ asset, request, close, changed }: {
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '分类管理'});
   const dialog = useRef<HTMLDivElement>(null);
   const saved = useRef(false);
   const dirty = !saved.current && (category !== asset.category || sub !== asset.sub || JSON.stringify(extras) !== JSON.stringify(initialExtras));

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, RefreshCw, Search, Tags, Upload } from "lucide-react";
 import type { LocalRequest } from "./OpenAISettings";
@@ -15,6 +16,8 @@ export function CloudTagsSync({ request, groups, accountId }: { request: LocalRe
   const [mode, setMode] = useState<Scope["mode"]>("SELF"), [group, setGroup] = useState(""), [member, setMember] = useState("");
   const [members, setMembers] = useState<Member[]>([]), [q, setQ] = useState(""), [candidates, setCandidates] = useState<Candidate[]>([]), [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
+  useFeedbackToast(notice, {source: '云端音频', kind: 'auto'});
   const [page, setPage] = useState(0);
   const generation = useRef(0), active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; generation.current++; }; }, []);

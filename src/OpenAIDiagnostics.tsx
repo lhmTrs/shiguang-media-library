@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { Download, RefreshCw, Trash2 } from "lucide-react";
 import type { LocalRequest } from "./OpenAISettings";
@@ -34,6 +35,7 @@ export function OpenAIDiagnostics({
   const [items, setItems] = useState<Diagnostic[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '音乐分析'});
   const [filter, setFilter] = useState("all");
   async function refresh() {
     setBusy(true);

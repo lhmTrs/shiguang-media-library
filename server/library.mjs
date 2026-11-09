@@ -1161,6 +1161,7 @@ export class Library {
       const operation = id();
       let changed = false;
       try {
+        if (this.storyboardVideos?.catalog?.ownsMediaAsset(p.id)) throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
         if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
         const { a, stat } = await this.source(p.id);

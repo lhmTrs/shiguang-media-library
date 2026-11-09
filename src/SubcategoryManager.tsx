@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { Check, FilePenLine, Plus, Trash2, X } from "lucide-react";
 import type { Subcategory } from "./CategoryPairFields";
@@ -8,6 +9,7 @@ export function SubcategoryManager({ parentId, request, revision, selected, sele
   const [rows, setRows] = useState<Subcategory[]>([]);
   const [editor, setEditor] = useState<{ id?: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
   async function load() { setRows(await request<Subcategory[]>("/subcategories?categoryId=" + encodeURIComponent(parentId))); }
   useEffect(() => {
     let live = true;

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, ChevronDown, FileVideo, FolderOpen, Link, Play, Unlink, X } from "lucide-react";
 import type { ProjectRequest } from "./ProjectManager";
@@ -11,6 +12,7 @@ export function TimelineReview({ reference: ref, projectId, projectName, initial
   const occurrences = [...ref.occurrences].sort((a,b)=>(a.start??Infinity)-(b.start??Infinity)||a.track-b.track);
   const [selected,setSelected]=useState(initialIndex), [position,setPosition]=useState(occurrences[initialIndex]?.start??0);
   const [render,setRender]=useState<Render|null>(null), [file,setFile]=useState(""), [offset,setOffset]=useState("0"), [busy,setBusy]=useState(false), [loading,setLoading]=useState(true), [error,setError]=useState(""), [mediaError,setMediaError]=useState(false), [videoDuration,setVideoDuration]=useState(0);
+  useFeedbackToast(error, {source: '项目管理'});
   const [settingsOpen,setSettingsOpen]=useState(true);
   const [filePickerAvailable,setFilePickerAvailable]=useState<boolean|null>(null);
   const requestGeneration=useRef(0);

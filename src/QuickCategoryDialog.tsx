@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { X, Check, FolderOpen, ListPlus, Search } from "lucide-react";
 import type { Asset } from "./main";
@@ -18,6 +19,7 @@ export function QuickCategoryDialog({ asset, request, close, changed }: Props) {
     [query, setQuery] = useState(""),
     [busy, setBusy] = useState(true),
     [error, setError] = useState("");
+  useFeedbackToast(error, {source: '分类管理'});
   useEffect(() => {
     let live = true;
     Promise.all([

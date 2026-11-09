@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { Trash2, X } from "lucide-react";
 
@@ -9,6 +10,7 @@ export function MissingCleanupDialog({ ids, request, close, changed }: {
 }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
   const [result, setResult] = useState<CleanupResult | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {

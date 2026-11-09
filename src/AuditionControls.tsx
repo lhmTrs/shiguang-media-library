@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, ListMusic, LogIn, LogOut, Pause, Play, Repeat2, RotateCcw, SkipBack, SkipForward, Star, Volume2, X } from "lucide-react";
 import type { Asset } from "./main";
@@ -11,6 +12,7 @@ export function AuditionControls({ asset, playing, position, length, volume, inP
   const [expanded, setExpanded] = useState(true), [failed, setFailed] = useState(false);
   const pausedOnPress = useRef(false);
   const [startDraft, setStartDraft] = useState(String(inPoint)), [endDraft, setEndDraft] = useState(String(outPoint)), [rangeError, setRangeError] = useState("");
+  useFeedbackToast(rangeError, {source: '素材管理'});
   useEffect(() => { setStartDraft(String(Number(inPoint.toFixed(2)))); setRangeError(""); }, [inPoint, asset.id]);
   useEffect(() => { setEndDraft(String(Number(outPoint.toFixed(2)))); setRangeError(""); }, [outPoint, asset.id]);
   function commitRange(start: boolean) {

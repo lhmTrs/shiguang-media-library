@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import {useEffect,useRef,useState} from 'react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
 import {blankScope,errorText,running,scopeQuery,type Attachment,type LocalAttachment,type Pending,type Scope,type ScopeState,type Session,type Status,type Task,type Turn} from './types';
@@ -14,6 +15,8 @@ const abortError=(e:unknown)=>(e as Error)?.name==='AbortError';
 export function useConcierge(request:PromptRequest,scope:string,enabled:boolean){
   const states=useRef(new Map<string,ScopeState>()),alive=useRef(true),identity=useRef(''),blocked=useRef(false),epoch=useRef(0);
   const [,render]=useState(0),[status,setStatus]=useState<Status|null>(null),[statusError,setStatusError]=useState(''),[connecting,setConnecting]=useState(false),[identityError,setIdentityError]=useState('');
+  useFeedbackToast(statusError, {source: '自由管家'});
+  useFeedbackToast(identityError, {source: '自由管家'});
   const statusRef=useRef(status),statusVersion=useRef(0),connectingRef=useRef(false);
   const currentScope=useRef(scope);currentScope.current=scope;
   const submissions=useRef(new Map<string,{id:string;text:string;attachments:LocalAttachment[];revision:number}>());

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, CheckCircle2, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react";
 
@@ -13,6 +14,7 @@ export function DuplicateCleanupDialog({ scope, reportId, request, close, change
 }) {
   const [preview, setPreview] = useState<Preview | null>(null), [roots, setRoots] = useState<Root[]>([]);
   const [busy, setBusy] = useState(true), [error, setError] = useState(""), [result, setResult] = useState<Result | null>(null);
+  useFeedbackToast(error, {source: '素材管理'});
   const [dirty, setDirty] = useState(false), [acknowledged, setAcknowledged] = useState(false), [visible, setVisible] = useState(20);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { AssetMergeDialog, readMergePairs } from "./AssetMergeDialog";
 import { useEffect, useRef, useState } from "react";
 import { Fingerprint, Search, Square, X } from "lucide-react";
@@ -102,11 +103,13 @@ export function OfflineRepairDialog({ ids, assets = [], roots, request, close, r
   const [task, setTask] = useState<Task | null>(null), [scope, setScope] = useState<SavedTask | null>(null);
   const [resume, setResume] = useState<SavedTask | null>(() => readSaved(storageKey, uniqueIds));
   const [sending, setSending] = useState<"start" | "cancel" | "query" | null>(null), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
   const [paused, setPaused] = useState(false), [confirmFingerprint, setConfirmFingerprint] = useState(false);
   const restoreKey = "offline-restore-intent:" + selectionKey;
   const [readiness, setReadiness] = useState<Readiness | null>(null), [restorePreview, setRestorePreview] = useState<RestorePreview | null>(null);
   const [restoreIntent, setRestoreIntent] = useState<RestoreIntent | null>(() => restoredIntent(restoreKey, uniqueIds));
   const [restoreOperation, setRestoreOperation] = useState<RestoreOperation | null>(null), [restoreBusy, setRestoreBusy] = useState<string | null>(null), [restoreError, setRestoreError] = useState("");
+  useFeedbackToast(restoreError, {source: '素材管理'});
   const [operationHistory, setOperationHistory] = useState<RestoreOperation[]>([]), [historyCursor, setHistoryCursor] = useState<HistoryCursor | null>(null), [repairPaused, setRepairPaused] = useState(false);
   const restoreGeneration = useRef(0), restoreQuery = useRef<AbortController | null>(null), restoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null), notifiedRestore = useRef(new Set<string>());
   const registrationCommand = useRef<{clientCommandId: string; expectedVersion: number; assetIds: string[]} | null>(null);
@@ -301,7 +304,7 @@ export function OfflineRepairDialog({ ids, assets = [], roots, request, close, r
           {readiness && <div><p>{readiness.ready ? "已登记实际上传存储；每次恢复仍会重新核验。" : readiness.phase === "NOT_REGISTERED" ? "本库上传存储尚未登记，核验实际账本和资源后才能恢复。" : readiness.phase === "REGISTERING" ? "登记处理中，请稍后明确核对。" : readiness.phase === "INIT_PENDING" ? "登记未全部完成，已保留待核现场；不会自动重建。" : restoreProblem({code:readiness.code})}</p>{readiness.phase === "NOT_REGISTERED" && readiness.canRegister && <button disabled={disabled || invalid} onClick={registerEnvironment}>核验并登记本库上传存储</button>}</div>}
           {restoreIntent && !restoreOperation && <p>有上次确认记录，结果须向服务核对。<button disabled={disabled} onClick={() => queryRestore()}>核对上次确认结果</button></p>}
           {restorePreview && <section aria-label="所选位置确认" className="missing-cleanup-item"><p>核对位置：{rootName(restorePreview.targetRootId)} / {restorePreview.targetRelativePath}</p><p>将原 ID 重新关联到所选内容一致文件，保留原标签、备注、收藏和确认；不会移动文件，也不会合并其它记录。</p><button className="primary" disabled={disabled || unresolvedRestore || Date.now() >= restorePreview.expiresAt} onClick={confirmRestore}>确认恢复原 ID</button></section>}
-          {restoreOperation && <section aria-label="实际恢复状态" className="missing-cleanup-item"><p role="status">{RESTORE_PHASES[restoreOperation.phase]}{restoreOperation.inFlight ? " · 操作仍在处理中" : ""}</p><p>{assetName(restoreOperation.assetId)} → {rootName(restoreOperation.targetRootId)} / {restoreOperation.targetRelativePath}</p><button disabled={!!restoreBusy} onClick={() => queryRestore()}>查询当前恢复状态</button>{restoreOperation.needsRecovery && <button disabled={disabled} onClick={recoverRestore}>{restoreOperation.phase === "PREPARED" ? "核对并中止未提交操作" : "补齐恢复镜像"}</button>}</section>}
+          {restoreOperation && <section aria-label="实际恢复状态" className="missing-cleanup-item"><p role="status">{RESTORE_PHASES[restoreOperation.phase]}{restoreOperation.inFlight ? " · 操作仍在处理中" : ""}</p><p>{assetName(restoreOperation.assetId)} → {rootName(restoreOperation.targetRootId)} / {restoreOperation.targetRelativePath}</p><div className="modal-inline-actions"><button disabled={!!restoreBusy} onClick={() => queryRestore()}>查询当前恢复状态</button>{restoreOperation.needsRecovery && <button disabled={disabled} onClick={recoverRestore}>{restoreOperation.phase === "PREPARED" ? "核对并中止未提交操作" : "补齐恢复镜像"}</button>}</div></section>}
           {mergeHistory.map(item => <p key={item.operationId}>这是合并记录，需在合并界面核对。<button disabled={disabled} aria-label={"查看合并记录："+item.operationId} onClick={() => setMergeTarget(item)}>查看合并记录</button></p>)}
           {operationHistory.map(op => <div key={op.operationId} className="missing-cleanup-item"><span>{assetName(op.assetId)}：{RESTORE_PHASES[op.phase]}</span><button disabled={disabled} onClick={() => queryRestore(op.operationId)} aria-label={"查看恢复操作：" + op.operationId}>查看操作状态</button></div>)}
           {historyCursor && <button disabled={disabled} onClick={() => readHistory(true)}>更多恢复记录</button>}

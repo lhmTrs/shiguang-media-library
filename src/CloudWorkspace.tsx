@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -284,6 +285,7 @@ export function CloudWorkspace({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [tab, setTab] = useState<"security" | "groups" | "audio" | "tags" | "accounts" | "roles" | "audit" | "upload-settings" | "audio-maintenance">(initialTab);
   const generation = useRef(0);
   /** 只读最新 controller，避免把整个 auth 对象放进 effect 依赖导致父级重渲染即重取。 */
@@ -619,6 +621,7 @@ export function AudioMaintenancePanel({ request, identityKey }: { request: Local
   const [protocol, setProtocol] = useState("0"), [storage, setStorage] = useState("2"), [lookupRun, setLookupRun] = useState("");
   const [verifiedFingerprint, setVerifiedFingerprint] = useState(""), [scopeConfirmed, setScopeConfirmed] = useState(false), [recover, setRecover] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const currentIdentity = useRef(identityKey); currentIdentity.current = identityKey;
   const alive = useRef(true), working = useRef(false), serial = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
@@ -769,6 +772,7 @@ function SecurityPanel({
   onNotice: (message: string) => void;
 }) {
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   const [confirmDevice, setConfirmDevice] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -994,6 +998,7 @@ function GroupsPanel({
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   const [rename, setRename] = useState("");
   const [addName, setAddName] = useState("");
@@ -1587,6 +1592,7 @@ function AccountDevices({ account, request, guard, onAuthFailure, onClose }: {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   useEffect(() => {
     const element = dialog.current;
@@ -1691,6 +1697,7 @@ function AccountsPanel({
   const [page, setPage] = useState<Page<Account>>({ items: [], total: 0, limit: PAGE_SIZE, offset: 0 });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   const [secret, setSecret] = useState<{ title: string; code: string; expiresAt: string | null; openingId?: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -2137,6 +2144,7 @@ function RolesPanel({
   const [editing, setEditing] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<"roles" | "auth">("roles");
@@ -2865,6 +2873,7 @@ function AuditPanel({
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
 
   const load = useCallback(
     async (nextOffset: number) => {

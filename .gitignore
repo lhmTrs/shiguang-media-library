@@ -9,6 +9,8 @@ releases/
 *.zip
 reports/
 backups/
+# Local coordination, test scenes and deployment records are not release source.
+/collab/
 .DS_Store
 .env
 .env.*

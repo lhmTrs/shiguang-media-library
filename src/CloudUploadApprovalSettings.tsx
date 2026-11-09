@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { LoaderCircle, RefreshCw, Save } from "lucide-react";
 import type { LocalRequest } from "./OpenAISettings";
@@ -13,6 +14,7 @@ export function CloudUploadApprovalSettings({ request, guard, onAuthFailure }: {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '云端音频'});
   const [success, setSuccess] = useState("");
   const [conflict, setConflict] = useState(false);
   const sequence = useRef(0);

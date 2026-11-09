@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronRight, FileAudio, ListChecks, LoaderCircle, Pause, Play, RefreshCw, Square, Upload, X } from 'lucide-react';
 import { createCloudUploadTaskClient, TaskClientError, type CloudUploadTaskClient, type RetryQualification, type TaskCommandStorage, type TaskScope, type TaskTarget, type TaskPreview, type PreviewItem, type PreviewPage, type Representative, type TaskBatch, type TaskItem, type TaskSummary, type ItemPage, type PendingTaskCommand, type MutationKind, type MutationResult, type MutationOutcome, type ScopeRoot, type ScopeCategory } from './cloud-upload-task-client';
@@ -34,6 +35,8 @@ function TaskCenterSession(props:UploadTaskCenterProps&{currentIdentity:()=>stri
   const client=useRef<CloudUploadTaskClient|null>(null),life=useRef(0),active=useRef(false),retryRead=useRef<AbortController|null>(null);
   const [clientReady,setClientReady]=useState(false),[writeCoordinated,setWriteCoordinated]=useState(false);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[closed,setClosed]=useState(false),[pending,setPending]=useState<PendingTaskCommand|null>(null),[journalError,setJournalError]=useState(false);
+  useFeedbackToast(error, {source: '云端音频'});
+  useFeedbackToast(notice, {source: '云端音频', kind: 'auto'});
   const [scopeRoots,setScopeRoots]=useState<ScopeRoot[]>([]),[rootCursor,setRootCursor]=useState<string|null>(null),[scopeRead,setScopeRead]=useState(false),[scopeCategories,setScopeCategories]=useState<ScopeCategory[]>([]),[categoryCursor,setCategoryCursor]=useState<string|null>(null),[providerBinding,setProviderBinding]=useState<string|null>(null),[categoryRoot,setCategoryRoot]=useState<string|null>(null),[previewHistorical,setPreviewHistorical]=useState(false);
   const [rootId,setRootId]=useState(''),[categoryIndex,setCategoryIndex]=useState('all'),[targetValue,setTargetValue]=useState('PRIVATE');
   const [preview,setPreview]=useState<TaskPreview|null>(null),[previewItems,setPreviewItems]=useState<PreviewItem[]>([]),[previewPage,setPreviewPage]=useState<PreviewPage|null>(null),[representative,setRepresentative]=useState<{group:Representative;item:PreviewItem}|null>(null),[representativeConfirmed,setRepresentativeConfirmed]=useState(false),[enqueueConfirmed,setEnqueueConfirmed]=useState(false);

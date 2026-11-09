@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -55,6 +56,7 @@ export function MusicTagQueue({
   const [skips, setSkips] = useState(0);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  useFeedbackToast(error, {source: '标签管理'});
   const [autoplay, setAutoplay] = useState(false);
   const skipped = useRef(new Set<string>());
   const mounted = useRef(true);

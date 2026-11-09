@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { Check, X, Play, FilePenLine, Plus, LoaderCircle } from "lucide-react";
 import type { Asset } from "./main";
@@ -27,6 +28,7 @@ export function AssetEditDialog({ asset, request, close, changed, play, legacyCa
   const [members, setMembers] = useState<Category[]>([]);
   const [extra, setExtra] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [message, setMessage] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
   const [plan, setPlan] = useState<RenamePlan | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const dirty = tagInput.trim() || JSON.stringify(tags) !== JSON.stringify(current.tags) || note !== current.note || category !== current.category || sub !== current.sub || kind !== current.kind || favorite !== !!current.favorite || confirmed !== !!current.confirmed || name !== current.name;

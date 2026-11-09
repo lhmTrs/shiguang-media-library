@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import {
   FolderOpen,
@@ -80,6 +81,8 @@ export function CategoryManager({
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  useFeedbackToast(error, {source: '分类管理'});
+  useFeedbackToast(notice, {source: '分类管理', kind: 'auto'});
   const [editor, setEditor] = useState<{
     mode: "create" | "rename" | "delete";
     id?: string;

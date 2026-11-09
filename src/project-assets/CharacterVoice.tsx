@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import {useEffect,useRef,useState} from 'react';
 import {Mic,Upload,Trash2} from 'lucide-react';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
@@ -10,6 +11,7 @@ const encode=(file:File)=>new Promise<string>((resolve,reject)=>{const reader=ne
 export function CharacterVoice({assetId,revision,value,disabled,active,request,onChange,onBusy}:{assetId:string;revision:number;value?:string;disabled:boolean;active:boolean;request:PromptRequest;onChange:(value:string)=>void;onBusy:(busy:boolean)=>void}){
   let profile=empty(),invalid=false;try{if(value)profile=JSON.parse(value);}catch{invalid=true;}
   const [error,setError]=useState(''),[uploading,setUploading]=useState(false),[duration,setDuration]=useState<number|null>(null);
+  useFeedbackToast(error, {source: '项目资产', active: active});
   const input=useRef<HTMLInputElement>(null),audio=useRef<HTMLAudioElement>(null),alive=useRef(true),working=useRef(false),latest=useRef(profile);latest.current=profile;
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;audio.current?.pause();};},[]);
   useEffect(()=>{if(!active)audio.current?.pause();},[active]);

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Check, ChevronLeft, ChevronRight, Folder, FolderPlus, HardDrive, LoaderCircle, RefreshCw, Search, X } from "lucide-react";
 
@@ -18,6 +19,7 @@ export function MoveDestinationPicker({ roots, rootId, directory, disabled, api,
   const [branch, setBranch] = useState<Branch | null>(null);
   const [loading, setLoading] = useState(true), [creating, setCreating] = useState(false);
   const [error, setError] = useState(""), [query, setQuery] = useState("");
+  useFeedbackToast(error, {source: '素材目录'});
   const [newName, setNewName] = useState<string | null>(null), [revision, setRevision] = useState(0);
   const history = useRef<Location[]>([{ root: rootId, directory }]);
   const cursor = useRef(0), request = useRef(0);

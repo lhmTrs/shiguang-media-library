@@ -1,3 +1,4 @@
+import {useFeedbackToast} from '../global-feedback';
 import {useEffect,useRef,useState} from 'react';
 import {RefreshCw,Square} from 'lucide-react';
 import {errorText,running,taskLabel,type Task} from './types';
@@ -5,6 +6,7 @@ import {errorText,running,taskLabel,type Task} from './types';
 type Client={read:<T>(path:string,signal?:AbortSignal)=>Promise<T>;write:<T>(path:string,body:unknown,method?:string)=>Promise<T>};
 export function ConciergeTasks({enabled,client,open}:{enabled:boolean;client:Client;open:(scope:string)=>void}){
   const [tasks,setTasks]=useState<Task[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(''),[reading,setReading]=useState(false);
+  useFeedbackToast(error, {source: '自由管家', active: enabled});
   const current=useRef(client),alive=useRef(true),pending=useRef(false),operation=useRef(false),generation=useRef(0);current.current=client;
   async function load(signal?:AbortSignal){
     if(pending.current)return;pending.current=true;setReading(true);const version=generation.current;

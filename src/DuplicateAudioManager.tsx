@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useState } from "react";
 import { AudioLines, Check, CheckCircle2, Copy, Download, ExternalLink, Files, HardDrive, LoaderCircle, Pause, Play, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
 import type { Asset } from "./main";
@@ -17,6 +18,8 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
   const [scope, setScope] = useState("sfx"), [force, setForce] = useState(false);
   const [state, setState] = useState<State>({ active: null, marking: false, report: null });
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  useFeedbackToast(error, {source: '素材管理'});
+  useFeedbackToast(notice, {source: '素材管理', kind: 'auto'});
   const [query, setQuery] = useState(""), [page, setPage] = useState(1), [revision, setRevision] = useState(0);
   const [cleanupReport, setCleanupReport] = useState<string | null>(null);
   useEffect(() => {

@@ -1,3 +1,4 @@
+import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, AudioLines, Check, ChevronLeft, ChevronRight, ExternalLink, FilePenLine, FileUp, Film, FolderKanban, Image, Layers, Music2, Pause, Play, Plus, Search, SearchX, Trash2, X } from "lucide-react";
 import type { Asset } from "./main";
@@ -32,6 +33,7 @@ export function ProjectMediaDialog({ asset, close, stopAudio, label = "项目素
 
 export function ProjectHistory({ assetId, request, revision = 0 }: { assetId: string; request: ProjectRequest; revision?: number }) {
   const [rows, setRows] = useState<(Omit<Item, "asset" | "unavailable"> & { project_name: string; project_id: string })[]>([]), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '项目管理'});
   useEffect(() => {
     let live = true; setRows([]); setError("");
     request<typeof rows>(`/assets/${assetId}/projects`).then(r => { if (live) setRows(r); }).catch(e => { if (live) setError(e.message); });
@@ -45,6 +47,7 @@ export function ProjectHistory({ assetId, request, revision = 0 }: { assetId: st
 function ProjectEditor({ project, request, close, saved, importXml }: { project: Project | null; request: ProjectRequest; close: () => void; saved: (id: string) => void; importXml?:()=>void }) {
   const [name, setName] = useState(project?.name || ""), [software, setSoftware] = useState(project?.software || ""), [note, setNote] = useState(project?.note || "");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '项目管理'});
   const root = useRef<HTMLFormElement>(null);
   useEffect(() => { const previous = document.activeElement as HTMLElement; root.current?.querySelector("input")?.focus(); return () => previous?.focus(); }, []);
   return <div className="modal-backdrop"><form className="modal project-editor" ref={root} role="dialog" aria-modal="true" aria-label={project ? "编辑项目" : "新建项目"}
@@ -70,6 +73,7 @@ export function ProjectManager({ projects, activeId, select, request, revision, 
   const [items, setItems] = useState<Item[]>([]), [total, setTotal] = useState(0), [pages, setPages] = useState(0), [page, setPage] = useState(1);
   const [kind, setKind] = useState(""), [kinds, setKinds] = useState(emptyKinds), [preview, setPreview] = useState<Asset | null>(null);
   const [checked, setChecked] = useState<string[]>([]), [busy, setBusy] = useState(false), [loading, setLoading] = useState(false), [error, setError] = useState("");
+  useFeedbackToast(error, {source: '项目管理'});
   const [editor, setEditor] = useState<{ project: Project | null } | null>(null), [noteEditor, setNoteEditor] = useState<{ id: string; note: string } | null>(null);
   const [importing,setImporting] = useState(false);
   const [creatingFromXml,setCreatingFromXml] = useState(false);

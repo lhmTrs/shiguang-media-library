@@ -2,7 +2,13 @@ import express from 'express';
 export function projectVideoRouter(store,{sendMedia,withActivity=fn=>fn()}={}){
  const router=express.Router(),route=(method,url,fn)=>router[method]('/projects/:projectId'+url,(req,res,next)=>{try{Promise.resolve(withActivity(()=>store.media.track(()=>fn(req,res)))).catch(next);}catch(e){next(e);}});
  router.use(express.json({limit:'2mb'}));router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
- route('get','',(req,res)=>store.list(req.params.projectId).then(v=>res.json(v)));
+ route('get','',(req,res)=>store.list(req.params.projectId,{folderId:req.query.folderId||'all',checkLegacyVideos:req.query.checkLegacyVideos==='true'}).then(v=>res.json(v)));
+ route('post','/folders',async(req,res)=>res.json(await store.folders.create(req.params.projectId,req.body)));
+ route('post','/folders/refresh',async(req,res)=>res.json(await store.folders.refresh(req.params.projectId,req.body.folderId||'root')));
+ route('post','/operations/preview',async(req,res)=>res.json(await store.fileOperations.preview(req.params.projectId,req.body)));
+ route('post','/operations',async(req,res)=>res.json(await store.fileOperations.execute(req.params.projectId,req.body)));
+ route('get','/operations/:requestId',(req,res)=>res.json(store.fileOperations.dto(req.params.requestId,store.fileOperations.row(req.params.projectId,req.params.requestId))));
+ route('post','/operations/:requestId/recover',async(req,res)=>res.json(await store.fileOperations.recover(req.params.projectId,req.params.requestId,req.body)));
  route('post','/imports',async(req,res)=>res.json(await store.start(req.params.projectId,req.body)));
  route('put','/imports/:requestId/content',async(req,res)=>res.json(await store.upload(req.params.projectId,req.params.requestId,req)));
  route('get','/imports/:requestId',(req,res)=>res.json(store.receiptDTO(store.receipt(req.params.projectId,req.params.requestId))));

@@ -1,4 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
+import {useFeedbackToast} from '../global-feedback';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
 type Doc={project_id:string;title:string;content:string;revision:number;updated_at:number|null};
 type Entry={doc:Doc;title:string;content:string;loaded:boolean;reading:boolean;saving:boolean;error:string;edits:number;read:number};
@@ -9,6 +10,7 @@ export function ProjectScript({projectId,visible,request,onDirtyChange}:{project
  const cache=useRef(new Map<string,Entry>()),alive=useRef(true),[,render]=useState(0);const update=()=>{if(alive.current)render(n=>n+1);};
  function entry(id:string){let e=cache.current.get(id);if(!e){if(cache.current.size>=20){const removable=[...cache.current].find(([,v])=>!dirty(v)&&!v.reading&&!v.saving);if(removable)cache.current.delete(removable[0]);else return{...fresh(id),error:'已保留20份未保存或处理中剧本，请先返回原项目保存'};}e=fresh(id);cache.current.set(id,e);}return e;}
  const current=entry(projectId),unsaved=dirty(current);
+ useFeedbackToast(current.error,{source:'项目剧本',active:visible});
  useEffect(()=>{alive.current=true;const before=(e:BeforeUnloadEvent)=>{if([...cache.current.values()].some(dirty)){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',before);return()=>{alive.current=false;window.removeEventListener('beforeunload',before);};},[]);
  useEffect(()=>{onDirtyChange(unsaved);},[projectId,unsaved,onDirtyChange]);
  useEffect(()=>()=>onDirtyChange(false),[onDirtyChange]);
