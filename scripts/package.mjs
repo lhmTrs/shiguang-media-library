@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 const run = promisify(execFile), project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const shareFiles = ["package.json", "package-lock.json", "index.html", "tsconfig.json", ".gitignore", ".dockerignore", ".env.example", "Dockerfile", "compose.yaml", "README.md", "START_HERE.md", "AI_HANDOFF.md", "AI_QUICK_START.md", "AGENTS.md", "CODE_SYNC.md", "FOLDER_VIEW.md", "DIRECTORY_CLASSIFICATION.md", "AI_METADATA_API.md", "启动分享版.command", "安装并启动.cmd", "src", "server", "tests", "dist",
+  "CONTRIBUTING.md", "CLAUDE.md", ".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/ai-task.yml",
   "DAVINCI_IMPORT.md", "STORYBOARD.md", "docs/storyboard-v2", "PROMPT_TEMPLATES.md", "CODEX_CHAT.md", "PROJECT_ASSETS.md", "KNOWN_ISSUES.md", "resources/skills", "config/cloud-release.json", "config/README.md", ...["launch", "portable", "doctor", "setup", "stop-portable", "shutdown-client", "package", "qa", "qa-directory-classification", "test-mysql-local", "verify-mysql", "verify-package", "update-code", "theme-gen", "export-manifest", "relocate-root", "annotate", "cloud-release-config"].map(n => `scripts/${n}.mjs`)];
 export async function collectFiles(root, entry, result = []) {
   const absolute = path.join(root, entry), stat = await fs.lstat(absolute);
