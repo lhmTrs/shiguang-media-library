@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node server/index.mjs",
     "build": "tsc --noEmit && vite build",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node scripts/test-suites.mjs",
     "test:browser": "node scripts/qa-directory-classification.mjs --webkit",
     "start": "node scripts/launch.mjs --open",
     "portable": "node scripts/portable.mjs --open",
@@ -28,7 +28,8 @@
     "test:project-assets": "node --test tests/project-assets.test.mjs",
     "test:project-assets:browser": "node tests/project-assets-ui.mjs",
     "test:project-assets:mysql": "node tests/project-assets-mysql.mjs",
-    "test:storyboard:mysql": "node tests/storyboard-database-mysql.mjs"
+    "test:storyboard:mysql": "node tests/storyboard-database-mysql.mjs",
+    "test:cloud": "node scripts/test-suites.mjs --suite cloud"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
