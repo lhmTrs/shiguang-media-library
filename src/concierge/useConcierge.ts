@@ -12,7 +12,9 @@ const knownRejected=(e:unknown,requestId:string)=>{
 };
 const abortError=(e:unknown)=>(e as Error)?.name==='AbortError';
 
-export function useConcierge(request:PromptRequest,scope:string,enabled:boolean){
+export function useConcierge(request:PromptRequest,scope:string,enabled:boolean,connectionVisible=enabled){
+  const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
+  useEffect(()=>{const changed=()=>setPageVisible(!document.hidden);document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
   const states=useRef(new Map<string,ScopeState>()),alive=useRef(true),identity=useRef(''),blocked=useRef(false),epoch=useRef(0);
   const [,render]=useState(0),[status,setStatus]=useState<Status|null>(null),[statusError,setStatusError]=useState(''),[connecting,setConnecting]=useState(false),[identityError,setIdentityError]=useState('');
   useFeedbackToast(statusError, {source: '自由管家'});
@@ -22,6 +24,7 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
   const submissions=useRef(new Map<string,{id:string;text:string;attachments:LocalAttachment[];revision:number}>());
   const readers=useRef(new Set<AbortController>());
   const loads=useRef(new Map<string,{version:number;signal?:AbortSignal}>());
+  const readyReload=useRef<{id:string;signal:AbortSignal}|null>(null),lastConnectionReady=useRef(false);
   const state=(id=scope)=>{if(!states.current.has(id))states.current.set(id,blankScope());return states.current.get(id)!;};
   const notify=()=>{if(alive.current)render(n=>n+1);};
   const assertAlive=(generation:number)=>{if(!alive.current||generation!==epoch.current||blocked.current)throw new DOMException('上下文已变化','AbortError');};
@@ -76,13 +79,13 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
   async function refreshStatus(signal?:AbortSignal){
     if(connectingRef.current)return;
     const version=++statusVersion.current;
-    try{const v=await read<Status>('/status',signal);if(version!==statusVersion.current)return;statusRef.current=v;setStatus(v);setStatusError('');}
+    try{const v=await read<Status>('/status',signal);if(version!==statusVersion.current)return;statusRef.current=v;setStatus(v);setStatusError('');return v;}
     catch(e){if(!abortError(e)&&version===statusVersion.current){setStatusError(errorText(e));statusRef.current=null;setStatus(null);}}
   }
   async function connect(){
-    if(connectingRef.current||blocked.current)return;
+    if(connectingRef.current||blocked.current||[...states.current.values()].some(s=>!!s.pending||s.task?.status==='unknown'||running(s.task)))return;
     connectingRef.current=true;setConnecting(true);const version=++statusVersion.current;setStatusError('');
-    try{const v=await write<Status>('/connect',{});if(version===statusVersion.current){statusRef.current=v;setStatus(v);await load(currentScope.current);}}
+    try{const observed=await read<Status>('/status');if(observed.connecting){statusRef.current=observed;setStatus(observed);return;}if(observed.activeCount||observed.unsettled)throw Error('仍有活动或未结清任务，请先核对原请求');const v=await write<Status>('/connect',{});if(version===statusVersion.current){statusRef.current=v;setStatus(v);await load(currentScope.current);}}
     catch(e){if(!abortError(e)){setStatusError(errorText(e));setStatus(null);statusRef.current=null;}}
     finally{connectingRef.current=false;if(alive.current)setConnecting(false);}
   }
@@ -92,10 +95,10 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
     // A disappeared model remains visible as unavailable; never silently change the user's choice.
     if(!s.model&&models[0]){s.model=models[0].id;s.effort=models[0].defaultEffort||'';}
   }
-  async function load(id=scope,signal?:AbortSignal){
+  async function load(id=scope,signal?:AbortSignal,connectionRefresh=false){
     const s=state(id),previous=loads.current.get(id);
     if(s.loading&&!previous?.signal?.aborted||blocked.current)return;
-    const version=(previous?.version||0)+1,generation=epoch.current;loads.current.set(id,{version,signal});s.loading=true;s.error='';notify();
+    const version=(previous?.version||0)+1,generation=epoch.current;loads.current.set(id,{version,signal});s.loading=true;if(!connectionRefresh||!s.pending&&!s.operation)s.error='';notify();
     try{
       await session();if(!s.loaded){restore(id);s.loaded=true;}
       const results=await Promise.allSettled([
@@ -119,10 +122,17 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
       const attached=new Map(s.attachments.map(a=>[a.id,a]));
       if(filesResult.status==='fulfilled')for(const a of filesResult.value.attachments.filter(a=>!a.sent))if(!attached.get(a.id)?.localBusy)attached.set(a.id,a);
       s.attachments=[...attached.values()].filter(a=>!a.sent);selectDefaults(s);
-      if(s.pending&&s.task?.id===s.pending.id)accept(s,s.task,id);
-      const failed=results.find(r=>r.status==='rejected'&&!abortError(r.reason));if(failed?.status==='rejected')s.error=errorText(failed.reason);
-    }catch(e){if(!abortError(e))s.error=errorText(e);}
-    finally{if(loads.current.get(id)?.version===version){s.loading=false;persist(id);}notify();}
+      if(!connectionRefresh&&s.pending&&s.task?.id===s.pending.id)accept(s,s.task,id);
+      const failed=results.find(r=>r.status==='rejected'&&!abortError(r.reason));if(failed?.status==='rejected'&&(!connectionRefresh||!s.pending&&!s.operation))s.error=errorText(failed.reason);
+    }catch(e){if(!abortError(e)&&(!connectionRefresh||!s.pending&&!s.operation))s.error=errorText(e);}
+    finally{
+      if(loads.current.get(id)?.version===version){
+        s.loading=false;persist(id);
+        const queued=readyReload.current;
+        if(queued?.id===id){readyReload.current=null;if(!queued.signal.aborted&&currentScope.current===id)void load(id,queued.signal,true);}
+      }
+      notify();
+    }
   }
   async function older(){
     const id=scope,s=state(id);if(s.historyLoading||!s.nextCursor)return;
@@ -176,7 +186,8 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
     if(s.operation)return '正在处理本次操作';
     if(s.loading||!s.info)return '请先读取项目上下文';
     if(s.info.phase==='unavailable'||s.info.phase==='creating')return s.info.error||'原上下文尚未可用，请核对原上下文';
-    if(!st?.connected)return '请先连接本机 Codex';
+    if(connectingRef.current||st?.connecting)return '后台正在连接…请稍候';
+    if(!st?.connected)return st?.connectionError||'尚未连接，请点击“重新连接”';
     if(!st.authenticated)return '请先在本机 Codex 登录';
     if(!model)return '请选择当前可用模型';
     if(s.effort&&!model.efforts.some(e=>e.id===s.effort))return '请选择当前模型支持的推理强度';
@@ -258,10 +269,32 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
   useEffect(()=>{alive.current=true;const changed=()=>invalidate();window.addEventListener('shiguang-library-identity-changed',changed);return()=>{alive.current=false;epoch.current++;for(const c of readers.current)c.abort();window.removeEventListener('shiguang-library-identity-changed',changed);};},[]);
   useEffect(()=>{
     if(!enabled||blocked.current)return;const controller=new AbortController();readers.current.add(controller);
-    void refreshStatus(controller.signal);void load(scope,controller.signal);
+    void load(scope,controller.signal);
     return()=>{controller.abort();readers.current.delete(controller);};
   },[enabled,scope,request]);
+  useEffect(()=>{
+    if(!connectionVisible||!pageVisible||blocked.current)return;
+    const controller=new AbortController();void refreshStatus(controller.signal);
+    return()=>controller.abort();
+  },[connectionVisible,pageVisible,scope,request]);
+  useEffect(()=>{
+    if(!connectionVisible||!pageVisible||!status?.connecting)return;
+    let stopped=false,timer:ReturnType<typeof setTimeout>;const controller=new AbortController();
+    const tick=async()=>{if(stopped||document.hidden)return;await refreshStatus(controller.signal);if(!stopped&&statusRef.current?.connecting)timer=setTimeout(tick,1200);};
+    timer=setTimeout(tick,1200);return()=>{stopped=true;clearTimeout(timer);controller.abort();};
+  },[connectionVisible,pageVisible,status?.connecting,scope,request]);
   useEffect(()=>{if(status){for(const [id,s] of states.current){selectDefaults(s);persist(id);}notify();}},[status]);
+  const connectionReady=!!status?.connected&&!!status.authenticated&&!status.connecting&&!!status.models.length;
+  useEffect(()=>{
+    const becameReady=connectionReady&&!lastConnectionReady.current;lastConnectionReady.current=connectionReady;
+    if(!connectionVisible||!pageVisible||!becameReady||blocked.current)return;
+    const controller=new AbortController();
+    // History may have failed before the background handshake finished. Queue behind that
+    // initial load, and only read the current scope; never recover or acknowledge pending work.
+    if(state(scope).loading)readyReload.current={id:scope,signal:controller.signal};
+    else void load(scope,controller.signal,true);
+    return()=>{controller.abort();if(readyReload.current?.signal===controller.signal)readyReload.current=null;};
+  },[connectionReady,connectionVisible,pageVisible,scope]);
   useEffect(()=>{
     if(!enabled)return;let stopped=false,timer:ReturnType<typeof setTimeout>|undefined,busy=false;
     const controller=new AbortController();readers.current.add(controller);
@@ -277,5 +310,5 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean)
     timer=setTimeout(tick,2200);document.addEventListener('visibilitychange',visible);
     return()=>{stopped=true;clearTimeout(timer);controller.abort();readers.current.delete(controller);document.removeEventListener('visibilitychange',visible);};
   },[enabled,scope,request]);
-  return {current:state(),status,statusError,connecting,identityError,update,load,older,send,stop,recover,refreshStatus,connect,sendIssue:()=>sendIssue(),addFiles,checkAttachment,removeAttachment,persistScroll:(top:number)=>{state().scrollTop=top;persist(scope);},read,write};
+  return {current:state(),status,statusError,connecting:connecting||!!status?.connecting,identityError,update,load,older,send,stop,recover,refreshStatus,connect,sendIssue:()=>sendIssue(),addFiles,checkAttachment,removeAttachment,persistScroll:(top:number)=>{state().scrollTop=top;persist(scope);},read,write};
 }

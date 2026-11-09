@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {canonical,fault} from '../prompt-templates/model.mjs';
 import {ACTIVE} from './store.mjs';
-import {CodexTransport,codexError} from './transport.mjs';
+import {CodexTransport,codexError,connectionFailure} from './transport.mjs';
 import {safeText} from './tasks.mjs';
 
 const safeCode=e=>/^[A-Z_]{1,80}$/.test(e?.code||'')?e.code:'CODEX_GENERATION_FAILED';
@@ -18,31 +18,40 @@ export class CodexService {
     this.pictures=pictures;
     this.tasks=new Map();this.threads=new Map();this.models=[];this.account=null;this.listeners=new Set();this.closing=false;
     this.instanceId=randomUUID();this.impactTokens=new Map();this.exitedClients=new WeakSet();
+    this.connectionAttempted=false;this.connectionFailure=null;this.startupConnection=null;
   }
-  status(){return{connected:!!this.client&&!this.client.closed,authenticated:!!this.account?.authenticated,accountType:this.account?.type??null,models:this.models,active:this.tasks.size,transport:'stdio'};}
+  status(){const connected=!!this.client&&!this.client.closed,problem=this.connectionFailure||(!connected&&this.connectionAttempted&&!this.connecting&&!this.closing?connectionFailure({code:'CODEX_DISCONNECTED'}):null);return{connected,authenticated:!!this.account?.authenticated,accountType:this.account?.type??null,models:this.models,active:this.tasks.size,transport:'stdio',connecting:!!this.connecting,connectionAttempted:this.connectionAttempted,connectionError:problem?.message||'',connectionErrorCode:problem?.code||'',unsettled:!!this.transportUnsettled};}
   taskOverview(options){const page=this.store.taskOverview(options);return{instanceId:this.instanceId,observedAt:Date.now(),connection:{connected:!!this.client&&!this.client.closed,authenticated:!!this.account?.authenticated,active:this.tasks.size,unsettled:!!this.transportUnsettled},...page};}
+  startConnection(){
+    if(this.startupConnection)return this.startupConnection.then(()=>this.status());
+    // One automatic attempt per application lifetime. Reads and sends never retry it.
+    this.startupConnection=this.closing||this.connectionAttempted?Promise.resolve(this.status()):this.connect().catch(()=>this.status());
+    return this.startupConnection.then(()=>this.status());
+  }
   async connect(){
     if(this.resetting||this.transportUnsettled)throw codexError('CODEX_BUSY','连接正在结清，请稍后重连',423);
     if(this.closing)throw codexError('CODEX_CLOSING','应用正在关闭');
-    if(this.connecting)return this.connecting;
+    if(this.connecting){await this.connecting;return this.status();}
     if(this.tasks.size)throw fault('其他对话仍在生成，请停止后重新连接',409);
+    this.connectionAttempted=true;this.connectionFailure=null;
     this.connecting=(async()=>{
       if(this.client&&!this.client.closed){if(this.tasks.size)throw fault('其他对话仍在生成，请停止后重新连接',409);await this.disconnect();}
-      await this.media.init();const client=this.transportFactory(this.media.work);this.client=client;
+      await this.media.init();if(this.closing)throw codexError('CODEX_CLOSING','应用正在关闭');const client=this.transportFactory(this.media.work);this.client=client;this.account=null;this.models=[];
       client.on('notification',(method,params)=>this.notification(method,params));
       client.on('closed',()=>{this.exitedClients.add(client);if(this.client===client){this.threads.clear();this.transportUnsettled=false;}for(const task of this.tasks.values())if(task.client===client){task.quiesced();task.resolve({status:'interrupted',errorCode:task.stopReason||'CODEX_DISCONNECTED'});}this.publish();});
       try{
-        await client.start();const auth=await client.call('account/read',{refreshToken:false});
+        await client.start();if(this.closing)throw codexError('CODEX_CLOSING','应用正在关闭');const auth=await client.call('account/read',{refreshToken:false});if(this.closing)throw codexError('CODEX_CLOSING','应用正在关闭');
         this.account={authenticated:!!auth.account||auth.requiresOpenaiAuth===false,type:auth.account?.type??null};
         if(this.account.authenticated){
           const models=[];let cursor=null;
-          for(let i=0;i<30;i++){const page=await client.call('model/list',{cursor,limit:100,includeHidden:false});if(!Array.isArray(page.data))throw codexError('CODEX_PROTOCOL_MISMATCH','当前 Codex 模型协议不兼容，请更新 Codex 后重连');models.push(...page.data);cursor=page.nextCursor;if(!cursor)break;}
+          for(let i=0;i<30;i++){const page=await client.call('model/list',{cursor,limit:100,includeHidden:false});if(this.closing)throw codexError('CODEX_CLOSING','应用正在关闭');if(!Array.isArray(page.data))throw codexError('CODEX_PROTOCOL_MISMATCH','当前 Codex 模型协议不兼容，请更新 Codex 后重连');models.push(...page.data);cursor=page.nextCursor;if(!cursor)break;}
           this.models=models.filter(m=>!m.hidden&&typeof m.model==='string').map(m=>({id:m.model,name:m.displayName||m.model,description:m.description||'',default:!!m.isDefault,efforts:(m.supportedReasoningEfforts||[]).filter(e=>typeof e.reasoningEffort==='string').map(e=>({id:e.reasoningEffort,description:e.description||''})),defaultEffort:m.defaultReasoningEffort??'',inputModalities:m.inputModalities||[]}));
         }else this.models=[];
         this.publish();return this.status();
-      }catch(e){await client.close().catch(()=>{});this.client=null;this.account=null;this.models=[];throw e;}
+      }catch(e){try{await client.close();}catch(closeError){this.transportUnsettled=true;throw closeError;}if(this.client===client)this.client=null;this.account=null;this.models=[];throw e;}
     })();
-    try{return await this.connecting;}finally{this.connecting=null;}
+    try{await this.connecting;}catch(e){this.connectionFailure=connectionFailure(e);throw e;}finally{this.connecting=null;this.publish();}
+    return this.status();
   }
   validateChoice(input){
     if(!this.client||this.client.closed)throw codexError('CODEX_DISCONNECTED','请先连接 Codex');
@@ -52,7 +61,7 @@ export class CodexService {
     return model;
   }
   async start(id,input){
-    if(this.closing||this.resetting||this.transportUnsettled||this.store.lib.migrating)throw codexError('CODEX_BUSY','应用正在迁移或关闭，请稍后发送',423);
+    if(this.closing||this.connecting||this.resetting||this.transportUnsettled||this.store.lib.migrating)throw codexError('CODEX_BUSY','应用正在连接、迁移或关闭，请稍后发送',423);
     this.validateChoice(input);
     if(this.pictures&&(input.output??'mixed')!=='text'&&!input.project_id)throw fault('请先选择图片所属项目');
     if(this.tasks.size>=4&&!this.tasks.has(input.id))throw fault('最多同时生成四个任务，请等待或停止已有任务',429);
@@ -244,5 +253,5 @@ export class CodexService {
   subscribe(listener){this.listeners.add(listener);return()=>this.listeners.delete(listener);}
   publish(id){for(const listener of this.listeners){try{listener(id);}catch{}}}
   async disconnect(){if(this.tasks.size)throw fault('请先停止正在生成的任务',409);await this.terminateOwnedClient('USER_DISCONNECTED');this.publish();}
-  async close(){this.closing=true;this.publish();const work=[...this.tasks.values()].map(t=>t.work);for(const task of this.tasks.values()){task.stopRequested=true;task.stopReason='APPLICATION_CLOSING';}await this.terminateOwnedClient('APPLICATION_CLOSING');await Promise.all(work);if(this.transportUnsettled)throw codexError('CODEX_CLOSE_UNSETTLED','Codex 进程尚未结清');this.client=null;this.listeners.clear();}
+  async close(){this.closing=true;this.publish();const work=[...this.tasks.values()].map(t=>t.work);for(const task of this.tasks.values()){task.stopRequested=true;task.stopReason='APPLICATION_CLOSING';}const connecting=this.connecting;if(connecting){await this.client?.close();await connecting.catch(()=>{});}await this.startupConnection?.catch(()=>{});await this.terminateOwnedClient('APPLICATION_CLOSING');await Promise.all(work);if(this.transportUnsettled)throw codexError('CODEX_CLOSE_UNSETTLED','Codex 进程尚未结清');this.client=null;this.listeners.clear();}
 }

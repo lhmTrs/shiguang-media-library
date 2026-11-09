@@ -1480,6 +1480,12 @@ await fs.writeFile(
   path.join(dataDir, "server.json"),
   JSON.stringify({ pid: process.pid, port, url: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }),
 );
+// Prepare only local account/model catalogs, once and outside the global work gate.
+// The HTTP service stays responsive; failure is retained in status, never retried by reads/sends.
+if (process.env.MEDIA_CODEX_AUTOCONNECT === "1" && !applicationClosing) {
+  void codexService.startConnection();
+  void concierge.service.startConnection();
+}
 // 启动对账 + 目录监听：用户在访达/终端（或 GPT）直接整理过文件时，把文件重新认领回原素材，
 // 而不是让标签、备注、项目关联随路径一起丢。默认不读全文件（不算 sha256），因此很快。
 // MEDIA_SKIP_RECONCILE=1 关闭对账，MEDIA_NO_WATCH=1 只对账不监听，MEDIA_RECONCILE_HASH=1 顺便补哈希。

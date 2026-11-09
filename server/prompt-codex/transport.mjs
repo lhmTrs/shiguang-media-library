@@ -6,6 +6,12 @@ import path from 'node:path';
 export function codexError(code, message, status=503) {
   return Object.assign(Error(message), {code,status});
 }
+// Connection diagnostics never expose stderr, account details, tokens or raw RPC arguments.
+export function connectionFailure(error) {
+  const messages={CODEX_NOT_INSTALLED:'未找到 Codex，请先安装并登录，再点击重新连接。',CODEX_NATIVE_BINARY_REQUIRED:'请配置原生 Codex 可执行文件，再点击重新连接。',CODEX_START_FAILED:'Codex 启动失败，请检查安装与本机登录，再点击重新连接。',CODEX_RPC_TIMEOUT:'Codex 连接等待超时，请检查本机状态，再点击重新连接；没有发送生成请求。',CODEX_PROTOCOL_MISMATCH:'本机 Codex 协议不兼容，请更新后重新连接。',CODEX_PROTOCOL_INCOMPATIBLE:'本机 Codex 协议不兼容，请更新后重新连接。',CODEX_CLOSE_UNSETTLED:'原 Codex 连接尚未正常结清，请保留当前任务状态。',CODEX_CLOSING:'素材管理器正在关闭。',CODEX_DISCONNECTED:'Codex 连接已断开，请点击重新连接；没有自动重发消息。'};
+  const code=Object.hasOwn(messages,error?.code)?error.code:'CODEX_CONNECTION_FAILED';
+  return {code,message:messages[code]||'Codex 连接未完成，请检查本机安装、登录和版本，再点击重新连接。'};
+}
 export async function findCodex() {
   if (process.env.MEDIA_CODEX_BIN) return process.env.MEDIA_CODEX_BIN;
   const names = process.platform==='win32'?['codex.exe','codex.cmd']:['codex'];
@@ -26,8 +32,10 @@ export class CodexTransport extends EventEmitter {
     this.experimentalApi=experimentalApi;this.clientInfo=clientInfo;
   }
   async start() {
+    if(this.closing)throw codexError('CODEX_CLOSING','Codex 连接正在关闭');
     if (this.child&&!this.closed) return;
     const command=this.command||await findCodex();this.commandResolved=command;this.commandIdentity=await fs.stat(command).then(s=>({size:s.size,mtimeMs:s.mtimeMs})).catch(()=>null);
+    if(this.closing)throw codexError('CODEX_CLOSING','Codex 连接正在关闭');
     if (/\.cmd$/i.test(command)) throw codexError('CODEX_NATIVE_BINARY_REQUIRED','请配置原生 Codex 可执行文件；当前集成不通过 shell 启动 .cmd。');
     this.closed=false;
     // Disable command execution, patching, external MCPs and agents for this text/image client.
@@ -80,6 +88,12 @@ export class CodexTransport extends EventEmitter {
   }
   failAll(error) {this.closed=true;for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}this.pending.clear();}
   async close() {
+    this.closing=true;
+    if(this.closeWork)return this.closeWork;
+    const work=this.finishClose();this.closeWork=work;
+    try{return await work;}finally{if(this.closeWork===work)this.closeWork=null;}
+  }
+  async finishClose() {
     const child=this.child;if(!child||!child.pid)return;
     child.stdin.end();
     if(child.exitCode!==null||child.signalCode!==null){this.failAll(codexError('CODEX_DISCONNECTED','Codex 已关闭'));return;}

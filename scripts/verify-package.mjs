@@ -21,7 +21,7 @@ async function stop() {
 async function start(root, state, noTools = false) {
   logs = "";
   child = spawn(process.execPath, ["scripts/portable.mjs", "--foreground"], { cwd: root, env: {
-    ...process.env, MEDIA_DATA_DIR: state, MEDIA_PORTABLE: "1", MEDIA_SKIP_IMPORT: "1", MEDIA_CONTAINER: "0", MEDIA_READONLY_FILES: "1", PORT: "4517",
+    ...process.env, MEDIA_DATA_DIR: state, MEDIA_PORTABLE: "1", MEDIA_SKIP_IMPORT: "1", MEDIA_CONTAINER: "0", MEDIA_READONLY_FILES: "1", MEDIA_CODEX_AUTOCONNECT: "0", PORT: "4517",
     ...(noTools ? { PATH: path.join(base, "empty-path") } : {}),
   }, stdio: ["ignore", "pipe", "pipe"] });
   childExited = once(child, "exit");
