@@ -259,3 +259,71 @@ test('SQLite failure on second approval rolls back source identity, first approv
   try{await assert.rejects(()=>f.catalog.verifiedSource(f.project.id,source.id),/owned identity approval failure/);assert.deepEqual(snapshot(f,source.id),before);}
   finally{f.lib.db.exec('DROP TRIGGER owned_identity_recheck_abort');}
 });
+
+// Device numbering may change between boots. Only explicit upgrade may accept
+// that drift, using the pre-existing digest and original approvals, never the
+// current bytes as a new baseline. The actual fixture files are not replaced.
+function previousDevice(f, source, scannerRefreshed=false) {
+  const probe=JSON.parse(snapshot(f,source.id).source.data_json);
+  probe.identity.dev=String(Number(probe.identity.dev)+2);
+  f.lib.db.prepare('UPDATE storyboard_video_sources SET data_json=? WHERE id=?').run(canonical(probe),source.id);
+  const old=f.entry.store.source(f.project.id,source.id);
+  if(!scannerRefreshed)f.lib.db.prepare('UPDATE assets SET dev=? WHERE id=?').run(old.identity.dev,f.catalog.metadata(f.project.id,old).data.mediaAssetId);
+  f.entry.store.approve(old);f.catalog.approveManaged(old);
+  return old;
+}
+async function finishedUpgrade(f) {
+  const plan=await f.catalog.upgradePlan(f.project.id),requestId=randomUUID();
+  await f.catalog.upgrade(f.project.id,{requestId,previewHash:plan.previewHash});
+  const deadline=Date.now()+5000;
+  while(f.catalog.receipt(f.project.id,requestId).status==='running'&&Date.now()<deadline)await pause(5);
+  const receipt=f.catalog.receipt(f.project.id,requestId);
+  assert.notEqual(receipt.status,'running','Owned upgrade must settle within the test bound');
+  return receipt;
+}
+test('explicit upgrade: device drift with trusted identical bytes preserves IDs, metadata and adopted offsets',async t=>{
+  const f=await fixture(t);initialize(f);
+  const first=await imported(f,'old-device.mp4');await bind(f,first);
+  const second=await imported(f,'scanner-current-device.mp4');
+  const sources=[previousDevice(f,first,true),previousDevice(f,second,true)],before=sources.map(s=>snapshot(f,s.id));
+  for(const source of sources){
+    await assert.rejects(()=>f.entry.media.open(source),e=>e.code==='SOURCE_CHANGED');
+    await deniedWithoutWrites(f,source);
+  }
+  const receipt=await finishedUpgrade(f);assert.equal(receipt.status,'ready',receipt.error);
+  assert.equal(receipt.results.length,2);assert.ok(receipt.results.every(r=>r.status==='ready'));
+  for(const [i,old]of sources.entries()){
+    const current=f.entry.store.source(f.project.id,old.id),after=snapshot(f,old.id),was=before[i];
+    assert.equal(current.path,old.path);assert.deepEqual(current.identity,stamp(await fs.stat(old.path)));
+    assert.deepEqual(JSON.parse(after.record.data_json),JSON.parse(was.record.data_json));
+    assert.equal(after.asset.id,was.asset.id);assert.equal(after.asset.sha256,was.asset.sha256);
+    assert.deepEqual(after.plans,was.plans);assert.deepEqual(after.takes,was.takes);
+    assert.equal(f.catalog.isManaged(f.project.id,current),true);
+    assert.equal(sha(await fs.readFile(current.path)),sha(f.bytes));
+    await opened(f,()=>f.catalog.open(f.project.id,current.id));
+  }
+  assert.equal(f.entry.store.sources(f.project.id).length,2);
+  assert.equal((await fs.readdir(path.dirname(first.path))).length,2,'No extra permanent video copy');
+  assert.equal((await f.catalog.upgradePlan(f.project.id)).completed,true);
+});
+test('explicit upgrade: changed bytes, replaced inode and missing prior authority stay rejected',async t=>{
+  const f=await fixture(t);initialize(f);
+  for(const kind of ['bytes','inode','approval','managed-approval','digest','asset-digest','removed']){
+    const source=await imported(f,kind+'-device.mp4');await bind(f,source);const old=previousDevice(f,source);
+    if(kind==='bytes'){const changed=Buffer.from(f.bytes);changed[changed.length-1]^=1;await fs.writeFile(old.path,changed);}
+    if(kind==='inode'){const replacement=path.join(f.dir,'new-inode.mp4');await fs.writeFile(replacement,f.bytes);await fs.rename(old.path,path.join(f.dir,'retained-'+kind+'.mp4'));await fs.rename(replacement,old.path);}
+    if(kind==='approval'||kind==='managed-approval')f.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(kind==='approval'?old.id:f.catalog.managedKey(old.id));
+    if(kind==='digest'||kind==='removed'){const {data,row}=f.catalog.metadata(f.project.id,old);f.catalog.record(f.project.id,old.id,{...data,...(kind==='digest'?{sha256:null}:{removedAt:Date.now()})},row.revision+1);}
+    if(kind==='asset-digest')f.lib.db.prepare('UPDATE assets SET sha256=? WHERE id=?').run('f'.repeat(64),f.catalog.metadata(f.project.id,old).data.mediaAssetId);
+    await deniedWithoutWrites(f,old,()=>f.catalog.upgradeSource(f.project.id,old,f.catalog.row(f.project.id,old.id).revision));
+  }
+});
+test('explicit upgrade: authorization revoked during copy cannot be reissued by registration',async t=>{
+  const f=await fixture(t);initialize(f);const source=await imported(f);await bind(f,source);const old=previousDevice(f,source);
+  const probe=f.entry.media.probe;let expected,injected=false;
+  f.entry.media.probe=async function(file){const result=await probe.call(this,file);if(file.endsWith('original.partial')){injected=true;f.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(f.catalog.managedKey(old.id));expected=snapshot(f,old.id);}return result;};
+  try{
+    await assert.rejects(()=>f.catalog.upgradeSource(f.project.id,old,f.catalog.row(f.project.id,old.id).revision),rejection);
+    assert.equal(injected,true);assert.deepEqual(snapshot(f,old.id),expected);
+  }finally{f.entry.media.probe=probe;}
+});
