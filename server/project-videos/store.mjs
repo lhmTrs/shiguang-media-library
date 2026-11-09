@@ -143,7 +143,9 @@ export class ProjectVideos{
   const {data,row}=this.metadata(id,source),asset=data.mediaAssetId&&this.db.prepare('SELECT * FROM assets WHERE id=?').get(data.mediaAssetId);
   const approvals=[source.id,this.managedKey(source.id)].map(key=>this.db.prepare('SELECT * FROM storyboard_video_approvals WHERE id=? AND project_id=?').get(key,id));
   const root=asset&&this.lib.roots().find(r=>r.id===asset.root_id&&within(r.path,source.path));
-  if(!data.managed||data.removedAt||!data.sha256||!this.videos.authorized(source)||approvals[1]?.proof_hash!==this.managedProof(source,data)||!this.folders.rootForSource(id,source.path)||!root||!asset||asset.trashed||asset.kind!=='video'||asset.path!==source.path||String(asset.ino)!==source.identity.ino||asset.size!==source.identity.size||asset.sha256!==data.sha256)fail('SOURCE_UNTRUSTED','原视频的管理授权或内容摘要不完整，请明确重新定位',409);
+  // The original project digest and both approvals remain authoritative. An absent index cache may
+  // be rebuilt only after copySource fully verifies those bytes; a conflicting cache still rejects.
+  if(!data.managed||data.removedAt||!data.sha256||!this.videos.authorized(source)||approvals[1]?.proof_hash!==this.managedProof(source,data)||!this.folders.rootForSource(id,source.path)||!root||!asset||asset.trashed||asset.kind!=='video'||asset.path!==source.path||String(asset.ino)!==source.identity.ino||asset.size!==source.identity.size||(asset.sha256!==null&&asset.sha256!==data.sha256))fail('SOURCE_UNTRUSTED','原视频的管理授权或内容摘要不完整，请明确重新定位',409);
   return canonical({row,approvals,root,asset:{id:asset.id,root_id:asset.root_id,path:asset.path,dev:asset.dev,ino:asset.ino,size:asset.size,sha256:asset.sha256,kind:asset.kind,trashed:asset.trashed}});
  }
  async upgradeSource(id,source,expectedRevision){

@@ -328,3 +328,39 @@ test('explicit upgrade: authorization revoked during copy cannot be reissued by 
     assert.equal(injected,true);assert.deepEqual(snapshot(f,old.id),expected);
   }finally{f.entry.media.probe=probe;}
 });
+
+test('empty index cache: explicit upgrade uses the original trusted digest and preserves root/nested assets',async t=>{
+  const f=await fixture(t);initialize(f);const nested=await folder(f,'缓存重建子目录');
+  const first=await imported(f,'cache-empty-root.mp4');await bind(f,first);
+  const second=await imported(f,'cache-empty-nested.mp4',nested.id);
+  const sources=[previousDevice(f,first,true),previousDevice(f,second,true)];
+  for(const source of sources)f.lib.db.prepare('UPDATE assets SET sha256=NULL WHERE id=?').run(f.catalog.metadata(f.project.id,source).data.mediaAssetId);
+  const before=sources.map(s=>snapshot(f,s.id));
+  const receipt=await finishedUpgrade(f);assert.equal(receipt.status,'ready',JSON.stringify(receipt.results));
+  assert.equal(receipt.results.length,2);assert.ok(receipt.results.every(r=>r.status==='ready'));
+  for(const [i,old]of sources.entries()){
+    const current=f.entry.store.source(f.project.id,old.id),after=snapshot(f,old.id),was=before[i],data=JSON.parse(was.record.data_json);
+    assert.equal(current.path,old.path);assert.equal(after.asset.id,was.asset.id);
+    assert.equal(was.asset.sha256,null);assert.equal(after.asset.sha256,data.sha256);
+    assert.deepEqual(JSON.parse(after.record.data_json),data);assert.deepEqual(after.plans,was.plans);assert.deepEqual(after.takes,was.takes);
+    assert.deepEqual(current.identity,stamp(await fs.stat(current.path)));assert.equal(f.catalog.isManaged(f.project.id,current),true);
+  }
+  assert.equal((await fs.readdir(path.dirname(first.path),{withFileTypes:true})).filter(e=>e.isFile()).length,1);
+  assert.deepEqual(await fs.readdir(nested.path),[second.name]);
+});
+test('empty index cache: different content and concurrent cache writes cannot replace original authority',async t=>{
+  const f=await fixture(t);initialize(f);
+  for(const kind of ['different-bytes','concurrent-cache']){
+    const source=await imported(f,kind+'.mp4');await bind(f,source);const old=previousDevice(f,source,true),meta=f.catalog.metadata(f.project.id,old);
+    f.lib.db.prepare('UPDATE assets SET sha256=NULL WHERE id=?').run(meta.data.mediaAssetId);
+    if(kind==='different-bytes'){
+      const bytes=Buffer.from(f.bytes);bytes[bytes.length-1]^=1;await fs.writeFile(old.path,bytes);
+      await deniedWithoutWrites(f,old,()=>f.catalog.upgradeSource(f.project.id,old,meta.row.revision));
+    }else{
+      const probe=f.entry.media.probe;let injected=false,expected;
+      f.entry.media.probe=async function(file){const result=await probe.call(this,file);if(file.endsWith('original.partial')){injected=true;f.lib.db.prepare('UPDATE assets SET sha256=? WHERE id=?').run(meta.data.sha256,meta.data.mediaAssetId);expected=snapshot(f,old.id);}return result;};
+      try{await assert.rejects(()=>f.catalog.upgradeSource(f.project.id,old,meta.row.revision),rejection);assert.equal(injected,true);assert.deepEqual(snapshot(f,old.id),expected);}
+      finally{f.entry.media.probe=probe;}
+    }
+  }
+});
