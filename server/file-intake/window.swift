@@ -4,14 +4,23 @@ import WebKit
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let args = CommandLine.arguments
+func presentAfterLaunch(_ alert: NSAlert, result: @escaping (NSApplication.ModalResponse) -> Int32) -> Never {
+    // NSApplication.run completes launch before dispatching the queued dialog.
+    // The service-off/error branches need the same lifecycle as the WK window.
+    DispatchQueue.main.async {
+        app.activate(ignoringOtherApps:true)
+        exit(result(alert.runModal()))
+    }
+    app.run()
+    exit(2)
+}
 if args.count >= 2 && args[1] == "--start-alert" {
     let alert = NSAlert()
     alert.messageText = "拾光尚未启动"
     alert.informativeText = "本次选择已保留。启动本机素材服务后继续选择项目与文件夹，不会自动导入。"
     alert.addButton(withTitle: "启动拾光并继续")
     alert.addButton(withTitle: "取消")
-    app.activate(ignoringOtherApps: true)
-    exit(alert.runModal() == .alertFirstButtonReturn ? 0 : 2)
+    presentAfterLaunch(alert) {$0 == .alertFirstButtonReturn ? 0 : 2}
 }
 if args.count >= 3 && args[1] == "--error" {
     let alert = NSAlert()
@@ -19,9 +28,7 @@ if args.count >= 3 && args[1] == "--error" {
     alert.messageText = "尚未开始收纳"
     alert.informativeText = args[2]
     alert.addButton(withTitle: "知道了")
-    app.activate(ignoringOtherApps: true)
-    alert.runModal()
-    exit(1)
+    presentAfterLaunch(alert) {_ in 1}
 }
 guard args.count == 3, args[1] == "--url", let url = URL(string:args[2]),
       url.scheme == "http", url.host == "127.0.0.1", url.port != nil,
