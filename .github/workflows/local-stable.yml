@@ -1,0 +1,59 @@
+name: Local stable checks
+
+'on':
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-stable:
+    name: Build, themes and selected local units (Node 22 / Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MEDIA_DATA_DIR: ${{ runner.temp }}/shiguang-ci-data
+      MEDIA_SKIP_IMPORT: '1'
+      MEDIA_SKIP_RECONCILE: '1'
+      MEDIA_NO_WATCH: '1'
+      MEDIA_CODEX_AUTOCONNECT: '0'
+      SHIGUANG_AUDIO_ANALYSIS: '0'
+    steps:
+      - name: Check out the PR merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Set up project Node.js 22.x
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version: '22.x'
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+        timeout-minutes: 8
+
+      - name: Build current source
+        run: npm run build
+        timeout-minutes: 5
+
+      - name: Check generated themes
+        run: node scripts/theme-gen.mjs --check
+        timeout-minutes: 1
+
+      - name: Publish selected and excluded test files
+        run: node scripts/ci-stable-tests.mjs --list
+        timeout-minutes: 1
+
+      - name: Run only the published stable local subset
+        run: node scripts/ci-stable-tests.mjs
+        timeout-minutes: 15
