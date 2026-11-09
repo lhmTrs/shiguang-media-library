@@ -8,7 +8,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance'].includes(selectedCase));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(root, '../素材管理器/collab/results/FINDER-VIDEO-INTAKE-20261109', selectedCase === 'completion' ? 'frontend-completion/ui' : selectedCase === 'confirm-binding' ? 'frontend-confirm-binding/ui' : 'frontend-ui'));
 await fs.mkdir(evidence, {recursive: true});
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
@@ -96,6 +96,16 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
+    await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
+    fixture.batches[0].items.push({id:'recoverable',name:'recoverable.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'TRANSIENT_IO_ERROR'});
+    await open();await expect(item('failed').getByText('需要重新选择',{exact:true})).toBeVisible();
+    await expect(item('failed').getByRole('button',{name:'重试此失败项',exact:true})).toHaveCount(0);
+    await expect(drawer().getByText(/部分视频需要从访达重新选择/)).toBeVisible();
+    await item('recoverable').getByRole('button',{name:'重试此失败项',exact:true}).click();
+    await expect(item('recoverable')).toContainText('正在复制');assert.equal(fixture.retryCount,1);
+    assert.equal(fixture.batches[0].items.find(i=>i.id==='failed').status,'failed');
+  });
   await check('selection-proof background check preserves target inputs, never submits early, and enables only when ready',async()=>{
     await fresh(true);fixture.handoff.preparation='checking';await page.reload();await choose();
     await expect(page.getByText('正在后台核验原视频，可先选择项目和文件夹；完成后即可确认收纳。',{exact:true})).toBeVisible();
