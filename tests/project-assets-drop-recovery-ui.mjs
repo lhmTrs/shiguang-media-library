@@ -77,6 +77,19 @@ try {
     await dialog().getByRole('button', { name: '完成', exact: true }).click(); await expect(work().locator('.ca-name-input')).toHaveValue('新人物乙'); await page.unrouteAll({ behavior: 'wait' });
   });
 
+  await check('新建时同名被拒绝：继续处理不会把图片加到已有同名人物，改名后才新建', async () => {
+    const before = await api('/project-assets/assets/' + hero.id), created = count.create;
+    await dropFiles(work().locator('.ca-gallery'), ['陈川.png']); await expect(dialog().getByLabel('名称：陈川.png')).toHaveValue('陈川'); await dialog().getByRole('button', { name: /^新建 1 个人物/ }).click();
+    const item = dialog().locator('.ca-drop-list li'); await expect(item).toContainText('本项目已有同名人物“陈川”'); await expect(item).toContainText('未完成');
+    await dialog().locator('footer').getByRole('button', { name: '继续处理' }).click(); await expect(item).toContainText('本项目已有同名人物“陈川”'); await expect(item).toContainText('未完成');
+    let same = await api('/project-assets/assets/' + hero.id); assert.equal(same.revision, before.revision, '已有同名人物不应被修改'); assert.equal(live(same).length, live(before).length); assert.equal(same.looks[0].default_image_id, coverId);
+    assert.equal(count.create, created, '名称已存在时不发新建请求');
+    await dialog().getByLabel('名称：陈川.png').fill('陈川二'); await dialog().locator('footer').getByRole('button', { name: '继续处理' }).click(); await expect(item).toContainText('已新建');
+    same = await api('/project-assets/assets/' + hero.id); assert.equal(same.revision, before.revision); assert.equal(live(same).length, live(before).length);
+    const rows = (await api('/project-assets/assets?project_id=' + project.id + '&kind=character&q=' + encodeURIComponent('陈川二'))).items.filter(a => a.name === '陈川二'); assert.equal(rows.length, 1); assert.equal(live(await api('/project-assets/assets/' + rows[0].id)).length, 1);
+    await dialog().getByRole('button', { name: '完成', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(work().locator('.ca-name-input')).toHaveValue('陈川二'); await expect(work()).toHaveAttribute('aria-busy', 'false');
+  });
+
   await check('用户主动再次拖入同一张图仍可选择使用原图（不做全局去重）', async () => {
     const before = await api('/project-assets/assets/' + hero.id);
     await dropFiles(card('陈川'), ['上传丢回应.png']); await dialog().getByRole('button', { name: '添加图片' }).click();

@@ -21,7 +21,7 @@ type Health = { id: string; state: string; label: string };
 type Receipt = { id: string; status: string; mediaAssetId?: string; fileName: string; error?: string; candidates: { id: string; name: string; reason: string; previewUrl: string }[] };
 // 每个拖入项固定导入编号、绑定编号和新造型编号：回应丢失后按原编号核对，不重新上传、不重复绑定。
 type DropStage = 'create' | 'look' | 'import' | 'bind' | 'done';
-type DropItem = { key: string; file: File; preview: string; name: string; include: boolean; state: 'waiting' | 'working' | 'unknown' | 'duplicate' | 'failed' | 'done'; message: string; stage: DropStage; requestId: string; bindingId: string; newLookId: string; startedAt: number; createPending?: boolean; assetId?: string; lookId?: string | null; mediaAssetId?: string; fileName?: string; receipt?: Receipt; candidate?: string };
+type DropItem = { key: string; file: File; preview: string; name: string; include: boolean; state: 'waiting' | 'working' | 'unknown' | 'duplicate' | 'failed' | 'done'; message: string; stage: DropStage; requestId: string; bindingId: string; newLookId: string; startedAt: number; createPending?: boolean; createAt?: number; preExisting?: string[]; assetId?: string; lookId?: string | null; mediaAssetId?: string; fileName?: string; receipt?: Receipt; candidate?: string };
 type DropJob = { mode: 'create' | 'attach'; kind: Kind; projectId: string; asset?: { id: string; name: string; looks: Look[] }; lookId: string | null; items: DropItem[]; running: boolean };
 const labels: Record<Kind, string> = { character: '人物', scene: '场景', prop: '道具' };
 const date = (v: number) => new Date(v).toLocaleString('zh-CN');
@@ -286,9 +286,10 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // 明确的失败（服务器已回应）带 status；没有 status 的是回应丢失，结果未知。
   const definite = (message: string) => Object.assign(Error(message), { status: 400 });
   const pendingNote = '结果待核对：没有收到服务器回应，操作可能已经完成。点击“核对结果”会先按原编号查询导入回执和资料，不会重复上传或绑定。';
-  async function findCreated(job: DropJob, it: DropItem) {
-    const r = await api<{ items: Asset[] }>('/assets?' + new URLSearchParams({ project_id: job.projectId, kind: job.kind, q: it.name.trim(), archived: 'false', page: '1' }));
-    return r.items.find(a => a.name === it.name.trim() && a.created_at >= it.startedAt - 60000)?.id;
+  // 本项目中与名称完全相同的资料（含已归档），用于新建前检查和回应丢失后的找回。
+  async function sameName(job: DropJob, name: string) {
+    const rows = await Promise.all(['false', 'true'].map(archived => api<{ items: Asset[] }>('/assets?' + new URLSearchParams({ project_id: job.projectId, kind: job.kind, q: name, archived, page: '1' }))));
+    return rows.flatMap(r => r.items).filter(a => a.name === name);
   }
   async function ensureLook(assetId: string, fixedId: string): Promise<string> {
     const a = await api<Asset>('/assets/' + assetId);
@@ -320,8 +321,16 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     sync({ state: 'working', message: '', startedAt: it.startedAt || Date.now() });
     try {
       if (it.stage === 'create') {
-        if (!it.assetId && it.createPending) { const found = await findCreated(job, it); if (found) sync({ assetId: found }); }
-        if (!it.assetId) { sync({ createPending: true }); const created = await api<Asset>('/assets', { project_id: job.projectId, kind: job.kind, name: it.name.trim() }); sync({ assetId: created.id }); }
+        const name = it.name.trim();
+        // 只有“发出新建、但没收到回应”时才找回：只认发请求前不存在、且在发请求之后建立的那一份。
+        if (!it.assetId && it.createPending) { const found = (await sameName(job, name)).find(a => !it.preExisting?.includes(a.id) && a.created_at >= (it.createAt ?? 0) - 5000); if (found) sync({ assetId: found.id }); }
+        if (!it.assetId) {
+          const before = await sameName(job, name);
+          if (before.length) throw definite(`本项目已有同名${labels[job.kind]}“${name}”${before.some(a => a.archived_at) ? '（已归档）' : ''}，请修改名称后继续；不会把图片加到已有资料`);
+          sync({ preExisting: before.map(a => a.id), createAt: Date.now(), createPending: true });
+          const created = await api<Asset>('/assets', { project_id: job.projectId, kind: job.kind, name });
+          sync({ assetId: created.id });
+        }
         sync({ createPending: false, stage: 'look' });
       }
       if (job.mode === 'attach' && !it.assetId) sync({ assetId: job.asset!.id });
@@ -351,7 +360,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       }
     } catch (e: any) {
       if (!e?.status) sync({ state: 'unknown', message: pendingNote });
-      else sync({ state: 'failed', message: (e.message || '未完成') + (/已经更新/.test(e.message || '') ? '；资料在其他地方已更新，重试会重新读取最新资料后再核对绑定' : '') + (it.stage !== 'create' && job.mode === 'create' && it.assetId ? '；资料已建立，可重试或归档' : '') });
+      else sync({ ...(it.stage === 'create' && !it.assetId ? { createPending: false } : {}), state: 'failed', message: (e.message || '未完成') + (/已经更新/.test(e.message || '') ? '；资料在其他地方已更新，重试会重新读取最新资料后再核对绑定' : '') + (it.stage !== 'create' && job.mode === 'create' && it.assetId ? '；资料已建立，可重试或归档' : '') });
     }
   }
   async function runDropJob() {
@@ -568,7 +577,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
         <ul className="ca-drop-list">{dropJob.items.map(i => <li key={i.key} className={'is-' + i.state}>
           {dropJob.items.length > 1 && <input type="checkbox" aria-label={'包含 ' + i.file.name} checked={i.include} disabled={dropJob.running || i.state !== 'waiting'} onChange={e => { const v = e.target.checked; patchItem(i.key, { include: v }); }}/>}
           <span className="ca-drop-thumb"><ReferencePreview src={i.preview} alt={i.file.name}/></span>
-          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || i.state !== 'waiting' || !i.include} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v }); }}/> : <strong>{i.file.name}</strong>}
+          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || !i.include || !(i.state === 'waiting' || i.state === 'failed' && i.stage === 'create' && !i.assetId)} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v }); }}/> : <strong>{i.file.name}</strong>}
             <small>{i.file.name} · {(i.file.size / 1024 / 1024).toFixed(2)} MB</small>
             {i.message && <small className={'ca-drop-message' + (i.state === 'failed' ? ' is-error' : '')} role={i.state === 'failed' || i.state === 'unknown' ? 'alert' : 'status'}>{i.message}</small>}
             {i.state === 'duplicate' && i.receipt && <span className="ca-drop-duplicate">{i.receipt.candidates.map(c => <label key={c.id}><input type="radio" name={'dup-' + i.key} checked={i.candidate === c.id} onChange={() => patchItem(i.key, { candidate: c.id })}/><span className="ca-drop-thumb small"><ReferencePreview src={c.previewUrl} alt={c.name}/></span>{c.name}<small>{c.reason}</small></label>)}<span className="ca-actions"><button disabled={dropJob.running || !i.candidate} onClick={() => void resolveDuplicate(i, 'reuse')}>使用原图</button><button disabled={dropJob.running} onClick={() => void resolveDuplicate(i, 'import')}>继续导入（重命名）</button></span></span>}
