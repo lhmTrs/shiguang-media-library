@@ -11,6 +11,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn()}={}) {
   route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body))));
   route('get','/batches',(_req,res)=>res.json(store.list()));
   route('get','/batches/:id',(req,res)=>res.json(store.dto(store.batch(req.params.id))));
+  route('post','/batches/:id/acknowledge',async(req,res)=>res.json(await withActivity(()=>store.acknowledge(req.params.id,req.body))));
   route('post','/batches/:id/reconcile',async(req,res)=>res.json(await withActivity(()=>store.reconcile(req.params.id))));
   route('post','/batches/:id/items/:item/resolve',async(req,res)=>res.json(await store.resolve(req.params.id,req.params.item,req.body)));
   route('post','/batches/:id/items/:item/retry',async(req,res)=>res.json(await withActivity(()=>store.retry(req.params.id,req.params.item))));

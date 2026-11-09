@@ -8,7 +8,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance', 'acknowledgement'].includes(selectedCase));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(root, '../素材管理器/collab/results/FINDER-VIDEO-INTAKE-20261109', selectedCase === 'completion' ? 'frontend-completion/ui' : selectedCase === 'confirm-binding' ? 'frontend-confirm-binding/ui' : 'frontend-ui'));
 await fs.mkdir(evidence, {recursive: true});
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
@@ -57,6 +57,7 @@ async function routeApi(route) {
   if (match && batch) {
     const suffix = match[2];
     if (!suffix) return respond(batch);
+    if (suffix === '/acknowledge') {assert.equal(body.resultKey,batch.resultKey);batch.acknowledged=body.acknowledged;fixture.status.needsAttention=body.acknowledged?0:4;return respond(batch);}
     if (suffix === '/reconcile') {fixture.reconcileCount++; const failed = batch.items.find(i => i.id === 'failed'); if (fixture.retry === 'lost' && failed) failed.status = 'copying'; return respond(batch);}
     const operation = suffix.match(/^\/items\/([^/]+)\/(resolve|retry)$/), item = batch.items.find(i => i.id === operation?.[1]);
     if (operation && item) {
@@ -96,6 +97,20 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  await check('acknowledgement clears old failure badge, preserves history and can restore without retry',async()=>{
+    await fresh();const batch=fixture.batches[0];batch.status='partial';batch.canAcknowledge=true;batch.resultKey='current-result';
+    batch.items=[1,2,3,4].map(n=>({id:'old-'+n,name:'old-'+n+'.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'INTAKE_SOURCE_CHANGED',error:'合成旧选择失败'}));fixture.batches=[batch];fixture.status.needsAttention=4;fixture.status.activeCount=0;await page.reload();
+    await expect(page.getByRole('button',{name:/^文件任务/})).toContainText('4 待处理');await open();
+    await drawer().getByRole('button',{name:'标记已处理',exact:true}).click();
+    await expect(page.getByRole('button',{name:/^文件任务/})).not.toContainText('待处理');await expect(drawer().locator('.fi-item')).toHaveCount(0);
+    await drawer().getByRole('button',{name:'已处理',exact:true}).click();await expect(drawer().locator('.fi-item')).toHaveCount(4);
+    await expect(drawer().locator('.fi-item .fi-error')).toHaveCount(0);await expect(drawer().locator('.fi-item').first()).toContainText('INTAKE_SOURCE_CHANGED');
+    await page.screenshot({path:path.join(evidence,'acknowledged-history.png')});
+    await drawer().getByRole('button',{name:'恢复待处理',exact:true}).click();await expect(page.getByRole('button',{name:/^文件任务/})).toContainText('4 待处理');
+    await drawer().getByRole('button',{name:'最近任务',exact:true}).click();await expect(drawer().locator('.fi-item')).toHaveCount(4);
+    assert.equal(fixture.retryCount,0);assert.equal(fixture.resolveBodies.length,0);assert.ok(batch.items.every(i=>i.status==='failed'));
+    const posts=requests.filter(r=>r.method==='POST');assert.equal(posts.length,2);assert.ok(posts.every(r=>r.path.endsWith('/acknowledge')));
+  });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
     fixture.batches[0].items.push({id:'recoverable',name:'recoverable.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'TRANSIENT_IO_ERROR'});

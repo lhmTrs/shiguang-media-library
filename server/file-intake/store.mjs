@@ -6,6 +6,7 @@ import {Receipts,uuid,stamp,same,unchanged,revalidateSelection,error} from './fi
 
 const stable = value => JSON.stringify(value);
 const pending = new Set(['queued','copying','duplicate','unknown']);
+const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
 const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copiedBytes||0,status:i.status,
   error:i.error,code:i.code,videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
   managedProjectName:i.managedProjectName,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
@@ -50,19 +51,38 @@ export class FileIntake {
   serial(fn) {const work=this.operation.then(fn);this.operation=work.catch(()=>{});return work;}
   assertOpen(){if(this.initializationError)throw this.initializationError;if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，已确认的文件任务保留',503);}
   assertLibrary(b){if(b.invalid)throw error('INTAKE_RECEIPT_INVALID','文件任务回执不可读，原件与原回执保留，不能自动继续');if(b.libraryId!==this.libraryId)throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库实例，未继续或移除原文件');}
+  resultKey(b) {return createHash('sha256').update(stable({libraryId:b.libraryId,projectId:b.projectId,folderId:b.folderId,mode:b.mode,status:b.status,
+    items:b.items.map(i=>[i.id,i.status,i.requestId,i.code,i.error,i.videoId,i.assetId,i.copiedBytes,i.removal])})).digest('hex');}
+  canAcknowledge(b) {return !b.invalid&&b.libraryId===this.libraryId&&b.items.length>0&&
+    b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
+  acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
   dto(b) {return {id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
-    mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
+    mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
+    canAcknowledge:this.canAcknowledge(b),acknowledged:this.acknowledged(b),acknowledgedAt:this.acknowledged(b)?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
   batch(id) {if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
   list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
   status(){const all=[...this.batches.values()],items=all.flatMap(b=>b.items);
     const last=all.filter(b=>['completed','partial'].includes(b.status)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];return {
     canTrash:this.canTrash,activeCount:items.filter(i=>['queued','copying'].includes(i.status)||this.finalizing.has(i.id)).length,
-    needsAttention:items.filter(i=>['duplicate','failed','source_retained','unknown'].includes(i.status)).length,
+    needsAttention:all.filter(b=>!this.acknowledged(b)).flatMap(b=>b.items).filter(i=>['duplicate','failed','source_retained','unknown'].includes(i.status)).length,
     latestCompletion:last?{id:last.id,updatedAt:last.updatedAt,projectName:last.projectName,status:last.status,
       completed:last.items.filter(i=>['ready','managed'].includes(i.status)).length,
       failed:last.items.filter(i=>i.status==='failed').length,retained:last.items.filter(i=>i.status==='source_retained').length}:null};}
-  async save(b) {b.updatedAt=Date.now();const snapshot=structuredClone(b);
+  async save(b,{touch=true}={}) {if(touch)b.updatedAt=Date.now();const snapshot=structuredClone(b);
     const work=this.writes.then(()=>this.receipts.write('batches',b.id,snapshot));this.writes=work.catch(()=>{});return work;}
+  async acknowledge(id,input={}) {return this.serial(async()=>{
+    this.assertOpen();const b=this.batch(id);this.assertLibrary(b);
+    if(!input||typeof input!=='object'||Array.isArray(input)||typeof input.acknowledged!=='boolean')
+      throw error('INTAKE_INVALID_INPUT','请选择标记已处理或恢复待处理',400);
+    if(!this.canAcknowledge(b))throw error('INTAKE_NOT_SETTLED','任务仍在运行或结果待核对，不能标记已处理',409);
+    if(input.resultKey!==this.resultKey(b))throw error('INTAKE_RESULT_CHANGED','任务结果已变化，请重新读取后确认',409);
+    const next=structuredClone(b);
+    if(input.acknowledged)next.acknowledgment={at:Date.now(),resultKey:input.resultKey};
+    else delete next.acknowledgment;
+    // A read acknowledgment never rewrites the business result or completion time.
+    // Publish it in memory only after its receipt is durable.
+    await this.save(next,{touch:false});b.acknowledgment=next.acknowledgment;return this.dto(b);
+  });}
   async handoff(id) {
     const h=await this.receipts.read('handoffs',id);
     const b=[...this.batches.values()].find(b=>b.handoffId===id);

@@ -14,6 +14,7 @@ export type IntakeItem = {
 export type IntakeBatch = {
   id: string; projectId: string; projectName: string; folderId: string; folderName: string; mode: 'copy' | 'move';
   createdAt: number | string; updatedAt: number | string;
+  canAcknowledge?: boolean; acknowledged?: boolean; acknowledgedAt?: number; resultKey?: string;
   status: 'queued' | 'running' | 'waiting' | 'completed' | 'partial' | 'interrupted'; items: IntakeItem[];
 };
 export type ConfirmInput = {requestId: string; projectId: string; folderId: string; mode: 'copy' | 'move'; fileIds: string[]};
