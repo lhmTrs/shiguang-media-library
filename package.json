@@ -29,7 +29,8 @@
     "test:project-assets:browser": "node tests/project-assets-ui.mjs",
     "test:project-assets:mysql": "node tests/project-assets-mysql.mjs",
     "test:storyboard:mysql": "node tests/storyboard-database-mysql.mjs",
-    "test:cloud": "node scripts/test-suites.mjs --suite cloud"
+    "test:cloud": "node scripts/test-suites.mjs --suite cloud",
+    "test:runner:resources": "node --test --test-concurrency=1 --test-timeout=15000 tests/fixtures/test-runner-resource-cases.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import ledger from './test-resource-ledger.cjs';
+const {createObservation, inspectObservation} = ledger;
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 export const DEFAULT_TIMEOUT_MS = 120_000;
@@ -25,7 +27,7 @@ function groupAlive(pid) {
 export async function runTestFile(file, {cwd = repo, timeoutMs = DEFAULT_TIMEOUT_MS, graceMs = 5000, nodeArgs = [], env = process.env, output = chunk => process.stdout.write(chunk)} = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(graceMs) || graceMs < 1) throw Error('Timeouts must be positive integer milliseconds');
   const posix = process.platform !== 'win32';
-  const childEnv = {...env};
+  const {scope, childEnv} = await createObservation(env);
   delete childEnv.NODE_TEST_CONTEXT; // This is a new runner, not the parent's test worker.
   const child = spawn(process.execPath, ['--test', '--test-concurrency=1', `--test-timeout=${timeoutMs}`, ...nodeArgs, file], {cwd, env:childEnv, detached:posix, stdio:['ignore','pipe','pipe']});
   const started = Date.now();
@@ -50,11 +52,16 @@ export async function runTestFile(file, {cwd = repo, timeoutMs = DEFAULT_TIMEOUT
     clearTimeout(wallTimer);
     if (posix && child.pid && groupAlive(child.pid)) stop();
     const end = Date.now() + graceMs;
-    while (Date.now() < end && ((!rawExit && !spawnError) || (posix && child.pid && groupAlive(child.pid)))) await sleep(25);
+    const inspect = () => inspectObservation(scope, child.pid, {stopRequested, groupAbsent:posix && child.pid ? !groupAlive(child.pid) : false});
+    let observation = await inspect();
+    while (Date.now() < end && ((!rawExit && !spawnError) || (posix && child.pid && groupAlive(child.pid)) || observation.state !== 'KNOWN')) {
+      await sleep(Math.min(25, Math.max(1, end - Date.now())));
+      observation = await inspect();
+    }
     const groupAbsent = posix && child.pid ? !groupAlive(child.pid) : null;
-    const resourcesKnown = !!(rawExit || spawnError) && (posix ? groupAbsent !== false : true);
+    const resourcesKnown = !!(rawExit || spawnError) && (posix ? groupAbsent !== false : true) && observation.state === 'KNOWN';
     if (!resourcesKnown) { child.unref(); child.stdout.destroy(); child.stderr.destroy(); }
-    return {file, pid:child.pid ?? null, durationMs:Date.now()-started, timedOut, stopRequested, rawExit, spawnError, groupAbsent, resourcesKnown, passed:!timedOut && !stopRequested && !spawnError && rawExit?.code === 0 && resourcesKnown};
+    return {file, pid:child.pid ?? null, durationMs:Date.now()-started, timedOut, stopRequested, rawExit, spawnError, groupAbsent, resourcesKnown, resourceObservation:observation, passed:!timedOut && !stopRequested && !spawnError && rawExit?.code === 0 && resourcesKnown};
   } finally {
     clearTimeout(wallTimer); process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
   }

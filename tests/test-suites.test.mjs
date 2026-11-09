@@ -6,8 +6,10 @@ import os from 'node:os';
 import net from 'node:net';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
 import {selectTests, runTestFile, DEFAULT_TIMEOUT_MS} from '../scripts/test-suites.mjs';
 const exec = promisify(execFile);
+const repo = fileURLToPath(new URL('..', import.meta.url));
 async function scene(t) { const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'sg-test-suites-'))); t.after(()=>fs.rm(root,{recursive:true,force:true})); return root; }
 
 test('suite selection excludes every cloud file and enrollment, retains local files, no UI selection', async t => {
@@ -51,4 +53,37 @@ test('a hanging server and descendant are bounded and actually close after norma
   assert.equal(JSON.parse(await fs.readFile(receipt,'utf8')).pid,started.pid);
   assert.throws(()=>process.kill(started.pid,0),{code:'ESRCH'});
   const server=net.createServer();await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(started.port,'127.0.0.1',resolve);});await new Promise(r=>server.close(r));
+});
+
+test('observed normal children and original spawn errors keep real semantics and a clean resource result', async t => {
+  const root = await scene(t), file = path.join(root, 'clean-child.test.mjs'), marker = path.join(root, 'detached-ran');
+  await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import {spawn} from 'node:child_process';import fs from 'node:fs/promises';
+test('real children',async()=>{
+ const child=spawn(process.execPath,['-e','process.exitCode=17'],{stdio:'ignore'});
+ assert.equal(child.listenerCount('error'),0,'observer must not add an error listener');
+ const result=await new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+ assert.deepEqual(result,{code:17,signal:null});
+ const detached=spawn(process.execPath,['-e',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran');process.exitCode=23;`)}],{detached:true,stdio:'ignore'});
+ detached.unref();
+ let ready=false;for(let i=0;i<200;i++){try{await fs.access(${JSON.stringify(marker)});ready=true;break;}catch{await new Promise(resolve=>setTimeout(resolve,10));}}
+ assert.equal(ready,true);
+ const missing=spawn('shiguang-intentionally-absent-executable',[],{stdio:'ignore'});
+ assert.equal(missing.listenerCount('error'),0);
+ await new Promise(resolve=>missing.once('error',error=>{assert.equal(error.code,'ENOENT');resolve();}));
+});`);
+  const result = await runTestFile(file, {cwd:root, timeoutMs:3000, graceMs:500, output:()=>{}});
+  assert.equal(result.passed, true, JSON.stringify(result));
+  assert.equal(result.resourcesKnown, true);
+  assert.deepEqual(result.rawExit, {code:0, signal:null});
+  assert.ok(result.resourceObservation.processes.some(child => child.rawExit?.code === 17));
+  assert.ok(result.resourceObservation.processes.some(child => child.detached === true && child.rawExit?.code === 23));
+  t.diagnostic(JSON.stringify(result));
+});
+
+test('published test runner includes both actual observation dependencies', async () => {
+  const {shareFiles, collectFiles} = await import('../scripts/package.mjs');
+  for (const file of ['scripts/test-resource-ledger.cjs', 'scripts/test-resource-observer.cjs']) {
+    assert.ok(shareFiles.includes(file), `missing shipped runner dependency: ${file}`);
+    assert.deepEqual(await collectFiles(repo, file), [file]);
+  }
 });

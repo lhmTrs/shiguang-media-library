@@ -200,7 +200,11 @@ MySQL 驱动通过专用工作线程执行查询，保留既有文件操作的�
 
 AI 批量标注标签与备注：见 `AI_METADATA_API.md`。可按明确 ID、名称/目录关键词或组合筛选生成预览，再确认提交；默认追加标签、只补空备注，支持逐文件不同建议。操作记录展示批次修改前后值并提供冲突安全的撤销，不改原媒体、不要求数据库密码或付费模型 Key。
 
-开发：`npm run dev`；构建：`npm run build`；测试：`npm test`（默认仅本地 `.test.mjs`，排除 `cloud-*` 与 `device-enrollment`；每文件及测试 120 秒、逐文件运行）。用 `npm test -- --list` 查看实际清单，`npm test -- --file tags.test.mjs` 定向执行。云端测试只在明确需要时运行 `npm run test:cloud`，云端 UI 脚本须另行显式运行；未运行不代表通过。超时会向本次测试自建进程组请求正常停止；若退出无法确认，则报告 `resourcesKnown: false`、停止后续文件并保留失败，不使用强制退出掩盖资源问题。Windows 仅记录直接子进程退出，不宣称完整进程树已结清。浏览器验收：`npm run test:browser`（需要 Chrome 和 `npx playwright install webkit`），使用临时副本和独立数据库，不改动真实素材库。服务仅监听 `127.0.0.1`，默认端口 4317，冲突时自动使用后续端口。
+开发：`npm run dev`；构建：`npm run build`；测试：`npm test`（默认仅本地 `.test.mjs`，排除 `cloud-*` 与 `device-enrollment`；每文件及测试 120 秒、逐文件运行）。用 `npm test -- --list` 查看实际清单，`npm test -- --file tags.test.mjs` 定向执行。云端测试只在明确需要时运行 `npm run test:cloud`，云端 UI 脚本须另行显式运行；未运行不代表通过。
+
+测试运行器通过专属继承预加载记录 Node 的真实异步 ChildProcess 启动与退出，保留 detached、stdio、unref 和原始退出结果。超时仍仅向本次自建进程组发送 SIGTERM，不扩大预算、不强杀脱离组的 PID。根进程退出或原进程组消失不等于后代已结清：脱离组后代缺少退出回执、子进程未继承观测、日志缺失或不完整时返回 `resourcesKnown: false` / `resourceObservation.state: "UNKNOWN"` 并停止后续文件，保留临时资源账本路径。显式隔离环境仍保持隔离。同步进程调用、无法观测的原生子进程及 Worker 未取得本轮资格，照常执行但保守返回 UNKNOWN；这不是任意恶意双 fork、原生扩展或篡改观测器的隔离容器。Windows 完整进程树未在本轮实测。
+
+`npm run test:runner:resources` 单独执行资源资格反例：真实 detached HTTP 后代、隔离环境、UNKNOWN 停止后续文件与同步进程边界，测试端用自有 IPC 自愿关闭 HTTP 并核对 exit 0。它们刻意制造观测缺口，故作为显式资格夹具，不放入普通 `.test.mjs` 集合；原有测试未迁出、默认选择规则不变。浏览器验收：`npm run test:browser`（需要 Chrome 和 `npx playwright install webkit`），使用临时副本和独立数据库，不改动真实素材库。服务仅监听 `127.0.0.1`，默认端口 4317，冲突时自动使用后续端口。
 
 项目素材页提供“全部 / 音乐 / 音效 / 照片 / 视频”类型筛选，使用素材当前登记类型，索引已清理时沿用项目快照；不会修改素材分类。类型数量覆盖整个项目的当前候选/已使用状态及关键词搜索结果，不局限于当前分页，也不被当前类型自身锁住。切换类型会清除勾选和重置页码。照片、视频显示按需加载的缩略图，支持项目内大图/视频预览；不兼容或离线时保留类型图标和明确状态。音频支持列表直接试听，完整路径可悬浮查看，访达及移出操作保持不变。
 
