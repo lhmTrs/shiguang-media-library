@@ -475,8 +475,8 @@
 .ca-script-cols{grid-template-columns:180px minmax(0,1fr)}
 .ca-script-mentions{display:none}
 .ca-image-dialog{flex-direction:column!important;height:90dvh}
-.ca-image-dialog-visual{min-height:240px;max-height:40%}
-.ca-image-dialog-side{width:auto;border-left:0;border-top:1px solid var(--line)}
+.ca-image-dialog-visual{flex:0 0 auto;height:40%;min-height:220px;max-height:none}
+.ca-image-dialog-side{width:auto;flex:1 1 auto;min-height:0;overflow:auto;border-left:0;border-top:1px solid var(--line)}
 }
 @media(max-width:700px){
 .ca-v2 .ca-head{padding:14px 16px 0}
