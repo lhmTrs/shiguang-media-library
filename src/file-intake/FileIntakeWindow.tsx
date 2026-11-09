@@ -55,6 +55,21 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     return () => {current = false; controller.abort();};
   }, [handoffId, reload]);
   useEffect(() => {
+    if(!api||handoff?.preparation!=='checking'||batch)return;
+    let current=true,timer:ReturnType<typeof setTimeout>;const controller=new AbortController();
+    const tick=async()=>{
+      try {
+        const value=await api<Handoff>(INTAKE_API+'/handoffs/'+encoded(handoffId),undefined,undefined,{signal:controller.signal});
+        if(!current)return;
+        if(value.id!==handoffId)throw Error('返回了其他收纳选择，请重新打开原窗口');
+        setHandoff(value);
+        if(value.preparation==='checking')timer=setTimeout(tick,1000);
+      }catch(e){if(current&&!controller.signal.aborted){setError(errorMessage(e));timer=setTimeout(tick,2000);}}
+    };
+    timer=setTimeout(tick,1000);
+    return()=>{current=false;clearTimeout(timer);controller.abort();};
+  }, [api,handoff?.preparation,handoffId,batch?.id]);
+  useEffect(() => {
     if (!api || !projectId || batch) return;
     let current = true; const controller = new AbortController(); setFolderLoading(true); setFolderError(''); setFolders([]);
     void api<{folders: IntakeFolder[]}>(INTAKE_API + '/projects/' + encoded(projectId) + '/folders', undefined, undefined, {signal: controller.signal}).then(value => {
@@ -75,7 +90,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
   async function confirm() {
-    if (!api || !handoff || sending.current || attempt.current || batch || !selected.length || !handoff.projects.some(p => p.id === projectId) || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff.canTrash) return;
+    if (!api || !handoff || handoff.preparation==='checking'||handoff.preparation==='failed'||sending.current || attempt.current || batch || !selected.length || !handoff.projects.some(p => p.id === projectId) || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff.canTrash) return;
     const input: ConfirmInput = {requestId: crypto.randomUUID(), projectId, folderId, mode, fileIds: [...selected]};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
@@ -89,6 +104,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     {!loading && !handoff && <div className="fi-empty"><AlertCircle size={24}/><p>尚未读取到本次收纳选择。请先启动拾光，再重试读取。</p><button onClick={() => setReload(n => n + 1)}><RefreshCw size={14}/>启动拾光后重新读取</button></div>}
     {handoff && !batch && <>
       <div className="fi-selection-summary"><strong>{files.length} 个视频</strong><span>{bytes(files.reduce((sum, f) => sum + f.bytes, 0))}</span></div>
+      {handoff.preparation==='checking'&&<p className="fi-muted" role="status">正在后台核验原视频，可先选择项目和文件夹；完成后即可确认收纳。</p>}
+      {handoff.preparation==='failed'&&<p className="fi-error" role="alert">{handoff.preparationError}</p>}
       <ul className="fi-selection">{handoff.files.map(file => <li key={file.id} className={!selected.includes(file.id) ? 'fi-removed' : ''}><Film size={17}/><div><strong title={file.name}>{file.name}</strong><small title={file.path}>{file.path}</small></div><span>{bytes(file.bytes)}</span><button disabled={locked} aria-label={(selected.includes(file.id) ? '移除 ' : '恢复 ') + file.name} onClick={() => setSelected(old => old.includes(file.id) ? old.filter(id => id !== file.id) : [...old, file.id])}>{selected.includes(file.id) ? <X size={14}/> : '恢复'}</button></li>)}</ul>
       {!files.length && <p className="fi-muted">请选择至少一个视频；可恢复上方已移除项。</p>}
       <div className="fi-target-fields"><label>项目<select aria-label="收纳目标项目" disabled={locked} value={projectId} onChange={e => {setProjectId(e.target.value); setFolderId('');}}><option value="">请选择项目</option>{handoff.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label>项目内文件夹<select aria-label="收纳目标文件夹" disabled={locked || folderLoading || !projectId} value={folderId} onChange={e => setFolderId(e.target.value)}><option value="">{folderLoading ? '正在读取…' : '请选择文件夹'}</option>{folders.map(f => <option key={f.id} value={f.id}>{f.relativePath || f.name || '根目录'}</option>)}</select></label></div>
@@ -101,6 +118,6 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     {error && <p className="fi-error" role="alert">{error}</p>}
     {unknown && <p className="fi-muted">原请求编号：<code>{attempt.current?.requestId || '由本次访达选择核对'}</code></p>}
     {receiptKind === 'other' && attempt.current && <p className="fi-muted">本窗口原请求编号：<code>{attempt.current.requestId}</code></p>}
-    <footer className="fi-actions fi-footer"><a className="fi-button" href="/#/project-videos" target="_blank" rel="noopener noreferrer">打开拾光 · 文件任务<ArrowRight size={14}/></a>{unknown ? <button className="fi-primary" disabled={busy || !api} onClick={() => void reconcile()}>{busy ? '正在核对…' : '核对原提交结果'}</button> : !batch && <button className="fi-primary" disabled={loading || busy || !api || !files.length || !projectId || folderLoading || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff?.canTrash} onClick={() => void confirm()}>{busy ? '正在提交，请勿重复点击…' : '确认收纳'}</button>}</footer>
+    <footer className="fi-actions fi-footer"><a className="fi-button" href="/#/project-videos" target="_blank" rel="noopener noreferrer">打开拾光 · 文件任务<ArrowRight size={14}/></a>{unknown ? <button className="fi-primary" disabled={busy || !api} onClick={() => void reconcile()}>{busy ? '正在核对…' : '核对原提交结果'}</button> : !batch && <button className="fi-primary" disabled={loading || busy || handoff?.preparation==='checking'||handoff?.preparation==='failed'||!api || !files.length || !projectId || folderLoading || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff?.canTrash} onClick={() => void confirm()}>{busy ? '正在提交，请勿重复点击…' : '确认收纳'}</button>}</footer>
   </section><GlobalFeedback/></main>;
 }

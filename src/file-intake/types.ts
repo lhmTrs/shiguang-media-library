@@ -2,7 +2,7 @@ export type IntakeRequest = <T = unknown>(url: string, body?: unknown, method?: 
 export type IntakeCompletion = {id: string; updatedAt: number; projectName: string; status: 'completed' | 'partial'; completed: number; failed: number; retained: number};
 export type IntakeStatus = {supported: boolean; installed: boolean; canTrash: boolean; activeCount: number; needsAttention: number; latestCompletion: IntakeCompletion | null};
 export type IntakeFile = {id: string; name: string; bytes: number; path: string};
-export type Handoff = {id: string; files: IntakeFile[]; projects: {id: string; name: string}[]; canTrash: boolean; batchId?: string};
+export type Handoff = {id: string; files: IntakeFile[]; projects: {id: string; name: string}[]; canTrash: boolean; batchId?: string; preparation?: 'checking' | 'ready' | 'failed'; preparationError?: string};
 export type IntakeFolder = {id: string; name: string; relativePath: string};
 export type Candidate = {id: string; name: string; reason: string; adoptedShots: {id: string; number: number | string}[]; mediaUrl: string};
 export type IntakeItem = {
