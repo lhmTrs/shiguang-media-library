@@ -42,6 +42,8 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
   const keyword = query.trim().toLocaleLowerCase();
   const groups = (report?.groups || []).filter(g => g.files.some(f => [f.name, f.path, f.category, f.sub, f.tags.join(" ")].join(" ").toLocaleLowerCase().includes(keyword)));
   const running = !!state.active || !!state.cleanup || state.marking || busy || !!cleanupReport;
+  const start = () => void action(async () => { await request("/duplicate-audio/start", { scope, force }); });
+  const scopeLabel = scope === "music" ? "音乐" : scope === "all" ? "全部音频" : "音效";
   useEffect(() => { setPage(n => Math.min(n, Math.max(1, Math.ceil(groups.length / 20)))); }, [groups.length]);
   return <div className="duplicate-audio-page">
     {cleanupReport && <DuplicateCleanupDialog scope={scope} reportId={cleanupReport} request={request}
@@ -56,8 +58,8 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
           setNotice(`新增标记 ${result.marked} 个，已有标记 ${result.alreadyMarked} 个，跳过 ${result.skipped.length} 组`); changed();
         });
       }}><Tag size={16}/>标记重复</button>}
-      <button className="danger" title="预览当前检查范围内的全部重复组，不受搜索词限制" disabled={!canTrash || running || loading || !report?.groups.length} onClick={() => { if (report) setCleanupReport(report.id); }}><Trash2 size={16}/>一键清除重复项</button>
-      <button className="primary" disabled={running || loading} onClick={() => void action(async () => { await request("/duplicate-audio/start", { scope, force }); })}><RefreshCw size={16} className={state.active ? "spin" : ""}/>{state.active ? "检查中…" : report ? "重新检查" : "开始检查"}</button>
+      {!!report?.groups.length && <button className="danger" title="预览当前检查范围内的全部重复组，不受搜索词限制" disabled={!canTrash || running || loading} onClick={() => { if (report) setCleanupReport(report.id); }}><Trash2 size={16}/>一键清除重复项</button>}
+      <button className="primary" disabled={running || loading} onClick={start}><RefreshCw size={16} className={state.active ? "spin" : ""}/>{state.active ? "检查中…" : report ? "重新检查" : "开始检查"}</button>
     </div></section>
     <div className="duplicate-tools"><div className="duplicate-scope" role="group" aria-label="重复音频检查范围">{[["sfx", "音效"], ["music", "音乐"], ["all", "全部音频"]].map(([value, label]) => <button key={value} aria-pressed={scope === value} disabled={running} onClick={() => { setScope(value); setNotice(""); }}>{label}</button>)}</div>
       <div className="duplicate-tool-options"><label className="check-label"><input type="checkbox" checked={force} disabled={running} onChange={e => setForce(e.target.checked)}/>完整校验</label>
@@ -92,6 +94,10 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
       {groups.length > 20 && <div className="pagination"><button className="plain" disabled={page <= 1} onClick={() => setPage(n => n - 1)}>上一页</button><span>{page} / {Math.ceil(groups.length / 20)}</span><button className="plain" disabled={page >= Math.ceil(groups.length / 20)} onClick={() => setPage(n => n + 1)}>下一页</button></div>}
       {!!report.skipped.length && <details className="duplicate-skipped"><summary>未完成检查 · {report.skipped.length} 项</summary>{report.skipped.map(file => <p key={file.id}>{file.name}<small>{file.path} · {file.reason}</small></p>)}</details>}
       {!!report.markResult?.skipped.length && <div className="banner" role="status">{report.markResult.skipped.map(g => g.reason).join("；")}</div>}
-    </> : <div className="duplicate-empty"><div className="duplicate-empty-icon"><AudioLines size={28}/></div><h2>尚无检测结果</h2></div>}
+    </> : <div className="duplicate-empty" role="status"><div className="duplicate-empty-icon"><AudioLines size={28}/></div>
+      <h2>{state.active ? "正在检查重复音频…" : "还没有检查过重复音频"}</h2>
+      <p>按文件内容比对{scopeLabel}，找出完全相同的副本。检查只读取文件，不会改动或删除任何内容。</p>
+      {!state.active && <button className="primary" disabled={running || loading} onClick={start}><RefreshCw size={16}/>开始检查</button>}
+    </div>}
   </div>;
 }
