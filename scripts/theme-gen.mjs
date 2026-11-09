@@ -89,6 +89,7 @@ export const PROTECTED = new Set([
   "#1f7a4d", "#2e7d5b", "#e6f4ec", // 成功
   "#8a6d1f", "#fdf6e3", // 提醒
   "#b34747", "#ad4f42", "#ef4444", // 模块 CSS 的危险/错误
+  "#b94f49", "#ad4d44", // style.css 的危险色（云端徽章、设备注销按钮）：未保护时午夜蓝/海洋青会把它们推成绿色
   "#785b2d", "#f59e0b", // 模块 CSS 的警告（--c-8a6a3a 的实际取值）
   "#22a06b", // 模块 CSS 的成功
   "#3b82f6", // 模块 CSS 的提示
@@ -148,6 +149,116 @@ export function findUndefinedTokens(defined) {
   };
   walk(path.join(project, "src"));
   return missing;
+}
+
+/* ------------------------------------------------------------ 文字对比度保护 */
+
+/**
+ * 文字常压着的底色：卡片、详情面板、页面、表头、侧栏、--soft（提示框、警告框、按钮悬停）。
+ * 每套风格都按其中最差的一个计算，保证正文和辅助文字 ≥ 4.5:1（WCAG AA 正文）。
+ */
+export const TEXT_SURFACES = ["--c-fff", "--c-fafcf9", "--c-f7f9fa", "--c-f4f7f6", "--c-f0f4f3", "--c-edf3ef"];
+
+/**
+ * 不做对比度保护的文字色：
+ *  - 默认值对白底不足 2:1 的颜色在下面自动豁免（彩色按钮上的白字、占位提示、禁用和纯装饰）；
+ *  - 全局反馈的四种颜色经 --feedback-color 用在图标上，按非文字元素对待（WCAG 要求 3:1）。
+ */
+export const TEXT_CONTRAST_EXEMPT = new Set(["--c-ef4444", "--c-f59e0b", "--c-22a06b", "--c-3b82f6"]);
+
+/** 默认值很浅、但承载提示信息的文字色：不走上面的自动豁免，照常保护。 */
+export const TEXT_CONTRAST_INCLUDE = new Set([
+  "--c-b7c5b8", // 详情面板空状态“未选择素材”
+]);
+
+/** 个别文字色还会压在别的底色上：只对这些 token 额外加入，不提高其他文字色的要求。 */
+export const TEXT_EXTRA_SURFACES = {
+  "--c-8b9690": ["--c-e8eee8", "--c-dfeae1"], // 侧栏计数：导航项悬停、选中时的底色
+};
+
+const TEXT_MIN = 4.5;
+// 保留深浅层次：对最差底色不足 TEXT_KEEP 的文字色，按原对比度线性映射到 [TEXT_MIN, TEXT_KEEP]，
+// 原来越浅的映射后仍越浅；≥ TEXT_KEEP 的不动。不一律压到 4.5，否则次要文字和弱化文字会变成同一个灰。
+const TEXT_KEEP = 5.1;
+const TEXT_FROM = 2;
+
+function luminance(hex) {
+  const c = parseColor(hex);
+  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
+export function contrast(a, b) {
+  const x = luminance(a), y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+const opaque = (v) => { const c = parseColor(v); return !!c && c.a >= 0.999; };
+
+/** 扫描 src 下除 themes.css 外的 CSS，返回用在 color / -webkit-text-fill-color / caret-color 上的 `--c-*` token。 */
+export function findTextTokens() {
+  const aliases = new Map(); // 非 --c- 自定义属性 → 它引用的变量（可能多次定义）
+  const textRefs = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".css") && full !== THEMES_FILE) {
+        const css = fs.readFileSync(full, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+        for (const [, prop, value] of css.matchAll(/([-a-zA-Z]+)\s*:\s*([^;{}]+)/g)) {
+          const refs = [...value.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1]);
+          if (prop.startsWith("--") && !prop.startsWith("--c-")) {
+            if (!aliases.has(prop)) aliases.set(prop, new Set());
+            refs.forEach((r) => aliases.get(prop).add(r));
+          } else if (/^(color|-webkit-text-fill-color|caret-color)$/i.test(prop)) textRefs.push(...refs);
+        }
+      }
+    }
+  };
+  walk(path.join(project, "src"));
+  const out = new Set();
+  const resolve = (name, depth = 0) => {
+    if (name.startsWith("--c-")) return void out.add(name);
+    if (depth > 8) return;
+    for (const next of aliases.get(name) ?? []) resolve(next, depth + 1);
+  };
+  textRefs.forEach((r) => resolve(r));
+  return out;
+}
+
+/** 只调 HSL 亮度（浅色风格调暗、深色风格调亮），直到对所有底色的最低对比度达到 target。 */
+function raiseContrast(value, surfaces, target, mode) {
+  const rgb = parseColor(value);
+  const hsl = rgbToHsl(rgb);
+  const worst = (l) => { const hex = toHex({ ...hslToRgb({ ...hsl, l }), a: 1 }); return [hex, Math.min(...surfaces.map((s) => contrast(hex, s)))]; };
+  let lo = hsl.l, hi = mode === "dark" ? 1 : 0; // 从原亮度往 hi 方向找最近的达标亮度
+  if (worst(hi)[1] < target) return worst(hi)[0];
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (worst(mid)[1] >= target) hi = mid; else lo = mid; }
+  return worst(hi)[0];
+}
+
+/** 对一套风格的最终取值做文字对比度保护，返回 Map(token → 调整后的取值)，只含有变化的 token。 */
+/** 这个 token 是否需要文字对比度保护（按默认值判断角色：对白底不足 TEXT_FROM 的浅色字、装饰自动豁免）。 */
+function guarded(token, value) {
+  const baseValue = tokens.get(token);
+  if (!value || !opaque(value) || !baseValue || !opaque(baseValue) || TEXT_CONTRAST_EXEMPT.has(token)) return false;
+  return TEXT_CONTRAST_INCLUDE.has(token) || contrast(baseValue, "#ffffff") >= TEXT_FROM;
+}
+function surfacesFor(token, values) {
+  return [...TEXT_SURFACES, ...(TEXT_EXTRA_SURFACES[token] ?? [])].map((s) => values.get(s)).filter((v) => v && opaque(v));
+}
+
+export function guardTextContrast(values, mode, textTokens) {
+  const changed = new Map();
+  for (const token of textTokens) {
+    const value = values.get(token);
+    if (!guarded(token, value)) continue;
+    const surfaces = surfacesFor(token, values);
+    const worst = Math.min(...surfaces.map((s) => contrast(value, s)));
+    if (worst >= TEXT_KEEP) continue;
+    const target = Math.max(TEXT_MIN, TEXT_MIN + ((worst - TEXT_FROM) * (TEXT_KEEP - TEXT_MIN)) / (TEXT_KEEP - TEXT_FROM));
+    const next = raiseContrast(value, surfaces, target, mode);
+    if (next !== value.toLowerCase()) changed.set(token, next);
+  }
+  return changed;
 }
 
 /* ------------------------------------------------------------ 风格定义与变换 */
@@ -248,27 +359,48 @@ export function readBaseTokens(css) {
   return out;
 }
 
-function base(theme) {
+let textTokens = new Set();
+const GUARD_NOTE = `  /* 对比度保护：用作文字的颜色在卡片、页面、表头、侧栏和 --soft 底色上 ≥ ${TEXT_MIN}:1，只调亮度 */`;
+
+/** 一套风格里每个 token 的最终取值（手工微调优先，其余自动派生；默认风格即原始色值）。 */
+function themeValues(theme) {
+  if (theme.builtin) return new Map(tokens);
+  const overrides = OVERRIDES[theme.id] ?? {};
+  return new Map([...tokens].map(([k, v]) => [k, k in overrides ? overrides[k] : derive(v, theme)]));
+}
+
+function base() {
+  const forest = THEMES.find((t) => t.builtin);
+  const guarded = guardTextContrast(themeValues(forest), forest.mode, textTokens);
   return `/* 由 scripts/theme-gen.mjs 生成，请勿手改：改风格请改该脚本的 THEMES / OVERRIDES 后重新运行。 */
 
-/* 1) 原始色值：默认风格（森林绿）逐像素等价于改造前的界面 */
+/* 1) 原始色值：脚本从这里读回基础 token，所有风格都从它派生 */
 :root {
   color-scheme: light;
 ${[...tokens].map(([k, v]) => `  ${k}: ${v};`).join("\n")}
 }
-
+${guarded.size ? `
+/* 默认风格（${forest.name}）的文字对比度保护：覆盖上面的原始色值 */
+:root {
+${GUARD_NOTE}
+${[...guarded].map(([k, v]) => `  ${k}: ${v};`).join("\n")}
+}
+` : ""}
 /* 2) 每套风格：只覆盖 token，所有 var(--c-*) 引用会自动跟随 */
 `;
 }
 
 function themeBlock(theme) {
   const overrides = OVERRIDES[theme.id] ?? {};
+  const values = themeValues(theme);
+  const guarded = guardTextContrast(values, theme.mode, textTokens);
   // 手工微调过的 token 不再出现在自动派生列表里：CSS 后声明优先，否则微调会被覆盖。
+  // 经过对比度保护的 token 统一放在块末尾，同理不再出现在前面两组里。
   const lines = [...tokens]
-    .filter(([k]) => !(k in overrides))
-    .map(([k, v]) => `  ${k}: ${derive(v, theme)};`);
+    .filter(([k]) => !(k in overrides) && !guarded.has(k))
+    .map(([k]) => `  ${k}: ${values.get(k)};`);
   const tune = Object.entries(overrides)
-    .filter(([k]) => tokens.has(k))
+    .filter(([k]) => tokens.has(k) && !guarded.has(k))
     .map(([k, v]) => `  ${k}: ${v};`);
   const head = `html[data-theme="${theme.id}"] {`;
   return [
@@ -277,8 +409,25 @@ function themeBlock(theme) {
     `  color-scheme: ${theme.scheme};`,
     ...(tune.length ? ["  /* 手工微调：自动派生分不清角色，这几处按语义钉死 */", ...tune] : []),
     ...lines,
+    ...(guarded.size ? [GUARD_NOTE, ...[...guarded].map(([k, v]) => `  ${k}: ${v};`)] : []),
     `}`,
   ].join("\n");
+}
+
+/** 校验生成结果：每套风格里用作文字的颜色（豁免项除外）对所有底色都 ≥ TEXT_MIN。返回不达标项。 */
+export function findLowContrastText() {
+  const failures = [];
+  for (const theme of THEMES) {
+    const values = themeValues(theme);
+    for (const [k, v] of guardTextContrast(values, theme.mode, textTokens)) values.set(k, v);
+    for (const token of textTokens) {
+      const value = values.get(token);
+      if (!guarded(token, value)) continue;
+      const worst = Math.min(...surfacesFor(token, values).map((s) => contrast(value, s)));
+      if (worst < TEXT_MIN) failures.push(`${theme.id} ${token} ${value} ${worst.toFixed(2)}`);
+    }
+  }
+  return failures;
 }
 
 /* --------------------------------------------------------------- 手工微调表 */
@@ -445,12 +594,20 @@ function main() {
   tokens = readBaseTokens(fs.readFileSync(THEMES_FILE, "utf8"));
   if (tokens.size === 0) throw new Error("themes.css 里没有 token；请先运行 node scripts/theme-gen.mjs --tokenize");
   for (const [token, value] of Object.entries(EXTRA_BASE_TOKENS)) tokens.set(token, value);
+  textTokens = findTextTokens();
   const css = generateThemeCss();
   if (args.includes("--check")) {
     const missing = findUndefinedTokens(tokens);
     if (missing.size) {
       for (const [file, list] of missing) console.error(`${file} 引用了未定义的 token：${[...list].join("、")}`);
       console.error("请把它们加入 EXTRA_BASE_TOKENS 后重新运行 node scripts/theme-gen.mjs");
+      process.exitCode = 1;
+      return;
+    }
+    const low = findLowContrastText();
+    if (low.length) {
+      for (const line of low) console.error(`文字对比度不足 ${TEXT_MIN}:1：${line}`);
+      console.error("自动调整亮度也达不到目标：请在 OVERRIDES 中为该风格手工指定，或确认它属于豁免项");
       process.exitCode = 1;
       return;
     }
