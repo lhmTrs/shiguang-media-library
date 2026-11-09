@@ -55,14 +55,19 @@ export async function runTestFile(file, {cwd = repo, timeoutMs = DEFAULT_TIMEOUT
     const end = Date.now() + graceMs;
     const inspect = () => inspectObservation(scope, child.pid, {stopRequested, groupAbsent:posix && child.pid ? !groupAlive(child.pid) : false});
     let observation = await inspect();
-    while (Date.now() < end && ((!rawExit && !spawnError) || (posix && child.pid && groupAlive(child.pid)) || observation.state !== 'KNOWN')) {
+    while (Date.now() < end && ((!rawExit && !spawnError) || (posix && child.pid && groupAlive(child.pid)) || observation.state === 'UNKNOWN')) {
       await sleep(Math.min(25, Math.max(1, end - Date.now())));
       observation = await inspect();
     }
     const groupAbsent = posix && child.pid ? !groupAlive(child.pid) : null;
-    const resourcesKnown = !!(rawExit || spawnError) && (posix ? groupAbsent !== false : true) && observation.state === 'KNOWN';
-    if (!resourcesKnown) { child.unref(); child.stdout.destroy(); child.stderr.destroy(); }
-    return {file, pid:child.pid ?? null, durationMs:Date.now()-started, timedOut, stopRequested, rawExit, spawnError, groupAbsent, resourcesKnown, resourceObservation:observation, passed:!timedOut && !stopRequested && !spawnError && rawExit?.code === 0 && resourcesKnown};
+    if (!rawExit && !spawnError || groupAbsent === false) observation = {...observation, state:'UNKNOWN', unknown:[...observation.unknown,
+      {reason:groupAbsent === false ? 'OWNED_GROUP_STILL_ALIVE' : 'ROOT_EXIT_MISSING'}]};
+    const observedResourcesClosed = !!(rawExit || spawnError) && observation.state !== 'UNKNOWN';
+    const resourcesKnown = observedResourcesClosed && observation.state === 'KNOWN';
+    if (!observedResourcesClosed) { child.unref(); child.stdout.destroy(); child.stderr.destroy(); }
+    return {file, pid:child.pid ?? null, durationMs:Date.now()-started, timedOut, stopRequested, rawExit, spawnError, groupAbsent,
+      resourcesKnown, observedResourcesClosed, resourceObservation:observation,
+      passed:!timedOut && !stopRequested && !spawnError && rawExit?.code === 0 && observedResourcesClosed};
   } finally {
     clearTimeout(wallTimer); process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
   }
@@ -91,8 +96,9 @@ export async function main(args = process.argv.slice(2)) {
     console.log(`\n[${suite}] tests/${name}`);
     const result = await runTestFile(path.join('tests',name), {timeoutMs, nodeArgs});
     console.log('[test-file-result] ' + JSON.stringify(result));
+    if (result.resourceObservation.state === 'LIMITED') console.error('[test-resource-coverage] LIMITED: observed direct external tools closed; opaque external descendants are not covered.');
     if (!result.passed) failed = true;
-    if (!result.resourcesKnown || result.stopRequested || result.timedOut) return 1;
+    if (!result.observedResourcesClosed || result.resourceObservation.state === 'UNKNOWN' || result.stopRequested || result.timedOut) return 1;
   }
   return failed ? 1 : 0;
 }

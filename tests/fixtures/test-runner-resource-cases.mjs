@@ -95,7 +95,8 @@ test('the CLI stops before the next file when a detached descendant is still ser
   for (const name of ['test-suites.mjs', 'test-resource-ledger.cjs', 'test-resource-observer.cjs']) {
     await fs.copyFile(path.join(repo, 'scripts', name), path.join(mini, 'scripts', name));
   }
-  await fs.writeFile(path.join(mini, 'tests/a-detached.test.mjs'), scene.text);
+  // A completed external tool must not mask the actually live Node descendant.
+  await fs.writeFile(path.join(mini, 'tests/a-detached.test.mjs'), `import {execFileSync} from 'node:child_process';execFileSync('/usr/bin/true');\n` + scene.text);
   const sentinel = path.join(mini, 'must-not-run');
   await fs.writeFile(path.join(mini, 'tests/b-later.test.mjs'), `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(sentinel)},'BAD');`);
   // NODE_TEST_CONTEXT must not turn this CLI invocation into an outer test worker.
@@ -107,6 +108,9 @@ test('the CLI stops before the next file when a detached descendant is still ser
   assert.ok(line, execution.stdout);
   const result = JSON.parse(line.slice('[test-file-result] '.length));
   assert.equal(result.resourcesKnown, false); assert.equal(result.passed, false);
+  assert.equal(result.observedResourcesClosed, false);
+  assert.equal(result.resourceObservation.state, 'UNKNOWN');
+  assert.ok(result.resourceObservation.limitations.some(item => item.reason === 'EXTERNAL_DESCENDANTS_NOT_OBSERVED'));
   assert.deepEqual(result.rawExit, {code:0, signal:null});
   assert.equal(await fs.access(sentinel).then(()=>true,()=>false), false);
   const state = await scene.readState();
@@ -142,7 +146,7 @@ test('actual synchronous controller',()=>{const env={...process.env};delete env.
   t.diagnostic(JSON.stringify({result, aliveHttpAfterReturn:200, fixture:state}));
 });
 
-test('the actual TLS helper records native openssl close zero but retains its unproved descendant boundary', async t => {
+test('the actual TLS helper passes with LIMITED direct-native coverage after real openssl close zero', async t => {
   const root = await scene(t), file = path.join(root, 'tls-helper.test.mjs');
   await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import {makeTlsFixture} from ${JSON.stringify(path.join(repo, 'tests/audio-engine-fixtures.mjs'))};
 test('actual supplied TLS fixture',async t=>{const tls=await makeTlsFixture(t);assert.ok(tls.ca.includes('BEGIN CERTIFICATE'));});`);
@@ -151,7 +155,26 @@ test('actual supplied TLS fixture',async t=>{const tls=await makeTlsFixture(t);a
   const openssl = result.resourceObservation.observedChildren.find(child => child.executable === 'openssl');
   assert.ok(openssl); assert.equal(openssl.sync, false); assert.equal(openssl.nodeObserver, false);
   assert.deepEqual(openssl.rawExit, {code:0, signal:null});
-  assert.equal(result.resourcesKnown, false); assert.equal(result.passed, false);
-  assert.ok(result.resourceObservation.unknown.some(item => item.reason === 'CHILD_OBSERVER_MISSING' && item.pid === openssl.pid));
-  t.diagnostic(JSON.stringify({result, nativeToolActualClose:openssl.rawExit, remainingCompatibilityLimit:'OpenSSL has no inherited Node start; arbitrary native detached descendants are NOT_PROVEN'}));
+  assert.equal(result.resourcesKnown, false); assert.equal(result.observedResourcesClosed, true); assert.equal(result.passed, true);
+  assert.equal(result.resourceObservation.state, 'LIMITED');
+  assert.deepEqual(result.resourceObservation.unknown, []);
+  assert.ok(result.resourceObservation.limitations.some(item => item.reason === 'EXTERNAL_DESCENDANTS_NOT_OBSERVED' && item.pid === openssl.pid));
+  t.diagnostic(JSON.stringify({result, nativeToolActualClose:openssl.rawExit, coverageLimit:'Only observed direct tool closure; opaque external descendants are NOT_COVERED'}));
+});
+
+test('the public CLI reports LIMITED and continues after an actually closed ordinary external tool', {skip:process.platform==='win32'}, async t => {
+  const root = await scene(t), mini = path.join(root, 'mini'), sentinel = path.join(mini, 'second-ran');
+  await fs.mkdir(path.join(mini, 'scripts'), {recursive:true}); await fs.mkdir(path.join(mini, 'tests'));
+  for (const name of ['test-suites.mjs', 'test-resource-ledger.cjs', 'test-resource-observer.cjs']) {
+    await fs.copyFile(path.join(repo, 'scripts', name), path.join(mini, 'scripts', name));
+  }
+  await fs.writeFile(path.join(mini, 'tests/a-tool.test.mjs'), `import test from 'node:test';import {execFileSync} from 'node:child_process';test('real closed tool',()=>execFileSync('/usr/bin/true'));`);
+  await fs.writeFile(path.join(mini, 'tests/b-later.test.mjs'), `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(sentinel)},'OK');`);
+  const env = {...process.env}; delete env.NODE_TEST_CONTEXT;
+  const execution = await exec(process.execPath, ['scripts/test-suites.mjs', '--timeout', '3000'], {cwd:mini, env});
+  const results = execution.stdout.split('\n').filter(line => line.startsWith('[test-file-result] ')).map(line => JSON.parse(line.slice('[test-file-result] '.length)));
+  assert.equal(results.length, 2); assert.equal(results[0].resourceObservation.state, 'LIMITED');
+  assert.equal(results[0].resourcesKnown, false); assert.equal(results[0].observedResourcesClosed, true); assert.equal(results[0].passed, true);
+  assert.match(execution.stderr, /LIMITED/); assert.equal(await fs.readFile(sentinel, 'utf8'), 'OK');
+  t.diagnostic(JSON.stringify({execution, results, sentinelRan:true}));
 });

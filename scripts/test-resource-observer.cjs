@@ -38,12 +38,35 @@ if (scopes.length) {
   const originalSpawn = cp.ChildProcess.prototype.spawn;
   const originalEmit = cp.ChildProcess.prototype.emit;
   const originalKill = cp.ChildProcess.prototype.kill;
+  function executableKind(options) {
+    const file = options?.file;
+    if (typeof file !== 'string') return 'unresolved';
+    const get = key => options?.envPairs?.find(pair => pair.startsWith(`${key}=`))?.slice(key.length + 1);
+    const cwd = options.cwd ? String(options.cwd) : process.cwd();
+    const candidates = path.isAbsolute(file) || file.includes('/') || file.includes('\\')
+      ? [path.resolve(cwd, file)]
+      : (get('PATH') ?? '/usr/bin:/bin').split(path.delimiter).map(dir => path.resolve(cwd, dir, file));
+    for (const candidate of candidates) {
+      let fd;
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        const real = fs.realpathSync(candidate), node = fs.realpathSync(process.execPath);
+        if (real === node || /^node(?:\.exe)?$/.test(path.basename(real))) return 'node';
+        fd = fs.openSync(real, 'r');
+        const header = Buffer.alloc(256), size = fs.readSync(fd, header, 0, header.length, 0);
+        if (/^#![^\n]*\bnode(?:\s|$)/.test(header.subarray(0, size).toString())) return 'node';
+        return 'external';
+      } catch {} finally { if (fd !== undefined) fs.closeSync(fd); }
+    }
+    return 'unresolved';
+  }
   function prepareSpawn(options, sync = false) {
     const spawnId = randomUUID();
     const get = key => options?.envPairs?.find(pair => pair.startsWith(`${key}=`))?.slice(key.length + 1);
     let inherited = [];
     try { inherited = parseRuns(get(OBSERVATION_ENV)); } catch {}
-    emit('spawn-intent', {spawnId, sync, executable:typeof options?.file === 'string' ? path.basename(options.file) : null, detached:options?.detached === true}, writer => ({
+    emit('spawn-intent', {spawnId, sync, executable:typeof options?.file === 'string' ? path.basename(options.file) : null,
+      executableKind:executableKind(options), detached:options?.detached === true}, writer => ({
       inherited:inherited.some(scope => scope.token === writer.token && scope.directory === writer.directory),
     }));
     // Annotate only an already-inherited runner context. An explicit isolated

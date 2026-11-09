@@ -40,7 +40,7 @@ function inheritTestObservation(env, source = process.env) {
 // Exit/close receipts establish closure. PID/group absence is only an additional
 // check in the runner, never a replacement for an inherited observation chain.
 async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequested = false} = {}) {
-  const unknown = [], nodes = new Map();
+  const unknown = [], limitations = [], nodes = new Map();
   const problem = (reason, details = {}) => unknown.push({reason, ...details});
   let names;
   try { names = await fs.readdir(scope.directory); }
@@ -110,8 +110,20 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
     const exit = attempt.events.findLast(e => e.event === 'child-close' || e.event === 'sync-exit');
     const observed = [...nodes.values()].filter(node => node.start.parent?.spawnId === spawnId && node.start.parent?.nodeId === attempt.parent.start.nodeId);
     observedChildren.push({pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, executable:attempt.intent.executable,
+      executableKind:attempt.intent.executableKind,
       sync:attempt.intent.sync === true, inherited:attempt.intent.inherited, nodeObserver:observed.length === 1,
       rawExit:exit ? {code:exit.code, signal:exit.signal ?? null} : null});
+    // An ordinary non-Node tool with an actual terminal receipt has closed its
+    // observed direct resource. Its opaque native family is NOT declared KNOWN.
+    // Known Node programs, missing receipts and any live observed chain still
+    // remain UNKNOWN, irrespective of other tools that closed successfully.
+    if (observed.length === 0 && attempt.intent.executableKind === 'external' && exit && Number.isSafeInteger(exit.pid) &&
+        (Number.isInteger(exit.code) || typeof exit.signal === 'string')) {
+      limitations.push({reason:'EXTERNAL_DESCENDANTS_NOT_OBSERVED', pid:exit.pid,
+        executable:attempt.intent.executable, sync:attempt.intent.sync === true,
+        directRawExit:{code:exit.code, signal:exit.signal ?? null}});
+      continue;
+    }
     if (!attempt.intent.inherited) problem('CHILD_OBSERVER_NOT_INHERITED', {pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, spawnId});
     if (observed.length !== 1 || (spawned && observed[0]?.start.pid !== spawned.pid)) {
       problem('CHILD_OBSERVER_MISSING', {pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, spawnId,
@@ -119,7 +131,8 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
         rawExit:exit ? {code:exit.code, signal:exit.signal ?? null} : null});
     }
   }
-  return {protocol:PROTOCOL, state:unknown.length ? 'UNKNOWN' : 'KNOWN', directory:scope.directory, processes, observedChildren, unknown};
+  return {protocol:PROTOCOL, state:unknown.length ? 'UNKNOWN' : limitations.length ? 'LIMITED' : 'KNOWN',
+    directory:scope.directory, processes, observedChildren, limitations, unknown};
 }
 
 module.exports = {OBSERVATION_ENV, PARENT_ENV, PROTOCOL, parseRuns, createObservation, inspectObservation, inheritTestObservation};

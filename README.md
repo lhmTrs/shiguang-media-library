@@ -202,11 +202,19 @@ AI 批量标注标签与备注：见 `AI_METADATA_API.md`。可按明确 ID、�
 
 开发：`npm run dev`；构建：`npm run build`；测试：`npm test`（默认仅本地 `.test.mjs`，排除 `cloud-*` 与 `device-enrollment`；每文件及测试 120 秒、逐文件运行）。用 `npm test -- --list` 查看实际清单，`npm test -- --file tags.test.mjs` 定向执行。云端测试只在明确需要时运行 `npm run test:cloud`，云端 UI 脚本须另行显式运行；未运行不代表通过。
 
-测试运行器通过专属继承预加载记录 Node 的真实同步/异步子进程启动与退出，保留 detached、stdio、unref、同步返回/异常及原始退出结果。超时仍仅向本次自建进程组发送 SIGTERM，不扩大预算、不强杀脱离组的 PID。根进程退出或原进程组消失不等于后代已结清：脱离组后代缺少退出回执、子进程未继承观测、日志缺失或不完整时返回 `resourcesKnown: false` / `resourceObservation.state: "UNKNOWN"` 并停止后续文件，保留临时资源账本路径。显式隔离环境仍保持隔离。继承观测的同步 Node 子进程可正常通过，其同步创建的脱离组后代仍需退出证据。原生子进程会记录真实 close/status；没有 Node start 的原生后代闭包及 Worker 未取得本轮资格，照常执行但保守返回 UNKNOWN；这不是任意恶意双 fork、原生扩展或篡改观测器的隔离容器。Windows 完整进程树未在本轮实测。
+测试运行器通过专属继承预加载记录 Node 的真实同步/异步子进程启动与退出，保留 detached、stdio、unref、同步返回/异常和原始退出结果。每文件 120000 毫秒、正常收尾 5000 毫秒的预算不变；超时仍只向本次自建进程组请求 SIGTERM，不强杀脱离组 PID。已知 Node 链未继承观测、缺退出回执、账本不完整或实际自有组仍存活，一律 `UNKNOWN` 并停止后续文件，不用根进程/组消失掩盖真实活着的 HTTP 后代。
 
-显式最小 App 环境可由测试夹具使用 `inheritTestObservation(minimalEnv)`（导出于 `scripts/test-suites.mjs`），仅追加本运行器的观测上下文和预加载；不合并父环境、`NODE_TEST_CONTEXT` 或无关的父 `NODE_OPTIONS`。未显式接线的隔离 Node 子进程仍为 UNKNOWN。本轮只验证自有合成 HTTP App 接线，未改写或重跑其它批次的 W05 真实 App 测试。
+公开 `[test-file-result]` JSON 将退出事实与覆盖范围分开：
 
-仍有限制：`tests/audio-engine-fixtures.mjs` 的 `makeTar` 是 tar-stream 纯 JS；TLS 夹具实际异步调用的 `openssl` 能记录 close 0，但没有 Node preload start，因此当前经此 runner 的相关目标命令仍会 UNKNOWN，不能宣称已全部可用或已证明任意原生脱离后代受控。
+| resourceObservation.state | 覆盖事实 | resourcesKnown | observedResourcesClosed | 断言成功且原 exit 0 时 CLI |
+| --- | --- | --- | --- | --- |
+| KNOWN | 本轮观测到的 Node 链已有闭合证据 | true | true | 0，继续 |
+| LIMITED | 普通非 Node 工具已有真实 exit/close/status；其不透明后代未覆盖 | false | true | 0，输出 LIMITED 提示并继续 |
+| UNKNOWN | 已观测/已知资源未结清，或 Node 观测链缺口等 | false | false | 非零，停止后续文件 |
+
+普通外部工具必须有真实直接退出证据，才可取得 LIMITED；它不表示整个原生家族 KNOWN。LIMITED 和实际 UNKNOWN 同时存在时，以 UNKNOWN 为准。断言失败、原非零退出、超时或停止请求均不会因 LIMITED 而降级成成功。`passed: true` 可以伴随 LIMITED 与 `resourcesKnown: false`，其含义是测试断言成功且已观测直接资源闭合，不是任意外部后代均已受控。运行器不是原生 double-fork/原生扩展或篡改观测器的通用隔离容器；Windows 完整进程树未在本轮实测。
+
+显式最小 App 环境可在测试夹具使用 `inheritTestObservation(minimalEnv)`（导出于 `scripts/test-suites.mjs`），只追加本 runner 的上下文/预加载，不合并父 HOME、NODE_TEST_CONTEXT 或无关 NODE_OPTIONS。本方只验证合成 HTTP App 接线；W05 最终组合由 #7 原作者维护，不争写或重跑其源。`makeTar` 使用 tar-stream 纯 JS；TLS 夹具异步 `execFile` 调用的 openssl 取得真实 close 0 后属于 LIMITED，而非整个原生家族 KNOWN。
 
 `npm run test:runner:resources` 单独执行资源资格反例：真实 detached HTTP 后代、隔离环境、UNKNOWN 停止后续文件与同步进程边界，测试端用自有 IPC 自愿关闭 HTTP 并核对 exit 0。它们刻意制造观测缺口，故作为显式资格夹具，不放入普通 `.test.mjs` 集合；原有测试未迁出、默认选择规则不变。浏览器验收：`npm run test:browser`（需要 Chrome 和 `npx playwright install webkit`），使用临时副本和独立数据库，不改动真实素材库。服务仅监听 `127.0.0.1`，默认端口 4317，冲突时自动使用后续端口。
 
