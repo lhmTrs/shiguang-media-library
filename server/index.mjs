@@ -47,6 +47,9 @@ import { dataDirectory } from "./runtime.mjs";
 import { createStoryboardGeneration } from "./storyboard-generation/index.mjs";
 import {ProjectVideos} from './project-videos/store.mjs';
 import {projectVideoRouter} from './project-videos/router.mjs';
+import {FileIntake} from './file-intake/store.mjs';
+import {IntakeNative} from './file-intake/native.mjs';
+import {fileIntakeRouter} from './file-intake/router.mjs';
 import {createStoryboardVideo} from "./storyboard-video/index.mjs";
 import { createStoryboardModule } from "./storyboard/router.mjs";
 import { PromptTemplates } from "./prompt-templates/store.mjs";
@@ -324,6 +327,8 @@ const storyboard = createStoryboardModule({ dataDir, lib, projectAssets });
 const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:storyboard.store,codex:codexService,projects});
 const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia});
 const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
+const fileIntake=await new FileIntake({dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
+const intakeNative=new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')});
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
 app.disable("x-powered-by");
@@ -452,6 +457,7 @@ app.use("/api", (req, res, next) => {
 // Storyboard shares the existing Host/origin, cookie and write-token gates.
 app.use("/api/storyboard-generation", storyboardGeneration.router);
 app.use("/api/storyboard-video", storyboardVideo.router);
+app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
@@ -1437,9 +1443,13 @@ let shutdownWork = null;
 async function shutdownApplication() {
   if (shutdownWork) return shutdownWork;
   applicationClosing = true;
+  fileIntake.beginClose();
+  intakeNative.beginClose();
   storyboard.beginClose();
   concierge.beginClose();
   shutdownWork = (async () => {
+    await fileIntake.close();
+    await intakeNative.close();
     await concierge.close();
     await storyboardVideo.close();
     await codexService.close();

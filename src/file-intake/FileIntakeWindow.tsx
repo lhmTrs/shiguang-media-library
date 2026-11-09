@@ -1,0 +1,106 @@
+import {useEffect, useRef, useState} from 'react';
+import {AlertCircle, ArrowRight, CheckCircle2, Copy, Film, FolderInput, RefreshCw, Trash2, X} from 'lucide-react';
+import {GlobalFeedback, notifyFeedback, useFeedbackToast} from '../global-feedback';
+import {applyTheme, readTheme} from '../theme';
+import '../themes.css';
+import {BatchDetails} from './BatchDetails';
+import {intakeSession} from './session';
+import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type IntakeBatch, type IntakeFolder, type IntakeRequest} from './types';
+import './file-intake.css';
+
+function readAttempt(id: string): ConfirmInput | null {
+  try {const v = JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id) || 'null'); return v && typeof v.requestId === 'string' && typeof v.projectId === 'string' && typeof v.folderId === 'string' && ['copy', 'move'].includes(v.mode) && Array.isArray(v.fileIds) && v.fileIds.every((f: unknown) => typeof f === 'string') ? v : null;} catch {return null;}
+}
+
+/** Standalone native/browser confirmation entry. It never boots the full App. */
+export function FileIntakeWindow({handoffId}: {handoffId: string}) {
+  const [api, setApi] = useState<IntakeRequest | null>(null), [handoff, setHandoff] = useState<Handoff | null>(null);
+  const [selected, setSelected] = useState<string[]>([]), [projectId, setProjectId] = useState(''), [folderId, setFolderId] = useState(''), [mode, setMode] = useState<'copy' | 'move'>('copy');
+  const [folders, setFolders] = useState<IntakeFolder[]>([]), [folderLoading, setFolderLoading] = useState(false), [folderError, setFolderError] = useState(''), [folderReload, setFolderReload] = useState(0);
+  const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [unknown, setUnknown] = useState(false), [batch, setBatch] = useState<IntakeBatch | null>(null), [reload, setReload] = useState(0);
+  const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing');
+  const alive = useRef(true), sending = useRef(false), initialized = useRef(''), attempt = useRef<ConfirmInput | null>(null), accepted = useRef('');
+  useFeedbackToast(error, {source: '视频收纳'}); useFeedbackToast(folderError, {source: '收纳文件夹'});
+  useEffect(() => {applyTheme(readTheme()); alive.current = true; return () => {alive.current = false;};}, []);
+  const remember = (value: ConfirmInput | null) => {attempt.current = value; try {if (value) sessionStorage.setItem('shiguang.file-intake.' + handoffId, JSON.stringify(value)); else sessionStorage.removeItem('shiguang.file-intake.' + handoffId);} catch { /* Handoff binding remains authoritative if browser storage is unavailable. */ }};
+  function accept(value: IntakeBatch) {
+    if (!value?.id || !Array.isArray(value.items)) throw Error('收纳回执格式不符，请核对原请求');
+    const submitted = attempt.current;
+    if (submitted && !sameTarget(value, submitted)) {
+      setBatch(value); setReceiptKind('other'); setUnknown(false);
+      setError('该选择已由另一窗口接收。以下为原批次，本窗口请求未获匹配回执；没有重复提交。');
+      return;
+    }
+    setReceiptKind(submitted ? 'submitted' : 'existing');
+    setBatch(value); setUnknown(false); remember(null);
+    if (submitted && accepted.current !== value.id) {
+      accepted.current = value.id; notifyFeedback({kind: 'success', source: '视频收纳', message: '收纳任务已接收，可在拾光顶栏“文件任务”查看真实进度。'});
+      const bridge = (window as Window & {webkit?: {messageHandlers?: {intake?: {postMessage: (message: string) => void}}}}).webkit?.messageHandlers?.intake;
+      try {bridge?.postMessage('accepted');} catch { /* Accepted receipt stays visible in ordinary browsers. */ }
+    }
+  }
+  useEffect(() => {
+    let current = true; const controller = new AbortController(); setLoading(true); setError('');
+    void (async () => {
+      if (!/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(handoffId)) throw Error('收纳确认编号无效，请从访达重新打开本次选择');
+      const request = await intakeSession(controller.signal), value = await request<Handoff>(INTAKE_API + '/handoffs/' + encoded(handoffId), undefined, undefined, {signal: controller.signal});
+      if (!current) return;
+      if (value.id !== handoffId) throw Error('收纳选择身份不符，请核对原窗口');
+      setApi(() => request); setHandoff(value);
+      const saved = readAttempt(handoffId); attempt.current = saved;
+      if (initialized.current !== handoffId) {initialized.current = handoffId; setSelected(saved?.fileIds || value.files.map(f => f.id)); setProjectId(saved?.projectId || ''); setFolderId(saved?.folderId || ''); setMode(saved?.mode || 'copy');}
+      if (value.batchId) {const receipt = await request<IntakeBatch>(INTAKE_API + '/batches/' + encoded(value.batchId), undefined, undefined, {signal: controller.signal}); if (current) accept(receipt);}
+      else if (saved) {setUnknown(true); setError('原提交结果尚未确认。请核对原请求，不会再次发送。');}
+    })().catch(e => {if (current && !controller.signal.aborted) setError(errorMessage(e));}).finally(() => {if (current) setLoading(false);});
+    return () => {current = false; controller.abort();};
+  }, [handoffId, reload]);
+  useEffect(() => {
+    if (!api || !projectId || batch) return;
+    let current = true; const controller = new AbortController(); setFolderLoading(true); setFolderError(''); setFolders([]);
+    void api<{folders: IntakeFolder[]}>(INTAKE_API + '/projects/' + encoded(projectId) + '/folders', undefined, undefined, {signal: controller.signal}).then(value => {
+      if (!current) return; setFolders(value.folders);
+      setFolderId(old => value.folders.some(f => f.id === old) ? old : value.folders.find(f => f.id === 'root')?.id || '');
+    }).catch(e => {if (current && !controller.signal.aborted) setFolderError(errorMessage(e));}).finally(() => {if (current) setFolderLoading(false);});
+    return () => {current = false; controller.abort();};
+  }, [api, projectId, folderReload, batch?.id]);
+
+  async function reconcile() {
+    if (!api || sending.current) return; sending.current = true; setBusy(true); setError('');
+    try {
+      const value = await api<Handoff>(INTAKE_API + '/handoffs/' + encoded(handoffId));
+      if (value.id !== handoffId) throw Error('返回了其他收纳选择，原请求保留');
+      if (value.batchId) {const receipt = await api<IntakeBatch>(INTAKE_API + '/batches/' + encoded(value.batchId)); if (alive.current) accept(receipt);}
+      else if (alive.current) {setUnknown(true); setError('尚未取得权威批次回执，原请求仍待核对；没有重新提交。');}
+    } catch (e) {if (alive.current) {setUnknown(true); setError(errorMessage(e));}}
+    finally {sending.current = false; if (alive.current) setBusy(false);}
+  }
+  async function confirm() {
+    if (!api || !handoff || sending.current || attempt.current || batch || !selected.length || !handoff.projects.some(p => p.id === projectId) || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff.canTrash) return;
+    const input: ConfirmInput = {requestId: crypto.randomUUID(), projectId, folderId, mode, fileIds: [...selected]};
+    sending.current = true; remember(input); setBusy(true); setError('');
+    try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
+    catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。'));}}
+    finally {sending.current = false; if (alive.current) setBusy(false);}
+  }
+  const files = handoff?.files.filter(f => selected.includes(f.id)) || [], locked = busy || unknown || !!batch;
+  return <main className="fi-root fi-window"><section className="fi-confirm" aria-label="收纳视频到拾光" aria-busy={loading || busy}>
+    <header className="fi-heading"><FolderInput size={23}/><div><h1>收纳视频到拾光</h1><p>{batch ? receiptKind === 'submitted' ? '任务已接收，后台继续处理' : receiptKind === 'other' ? '另一窗口已接收此选择' : '查看既有任务，没有新建任务' : '选择目标，一次确认，后台收纳'}</p></div></header>
+    {loading && <p role="status" className="fi-muted">正在读取本次访达选择…</p>}
+    {!loading && !handoff && <div className="fi-empty"><AlertCircle size={24}/><p>尚未读取到本次收纳选择。请先启动拾光，再重试读取。</p><button onClick={() => setReload(n => n + 1)}><RefreshCw size={14}/>启动拾光后重新读取</button></div>}
+    {handoff && !batch && <>
+      <div className="fi-selection-summary"><strong>{files.length} 个视频</strong><span>{bytes(files.reduce((sum, f) => sum + f.bytes, 0))}</span></div>
+      <ul className="fi-selection">{handoff.files.map(file => <li key={file.id} className={!selected.includes(file.id) ? 'fi-removed' : ''}><Film size={17}/><div><strong title={file.name}>{file.name}</strong><small title={file.path}>{file.path}</small></div><span>{bytes(file.bytes)}</span><button disabled={locked} aria-label={(selected.includes(file.id) ? '移除 ' : '恢复 ') + file.name} onClick={() => setSelected(old => old.includes(file.id) ? old.filter(id => id !== file.id) : [...old, file.id])}>{selected.includes(file.id) ? <X size={14}/> : '恢复'}</button></li>)}</ul>
+      {!files.length && <p className="fi-muted">请选择至少一个视频；可恢复上方已移除项。</p>}
+      <div className="fi-target-fields"><label>项目<select aria-label="收纳目标项目" disabled={locked} value={projectId} onChange={e => {setProjectId(e.target.value); setFolderId('');}}><option value="">请选择项目</option>{handoff.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label>项目内文件夹<select aria-label="收纳目标文件夹" disabled={locked || folderLoading || !projectId} value={folderId} onChange={e => setFolderId(e.target.value)}><option value="">{folderLoading ? '正在读取…' : '请选择文件夹'}</option>{folders.map(f => <option key={f.id} value={f.id}>{f.relativePath || f.name || '根目录'}</option>)}</select></label></div>
+      {folderError && <div className="fi-error" role="alert">{folderError}<button disabled={locked} onClick={() => setFolderReload(n => n + 1)}>重读文件夹</button></div>}
+      {!handoff.projects.length && <p className="fi-warning-copy">暂无可收纳项目，请先在拾光中创建项目，再重新打开本次选择。</p>}
+      <fieldset className="fi-modes" disabled={locked}><legend>原文件处理方式</legend><label><input type="radio" name="intake-mode" checked={mode === 'copy'} onChange={() => setMode('copy')}/><Copy size={16}/><span><strong>复制并保留原文件</strong><small>默认方式，原位置不变</small></span></label><label><input type="radio" name="intake-mode" checked={mode === 'move'} disabled={!handoff.canTrash} onChange={() => setMode('move')}/><Trash2 size={16}/><span><strong>移动到素材库</strong><small>{handoff.canTrash ? '完整核验并登记成功后，原件移入废纸篓' : '当前系统不支持安全移入废纸篓'}</small></span></label></fieldset>
+      <p className="fi-muted">确认后固定项目、文件夹和处理方式；关闭窗口或切换项目不影响后台任务。</p>
+    </>}
+    {batch && <><p className={receiptKind === 'submitted' ? 'fi-accepted' : receiptKind === 'other' ? 'fi-warning-copy' : 'fi-muted'} role="status">{receiptKind === 'submitted' && <CheckCircle2 size={18}/>} {receiptKind === 'submitted' ? '任务已接收，请在网页顶栏“文件任务”查看后续进度。' : receiptKind === 'other' ? '此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。' : '这是此选择的既有回执，没有新建任务。'}</p><BatchDetails batch={batch}/></>}
+    {error && <p className="fi-error" role="alert">{error}</p>}
+    {unknown && <p className="fi-muted">原请求编号：<code>{attempt.current?.requestId || '由本次访达选择核对'}</code></p>}
+    {receiptKind === 'other' && attempt.current && <p className="fi-muted">本窗口原请求编号：<code>{attempt.current.requestId}</code></p>}
+    <footer className="fi-actions fi-footer"><a className="fi-button" href="/#/project-videos" target="_blank" rel="noopener noreferrer">打开拾光 · 文件任务<ArrowRight size={14}/></a>{unknown ? <button className="fi-primary" disabled={busy || !api} onClick={() => void reconcile()}>{busy ? '正在核对…' : '核对原提交结果'}</button> : !batch && <button className="fi-primary" disabled={loading || busy || !api || !files.length || !projectId || folderLoading || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff?.canTrash} onClick={() => void confirm()}>{busy ? '正在提交，请勿重复点击…' : '确认收纳'}</button>}</footer>
+  </section><GlobalFeedback/></main>;
+}

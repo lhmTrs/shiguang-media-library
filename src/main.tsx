@@ -101,6 +101,7 @@ import { SeriesAssetList, type AssetSeries } from "./SeriesAssetList";
 import { PaginationControls } from "./PaginationControls";
 import type {GenerationFocus,GenerationTask} from './storyboard/generation-types';
 import {ProjectVideoWorkspace} from "./project-videos/ProjectVideoWorkspace";
+import {FileIntakeWindow,FileTaskEntry} from "./file-intake";
 import { StoryboardWorkspace } from "./StoryboardWorkspace";
 import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemplateWorkspace";
 import {CodexTaskEntry,useCodexTasks} from './CodexTaskDrawer';
@@ -589,6 +590,7 @@ function App() {
     [layout, setLayout] = useState<"list" | "grid">(() => readLayouts()[initialView()] || defaultLayout(initialView()));
   const viewRef = useRef(view);
   const navigateRef = useRef<(value: string, fromHistory?: boolean) => void>(() => {});
+  const [fileTaskVideoFocus,setFileTaskVideoFocus] = useState<{projectId:string;videoId:string;request:number}>();
   const [selected, setSelected] = useState<Asset | null>(null),
     [checked, setChecked] = useState<Set<string>>(new Set()),
     [busy, setBusy] = useState(false),
@@ -1812,6 +1814,10 @@ function App() {
           <div className="topbar-actions">
           {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy} label="当前项目" onChange={id=>{cancelCodexNavigation();setActiveProject(id);}}/></div>}
           <CodexTaskEntry controller={codexTasks}/>
+          <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
+            if(projectId){if(storyboardDirty&&activeProject!==projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
+            else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
+          }}/>
           <div className="file-check-entry">
             <button className="plain file-check-button" aria-label="检查文件状态" aria-busy={fileChecking || undefined} aria-describedby={fileCheckFeedback ? 'file-check-feedback' : undefined} disabled={!ready || fileChecking} title={fileChecking ? '正在核对整个素材库，可切换栏目；请勿重复发起。' : '手动完整检查整个素材库的文件状态，可能耗时；不会删除原文件或记录。'} onClick={() => void checkFiles()}>
               <RefreshCw size={16} className={fileChecking ? 'spin' : ''} aria-hidden="true"/>
@@ -1840,7 +1846,7 @@ function App() {
         {projectsError&&["projects","storyboard","promptTemplates"].includes(view)&&<div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={()=>setProjectRevision(n=>n+1)}>重试项目列表</button></div>}
         <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={setActiveProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(storyboardDirty&&activeProject!==target.projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
-        <ProjectVideoWorkspace onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
+        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" && !projectsKnown ? <div className="empty" role="status">{projectsError?"项目列表未能读取，请重试":"正在读取项目…"}</div> : view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
@@ -3821,4 +3827,5 @@ function App() {
     </div>{specialPage&&<div ref={specialFrame} className="codex-special-page"><div className="codex-task-overlaybar"><CodexTaskEntry controller={codexTasks}/></div><div className="codex-special-content">{specialPage}</div></div>}<div className="codex-task-host" style={{"--inspector-top":`${specialPage?specialTaskTop:topbarHeight}px`} as React.CSSProperties}><ConciergeWorkspace controller={codexTasks} request={api} activeProject={activeProject} projects={projects} onNavigate={openCodexTask}/></div></>
   );
 }
-createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary><App /></GlobalErrorBoundary><GlobalFeedback /></>);
+const fileIntakeMatch=window.location.hash.match(/^#\/file-intake\/([a-f0-9-]{36})$/i);
+createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary>{fileIntakeMatch?<FileIntakeWindow handoffId={fileIntakeMatch[1]}/>:<App />}</GlobalErrorBoundary><GlobalFeedback /></>);
