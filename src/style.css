@@ -3669,13 +3669,14 @@ dd {
 .folder-breadcrumbs > span { display: inline-flex; align-items: center; min-width: 0; }
 .folder-breadcrumbs button { padding: 5px 4px; overflow-wrap: anywhere; text-align: left; font-size: 12px; }
 .folder-breadcrumbs button svg { flex-shrink: 0; }
-.folder-children { display: grid; grid-template-columns: repeat(auto-fill,minmax(160px,1fr)); gap: 8px; margin-bottom: 18px; }
+/* 子文件夹卡片：名字单行省略，悬停（title）看全名；卡片加宽，避免长名字逐字折行（#18） */
+.folder-children { display: grid; grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); gap: 8px; margin-bottom: 18px; }
 .folder-children:empty { display: none; }
 .folder-children > button { border: 1px solid var(--c-dce4df); border-radius: 5px; background: var(--c-fff); padding: 12px; justify-content: flex-start; min-width: 0; gap: 10px; }
 .folder-children > button:hover { border-color: var(--c-91ad9d); background: var(--c-f0f6f2); }
 .folder-children svg { color: var(--c-b18c46); flex-shrink: 0; }
 .folder-children svg:last-child { color: var(--c-97a39b); }
-.folder-children span { min-width: 0; flex: 1; text-align: left; overflow-wrap: anywhere; }
+.folder-children span { min-width: 0; flex: 1; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .folder-children small { display: block; font-size: 10px; color: var(--c-88968d); margin-top: 4px; }
 .folder-search { display: grid; grid-template-columns: minmax(140px,2fr) minmax(160px,1.3fr) minmax(100px,1fr); gap: 8px; }
 .folder-search .search { min-width: 0; }
