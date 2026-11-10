@@ -49,6 +49,34 @@
 
 ## 数据、冲突和恢复
 
+### 视频内容核验与桌面操作接口
+
+项目视频列表顶层 `capabilities` 返回版本、最多50项选择、文件剪贴板、批量访达和媒体比较器的可用状态。读取能力不扫描视频、不读取剪贴板内容、不打开访达；应用启动可用已有 Swift 工具在私有缓存准备随源码提供的 Mac 桌面组件，不安装系统工具。非本机 Mac 桌面会话返回不可用原因。`MEDIA_DISABLE_DESKTOP_NATIVE=1` 可禁用准备；隔离自动测试应使用该设置及独立数据目录。
+
+下列路径以前缀 `/api/project-videos/projects/:projectId` 开始，并沿用登录、会话、来源与项目校验。桌面副作用还检查实际连接来自回环地址，不信任转发地址头；回环连接不能识别 SSH 隧道背后浏览器的位置。
+
+| 操作 | 方法与路径 | 主要输入 |
+| --- | --- | --- |
+| 文件URL剪贴板 | `POST /videos/clipboard` | `requestId, ids` |
+| 批量访达影响预览 | `POST /videos/reveal/preview` | `requestId, ids` |
+| 明确派发访达请求 | `POST /videos/reveal` | 新的 `requestId, ids, previewToken` |
+| 查询原请求 | `GET /desktop-actions/:requestId` | 无，不重新执行 |
+| 内容变化候选预览 | `POST /videos/:sourceId/changes/preview` | `requestId, expectedRevision` |
+| 读取冻结候选 | `GET/HEAD /videos/:sourceId/changes/:contentToken/media` | 只读临时快照，支持现有媒体范围读取 |
+| 明确接受当前内容 | `POST /videos/:sourceId/accept-change` | `requestId, expectedRevision, adoptionStamp, contentToken, confirmAcceptContent:true, confirmedUnbindShotIds` |
+| 移除影响预览 | `POST /videos/:sourceId/remove/preview` | `requestId, expectedRevision` |
+| 明确移除记录和采用 | `POST /videos/:sourceId/remove` | `requestId, expectedRevision, adoptionStamp, removalToken, confirmUnbind:true, fileAction:'keep'或'trash'` |
+
+任务可先返回202及 `checking/dispatching`、`processed/total`，再用同一请求编号查询。终态区分 `completed/partial/failed/unknown`；前端必须检查状态和错误，不能把HTTP200当成功。相同请求编号和参数只读原回执，不重复写剪贴板、派发访达或移入废纸篓；参数变化返回409。服务重启后，未取得明确回执的操作保持未知，不自动重跑。长核验不占全局文件变更队列。单视频访达入口和不含新参数的旧移除入口保持兼容，旧移除仍只移除记录、保留文件。
+
+桌面操作只接受视频编号，不接受文件路径或命令。有效授权的旧外部视频无需复制升级也可交给剪贴板或访达，回执明确 `managed:false`；分镜绑定仍要求当前项目托管视频。重复编号去重，同一实际文件的多个记录仅派发一个文件URL，并逐项说明跳过原因。没有有效项不修改剪贴板；核验期间剪贴板变化时拒绝迟到覆盖。`written`只证明原生接口确认写入，不能证明剪辑软件已粘贴；`dispatched`只证明向系统派发，不保证访达窗口数量或已观察到选中。
+
+媒体同一性版本 `sg-media-content-v1` 同时保留整文件SHA256，并在同一已打开文件上比较压缩包内容、解码配置、轨道、时间戳、时长、旋转和播放属性。已知无关标题、注释、创建时间和XMP变化可保留来源、备注、提示词及采用。它不判断重新编码后的视觉相似性；未知结构、外部引用、附件等保守返回不能比较。旧文件已有可信整文件摘要时，只有完整比对相同后才能补建旧内容指纹；摘要已经不同不能拿当前内容自证旧身份。普通清单不会为全库建立指纹。
+
+内容变化预览创建本次受控私有快照，不放开普通播放校验。候选有效期10分钟，固定原项目、修订、当前文件和采用关系；不保留原内容时明确不提供“旧视频”播放。只有双边可比较且不同才报告 `content_changed`；不能比较返回 `not_comparable`；一致的候选报告 `metadata_only`，无需接受为新内容。接受当前内容保留来源编号和有效采用，必须精确确认解除因新时长越界的当前采用；分镜正文、对白和历史候选保留。历史越界候选只按接受前的具体候选摘要、时间及旧时长保留备份兼容，不能成为新增片段的放宽条件，也不能重新采用越界历史。
+
+移除时每次选择保留文件或移入系统废纸篓，不记忆删除选择。缺失文件仍可移除记录；其他活动引用、预览未释放或废纸篓不可用时不移除文件。记录及采用移除与系统废纸篓不是一个事务：回执分别报告记录和文件结果，部分完成不伪装回滚。放弃、过期或失败不删原视频。临时候选只在本进程已知且过期、无活动读取时清理单个已知副本及空目录；未确认的历史操作和原文件不作为清理对象。
+
 当前正文在 `storyboard_documents.document_json` 数据库字段中，项目内只有一份当前分镜。`storyboard_asset_links` 覆盖完整清单；`storyboard_import_requests` 只保存初始化技术回执，不存旧正文快照。全部表带 UTC 毫秒 `created_at`、`updated_at`。
 
 初始化、资产创建、关联切换、修订号和回执在同一个数据库事务提交。任一步失败保留旧分镜和旧保护。保存与初始化使用项目锁和 `expected_revision`；旧页面收到 409 后暂停保存，可导出草稿或载入最新数据。

@@ -331,6 +331,9 @@ const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:s
 const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia});
 const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
 const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStorage.sourceId}).init();
+// Prepare the bundled desktop bridge without clipboard/Finder side effects.
+// Capability GETs never compile, install tools or scan media.
+if(process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1')void projectVideos.prepareDesktop();
 const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
 const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
 const intakeNative=new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')});
@@ -1458,7 +1461,9 @@ async function shutdownApplication() {
     await fileIntake.close();
     await intakeNative.close();
     await concierge.close();
+    await projectVideos.close();
     await storyboardVideo.close();
+    await projectVideos.changes.cleanup(true);
     await codexService.close();
     reconcileWatcher?.stop(); manifestSync.stop();
     await drainTaskEntry({ allowNeverStarted: true });

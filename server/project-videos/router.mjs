@@ -1,4 +1,7 @@
 import express from 'express';
+import {fail} from '../storyboard-video/model.mjs';
+const localPeer=req=>{if(!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress))fail('DESKTOP_LOCAL_ONLY','桌面操作仅限本机连接',403);};
+const sendAction=(res,v)=>res.status(['queued','checking','running','dispatching'].includes(v.status)?202:200).json(v);
 export function projectVideoRouter(store,{sendMedia,rememberTarget=async()=>{},withActivity=fn=>fn()}={}){
  const router=express.Router(),route=(method,url,fn)=>router[method]('/projects/:projectId'+url,(req,res,next)=>{try{Promise.resolve(withActivity(()=>store.media.track(()=>fn(req,res)))).catch(next);}catch(e){next(e);}});
  router.use(express.json({limit:'2mb'}));router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
@@ -14,12 +17,20 @@ export function projectVideoRouter(store,{sendMedia,rememberTarget=async()=>{},w
  route('get','/imports/:requestId',(req,res)=>res.json(store.receiptDTO(store.receipt(req.params.projectId,req.params.requestId))));
  route('post','/imports/:requestId/resolve',async(req,res)=>res.json(await store.resolve(req.params.projectId,req.params.requestId,req.body)));
  route('patch','/videos/:sourceId',async(req,res)=>res.json(await store.update(req.params.projectId,req.params.sourceId,req.body)));
- route('post','/videos/:sourceId/remove',(req,res)=>res.json(store.remove(req.params.projectId,req.params.sourceId,req.body)));
+ route('post','/videos/:sourceId/remove',(req,res)=>sendAction(res,req.body.requestId?store.changes.remove(req.params.projectId,req.params.sourceId,req.body):store.remove(req.params.projectId,req.params.sourceId,req.body)));
+ route('post','/videos/:sourceId/remove/preview',(req,res)=>sendAction(res,store.changes.removePreview(req.params.projectId,req.params.sourceId,req.body)));
+ route('post','/videos/:sourceId/changes/preview',(req,res)=>sendAction(res,store.changes.preview(req.params.projectId,req.params.sourceId,req.body)));
+ route('post','/videos/:sourceId/accept-change',(req,res)=>sendAction(res,store.changes.accept(req.params.projectId,req.params.sourceId,req.body)));
+ route('post','/videos/clipboard',(req,res)=>{localPeer(req);return sendAction(res,store.desktop.clipboard(req.params.projectId,req.body));});
+ route('post','/videos/reveal/preview',(req,res)=>{localPeer(req);return sendAction(res,store.desktop.revealPreview(req.params.projectId,req.body));});
+ route('post','/videos/reveal',(req,res)=>{localPeer(req);return sendAction(res,store.desktop.reveal(req.params.projectId,req.body));});
+ route('get','/desktop-actions/:requestId',(req,res)=>res.json(store.actionJournal.dto(store.actionJournal.row(req.params.projectId,req.params.requestId))));
  route('post','/videos/:sourceId/relink',async(req,res)=>res.json(await store.relink(req.params.projectId,req.params.sourceId,req.body)));
  route('post','/videos/:sourceId/reveal',async(req,res)=>res.json(await store.reveal(req.params.projectId,req.params.sourceId)));
  route('get','/upgrade',async(req,res)=>res.json(await store.upgradePlan(req.params.projectId)));
  route('post','/upgrade',async(req,res)=>res.json(await store.upgrade(req.params.projectId,req.body)));
- const serve=async(req,res,candidate)=>{const opened=await(candidate?store.openCandidate(req.params.projectId,req.params.requestId,req.params.candidateId):store.open(req.params.projectId,req.params.sourceId));let done=false;const release=()=>{if(done)return;done=true;store.media.responses.delete(res);void store.media.release(opened.handle).catch(()=>{});};store.media.responses.add(res);res.once('close',release);res.once('finish',release);try{if(req.method==='HEAD'){const st=await opened.handle.stat();res.setHeader('Content-Length',st.size);res.setHeader('Accept-Ranges','bytes');res.setHeader('Content-Type',opened.path.toLowerCase().endsWith('.webm')?'video/webm':'video/mp4');res.end();}else await sendMedia(req,res,opened.path,opened.handle);}catch(e){release();throw e;}};
+ const serve=async(req,res,candidate)=>{const opened=await(candidate==='change'?store.changes.open(req.params.projectId,req.params.sourceId,req.params.contentToken):candidate?store.openCandidate(req.params.projectId,req.params.requestId,req.params.candidateId):store.open(req.params.projectId,req.params.sourceId));let done=false;const release=()=>{if(done)return;done=true;store.media.responses.delete(res);void store.media.release(opened.handle).catch(()=>{});};store.media.responses.add(res);res.once('close',release);res.once('finish',release);try{if(req.method==='HEAD'){const st=await opened.handle.stat();res.setHeader('Content-Length',st.size);res.setHeader('Accept-Ranges','bytes');res.setHeader('Content-Type',opened.path.toLowerCase().endsWith('.webm')?'video/webm':'video/mp4');res.end();}else await sendMedia(req,res,opened.path,opened.handle);}catch(e){release();throw e;}};
+ route('get','/videos/:sourceId/changes/:contentToken/media',(req,res)=>serve(req,res,'change'));route('head','/videos/:sourceId/changes/:contentToken/media',(req,res)=>serve(req,res,'change'));
  route('get','/videos/:sourceId/media',(req,res)=>serve(req,res,false));route('head','/videos/:sourceId/media',(req,res)=>serve(req,res,false));route('get','/imports/:requestId/candidates/:candidateId/media',(req,res)=>serve(req,res,true));
  router.use((_req,res)=>res.status(404).json({error:'项目视频接口不存在',code:'VIDEO_ROUTE_NOT_FOUND'}));router.use((e,_req,res,next)=>{if(res.headersSent)return next(e);res.status(e.status??500).json({error:e.status?e.message:'项目视频操作未完成，请核对同一请求结果',code:e.code??'PROJECT_VIDEO_FAILED'});});return router;
 }
