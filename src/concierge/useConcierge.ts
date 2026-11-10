@@ -11,6 +11,7 @@ const knownRejected=(e:unknown,requestId:string)=>{
   return [400,401,403,404,409,413,415,422,423,429].includes(error?.status||0)||error?.accepted===false&&error.requestId===requestId;
 };
 const abortError=(e:unknown)=>(e as Error)?.name==='AbortError';
+const historyReady=(status:Status|null)=>!!status?.connected&&status.authenticated&&!status.connecting;
 
 export function useConcierge(request:PromptRequest,scope:string,enabled:boolean,connectionVisible=enabled){
   const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
@@ -103,7 +104,7 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean,
       await session();if(!s.loaded){restore(id);s.loaded=true;}
       const results=await Promise.allSettled([
         read<Scope>('/scope'+scopeQuery(id),signal),
-        read<{turns:Turn[];nextCursor:string|null}>('/history'+scopeQuery(id)+'&limit=10',signal),
+        historyReady(statusRef.current)?read<{turns:Turn[];nextCursor:string|null}>('/history'+scopeQuery(id)+'&limit=10',signal):Promise.resolve(null),
         read<{attachments:Attachment[]}>('/attachments'+scopeQuery(id),signal)
       ]);
       assertAlive(generation);if(signal?.aborted||loads.current.get(id)?.version!==version)throw new DOMException('读取已更新','AbortError');
@@ -114,7 +115,7 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean,
         if(context.value.activeTask)s.task=context.value.activeTask;
         else if(s.task&&running(s.task)&&!s.operation&&!s.pending)await checkTask(id,signal);
       }
-      if(historyResult.status==='fulfilled'){
+      if(historyResult.status==='fulfilled'&&historyResult.value){
         const hadOlder=s.turns.length>10,fresh=[...historyResult.value.turns].reverse(),ids=new Set(fresh.map(t=>t.id));
         s.turns=[...s.turns.filter(t=>!ids.has(t.id)),...fresh];if(!hadOlder)s.nextCursor=historyResult.value.nextCursor;
       }
@@ -284,13 +285,13 @@ export function useConcierge(request:PromptRequest,scope:string,enabled:boolean,
     timer=setTimeout(tick,1200);return()=>{stopped=true;clearTimeout(timer);controller.abort();};
   },[connectionVisible,pageVisible,status?.connecting,scope,request]);
   useEffect(()=>{if(status){for(const [id,s] of states.current){selectDefaults(s);persist(id);}notify();}},[status]);
-  const connectionReady=!!status?.connected&&!!status.authenticated&&!status.connecting&&!!status.models.length;
+  const connectionReady=historyReady(status);
   useEffect(()=>{
     const becameReady=connectionReady&&!lastConnectionReady.current;lastConnectionReady.current=connectionReady;
     if(!connectionVisible||!pageVisible||!becameReady||blocked.current)return;
     const controller=new AbortController();
-    // History may have failed before the background handshake finished. Queue behind that
-    // initial load, and only read the current scope; never recover or acknowledge pending work.
+    // History waits for the background handshake. Queue behind the initial metadata
+    // load, and only read the current scope; never recover or acknowledge pending work.
     if(state(scope).loading)readyReload.current={id:scope,signal:controller.signal};
     else void load(scope,controller.signal,true);
     return()=>{controller.abort();if(readyReload.current?.signal===controller.signal)readyReload.current=null;};
