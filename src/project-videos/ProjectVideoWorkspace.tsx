@@ -10,7 +10,7 @@ import {MediaViewer} from '../MediaViewer';
 import {Modal, ModalActions} from './Modal';
 import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
-import {VIDEO_DRAG_TYPE, folderTarget, folderContains, readVideoDrag} from './folders';
+import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import type {FolderView} from './types';
 
@@ -123,14 +123,9 @@ export function ProjectVideoWorkspace(props: ProjectVideoWorkspaceProps) {
   return <section className="pv-workspace" hidden={!props.active} aria-label="项目生成视频">
     <header className="pv-header">
       <div className="pv-title"><Film size={20}/><h1>生成视频</h1><span>项目视频库</span></div>
-      <label className="pv-project">当前项目<select aria-label="生成视频所属项目" value={currentId} onChange={e => props.onProject(e.target.value)}>
-        <option value="" disabled>请选择项目</option>
-        {currentId && !props.projects.some(p => p.id === currentId) && <option value={currentId}>当前项目</option>}
-        {props.projects.filter(p => p.project_kind !== 'public').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select></label>
     </header>
     {importOwner && importOwner !== currentId && <div className="pv-notice" role="status">“{props.projects.find(p => p.id === importOwner)?.name || '原项目'}”有一笔导入待结束，浏览与切换不受影响。<button type="button" onClick={() => props.onProject(importOwner)}>返回原导入任务</button></div>}
-    {!currentId && <div className="pv-empty"><Film size={38}/><h2>先选择一个项目</h2><p>导入的视频固定归属于该项目。</p></div>}
+    {!currentId && <div className="pv-empty"><Film size={38}/><h2>先选择一个项目</h2><p>在页面顶部的“当前项目”中选择。导入的视频固定归属于该项目。</p></div>}
     {sessions.map(id => <ProjectVideoSession key={id} {...props} projectId={id}
       active={props.active && id === currentId} importOwner={importOwner} acquireImport={acquireImport} releaseImport={releaseImport}/>) }
   </section>;
@@ -238,7 +233,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     return <T,>(suffix: string, body?: unknown, method?: string) => original<T>(base + suffix, body, method);
   }
   const folders = collection?.folders || [];
-  const folderName = folderId === 'all' || folderId === 'root' ? '项目根目录' : folders.find(f => f.id === folderId)?.path || folders.find(f => f.id === folderId)?.name || '当前文件夹';
+  // 显示用的位置一律是项目内的文件夹名路径（如“第一场 / 补拍”），不显示 folder.path 这类磁盘绝对路径。
+  const folderLabel = (id: string) => id === 'root' ? '项目根目录' : folderTrail(folders, id).map(f => f.name).join(' / ');
+  const folderName = folderId === 'all' || folderId === 'root' ? '项目根目录' : folderLabel(folderId) || '当前文件夹';
   const folderBlocked = (id: string) => !!taskRef.current && !terminal(taskRef.current.receipt) && taskRef.current.kind === 'import' && folderContains(folders, id, taskRef.current.folderId);
   function navigateFolder(id: FolderView) {
     // Re-clicking the current folder must not blank the list: the folder effect would not run again.
@@ -516,7 +513,10 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const draftDirty = (video: ProjectVideo) => !!edits[video.id] && JSON.stringify(edits[video.id]) !== JSON.stringify(editFor(video));
   // “全部视频”聚合时服务端不逐个核验，状态都是“尚未核验”；页头已说明，卡片上不再逐张重复。
   const showStatus = (video: ProjectVideo) => video.status !== 'available' && !(folderId === 'all' && video.status === 'unchecked');
-  const cardFolder = (video: ProjectVideo) => video.folderName || (video.folderId === 'root' ? '项目根目录' : folders.find(f => f.id === video.folderId)?.path || folders.find(f => f.id === video.folderId)?.name || '未核对目录');
+  // 只有字面 'root' 是项目根目录；folderId 为 null 表示项目托管目录之外的旧来源，如实标注，不冒充根目录，也不显示磁盘路径。
+  const cardFolder = (video: ProjectVideo) => video.folderId === 'root' ? '项目根目录'
+    : !video.folderId ? (video.managed ? '未核对目录' : '旧视频 · 原位置')
+    : folderLabel(video.folderId) || (video.folderName && !/^([/\\]|[A-Za-z]:)/.test(video.folderName) ? video.folderName : '未核对目录');
   const discardDraft = (id: string) => setEdits(old => { const next = { ...old }; delete next[id]; return next; });
   const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ kind: 'relink', video, path: '' }); };
   // Video moves always open the move-video preview; nothing is moved by the drop itself.
@@ -607,7 +607,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         <nav className="pv-folder-bar" aria-label="视频文件夹（可把视频卡片拖到这里）">
           <button type="button" className="pv-folder-chip" aria-current={folderId === 'all' ? 'page' : undefined} title="聚合所有文件夹；文件状态在进入文件夹或打开视频时核验" onClick={() => navigateFolder('all')}><Layers size={14}/><span>全部视频</span></button>
           <button type="button" className={`pv-folder-chip${dropFolder === 'root' ? ' is-drop-target' : ''}`} aria-current={folderId === 'root' ? 'page' : undefined} onClick={() => navigateFolder('root')} {...folderDrop('root')}><FolderOpen size={14}/><span>项目根目录</span>{receivingId === 'root' && <small className="pv-receiving">接收中</small>}</button>
-          {orderedFolders.map(({folder, depth}) => <button key={folder.id} type="button" className={`pv-folder-chip${dropFolder === folder.id ? ' is-drop-target' : ''}`} aria-current={folderId === folder.id ? 'page' : undefined} title={folder.path || folder.name} onClick={() => navigateFolder(folder.id)} {...folderDrop(folder.id, folder.available)}>
+          {orderedFolders.map(({folder, depth}) => <button key={folder.id} type="button" className={`pv-folder-chip${dropFolder === folder.id ? ' is-drop-target' : ''}`} aria-current={folderId === folder.id ? 'page' : undefined} title={folderLabel(folder.id) || folder.name} onClick={() => navigateFolder(folder.id)} {...folderDrop(folder.id, folder.available)}>
             {depth ? <CornerDownRight size={13}/> : <FolderIcon size={14}/>}<span>{folder.name}</span>{!folder.available && <small>不可用</small>}{receivingId === folder.id && <small className="pv-receiving">接收中</small>}</button>)}
           <button type="button" className="pv-folder-chip pv-folder-new" disabled={locked || operationPending || !collection} onClick={() => setFolderAction({kind: 'create', parentId: folderTarget(folderId)})}><FolderPlus size={14}/><span>新建文件夹</span></button>
           {menuWrap('dir', <><span>当前目录</span><ChevronDown size={13}/></>, {className: 'pv-folder-chip', disabled: folderId === 'all', title: folderId === 'all' ? '“全部视频”不是一个具体目录' : `管理“${folderName}”`}, <>
@@ -640,11 +640,13 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {!!collection && !collection.legacyUpgrade?.completed && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
       </div>
       <div className={`pv-main${selected && draft ? ' pv-has-detail' : ''}`}>
-        <section className="pv-library" aria-label="视频列表">
+        {/* 外部视频文件拖到列表区任意位置即可导入（先核对再复制）；提示只在拖动时出现，平时不占一行。 */}
+        <section className={`pv-library${dragging ? ' pv-dragging' : ''}`} aria-label="视频列表"
+          onDragOver={e => { if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked && !importUnavailable && !(task && !terminal(task.receipt))) { e.dataTransfer.dropEffect = 'copy'; setDragging(true); } else e.dataTransfer.dropEffect = 'none'; }}
+          onDragLeave={e => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
+          onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
           <div className="pv-library-head"><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频{folderId === 'all' ? ' · 全部文件夹聚合，文件状态打开时核验' : ''}{loading && collection ? ' · 正在刷新…' : ''}</span><span className="pv-save-location" title={folderName}>导入到：<strong>{folderName}</strong></span></div>
-          <div className={`pv-dropzone${dragging ? ' pv-dragging' : ''}`} onDragOver={e => { if (e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) { e.preventDefault(); if (!locked && !importUnavailable) setDragging(true); } }} onDragLeave={() => setDragging(false)} onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
-            <Upload size={15}/><span>把一个视频文件拖到这里，导入到“{folderName}”（会先核对再复制）</span><button type="button" disabled={locked || !collection || importUnavailable || !!task && !terminal(task.receipt)} onClick={() => fileInput.current?.click()}>选择文件…</button>
-          </div>
+          {dragging && <div className="pv-drop-overlay" role="status"><Upload size={18}/><span>松开导入一个视频到“{folderName}”，会先核对再复制</span></div>}
           {!collection && loading && <p className="pv-empty">正在读取项目视频…</p>}
           {view === 'prompts' && childFolderCount > 0 && <div className="pv-cards pv-folder-cards" role="group" aria-label="当前层子文件夹">{folderCards}</div>}
           {groups.map(group => <section key={group.id} className="pv-group">

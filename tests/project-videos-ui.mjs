@@ -55,7 +55,8 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.method() === 'PUT' && r.url().includes('/project-videos/') && r.url().endsWith('/content')) count.content++; });
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.getByLabel('生成视频所属项目').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  assert.equal(await work().locator('select[aria-label="生成视频所属项目"]').count(), 0, '页内不再重复项目选择');
   await expect(card('清晨远景.mp4')).toBeVisible();
 
   await check('布局：未选中时不显示详情；详情先提示词后资料，不挂播放器；页面不整体滚动', async () => {
@@ -92,6 +93,18 @@ try {
     await chip('第一场').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(2);
     await chip('项目根目录').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(1);
     await chip('全部视频').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(3);
+    await expect(card('集市跟拍.mp4').locator('.pv-card-folder')).toHaveText('第一场'); // 位置用文件夹名，不显示磁盘路径
+    await expect(card('清晨远景.mp4').locator('.pv-card-folder')).toHaveText('项目根目录');
+    // 项目托管目录之外的旧来源：folderId 为 null，不能标成“项目根目录”，也不显示磁盘路径
+    await page.route(url => url.pathname.endsWith('/project-videos/projects/' + projectId) && url.searchParams.get('folderId') === 'all', async route => {
+      const data = await (await route.fetch()).json();
+      data.videos.push({ ...data.videos[0], id: 'legacy-null-folder', name: '旧外部来源.mp4', fileName: 'old.mp4', folderId: null, folderName: undefined, managed: false, path: '/synthetic/legacy/old.mp4' });
+      await route.fulfill({ json: data });
+    });
+    await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click();
+    await expect(card('旧外部来源.mp4').locator('.pv-card-folder')).toHaveText('旧视频 · 原位置');
+    await page.unrouteAll({ behavior: 'wait' }); await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click();
+    await expect(card('旧外部来源.mp4')).toHaveCount(0);
     await chip('第一场').click(); await card('手部特写.mp4').dragTo(chip('第二场'));
     await expect(modal()).toContainText('移动视频'); assert.equal((await api(pv('?folderId=all'))).videos.find(v => v.id === bId).folderId, f1id, '拖放本身不应移动');
     await modal().getByRole('button', { name: /核对操作影响/ }).click(); await modal().getByRole('button', { name: /确认执行/ }).click();
@@ -141,6 +154,18 @@ try {
     await banner.getByRole('button', { name: '查询原请求' }).click(); await expect(banner).toContainText('处理已结束');
     assert.equal(count.content, before + 1, '查询不应重新上传'); await page.unrouteAll({ behavior: 'wait' });
     await expect(card('丢回应.mp4')).toBeVisible();
+  });
+
+  await check('拖入提示平时不占位，外部文件拖到列表区时才出现，松开进入导入核对', async () => {
+    await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await expect(card('清晨远景.mp4')).toBeVisible();
+    await expect(work().locator('.pv-drop-overlay')).toHaveCount(0);
+    const library = work().getByRole('region', { name: '视频列表' });
+    const dt = await page.evaluateHandle(() => { const d = new DataTransfer(); d.items.add(new File([new Uint8Array(32)], '拖入测试.mp4', { type: 'video/mp4' })); return d; });
+    await library.dispatchEvent('dragenter', { dataTransfer: dt }); await library.dispatchEvent('dragover', { dataTransfer: dt });
+    await expect(work().locator('.pv-drop-overlay')).toContainText('会先核对再复制');
+    await library.dispatchEvent('drop', { dataTransfer: dt });
+    await expect(work().locator('.pv-drop-overlay')).toHaveCount(0); await expect(modal()).toContainText('拖入测试.mp4');
+    await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0);
   });
 
   await check('键盘：⋯ 菜单可用方向键与 Esc 操作，焦点回到按钮', async () => {
