@@ -16,6 +16,8 @@ export function initialDestination(file:IntakeFile,preferences:Partial<Record<Me
 }
 export function TargetEditor({file,handoffId,api,projects,value,locked,previewReady=true,onChange,onReady}:{file:IntakeFile;handoffId:string;api:IntakeRequest;projects:{id:string;name:string}[];value:DestinationDraft|null;locked:boolean;previewReady?:boolean;onChange:(v:DestinationDraft,manual?:boolean)=>void;onReady:(v:boolean)=>void}){
   const [folders,setFolders]=useState<IntakeFolder[]>([]),[reading,setReading]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[newFolder,setNewFolder]=useState(''),[creating,setCreating]=useState(false),[proposal,setProposal]=useState<Proposal|null>(null),[checking,setChecking]=useState(false);
+  const [previewError,setPreviewError]=useState(''),[previewAttempt,setPreviewAttempt]=useState(0);
+  const previewSrc='/api'+INTAKE_API+'/handoffs/'+encoded(handoffId)+'/files/'+encoded(file.id)+'/preview'+(previewAttempt?'?retry='+previewAttempt:'');
   const valueRef=useRef(value);valueRef.current=value;
   const lockedRef=useRef(locked);lockedRef.current=locked;
   const mounted=useRef(true);
@@ -50,7 +52,7 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   async function createFolder(){if(locked||!value||!newFolder.trim()||creating)return;const version=location.current.version;setCreating(true);setError('');try{const r=await api<{relativePath:string}>(INTAKE_API+'/categories/'+value.kind,{directory:value.directory||'',name:newFolder});if(!mounted.current)return;const current=valueRef.current;if(!lockedRef.current&&current&&location.current.version===version)onChange({...current,directory:r.relativePath});setNewFolder('');setRefresh(n=>n+1);}catch(e){if(mounted.current&&!lockedRef.current&&location.current.version===version)setError(errorMessage(e));}finally{if(mounted.current)setCreating(false);}}
   const updateFilename=(text:string)=>{if(!value)return;const next=imageNamePreset(text),change:Partial<DestinationDraft>={fileName:text};if(!value.characterNameManual)change.characterName=next.name;if(!value.lookNameManual)change.lookName=next.lookName;onChange({...value,...change});};
   return <section className="fi-item" aria-label={'收纳设置 '+file.name}>
-    {file.mediaKind==='photo'&&(previewReady?<img src={'/api'+INTAKE_API+'/handoffs/'+encoded(handoffId)+'/files/'+encoded(file.id)+'/preview'} width="160" height="100" alt={file.name}/>:<p role="status">正在准备图片预览…</p>)}
+    {file.mediaKind==='photo'&&(previewReady?(previewError===previewSrc?<p className="fi-error" role="alert">图片预览未能显示；原文件仍保留，可在访达中打开。<button onClick={()=>setPreviewAttempt(n=>n+1)}><RefreshCw size={13}/>重新读取</button></p>:<img key={previewSrc} src={previewSrc} width="160" height="100" alt={file.name} onError={()=>setPreviewError(previewSrc)}/>):<p role="status">正在准备图片预览…</p>)}
     <strong>{file.mediaKind==='photo'?<Image size={15}/>:file.mediaKind==='audio'?<Music size={15}/>:<Film size={15}/>} {file.name}</strong>
     {file.mediaKind==='audio'&&<label>素材类型<select aria-label={'素材类型 '+file.id} value={value?.kind||''} disabled={locked} onChange={e=>onChange({kind:e.target.value as MediaKind,scope:'library',directory:''})}><option value="" disabled>请选择音乐或音效</option><option value="music">音乐</option><option value="sfx">音效</option></select></label>}
     {value&&<>

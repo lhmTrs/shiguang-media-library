@@ -5,6 +5,8 @@ import os from 'node:os';
 import {spawn} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
+import {Readable} from 'node:stream';
+import {imagePreviewCache,previewSourceLimit} from './image-preview.mjs';
 import {fault,idOK,canonical} from './model.mjs';
 import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {privateDirectory} from '../prompt-codex/media.mjs';
@@ -15,7 +17,7 @@ const mimeFor=file=>({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'im
 async function checkedFile(file){
   const before=await fs.lstat(file);
   if(!before.isFile()||before.isSymbolicLink()||await fs.realpath(file)!==file)throw fault('图片文件或路径已变化',409);
-  const handle=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW);
+  const handle=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try{if(identity(before)!==identity(await handle.stat()))throw fault('图片正在变化，请重新选择',409);return{handle,before};}catch(e){await handle.close();throw e;}
 }
 async function unchanged(file,handle,before){
@@ -26,20 +28,42 @@ export async function imageDigest(file){
   try{const h=createHash('sha256');for await(const chunk of handle.createReadStream({autoClose:false}))h.update(chunk);await unchanged(file,handle,before);return{hash:h.digest('hex'),stat:before};}finally{await handle.close();}
 }
 // Verify from the same descriptor that is streamed. Never read the whole image into memory.
-export async function streamImage(file,expected,res){
-  const {handle,before}=await checkedFile(file);let snapshot,temp,retained;
+export async function streamImage(file,expected,res,{media,verifySource}={}){
+  const compatible=/\.(heic|heif)$/i.test(file),controller=new AbortController(),signal=controller.signal;
+  const abort=()=>{if(!res.writableFinished)controller.abort();};
+  res.once('close',abort);if(res.destroyed)abort();
+  let handle,before,snapshot,temp,retained,output,release;
   try{
-    const mime=mimeFor(file);if(!mime)throw fault('此格式暂不能在浏览器预览，原文件仍保留，可在访达中打开',415);
+    signal.throwIfAborted();if(compatible)release=imagePreviewCache.acquire();
+    ({handle,before}=await checkedFile(file));
+    const mime=compatible?'image/jpeg':mimeFor(file);if(!mime)throw fault('此格式暂不能在浏览器预览，原文件仍保留，可在访达中打开',415);
+    if(compatible&&before.size>previewSourceLimit)throw fault('HEIC 原图过大，暂不能生成预览；原文件仍保留，可在访达中打开',413);
     temp=await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-reference-preview-'));
-    retained=path.join(temp,'snapshot');snapshot=await fs.open(retained,constants.O_RDWR|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+    temp=await fs.realpath(temp);
+    retained=path.join(temp,compatible?'snapshot.heic':'snapshot');snapshot=await fs.open(retained,constants.O_RDWR|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
     // POSIX anonymous inode: later changes to the source cannot change delivered bytes.
-    try{await fs.unlink(retained);retained=null;}catch(e){if(!['EPERM','EACCES','EBUSY'].includes(e.code))throw e;}
-    const hash=createHash('sha256');for await(const chunk of handle.createReadStream({autoClose:false})){hash.update(chunk);await snapshot.writeFile(chunk);}
-    if(expected&&hash.digest('hex')!==expected)throw fault('引用失效：图片内容已变更',409);
+    if(!compatible)try{await fs.unlink(retained);retained=null;}catch(e){if(!['EPERM','EACCES','EBUSY'].includes(e.code))throw e;}
+    const hash=createHash('sha256');let size=0;
+    for await(const chunk of handle.createReadStream({autoClose:false})){signal.throwIfAborted();size+=chunk.length;if(size>before.size)throw fault('图片正在变化，请重新选择',409);hash.update(chunk);await snapshot.writeFile(chunk);}
+    const digest=hash.digest('hex');
+    if(size!==before.size||expected&&digest!==expected)throw fault('引用失效：图片内容已变更',409);
     await unchanged(file,handle,before);
-    res.set({'Content-Type':mime,'Content-Length':String(before.size),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});
-    await pipeline(snapshot.createReadStream({autoClose:false,start:0}),res);
-  }finally{await handle.close();await snapshot?.close();if(retained)await fs.unlink(retained).catch(()=>{});if(temp)await fs.rmdir(temp).catch(()=>{});}
+    let bytes;
+    if(compatible){
+      output=path.join(temp,'preview.jpg');const created=await fs.open(output,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);await created.close();
+      const key=createHash('sha256').update(file+'|'+identity(before)+'|'+digest).digest('hex');
+      bytes=await imagePreviewCache.preview(retained,output,key,{signal,media});
+      await unchanged(file,handle,before);
+    }
+    await verifySource?.();signal.throwIfAborted();
+    res.set({'Content-Type':mime,'Content-Length':String(bytes?.length??before.size),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});
+    await pipeline(bytes?Readable.from([bytes]):snapshot.createReadStream({autoClose:false,start:0}),res,{signal});
+  }finally{
+    res.removeListener('close',abort);
+    try{await handle?.close();}finally{try{await snapshot?.close();}finally{
+      if(output)await fs.unlink(output).catch(()=>{});if(retained)await fs.unlink(retained).catch(()=>{});if(temp)await fs.rmdir(temp).catch(()=>{});release?.();
+    }}
+  }
 }
 
 async function publishRelative(s,suffixed){
