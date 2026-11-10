@@ -18,7 +18,7 @@ export function validateFolderData(table,data) {
   if(!data||typeof data!=='object'||Array.isArray(data))fail('VIDEO_BACKUP_INVALID','项目视频目录资料无效');
   const keys=Object.keys(data).sort().join(',');
   if(table==='project_video_settings') {
-    if(keys!=='upgradeCompleted'||typeof data.upgradeCompleted!=='boolean')fail('VIDEO_BACKUP_INVALID','旧视频升级状态无效');
+    if(!['upgradeCompleted','rejectFolderId,upgradeCompleted'].includes(keys)||typeof data.upgradeCompleted!=='boolean'||Object.hasOwn(data,'rejectFolderId')&&data.rejectFolderId!==null&&!idOK(data.rejectFolderId))fail('VIDEO_BACKUP_INVALID','项目视频设置无效');
   } else if(table==='project_video_folders') {
     if(keys!=='identity,name,parentId,relativePath,removedAt'||folderName(data.name)!==data.name||!['root',null].includes(data.parentId)&&!idOK(data.parentId)||data.parentId===null||!relative(data.relativePath)||!Number.isSafeInteger(data.removedAt)||data.removedAt<0||!data.identity||Object.keys(data.identity).sort().join(',')!=='dev,ino'||typeof data.identity.dev!=='string'||typeof data.identity.ino!=='string')fail('VIDEO_BACKUP_INVALID','文件夹结构无效');
   } else fail('VIDEO_BACKUP_INVALID','未知视频目录资料');
@@ -28,8 +28,34 @@ export function validateFolderData(table,data) {
 export class ProjectVideoFolders {
   constructor(catalog) {this.catalog=catalog;}
   get db(){return this.catalog.db;}
-  settings(id) {const row=this.db.prepare('SELECT * FROM project_video_settings WHERE id=?').get(id);return row?validateFolderData('project_video_settings',JSON.parse(row.data_json)):{upgradeCompleted:false};}
-  completeUpgrade(id) {const now=Date.now(),row=this.db.prepare('SELECT * FROM project_video_settings WHERE id=?').get(id);if(row)this.db.prepare('UPDATE project_video_settings SET data_json=?,revision=?,updated_at=? WHERE id=?').run(canonical({upgradeCompleted:true}),row.revision+1,now,id);else this.db.prepare('INSERT INTO project_video_settings VALUES(?,?,?,?,?,?)').run(id,id,canonical({upgradeCompleted:true}),1,now,now);}
+  settingsRow(id) {const row=this.db.prepare('SELECT * FROM project_video_settings WHERE id=?').get(id);if(row&&(row.project_id!==id||!Number.isSafeInteger(row.revision)||row.revision<1))fail('FOLDER_ROLES_CONFLICT','项目视频设置身份无效',409);return row;}
+  settingsData(row) {return{rejectFolderId:null,...(row?validateFolderData('project_video_settings',JSON.parse(row.data_json)):{upgradeCompleted:false})};}
+  settings(id) {return this.settingsData(this.settingsRow(id));}
+  writeSettings(id,data,expectedRevision) {
+    this.catalog.project(id,true);validateFolderData('project_video_settings',data);
+    const row=this.settingsRow(id),now=Date.now();if((row?.revision||0)!==expectedRevision)fail('FOLDER_ROLES_CONFLICT','收纳角色或升级设置已变化，请重新预览',409);
+    if(row){const result=this.db.prepare('UPDATE project_video_settings SET data_json=?,revision=?,updated_at=? WHERE id=? AND project_id=? AND revision=?').run(canonical(data),expectedRevision+1,now,id,id,expectedRevision);if(result.changes!==1)fail('FOLDER_ROLES_CONFLICT','项目视频设置已变化',409);}
+    else {try{this.db.prepare('INSERT INTO project_video_settings VALUES(?,?,?,?,?,?)').run(id,id,canonical(data),1,now,now);}catch(e){if(['SQLITE_CONSTRAINT_PRIMARYKEY','SQLITE_CONSTRAINT_UNIQUE','ER_DUP_ENTRY'].includes(e.code))fail('FOLDER_ROLES_CONFLICT','项目视频设置已由另一操作创建，请重新预览',409);throw e;}}
+  }
+  completeUpgrade(id) {const row=this.settingsRow(id);this.writeSettings(id,{...this.settingsData(row),upgradeCompleted:true},row?.revision||0);}
+  // These three helpers are synchronous: file operations call them inside their
+  // existing metadata transaction, before any removed folder rows are written.
+  inRejectArea(id,folderId,rows=this.rows(id)) {return this.inSubtree(folderId,this.settings(id).rejectFolderId,rows);}
+  inSubtree(folderId,ancestorId,rows=[]) {
+    if(!ancestorId)return false;const byId=new Map(rows.map(r=>[r.id,r]));
+    const seen=new Set();while(folderId&&folderId!=='root'&&!seen.has(folderId)){if(folderId===ancestorId)return true;seen.add(folderId);const row=byId.get(folderId);if(!row)return false;folderId=row.parentId;}return false;
+  }
+  roleState(id) {
+    this.catalog.project(id);const setting=this.settingsRow(id),revision=setting?.revision||0,rejectFolderId=this.settingsData(setting).rejectFolderId,rows=this.rows(id),byId=new Map(rows.map(r=>[r.id,r]));
+    let current=rejectFolderId,needsReview=false;const seen=new Set();while(current&&current!=='root'){if(seen.has(current)||!byId.has(current)){needsReview=true;break;}seen.add(current);current=byId.get(current).parentId;}
+    const rejectVideoCount=rejectFolderId?this.catalog.videos.sources(id).filter(s=>!this.catalog.metadata(id,s).data.removedAt&&this.inSubtree(this.folderId(id,s.path,rows),rejectFolderId,rows)).length:0;
+    return{revision,rejectFolderId,rejectVideoCount,needsReview,...(needsReview?{errorCode:'REJECT_FOLDER_MISSING'}:{})};
+  }
+  clearRemovedRole(id,deletedFolderIds) {
+    const state=this.roleState(id),deleted=new Set(deletedFolderIds),byId=new Map(this.rows(id).map(r=>[r.id,r]));let current=state.rejectFolderId;const seen=new Set();
+    while(current&&current!=='root'&&!seen.has(current)){if(deleted.has(current)){this.writeSettings(id,{...this.settings(id),rejectFolderId:null},state.revision);return this.roleState(id);}seen.add(current);current=byId.get(current)?.parentId;}
+    return state;
+  }
   rows(id) {return this.db.prepare('SELECT * FROM project_video_folders WHERE project_id=? ORDER BY created_at,id').all(id).map(r=>({...r,...validateFolderData('project_video_folders',JSON.parse(r.data_json))})).filter(r=>!r.removedAt);}
   row(id,folderId) {if(!idOK(folderId))fail('FOLDER_NOT_FOUND','文件夹不存在',404);const row=this.rows(id).find(r=>r.id===folderId);if(!row)fail('FOLDER_NOT_FOUND','文件夹不属于当前项目或已删除',404);return row;}
   write(id,folderId,data) {validateFolderData('project_video_folders',data);const old=this.db.prepare('SELECT * FROM project_video_folders WHERE id=?').get(folderId),now=Date.now();if(old&&old.project_id!==id)fail('FOLDER_CONFLICT','文件夹归属不符',409);if(old)this.db.prepare('UPDATE project_video_folders SET data_json=?,revision=?,updated_at=? WHERE id=?').run(canonical(data),old.revision+1,now,folderId);else this.db.prepare('INSERT INTO project_video_folders VALUES(?,?,?,?,?,?)').run(folderId,id,canonical(data),1,now,now);}
@@ -45,7 +71,7 @@ export class ProjectVideoFolders {
     return parts.length>=2&&!parts.includes('..')&&parts[0].endsWith('--'+id.toLowerCase())?path.join(this.catalog.directory,parts[0]):null;
   }
   folderId(id,file,rows=this.rows(id)) {const root=this.rootForSource(id,file);if(!root)return null;const rel=path.relative(root,path.dirname(file)).split(path.sep).join('/');return !rel?'root':rows.find(r=>r.relativePath===rel)?.id??null;}
-  dto(row,root) {return{id:row.id,parentId:row.parentId,name:row.name,path:path.join(root,...row.relativePath.split('/')),relativePath:row.relativePath,available:true};}
+  dto(row,root,roles=row.project_id?this.roleState(row.project_id):{rejectFolderId:null}) {return{id:row.id,parentId:row.parentId,name:row.name,path:path.join(root,...row.relativePath.split('/')),relativePath:row.relativePath,available:true,role:row.id===roles.rejectFolderId?'reject':null};}
   async resolve(id,folderId='root',{write=false,create=false}={}) {
     this.catalog.project(id,write);if(folderId==='all')folderId='root';
     const base=create?await this.catalog.prepareRoot(id):null,root=base?.target??await this.rootPath(id);
