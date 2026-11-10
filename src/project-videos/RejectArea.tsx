@@ -48,7 +48,12 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
   const [setup, setSetup] = useState<Setup>({ kind: 'create' });
   const [rolePlan, setRolePlan] = useState<RejectRolePlan | null>(null), [movePlan, setMovePlan] = useState<RejectMovePlan | null>(null);
   const [roleOk, setRoleOk] = useState(false), [unbindOk, setUnbindOk] = useState(false);
-  const [choices, setChoices] = useState<Record<string, ConflictChoice>>({});
+  const [choices, setChoicesState] = useState<Record<string, ConflictChoice>>({});
+  // 预览时使用的冲突选择；界面选择与之不同时，旧预览（及其 previewHash、确认）作废，必须重新核对才能执行
+  const [planChoices, setPlanChoices] = useState('');
+  const choicesKey = JSON.stringify(Object.entries(choices).sort());
+  const planStale = !!planChoices && planChoices !== choicesKey;
+  const setChoices = (update: (old: Record<string, ConflictChoice>) => Record<string, ConflictChoice>) => { setChoicesState(update); setUnbindOk(false); };
   const [roles, setRoles] = useState<FolderRoles | null>(null), [folders, setFolders] = useState<Folder[]>([]);
   const [previewBusy, setPreviewBusy] = useState(false), [previewError, setPreviewError] = useState('');
   const [commit, setCommitState] = useState<Commit | null>(null), [roleDone, setRoleDone] = useState<BatchReceipt | null>(null);
@@ -99,7 +104,7 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
     const list = await requestRef.current<ProjectVideoCollection>(`${base}?folderId=reject`);
     setRoles(list.folderRoles || null); setFolders(list.folders || []); return list;
   }
-  function resetPlans() { setRolePlan(null); setMovePlan(null); setRoleOk(false); setUnbindOk(false); setChoices({}); setPreviewError(''); }
+  function resetPlans() { setRolePlan(null); setMovePlan(null); setPlanChoices(''); setRoleOk(false); setUnbindOk(false); setChoicesState({}); setPreviewError(''); setPreviewBusy(false); }
 
   /** 标记为废片：有收纳处时直接核对移动；没有（或需核对）时先设置收纳处。 */
   async function open(next: RejectTarget[], current: { roles?: FolderRoles | null; folders: Folder[] }) {
@@ -139,7 +144,7 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
   }
   async function previewMove(list = targets, knownRoles?: FolderRoles | null) {
     if (previewBusy || attention && commitRef.current?.stage === 'move') return;
-    const t = ++ticket.current; setPreviewBusy(true); setPreviewError(''); setMovePlan(null); setUnbindOk(false);
+    const t = ++ticket.current, sentChoices = choicesKey; setPreviewBusy(true); setPreviewError(''); setMovePlan(null); setPlanChoices(''); setUnbindOk(false);
     try {
       const latest = knownRoles ? { folderRoles: knownRoles } : await loadRoles(); if (t !== ticket.current) return;
       const target = latest.folderRoles?.rejectFolderId;
@@ -148,7 +153,7 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
         requestId: crypto.randomUUID(), kind: 'move-videos', sourceIds: list.map(v => v.id), destinationFolderId: target,
         unbindAdoptions: true, expectedRolesRevision: latest.folderRoles?.revision ?? 0, choices,
       }, 'POST');
-      if (t === ticket.current) setMovePlan(plan);
+      if (t === ticket.current) { setMovePlan(plan); setPlanChoices(sentChoices); }
     } catch (e) { if (t === ticket.current) setPreviewError(msg(e)); }
     finally { if (t === ticket.current) setPreviewBusy(false); }
   }
@@ -157,9 +162,10 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
     put({ stage: stageNow, requestId, receipt: null, busy: true, unknown: false, error: '' });
     try { receive(requestId, await requestRef.current<BatchReceipt>(url, body, 'POST')); }
     catch (e) {
-      // 没有 HTTP 状态 = 回应丢失：可能已经执行，只能查询原请求
-      if (!httpStatus(e)) patch(requestId, { busy: false, unknown: true, error: `结果尚未确认：${msg(e)}。请查询原请求，不会自动重发。` });
-      else patch(requestId, { busy: false, unknown: false, error: msg(e) });
+      // 只有后台明确拒绝（4xx，如预览失效、确认不符）才算没有执行；回应丢失、5xx、超时都可能已经执行，只能查询原请求
+      const status = httpStatus(e);
+      if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) patch(requestId, { busy: false, unknown: false, error: msg(e) });
+      else patch(requestId, { busy: false, unknown: true, error: `结果尚未确认${status ? `（${status}）` : ''}：${msg(e)}。原操作可能已经执行，请查询原请求，不会自动重发。` });
     }
   }
   function commitRole() {
@@ -169,22 +175,22 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
       ...(shots.length ? { confirmUnbind: true } : {}), confirmedUnbindShotIds: shots.map(s => s.id) });
   }
   function commitMove() {
-    const p = movePlan; if (!p?.ready || attention) return;
+    const p = movePlan; if (!p?.ready || attention || planStale) return;
     const shots = uniqueShots(p.affectedShots || []); if (shots.length && !unbindOk) return;
     void run('move', `${base}/operations`, { requestId: p.requestId, previewHash: p.previewHash, confirmUnbind: true, confirmedUnbindShotIds: shots.map(s => s.id) });
   }
   /** 收纳处已准备好：读取新的角色信息后继续核对移动。 */
   function continueToMove() { if (attention) return; put(null); resetPlans(); setStage('move'); void previewMove(targets); }
   function hide() {
-    setVisible(false); ticket.current++;
+    setVisible(false); ticket.current++; setPreviewBusy(false); // 取消核对：释放忙碌，旧回应因代次变化不会写入
     if (!unresolved && (!resultKey || seenKey === resultKey)) { put(null); setRoleDone(null); resetPlans(); setMode(null); setTargets([]); }
   }
-  function forget() { ticket.current++; put(null); setRoleDone(null); resetPlans(); setMode(null); setTargets([]); setVisible(false); }
+  function forget() { ticket.current++; setPreviewBusy(false); put(null); setRoleDone(null); resetPlans(); setMode(null); setTargets([]); setVisible(false); }
   function retry() { put(null); if (stage === 'role') void previewRole(); else void previewMove(); }
 
   return {
     visible, setVisible, mode, targets, stage, setup, setSetup, rolePlan, movePlan, roleOk, setRoleOk, unbindOk, setUnbindOk,
-    choices, setChoices, roles, folders, previewBusy, previewError, commit, roleDone, pending, unresolved, unread, attention, resultKey, markSeen,
+    choices, setChoices, planStale, roles, folders, previewBusy, previewError, commit, roleDone, pending, unresolved, unread, attention, resultKey, markSeen,
     open, openRole, previewRole, previewMove, commitRole, commitMove, continueToMove, query, hide, forget, retry,
     invalidateRole: () => { setRolePlan(null); setRoleOk(false); setUnbindOk(false); },
   };
@@ -229,7 +235,7 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
       <p>请求编号：<code>{c.requestId}</code></p><p className="pv-muted">只会查询原请求，不会重新提交。</p></div>;
     actions = <><button type="button" onClick={() => ctl.setVisible(false)}>稍后处理</button><button type="button" onClick={ctl.forget}>已核对，收起</button><button type="button" className="pv-primary" onClick={() => void ctl.query()}><RefreshCw size={14}/>查询原请求</button></>;
   } else if (c && c.error) {
-    body = <p className="pv-error" role="alert">{c.error}</p>;
+    body = <><p className="pv-error" role="alert">{c.error}</p>{!!r?.items?.length && <ItemList items={r.items} targets={ctl.targets}/>}</>;
     actions = <><button type="button" onClick={ctl.hide}>关闭</button><button type="button" className="pv-primary" onClick={ctl.retry}>重新核对</button></>;
   } else if (c && r && c.stage === 'role') {
     const after = r.folderId ?? ctl.rolePlan?.roleChange.afterFolderId ?? null;
@@ -241,10 +247,11 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
       : <button type="button" className="pv-primary" onClick={ctl.hide}>完成</button>;
   } else if (c && r && c.stage === 'move') {
     const moved = r.items?.filter(i => i.status === 'ready').length ?? (r.status === 'ready' ? ctl.targets.length : 0);
-    const unbound = uniqueShots((r.items || []).flatMap(i => (i.unboundShotIds || []).map(id => ({ id, number: id }))));
+    // 顶层 unboundShotIds 是权威并集（含被覆盖的同名目标），逐项只含来源自己的
+    const unbound = new Set([...(r.unboundShotIds || []), ...(r.items || []).flatMap(i => i.unboundShotIds || [])]);
     body = <div className="pv-callout" data-tone={r.status === 'ready' ? undefined : 'warn'} role="status">
       <strong>{r.status === 'ready' ? `已移入废片：${moved} 个视频` : `部分完成：已移入 ${moved} 个，其余没有移动`}</strong>
-      <span>{r.items ? `解除 ${unbound.length} 个镜号的采用（镜号本身保留）。` : ''}{ctl.roleDone ? ' 本次也准备了收纳处。' : ''}</span>
+      <span>{`解除 ${unbound.size} 个镜号的采用（镜号本身保留）。`}{ctl.roleDone ? ' 本次也准备了收纳处。' : ''}</span>
       {!!r.items?.length && <ItemList items={r.items} targets={ctl.targets}/>}</div>;
     actions = <button type="button" className="pv-primary" onClick={ctl.hide}>完成</button>;
   } else if (ctl.stage === 'role') {
@@ -266,7 +273,7 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
           ? <>{p.roleChange.willCreate ? `将在项目根目录新建“${p.roleChange.name || '废片'}”文件夹，并设为废片收纳处。` : `将把“${folderPath(folders, p.roleChange.afterFolderId)}”设为废片收纳处，里面的文件不搬动。`}
             {p.roleChange.beforeFolderId ? ` 原收纳处“${folderPath(folders, p.roleChange.beforeFolderId)}”不再隐藏，内容保持不变。` : ''}</>
           : `将取消废片收纳处：“${folderPath(folders, p.roleChange.beforeFolderId)}”回到普通文件夹，内容保持不变。`}</p>
-        {typeof p.videoCount === 'number' && <p>该文件夹（含子文件夹）现有 {p.videoCount} 个视频，设为收纳处后它们会归入“废片”，不在“全部视频”中显示。</p>}
+        {typeof p.rejectVideoCount === 'number' && !p.roleChange.willCreate && !!p.roleChange.afterFolderId && <p>该文件夹（含子文件夹）现有 {p.rejectVideoCount} 个视频，设为收纳处后它们会归入“废片”，不在“全部视频”中显示。</p>}
         <h3>本次将解除采用的精确镜号</h3><p>{shotText(shots) || '没有受影响的采用镜号'}</p>
         {!p.ready && <p className="pv-error" role="alert">后台认为暂时不能执行，请重新核对。</p>}
         <label className="pv-check"><input type="checkbox" checked={ctl.roleOk} disabled={busy || !p.ready} onChange={e => ctl.setRoleOk(e.target.checked)}/>{p.roleChange.afterFolderId || p.roleChange.willCreate ? '确认设置废片收纳处' : '确认取消废片收纳处'}</label>
@@ -281,7 +288,7 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
   } else {
     const p = ctl.movePlan, shots = uniqueShots(p?.affectedShots || []);
     const fromSource = uniqueShots(p?.sourceUnbindShots || []), fromOverwrite = uniqueShots(p?.overwriteTargetUnbindShots || []);
-    const missingChoice = !!p?.conflicts.some(x => !ctl.choices[x.key]);
+    const missingChoice = !!p?.conflicts.some(x => !ctl.choices[x.key]), stale = ctl.planStale;
     body = <>
       <p>移入废片收纳处“<strong>{currentName}</strong>”。文件会在硬盘上真的移动；如果这些视频已用在外部剪辑工程里，那边可能失去链接。</p>
       {ctl.previewBusy && !p && <p className="pv-muted" role="status">正在核对移入影响…</p>}
@@ -291,19 +298,20 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
           <small>覆盖会解除目标视频的采用：{shotText(x.adoptedShots) || '无'}</small>
           <select aria-label={`冲突处理 ${x.name}`} value={ctl.choices[x.key] || ''} disabled={busy} onChange={e => { const v = e.target.value; ctl.setChoices(old => { const n = { ...old }; if (v) n[x.key] = v as ConflictChoice; else delete n[x.key]; return n; }); }}>
             <option value="">请选择</option><option value="rename">保留双方，递增 _0 重命名</option><option value="overwrite">覆盖收纳处里的同名视频</option></select></label>)}
+          {stale && <p className="pv-error" role="alert">冲突处理方式已改变，原核对结果作废，请按所选方式重新核对后再执行。</p>}
           <button type="button" disabled={busy || missingChoice} onClick={() => void ctl.previewMove()}>按所选冲突方式重新核对</button></>}
         <h3>本次将解除采用的精确镜号</h3>
         <p>{shotText(shots) || '没有受影响的采用镜号'}</p>
         {!!fromSource.length && !!fromOverwrite.length && <p className="pv-muted">其中移入的视频：{shotText(fromSource)}；被覆盖的同名视频：{shotText(fromOverwrite)}。</p>}
         {!!shots.length && <><p className="pv-muted">只解除采用关系，镜号本身保留；之后移回也不会自动恢复，需要到分镜里重新选择。</p>
           <label className="pv-check"><input type="checkbox" checked={ctl.unbindOk} disabled={busy} onChange={e => ctl.setUnbindOk(e.target.checked)}/>我已核对上述镜号，确认解除这些采用关系</label></>}
-        {!p.ready && !missingChoice && <p className="pv-error" role="alert">后台认为暂时不能执行，请重新核对。</p>}
+        {!p.ready && !missingChoice && !stale && <p className="pv-error" role="alert">后台认为暂时不能执行，请重新核对。</p>}
       </div>}
     </>;
     actions = <>
       <button type="button" onClick={ctl.hide}>取消</button>
       <button type="button" disabled={busy} onClick={() => void ctl.previewMove()}>{ctl.previewBusy ? '正在核对…' : '重新核对'}</button>
-      {p && <button type="button" className={shots.length ? 'pv-danger' : 'pv-primary'} disabled={busy || !p.ready || missingChoice || !!shots.length && !ctl.unbindOk} onClick={ctl.commitMove}>{!!shots.length && <AlertTriangle size={15}/>}移入废片</button>}
+      {p && <button type="button" className={shots.length ? 'pv-danger' : 'pv-primary'} disabled={busy || !p.ready || missingChoice || stale || !!shots.length && !ctl.unbindOk} onClick={ctl.commitMove}>{!!shots.length && <AlertTriangle size={15}/>}移入废片</button>}
     </>;
   }
   return <Modal title={title} locked={false} onClose={ctl.hide} className="pv-folder-operation-modal pv-reject-modal">

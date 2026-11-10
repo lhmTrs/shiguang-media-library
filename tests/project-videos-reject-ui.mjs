@@ -42,7 +42,7 @@ const banner = () => work().locator('.pv-banner', { hasText: '废片收纳：' }
 const bar = () => work().getByRole('navigation', { name: /视频文件夹/ });
 
 // ---- 合同 v1 模拟状态 ----
-const mock = { role: { revision: 0, id: null }, rejected: new Set(), adopted: {}, plans: {}, receipts: {}, posts: [], next: '' };
+const mock = { role: { revision: 0, id: null }, rejected: new Set(), adopted: {}, plans: {}, receipts: {}, posts: [], next: '', executed: [], holdPreview: null, holdRole: null, conflictIds: [] };
 const sorted = a => [...a].sort();
 async function installMocks() {
   const base = `/api/project-videos/projects/${projectId}`;
@@ -65,8 +65,9 @@ async function installMocks() {
     if (req.method() === 'GET') { const id = decodeURIComponent(suffix.split('/').pop()); return mock.receipts[id] ? route.fulfill({ json: mock.receipts[id] }) : route.fallback(); }
     if (suffix === '/folders/reject/preview') {
       mock.posts.push({ kind: 'role-preview', body });
+      if (mock.holdRole) { const gate = mock.holdRole; mock.holdRole = null; gate.reached(); await gate.release; }
       const plan = { requestId: body.requestId, previewHash: 'h-' + body.requestId, ready: true, expectedRolesRevision: mock.role.revision, adoptionStamp: 'stamp',
-        roleChange: { beforeFolderId: mock.role.id, afterFolderId: body.create ? null : body.folderId, willCreate: !!body.create }, affectedShots: [] };
+        roleChange: { beforeFolderId: mock.role.id, afterFolderId: body.create ? null : body.folderId, willCreate: !!body.create }, affectedShots: [], rejectVideoCount: body.folderId ? 7 : undefined };
       mock.plans[body.requestId] = { kind: 'role', plan }; return route.fulfill({ json: plan });
     }
     if (suffix === '/folders/reject') {
@@ -78,10 +79,14 @@ async function installMocks() {
     }
     if (suffix === '/operations/preview' && body.kind === 'move-videos') {
       mock.posts.push({ kind: 'move-preview', body });
+      if (mock.holdPreview) { const gate = mock.holdPreview; mock.holdPreview = null; gate.reached(); await gate.release; }
       const shots = body.sourceIds.flatMap(id => (mock.adopted[id] || []).map(s => ({ ...s, sourceIds: [id] })));
-      const plan = { requestId: body.requestId, previewHash: 'm-' + body.requestId, description: `将 ${body.sourceIds.length} 个视频移入废片`, conflicts: [], files: body.sourceIds.length, folders: 0, ready: true,
-        affectedShots: shots, sourceUnbindShots: shots, overwriteTargetUnbindShots: [], willUnbindAdoptions: true, rolesRevision: mock.role.revision, adoptionStamp: 'stamp' };
-      mock.plans[body.requestId] = { kind: 'move', plan, sourceIds: body.sourceIds }; return route.fulfill({ json: plan });
+      // 与收纳处里已有的同名视频冲突：覆盖会解除目标的镜 12；按 sourceId 选择
+      const conflicts = body.sourceIds.filter(id => mock.conflictIds.includes(id)).map(id => ({ key: id, name: '戊.mp4', sourceName: '戊.mp4', targetName: '戊.mp4', targetVideoId: 'old-target', adoptedShots: [{ id: 'shot-12', number: '12' }], choice: body.choices?.[id] }));
+      const overwrite = conflicts.filter(x => body.choices?.[x.key] === 'overwrite').flatMap(x => x.adoptedShots.map(s => ({ ...s, sourceIds: ['old-target'] })));
+      const plan = { requestId: body.requestId, previewHash: 'm-' + body.requestId, description: `将 ${body.sourceIds.length} 个视频移入废片`, conflicts, files: body.sourceIds.length, folders: 0,
+        ready: conflicts.every(x => body.choices?.[x.key]), affectedShots: [...shots, ...overwrite], sourceUnbindShots: shots, overwriteTargetUnbindShots: overwrite, willUnbindAdoptions: true, rolesRevision: mock.role.revision, adoptionStamp: 'stamp' };
+      mock.plans[body.requestId] = { kind: 'move', plan, sourceIds: body.sourceIds, choices: body.choices || {} }; return route.fulfill({ json: plan });
     }
     if (suffix === '/operations/preview' && body.kind === 'move-video' && mock.rejected.has(body.sourceId)) { // 移回（普通 move-video）
       mock.posts.push({ kind: 'back-preview', body });
@@ -93,13 +98,18 @@ async function installMocks() {
       if (entry.kind === 'back') { mock.rejected.delete(entry.sourceId); const receipt = { requestId: body.requestId, status: 'ready', description: '已移回' }; mock.receipts[body.requestId] = receipt; return route.fulfill({ json: receipt }); }
       assert.deepEqual(sorted(body.confirmedUnbindShotIds), sorted(entry.plan.affectedShots.map(s => s.id)), '确认的镜号必须与预览并集完全一致');
       const mode = mock.next; mock.next = '';
-      const items = entry.sourceIds.map((id, i) => mode === 'partial' && i === entry.sourceIds.length - 1
-        ? { sourceId: id, status: 'failed', error: '测试：目标目录暂不可写' }
+      if (mode === '409') return route.fulfill({ status: 409, json: { error: '测试：预览已失效，请重新核对', code: 'PREVIEW_REQUIRED' } }); // 明确拒绝：没有执行
+      mock.executed.push({ requestId: body.requestId, choices: entry.choices });
+      // 后台整批一次提交：失败时逐项回退，不产生部分提交
+      const items = entry.sourceIds.map((id, i) => mode === 'failed'
+        ? i === entry.sourceIds.length - 1 ? { sourceId: id, status: 'failed', error: '测试：目标目录暂不可写' } : { sourceId: id, status: 'rolled-back' }
         : { sourceId: id, status: 'ready', unboundShotIds: (mock.adopted[id] || []).map(s => s.id) });
-      for (const it of items) if (it.status === 'ready') { mock.rejected.add(it.sourceId); delete mock.adopted[it.sourceId]; }
-      const receipt = { requestId: body.requestId, status: mode === 'partial' ? 'partial' : 'ready', description: '移入废片', items };
+      if (mode !== 'failed') for (const it of items) { mock.rejected.add(it.sourceId); delete mock.adopted[it.sourceId]; }
+      const receipt = { requestId: body.requestId, status: mode === 'failed' ? 'failed' : 'ready', description: '移入废片', items,
+        error: mode === 'failed' ? '测试：有视频没有移动，已全部回退' : null, unboundShotIds: mode === 'failed' ? [] : entry.plan.affectedShots.map(s => s.id) };
       mock.receipts[body.requestId] = receipt;
       if (mode === 'drop') return route.abort('failed'); // 已执行，只丢回应
+      if (mode === '500') return route.fulfill({ status: 500, json: { error: '测试：执行后服务器出错' } }); // 已执行，回应是 500
       return route.fulfill({ json: receipt });
     }
     return route.fallback();
@@ -114,8 +124,8 @@ try {
   await api(pv('/folders'), { requestId: crypto.randomUUID(), parentId: 'root', name: '废片' }); // 用户手建的同名文件夹
   await api(pv('/folders'), { requestId: crypto.randomUUID(), parentId: 'root', name: '第一场' });
   const folders = (await api(pv('?folderId=all'))).folders, manual = folders.find(f => f.name === '废片').id;
-  const ids = {}; for (const [name, color] of [['甲.mp4', 'green'], ['乙.mp4', 'brown'], ['丙.mp4', 'gray'], ['丁.mp4', 'navy']]) ids[name] = await seedVideo(await clip(name, color), 'root');
-  const [A, B, C, D] = ['甲.mp4', '乙.mp4', '丙.mp4', '丁.mp4'].map(n => ids[n]);
+  const ids = {}; for (const [name, color] of [['甲.mp4', 'green'], ['乙.mp4', 'brown'], ['丙.mp4', 'gray'], ['丁.mp4', 'navy'], ['戊.mp4', 'purple'], ['己.mp4', 'olive'], ['庚.mp4', 'teal']]) ids[name] = await seedVideo(await clip(name, color), 'root');
+  const [A, B, C, D, E, F, G] = ['甲.mp4', '乙.mp4', '丙.mp4', '丁.mp4', '戊.mp4', '己.mp4', '庚.mp4'].map(n => ids[n]); mock.conflictIds = [E, G];
   mock.adopted[A] = [{ id: 'shot-3', number: '03' }];
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
@@ -137,6 +147,7 @@ try {
     await expect(modal()).toContainText('标记为废片（1 个）'); await expect(modal()).toContainText('项目还没有废片收纳处');
     await expect(modal().getByLabel('把现有文件夹设为收纳处（文件不搬动）')).toBeChecked(); // 预选手建的“废片”，仍需用户核对确认
     await modal().getByRole('button', { name: '核对影响' }).click(); await expect(modal()).toContainText('将把“废片”设为废片收纳处，里面的文件不搬动');
+    await expect(modal()).toContainText('该文件夹（含子文件夹）现有 7 个视频'); // R5：读取 rejectVideoCount
     const set = modal().getByRole('button', { name: '设为收纳处' }); await expect(set).toBeDisabled();
     await modal().getByLabel('确认设置废片收纳处').check(); await set.click();
     await expect(modal()).toContainText('收纳处已准备'); await expect(modal()).toContainText('视频还没有移动');
@@ -182,12 +193,78 @@ try {
     assert.equal(posts('move-commit').filter(p => p.body.requestId === requestId).length, 1, '不重发');
   });
 
-  await check('部分完成：逐项显示已移入与没有移动的原因', async () => {
+  await check('整批失败已回退：逐项显示回退与失败原因，不显示已移入', async () => {
     await card(B).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
-    await expect(modal()).toContainText('将 1 个视频移入废片'); mock.next = 'partial';
+    await expect(modal()).toContainText('将 1 个视频移入废片'); mock.next = 'failed';
     await modal().getByRole('button', { name: '移入废片' }).click();
-    await expect(modal()).toContainText('部分完成：已移入 0 个'); await expect(modal()).toContainText('没有移动 · 测试：目标目录暂不可写');
-    await modal().getByRole('button', { name: '完成' }).click(); await expect(card(B)).toBeVisible();
+    await expect(modal()).toContainText('测试：有视频没有移动，已全部回退'); await expect(modal()).toContainText('没有移动 · 测试：目标目录暂不可写');
+    await expect(modal()).not.toContainText('已移入废片：');
+    await modal().getByRole('button', { name: '关闭' }).last().click(); await expect(card(B)).toBeVisible();
+  });
+
+  const conflictChoice = () => modal().getByLabel('冲突处理 戊.mp4');
+  await check('改动冲突处理（R1）：旧核对与确认立即作废、不能执行；按新选择重新核对后执行的是新选择', async () => {
+    await card(E).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await expect(modal()).toContainText('同名冲突');
+    await conflictChoice().selectOption('overwrite'); await modal().getByRole('button', { name: '按所选冲突方式重新核对' }).click();
+    await expect(modal()).toContainText('镜 12'); await modal().getByLabel('我已核对上述镜号，确认解除这些采用关系').check();
+    const go = modal().getByRole('button', { name: '移入废片' }); await expect(go).toBeEnabled();
+    const executed = mock.executed.length;
+    await conflictChoice().selectOption('rename');
+    await expect(modal()).toContainText('冲突处理方式已改变，原核对结果作废'); await expect(go).toBeDisabled();
+    await go.click({ force: true }); assert.equal(mock.executed.length, executed, '旧的覆盖方案不能被执行');
+    await modal().getByRole('button', { name: '按所选冲突方式重新核对' }).click();
+    await expect(modal()).not.toContainText('冲突处理方式已改变'); await expect(modal()).toContainText('没有受影响的采用镜号');
+    await go.click(); await expect(modal()).toContainText('已移入废片：1 个视频');
+    assert.equal(mock.executed.at(-1).choices[E], 'rename', '执行的是重新核对后的“改名”'); assert.deepEqual(posts('move-commit').at(-1).body.confirmedUnbindShotIds, []);
+    await modal().getByRole('button', { name: '完成' }).click();
+  });
+
+  await check('覆盖同名目标（R4）：解除数量按顶层并集显示（来源本身未被采用）', async () => {
+    await card(G).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await conflictChoice().selectOption('overwrite'); await modal().getByRole('button', { name: '按所选冲突方式重新核对' }).click();
+    await expect(modal()).toContainText('镜 12'); await modal().getByLabel('我已核对上述镜号，确认解除这些采用关系').check();
+    await modal().getByRole('button', { name: '移入废片' }).click();
+    await expect(modal()).toContainText('已移入废片：1 个视频'); await expect(modal()).toContainText('解除 1 个镜号的采用');
+    assert.deepEqual(posts('move-commit').at(-1).body.confirmedUnbindShotIds, ['shot-12']);
+    await modal().getByRole('button', { name: '完成' }).click();
+  });
+
+  await check('执行回应是 500（R2）：可能已经执行，保持待核对与原编号，只能查询原请求，不给新编号重做', async () => {
+    await card(F).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await expect(modal()).toContainText('将 1 个视频移入废片'); mock.next = '500';
+    await modal().getByRole('button', { name: '移入废片' }).click();
+    const requestId = posts('move-commit').at(-1).body.requestId;
+    await expect(modal()).toContainText('结果待核对'); await expect(modal()).toContainText('（500）'); await expect(modal()).toContainText(requestId);
+    await expect(modal().getByRole('button', { name: '重新核对' })).toHaveCount(0);
+    await modal().getByRole('button', { name: '查询原请求' }).click(); await expect(modal()).toContainText('已移入废片：1 个视频');
+    assert.equal(posts('move-commit').filter(p => p.body.requestId === requestId).length, 1); assert.equal(posts('move-commit').at(-1).body.requestId, requestId);
+    await modal().getByRole('button', { name: '完成' }).click(); await expect(card(F)).toHaveCount(0);
+  });
+
+  await check('执行被明确拒绝（409）：没有执行，显示原因并可重新核对', async () => {
+    await card(B).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await expect(modal()).toContainText('将 1 个视频移入废片'); mock.next = '409'; const executed = mock.executed.length;
+    await modal().getByRole('button', { name: '移入废片' }).click();
+    await expect(modal()).toContainText('测试：预览已失效，请重新核对'); await expect(modal().getByRole('button', { name: '重新核对' })).toBeVisible();
+    await expect(modal().getByRole('button', { name: '查询原请求' })).toHaveCount(0); assert.equal(mock.executed.length, executed);
+    await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0); await expect(card(B)).toBeVisible();
+  });
+
+  const gate = () => { const g = {}; g.arrived = new Promise(r => g.reached = r); g.release = new Promise(r => g.open = r); return g; };
+  await check('核对中取消（R3）：移入与收纳处两种核对，取消后旧回应不写入，再打开能正常核对', async () => {
+    const g = gate(); mock.holdPreview = g;
+    await card(B).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await g.arrived; await expect(modal()).toContainText('正在核对移入影响'); await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
+    g.open(); await page.waitForTimeout(300);
+    await card(B).click({ button: 'right' }); await page.getByRole('menuitem', { name: '标记为废片…' }).click();
+    await expect(modal()).toContainText('将 1 个视频移入废片'); await page.keyboard.press('Escape');
+    const r = gate(); mock.holdRole = r; await chip().click();
+    await work().getByRole('button', { name: '更改或取消收纳处…' }).click(); await modal().getByRole('button', { name: '核对影响' }).click();
+    await r.arrived; await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0); r.open(); await page.waitForTimeout(300);
+    await work().getByRole('button', { name: '更改或取消收纳处…' }).click(); await expect(modal().getByRole('button', { name: '核对影响' })).toBeEnabled();
+    await modal().getByRole('button', { name: '核对影响' }).click(); await expect(modal()).toContainText('核对结果');
+    await page.keyboard.press('Escape'); await bar().getByRole('button', { name: '项目根目录' }).click(); await expect(card(B)).toBeVisible();
   });
 
   await check('废片视图：显示收纳处与数量；“移回…”走普通移动核对，不说会恢复采用', async () => {

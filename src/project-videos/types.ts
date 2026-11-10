@@ -97,8 +97,8 @@ export type RejectShot = AdoptedShot & { sourceIds?: string[] };
 export type RejectRolePlan = {
   requestId: string; previewHash: string; ready: boolean; expectedRolesRevision: number; adoptionStamp?: string;
   roleChange: { beforeFolderId: string | null; afterFolderId: string | null; willCreate: boolean; name?: string };
-  /** 现有目录转换时，目录内当前视频数（可选）。 */
-  videoCount?: number;
+  /** 目标目录（含子树）内当前的视频记录数。 */
+  rejectVideoCount?: number;
   affectedShots: RejectShot[];
 };
 /** move-videos（unbindAdoptions:true）预览：在普通 OperationPlan 之上增加解除采用的明细。 */
@@ -110,6 +110,10 @@ export type RejectMovePlan = OperationPlan & {
 export type BatchItemStatus = 'ready' | 'rolled-back' | 'failed' | 'unknown' | 'not-run';
 export type BatchReceipt = Omit<OperationReceipt, 'status'> & {
   status: OperationReceipt['status'] | 'partial';
+  /** 权威的解除采用并集（含被覆盖的同名目标）。 */
+  unboundShotIds?: string[];
+  /** 仅预览、执行尚未登记：status=unknown, phase=preview, errorCode=OPERATION_NOT_STARTED。 */
+  phase?: 'preview' | 'execution'; errorCode?: string; canRecover?: boolean; folderRoles?: FolderRoles;
   items?: { sourceId: string; name?: string; status: BatchItemStatus; unboundShotIds?: string[]; error?: string }[];
 }
 
