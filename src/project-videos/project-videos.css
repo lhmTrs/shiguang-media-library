@@ -5,7 +5,7 @@
   font-size: 13px;
   line-height: 1.6;
 }
-.pv-workspace [hidden] { display: none !important; }
+.pv-workspace [hidden], .pv-workspace[hidden] { display: none !important; }
 .pv-workspace *, .pv-workspace *::before, .pv-workspace *::after { box-sizing: border-box; }
 .pv-workspace button, .pv-workspace input, .pv-workspace select, .pv-workspace textarea { font: inherit; color: inherit; }
 .pv-workspace button {

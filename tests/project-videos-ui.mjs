@@ -151,6 +151,18 @@ try {
     await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0); await expect(trigger).toBeFocused();
   });
 
+  await check('切换到其他栏目：生成视频页整体隐藏且不占位，返回后草稿仍在', async () => {
+    await card('灶房夜景.mp4').click(); await detail().getByLabel('备注（可选）').fill('跨栏目草稿');
+    const section = page.locator('section.pv-workspace');
+    await page.getByRole('navigation').getByRole('button', { name: '分镜设计' }).first().click();
+    await expect(section).toBeHidden();
+    const box = await section.evaluate(el => ({ display: getComputedStyle(el).display, height: el.getBoundingClientRect().height }));
+    assert.deepEqual(box, { display: 'none', height: 0 }, '隐藏的生成视频页不应占位');
+    await page.getByRole('navigation').getByRole('button', { name: '生成视频' }).first().click();
+    await expect(section).toBeVisible(); await expect(detail().getByLabel('备注（可选）')).toHaveValue('跨栏目草稿');
+    await detail().getByRole('button', { name: '放弃草稿' }).click();
+  });
+
   await check('窄窗口（900×780）无横向溢出，详情覆盖在列表上', async () => {
     await page.setViewportSize({ width: 900, height: 780 }); if (await detail().count()) await detail().getByRole('button', { name: '关闭详情' }).click();
     await card('灶房夜景.mp4').click(); await expect(detail()).toBeVisible();
