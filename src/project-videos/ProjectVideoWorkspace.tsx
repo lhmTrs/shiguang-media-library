@@ -1,6 +1,6 @@
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronRight, Film, FolderOpen, RefreshCw, Upload, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
 import type {
   AdoptedShot, ImportRequest, ProjectVideo, ProjectVideoCollection, ProjectVideoWorkspaceProps,
   PromptInput, Receipt, ReferencePrompt, UpdateVideoRequest, UpgradePreview,
@@ -8,12 +8,13 @@ import type {
 import './project-videos.css';
 import {MediaViewer} from '../MediaViewer';
 import {Modal, ModalActions} from './Modal';
-import {FolderTree, FolderBreadcrumbs, FolderCards} from './FolderBrowser';
+import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
-import {VIDEO_DRAG_TYPE, folderTarget, folderContains} from './folders';
+import {VIDEO_DRAG_TYPE, folderTarget, folderContains, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import type {FolderView} from './types';
 
+type MenuName = 'more' | 'dir' | 'detail';
 type PromptDraft = { mode: PromptInput['mode']; id: string; title: string; text: string };
 type EditDraft = { expectedRevision: number; title: string; notes: string; prompt: PromptDraft };
 type Task = {
@@ -43,6 +44,9 @@ const receiptLabel: Record<Receipt['status'], string> = {
 };
 const statusLabel: Record<ProjectVideo['status'], string> = {
   available: '可预览', unsupported: '格式不支持预览', missing: '文件缺失', changed: '文件状态待核验', untrusted: '文件待核验', unchecked: '尚未核验，打开时检查',
+};
+const statusShort: Record<ProjectVideo['status'], string> = {
+  available: '', unsupported: '格式不支持', missing: '文件缺失', changed: '待核验', untrusted: '待核验', unchecked: '未核验',
 };
 function bytes(value: number) {
   if (!Number.isFinite(value) || value < 0) return '未知';
@@ -171,8 +175,11 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   }
   const [edits, setEdits] = useState<Record<string, EditDraft>>({});
   const [view, setView] = useState<'videos' | 'prompts'>('videos');
-  const [nameFilter, setNameFilter] = useState('');
-  const [promptFilter, setPromptFilter] = useState('');
+  const [query, setQuery] = useState('');
+  const [queryScope, setQueryScope] = useState<'all' | 'name' | 'prompt'>('all');
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [openMenu, setOpenMenu] = useState<MenuName | ''>('');
+  const sessionRef = useRef<HTMLDivElement>(null);
   const [adoptionFilter, setAdoptionFilter] = useState<'all' | 'candidate' | 'adopted'>('all');
   const [importOpen, setImportOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -234,6 +241,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const folderName = folderId === 'all' || folderId === 'root' ? '项目根目录' : folders.find(f => f.id === folderId)?.path || folders.find(f => f.id === folderId)?.name || '当前文件夹';
   const folderBlocked = (id: string) => !!taskRef.current && !terminal(taskRef.current.receipt) && taskRef.current.kind === 'import' && folderContains(folders, id, taskRef.current.folderId);
   function navigateFolder(id: FolderView) {
+    // Re-clicking the current folder must not blank the list: the folder effect would not run again.
+    if (id === folderRef.current) { void refresh(); return; }
     folderRef.current = id; listSerial.current += 1; setFolderId(id); setSelectedId(''); setExpandedId('');
     setCollection(old => old ? {...old, videos: [], breadcrumbs: [], currentFolderId: id} : old);
   }
@@ -263,7 +272,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         playbackContent.current.set(video.id, content);
       }
       setCollection(next);
-      setSelectedId(old => selectId && next.videos.some(v => v.id === selectId) ? selectId : next.videos.some(v => v.id === old) ? old : next.videos[0]?.id || '');
+      setSelectedId(old => selectId && next.videos.some(v => v.id === selectId) ? selectId : next.videos.some(v => v.id === old) ? old : '');
     } catch (e) { if (isCurrent(ticket) && serial === listSerial.current) setError(message(e)); }
     finally { if (isCurrent(ticket) && serial === listSerial.current) setLoading(false); }
   }
@@ -455,15 +464,18 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     });
   }
 
+  const attention = (v: ProjectVideo) => !v.managed || ['missing', 'changed', 'untrusted', 'unsupported'].includes(v.status);
   const filtered = useMemo(() => {
-    const name = nameFilter.trim().toLocaleLowerCase(); const prompt = promptFilter.trim().toLocaleLowerCase();
+    const q = query.trim().toLocaleLowerCase();
     return videos.filter(v => {
       const reference = prompts.find(p => p.id === v.promptId);
-      return (!name || `${v.name}\n${v.fileName}`.toLocaleLowerCase().includes(name))
-        && (!prompt || `${reference?.title || ''}\n${reference?.text || ''}`.toLocaleLowerCase().includes(prompt))
-        && (adoptionFilter === 'all' || (adoptionFilter === 'adopted' ? v.adoptedShots.length > 0 : v.adoptedShots.length === 0));
+      const nameHit = `${v.name}\n${v.fileName}`.toLocaleLowerCase().includes(q);
+      const promptHit = `${reference?.title || ''}\n${reference?.text || ''}`.toLocaleLowerCase().includes(q);
+      return (!q || queryScope !== 'prompt' && nameHit || queryScope !== 'name' && promptHit)
+        && (adoptionFilter === 'all' || (adoptionFilter === 'adopted' ? v.adoptedShots.length > 0 : v.adoptedShots.length === 0))
+        && (!attentionOnly || attention(v));
     });
-  }, [videos, prompts, nameFilter, promptFilter, adoptionFilter]);
+  }, [videos, prompts, query, queryScope, adoptionFilter, attentionOnly]);
   const groups = useMemo(() => {
     if (view === 'videos') return [{ id: 'all', title: '', text: '', videos: filtered }];
     const result = new Map<string, { id: string; title: string; text: string; videos: ProjectVideo[] }>();
@@ -501,102 +513,188 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const importFrozen = !!taskRef.current || !!sending;
   const editChanged = !!selected && !!draft && JSON.stringify(draft) !== JSON.stringify(editFor(selected));
   const childFolderCount = folders.filter(f => f.parentId === (folderId === 'all' ? 'root' : folderId)).length;
-  const folderCards = <FolderCards folders={folders} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || operationPending || !!sending || modalOpen ? undefined : (videoId, target) => {
-        if (readOnly || operationPending || sending) return;
-        const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
-        setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
-      }}/>;
-  return <div className="pv-session" hidden={!active}>
+  const draftDirty = (video: ProjectVideo) => !!edits[video.id] && JSON.stringify(edits[video.id]) !== JSON.stringify(editFor(video));
+  // “全部视频”聚合时服务端不逐个核验，状态都是“尚未核验”；页头已说明，卡片上不再逐张重复。
+  const showStatus = (video: ProjectVideo) => video.status !== 'available' && !(folderId === 'all' && video.status === 'unchecked');
+  const cardFolder = (video: ProjectVideo) => video.folderName || (video.folderId === 'root' ? '项目根目录' : folders.find(f => f.id === video.folderId)?.path || folders.find(f => f.id === video.folderId)?.name || '未核对目录');
+  const discardDraft = (id: string) => setEdits(old => { const next = { ...old }; delete next[id]; return next; });
+  const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ kind: 'relink', video, path: '' }); };
+  // Video moves always open the move-video preview; nothing is moved by the drop itself.
+  const moveVideoTo = (videoId: string, target: string) => {
+    if (readOnly || operationPending || sending || modalOpen) return;
+    const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
+    setOpenMenu(''); setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
+  };
+  const folderCards = <FolderCards folders={folders} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || operationPending || !!sending || modalOpen ? undefined : moveVideoTo}/>;
+  const orderedFolders = useMemo(() => {
+    const out: {folder: typeof folders[number]; depth: number}[] = [];
+    const walk = (parentId: string, depth: number, seen: Set<string>) => {
+      for (const folder of folders.filter(f => f.parentId === parentId && !seen.has(f.id))) { out.push({folder, depth}); walk(folder.id, depth + 1, new Set([...seen, folder.id])); }
+    };
+    walk('root', 0, new Set());
+    return out;
+  }, [folders]);
+  const [dropFolder, setDropFolder] = useState('');
+  // Folder chips accept internal video drags only; external files are stopped here and sent to the import entry.
+  const folderDrop = (id: string, available = true) => ({
+    onDragOver: (e: React.DragEvent) => {
+      const types = Array.from(e.dataTransfer.types);
+      if (types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; return; }
+      if (!types.includes(VIDEO_DRAG_TYPE) || !available || readOnly || operationPending || sending || modalOpen) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropFolder(id);
+    },
+    onDragLeave: (e: React.DragEvent) => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDropFolder(old => old === id ? '' : old); },
+    onDrop: (e: React.DragEvent) => {
+      setDropFolder('');
+      if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); e.stopPropagation(); notifyFeedback({source: '生成视频', kind: 'info', message: '请用“导入视频”入口导入外部文件。'}); return; }
+      const videoId = readVideoDrag(e.dataTransfer, projectId); if (!videoId || !available) return;
+      e.preventDefault(); e.stopPropagation(); moveVideoTo(videoId, id);
+    },
+  });
+  useEffect(() => { setOpenMenu(''); }, [active, projectId, modalOpen, folderId, selectedId]);
+  useEffect(() => {
+    if (!openMenu) return;
+    sessionRef.current?.querySelector<HTMLElement>(`[data-pv-menu="${openMenu}"] [role^="menuitem"]:not(:disabled)`)?.focus();
+    const down = (e: PointerEvent) => { if (!(e.target instanceof Element) || !e.target.closest(`[data-pv-menu-wrap="${openMenu}"]`)) setOpenMenu(''); };
+    document.addEventListener('pointerdown', down);
+    return () => document.removeEventListener('pointerdown', down);
+  }, [openMenu]);
+  function menuKeys(e: React.KeyboardEvent<HTMLDivElement>, name: string) {
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)'));
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setOpenMenu(''); sessionRef.current?.querySelector<HTMLElement>(`[data-pv-menu-wrap="${name}"] > button`)?.focus(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (items.length) items[(index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus(); }
+    else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); items[e.key === 'Home' ? 0 : items.length - 1]?.focus(); }
+    else if (e.key === 'Tab') setOpenMenu('');
+  }
+  const menuWrap = (name: MenuName, trigger: React.ReactNode, props: {label?: string; className?: string; disabled?: boolean; title?: string}, items: React.ReactNode, align: 'left' | 'right' = 'right') =>
+    <div className="pv-menu-wrap" data-pv-menu-wrap={name}>
+      <button type="button" className={props.className} aria-label={props.label} title={props.title} disabled={props.disabled} aria-haspopup="menu" aria-expanded={openMenu === name} onClick={() => setOpenMenu(old => old === name ? '' : name)}>{trigger}</button>
+      {openMenu === name && <div className={`pv-menu pv-menu-${align}`} role="menu" data-pv-menu={name} onKeyDown={e => menuKeys(e, name)}>{items}</div>}
+    </div>;
+  const menuItem = (label: string, onClick: () => void, options: {disabled?: boolean; danger?: boolean; hint?: string} = {}) =>
+    <button type="button" role="menuitem" className={options.danger ? 'pv-danger' : undefined} disabled={options.disabled} onClick={() => { setOpenMenu(''); onClick(); }}><span>{label}</span>{options.hint && <small>{options.hint}</small>}</button>;
+  const legacyCount = collection?.legacyUpgrade?.count;
+  const upgradeBlocked = locked || !collection || unresolved && task?.kind !== 'upgrade';
+  const dirBlocked = !['all', 'root'].includes(folderId) && folderBlocked(folderId);
+  const dirDisabled = locked || operationPending || dirBlocked;
+  const receivingId = task?.kind === 'import' && !terminal(task.receipt) ? task.folderId : '';
+  const attentionCount = videos.filter(attention).length;
+  const formId = `pv-detail-form-${projectId}`;
+  const taskTone = !task ? '' : task.error || task.receipt?.status === 'unknown' || task.receipt?.status === 'duplicate' ? 'warn' : task.receipt?.status === 'failed' ? 'bad' : '';
+  return <div className="pv-session" hidden={!active} ref={sessionRef}>
     <div className="pv-content" aria-hidden={modalOpen || undefined}>
-      <div className="pv-columns">
-        <aside className="pv-sidebar" aria-label="项目视频目录">
-          <div className="pv-sidebar-heading"><h2>文件夹</h2><button type="button" disabled={locked || operationPending || !collection} onClick={() => setFolderAction({kind: 'create', parentId: folderTarget(folderId)})}>新建文件夹</button></div>
-      <FolderTree folders={folders} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={(videoId, target) => {
-        if (readOnly || operationPending || sending) return;
-        const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
-        setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
-      }}/>
-          <div className="pv-directory-tools">
-        {!['all', 'root'].includes(folderId) && <details className="pv-directory-menu"><summary>管理当前目录</summary><div className="pv-actions">
-          <button type="button" disabled={locked || operationPending || folderBlocked(folderId)} onClick={() => setFolderAction({kind: 'rename-folder', folderId, label: folderName})}>重命名文件夹</button>
-          <button type="button" disabled={locked || operationPending || folderBlocked(folderId)} onClick={() => setFolderAction({kind: 'move-folder', folderId, label: folderName})}>移动文件夹</button>
-          <button type="button" className="pv-danger" disabled={locked || operationPending || folderBlocked(folderId)} onClick={() => setFolderAction({kind: 'delete-folder', folderId, label: folderName})}>删除文件夹</button>
-        </div></details>}
-        <button type="button" disabled={locked || loading || folderId === 'all'} onClick={() => void run('正在刷新当前目录…', async () => { await api('/folders/refresh', {folderId}, 'POST'); void refresh(); })}>刷新当前目录</button>
+      <div className="pv-bar">
+        <div className="pv-bar-row">
+          <label className="pv-search"><Search size={15} aria-hidden="true"/><input type="search" aria-label="搜索视频" value={query} onChange={e => setQuery(e.target.value)} placeholder={folderId === 'all' ? '搜索全部视频' : '搜索当前目录'}/>
+            <select aria-label="搜索范围" value={queryScope} onChange={e => setQueryScope(e.target.value as typeof queryScope)}><option value="all">名称和提示词</option><option value="name">只搜名称</option><option value="prompt">只搜提示词</option></select></label>
+          <div className="pv-chips" role="group" aria-label="按采用状态筛选">
+            {(['all', 'candidate', 'adopted'] as const).map(key => <button key={key} type="button" aria-pressed={adoptionFilter === key} onClick={() => setAdoptionFilter(key)}>{{all: '全部', candidate: '候选', adopted: '已采用'}[key]}<span>{key === 'all' ? videos.length : videos.filter(v => (key === 'adopted') === v.adoptedShots.length > 0).length}</span></button>)}
+            {(attentionCount > 0 || attentionOnly) && <button type="button" className="pv-chip-attention" aria-pressed={attentionOnly} title="文件缺失、待核验、格式不支持或待升级" onClick={() => setAttentionOnly(on => !on)}>需处理<span>{attentionCount}</span></button>}
           </div>
-          <p className="pv-sidebar-hint">可将视频卡片拖到目标文件夹</p>
-        </aside>
+          <div className="pv-bar-actions">
+            <button type="button" className="pv-primary" disabled={readOnly || !collection || importUnavailable || unresolved && task?.kind !== 'import'} title={importUnavailable ? '另一个项目有一笔导入待结束；浏览和切换不受影响' : undefined} onClick={() => {
+              if (taskRef.current?.kind !== 'import' && terminal(taskRef.current?.receipt || null)) putTask(null);
+              setImportOpen(true); setUpgradeOpen(false);
+            }}><Upload size={16}/>导入视频</button>
+            {menuWrap('more', <Ellipsis size={18}/>, {label: '更多视频操作', className: 'pv-icon-button'}, <>
+              <button type="button" role="menuitemcheckbox" aria-checked={view === 'prompts'} onClick={() => { setOpenMenu(''); setView(old => old === 'prompts' ? 'videos' : 'prompts'); }}><span>按参考提示词分组</span>{view === 'prompts' && <Check size={14}/>}</button>
+              {menuItem(loading ? '正在刷新…' : '刷新视频资料', () => void refresh(), {disabled: loading})}
+              {!collection?.legacyUpgrade?.completed && <><hr/>{menuItem('升级旧视频…', () => void previewUpgrade(), {disabled: upgradeBlocked, hint: legacyCount !== undefined ? `${legacyCount} 个待升级` : undefined})}</>}
+            </>)}
+          </div>
+        </div>
+        <nav className="pv-folder-bar" aria-label="视频文件夹（可把视频卡片拖到这里）">
+          <button type="button" className="pv-folder-chip" aria-current={folderId === 'all' ? 'page' : undefined} title="聚合所有文件夹；文件状态在进入文件夹或打开视频时核验" onClick={() => navigateFolder('all')}><Layers size={14}/><span>全部视频</span></button>
+          <button type="button" className={`pv-folder-chip${dropFolder === 'root' ? ' is-drop-target' : ''}`} aria-current={folderId === 'root' ? 'page' : undefined} onClick={() => navigateFolder('root')} {...folderDrop('root')}><FolderOpen size={14}/><span>项目根目录</span>{receivingId === 'root' && <small className="pv-receiving">接收中</small>}</button>
+          {orderedFolders.map(({folder, depth}) => <button key={folder.id} type="button" className={`pv-folder-chip${dropFolder === folder.id ? ' is-drop-target' : ''}`} aria-current={folderId === folder.id ? 'page' : undefined} title={folder.path || folder.name} onClick={() => navigateFolder(folder.id)} {...folderDrop(folder.id, folder.available)}>
+            {depth ? <CornerDownRight size={13}/> : <FolderIcon size={14}/>}<span>{folder.name}</span>{!folder.available && <small>不可用</small>}{receivingId === folder.id && <small className="pv-receiving">接收中</small>}</button>)}
+          <button type="button" className="pv-folder-chip pv-folder-new" disabled={locked || operationPending || !collection} onClick={() => setFolderAction({kind: 'create', parentId: folderTarget(folderId)})}><FolderPlus size={14}/><span>新建文件夹</span></button>
+          {menuWrap('dir', <><span>当前目录</span><ChevronDown size={13}/></>, {className: 'pv-folder-chip', disabled: folderId === 'all', title: folderId === 'all' ? '“全部视频”不是一个具体目录' : `管理“${folderName}”`}, <>
+            {!['all', 'root'].includes(folderId) && <>
+              {menuItem('重命名文件夹…', () => setFolderAction({kind: 'rename-folder', folderId, label: folderName}), {disabled: dirDisabled})}
+              {menuItem('移动文件夹…', () => setFolderAction({kind: 'move-folder', folderId, label: folderName}), {disabled: dirDisabled})}
+              {menuItem('删除文件夹…', () => setFolderAction({kind: 'delete-folder', folderId, label: folderName}), {disabled: dirDisabled, danger: true})}
+              {dirBlocked && <p className="pv-menu-note">该文件夹或其子目录正在接收视频，等原导入结束后再操作。</p>}
+              <hr/>
+            </>}
+            {menuItem('刷新当前目录', () => void run('正在刷新当前目录…', async () => { await api('/folders/refresh', {folderId}, 'POST'); void refresh(); }), {disabled: locked || loading || folderId === 'all', hint: '重新认领访达中改过名的目录和文件'})}
+          </>, 'left')}
+        </nav>
+      </div>
+      <div className="pv-notices">
+        {sending && <p className="pv-banner" role="status"><RefreshCw size={14} className="pv-spin"/>{sending}</p>}
+        {error && <div className="pv-banner" data-tone="bad" role="alert"><AlertCircle size={15}/><span className="pv-banner-text">{error}</span><button type="button" className="pv-banner-close" aria-label="关闭错误提示" onClick={() => setError('')}><X size={14}/></button></div>}
+        {notice && <p className="pv-banner" role="status"><Check size={15}/><span className="pv-banner-text">{notice}</span></p>}
+        {task && !modalOpen && <div className="pv-banner pv-task-banner" data-tone={taskTone || undefined} role="status" aria-live="polite">
+          <strong>{task.kind === 'upgrade' ? '旧视频升级' : task.kind === 'relink' ? '重新定位' : '视频导入'} · {task.receipt ? receiptLabel[task.receipt.status] : '提交结果待核对'}</strong>
+          <span className="pv-banner-text">{task.kind === 'import' ? `固定保存到 ${projectName} / ${task.folderName}：${task.receipt?.finalName || task.receipt?.fileName || task.file?.name || '视频'} ` : ''}<code>{task.queryId || task.requestId}</code></span>
+          {pending(task) && !task.error && <progress aria-label="后台任务处理中"/>}
+          <button type="button" disabled={taskSending || querying || !task.queryId} onClick={() => void queryTask()}><RefreshCw size={13}/>{querying ? '正在核对…' : '查询原请求'}</button>
+          {task.kind === 'import' && task.receipt?.status === 'waiting' && !task.uploadAttempted && <button type="button" disabled={taskSending || querying || !task.file} onClick={() => void queryTask()}>确认上传所选文件</button>}
+          {task.kind === 'relink' && !task.queryId && <button type="button" disabled={loading || !!sending} onClick={() => void refresh()}>刷新视频资料核对</button>}
+          {task.kind === 'import' && <button type="button" onClick={() => setImportOpen(true)}>{task.receipt?.status === 'duplicate' ? '选择处理方式' : '打开导入详情'}<ChevronRight size={13}/></button>}
+          {task.kind === 'upgrade' && <button type="button" onClick={() => setUpgradeOpen(true)}>查看升级结果<ChevronRight size={13}/></button>}
+          {terminal(task.receipt) && <button type="button" className="pv-banner-close" aria-label="收起任务提示" onClick={() => putTask(null)}><X size={13}/></button>}
+        </div>}
+        {!!collection && !collection.legacyUpgrade?.completed && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
+      </div>
+      <div className={`pv-main${selected && draft ? ' pv-has-detail' : ''}`}>
         <section className="pv-library" aria-label="视频列表">
-          <div className="pv-library-toolbar">
-      <div className="pv-toolbar">
-        <div className="pv-actions"><button type="button" className="pv-primary" disabled={readOnly || !collection || importUnavailable || unresolved && task?.kind !== 'import'} onClick={() => {
-          if (taskRef.current?.kind !== 'import' && terminal(taskRef.current?.receipt || null)) putTask(null);
-          setImportOpen(true); setUpgradeOpen(false);
-        }}><Upload size={16}/>导入视频</button>
-          {!collection?.legacyUpgrade?.completed && <button type="button" disabled={locked || !collection || unresolved && task?.kind !== 'upgrade'} onClick={() => void previewUpgrade()}>升级旧视频{collection?.legacyUpgrade?.count !== undefined ? `（${collection.legacyUpgrade.count}）` : ''}</button>}</div>
-        <button type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'pv-spin' : ''}/>{loading ? '正在刷新…' : '刷新资料'}</button>
-      </div>
-            <div className="pv-location-row">
-      <FolderBreadcrumbs folders={folders} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={(videoId, target) => {
-        if (readOnly || operationPending || sending) return;
-        const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
-        setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
-      }}/>
-              <span className="pv-save-location" title={folderName}>导入到：{folderName}</span>
-            </div>
-      <div className="pv-filters">
-        <label>名称<input type="search" value={nameFilter} onChange={e => setNameFilter(e.target.value)} placeholder="视频标题或原文件名"/></label>
-        <label>参考提示词<input type="search" value={promptFilter} onChange={e => setPromptFilter(e.target.value)} placeholder="提示词标题或正文"/></label>
-        <label>采用状态<select value={adoptionFilter} onChange={e => setAdoptionFilter(e.target.value as typeof adoptionFilter)}><option value="all">全部视频</option><option value="candidate">候选 · 尚未采用</option><option value="adopted">已采用</option></select></label>
-      </div>
-      <div className="pv-list-heading"><div className="pv-actions" role="group" aria-label="视频排列方式"><button type="button" aria-pressed={view === 'videos'} onClick={() => setView('videos')}>按视频</button><button type="button" aria-pressed={view === 'prompts'} onClick={() => setView('prompts')}>按参考提示词分组</button></div><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频</span></div>
-          </div>
-      <div className="pv-feedback" aria-live="polite">
-        {sending && <p className="pv-notice"><RefreshCw size={15} className="pv-spin"/>{sending}</p>}
-        {error && <div className="pv-error" role="alert"><AlertCircle size={16}/><span>{error}</span><button type="button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={14}/></button></div>}
-        {notice && <p className="pv-notice"><Check size={16}/>{notice}</p>}
-      </div>
-      {task && !modalOpen && <div className="pv-task-summary">{taskPanel(task)}{task.kind === 'import' && <button type="button" onClick={() => setImportOpen(true)}>打开导入详情<ChevronRight size={14}/></button>}{task.kind === 'upgrade' && <button type="button" onClick={() => setUpgradeOpen(true)}>查看升级结果<ChevronRight size={14}/></button>}</div>}
+          <div className="pv-library-head"><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频{folderId === 'all' ? ' · 全部文件夹聚合，文件状态打开时核验' : ''}{loading && collection ? ' · 正在刷新…' : ''}</span><span className="pv-save-location" title={folderName}>导入到：<strong>{folderName}</strong></span></div>
           <div className={`pv-dropzone${dragging ? ' pv-dragging' : ''}`} onDragOver={e => { if (e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) { e.preventDefault(); if (!locked && !importUnavailable) setDragging(true); } }} onDragLeave={() => setDragging(false)} onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
-            <Upload size={16}/><span>拖入一个视频到当前导入位置</span><button type="button" disabled={locked || !collection || importUnavailable || !!task && !terminal(task.receipt)} onClick={() => fileInput.current?.click()}>选择文件</button>
+            <Upload size={15}/><span>把一个视频文件拖到这里，导入到“{folderName}”（会先核对再复制）</span><button type="button" disabled={locked || !collection || importUnavailable || !!task && !terminal(task.receipt)} onClick={() => fileInput.current?.click()}>选择文件…</button>
           </div>
           {!collection && loading && <p className="pv-empty">正在读取项目视频…</p>}
           {view === 'prompts' && childFolderCount > 0 && <div className="pv-cards pv-folder-cards" role="group" aria-label="当前层子文件夹">{folderCards}</div>}
           {groups.map(group => <section key={group.id} className="pv-group">
             {view === 'prompts' && <header><h2>{group.title}<small>{group.videos.length} 个视频</small></h2>{group.text && <details><summary>查看完整参考提示词</summary><pre>{group.text}</pre></details>}</header>}
-            <div className="pv-cards" role="group" aria-label={view === 'videos' ? '当前目录的文件夹与视频' : group.title}>{view === 'videos' && folderCards}{group.videos.map(video => <div className="pv-card-entry" key={video.id}><button type="button" className={`pv-card${selectedId === video.id ? ' pv-selected' : ''}`} aria-pressed={selectedId === video.id} draggable={video.managed && !readOnly && !operationPending} onDragStart={e => { e.dataTransfer.setData(VIDEO_DRAG_TYPE, JSON.stringify({projectId, videoId: video.id})); e.dataTransfer.effectAllowed = 'move'; }} onClick={() => setSelectedId(video.id)} onDoubleClick={() => { setSelectedId(video.id); setExpandedId(video.id); }}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); if (!e.repeat) { setSelectedId(video.id); setExpandedId(video.id); } } }} aria-haspopup="dialog" aria-keyshortcuts="Enter" title="单击选择，双击查看原视频；也可按 Enter 打开">
-              <span className="pv-thumbnail">{(video.thumbnailUrl || video.thumbUrl) ? <img src={video.thumbnailUrl || video.thumbUrl} alt="" loading="lazy" onError={e => { e.currentTarget.hidden = true; }}/>: null}<Film size={30} aria-hidden="true"/><span>{duration(video.durationMs)}</span></span>
-              <span className="pv-card-body"><strong title={video.name || video.fileName}>{video.name || video.fileName}</strong><small className="pv-card-folder" title={video.folderName || video.fileName}>{video.folderName || (video.folderId === 'root' ? '项目根目录' : '未核对目录')}</small><span className="pv-badges"><span className={video.adoptedShots.length ? 'pv-adopted' : 'pv-candidate'}>{video.adoptedShots.length ? `已采用 · ${video.adoptedShots.length} 镜` : '候选'}</span>{!video.managed && <span>待升级</span>}{video.status !== 'available' && <span className="pv-card-status" data-status={video.status} title={statusLabel[video.status]}>{statusLabel[video.status]}</span>}</span><small className="pv-card-prompt">{video.promptId ? prompts.find(p => p.id === video.promptId)?.title || '已关联参考提示词' : '无参考提示词'}</small></span>
+            <div className="pv-cards" role="group" aria-label={view === 'videos' ? '当前目录的文件夹与视频' : group.title}>{view === 'videos' && folderCards}{group.videos.map(video => <div className="pv-card-entry" key={video.id}><button type="button" className={`pv-card${selectedId === video.id ? ' pv-selected' : ''}`} aria-pressed={selectedId === video.id} draggable={video.managed && !readOnly && !operationPending} onDragStart={e => { e.dataTransfer.setData(VIDEO_DRAG_TYPE, JSON.stringify({projectId, videoId: video.id})); e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDropFolder('')} onClick={() => setSelectedId(video.id)} onDoubleClick={() => { setSelectedId(video.id); setExpandedId(video.id); }}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); if (!e.repeat) { setSelectedId(video.id); setExpandedId(video.id); } } }} aria-haspopup="dialog" aria-keyshortcuts="Enter" title="单击查看资料，双击或按 Enter 查看原视频">
+              <span className="pv-thumbnail">{(video.thumbnailUrl || video.thumbUrl) ? <img src={video.thumbnailUrl || video.thumbUrl} alt="" loading="lazy" onError={e => { e.currentTarget.hidden = true; }}/> : null}<Film size={30} aria-hidden="true"/>
+                <span className={`pv-adoption-badge${video.adoptedShots.length ? ' is-adopted' : ''}`}>{video.adoptedShots.length ? `已采用 · ${video.adoptedShots.length} 镜` : '候选'}</span><span className="pv-duration">{duration(video.durationMs)}</span></span>
+              <span className="pv-card-body"><strong title={video.name || video.fileName}>{video.name || video.fileName}</strong>
+                <small className="pv-card-prompt">{video.promptId ? prompts.find(p => p.id === video.promptId)?.title || '已关联参考提示词' : '无参考提示词'}</small>
+                {folderId === 'all' && <small className="pv-card-folder" title={cardFolder(video)}>{cardFolder(video)}</small>}
+                {(showStatus(video) || !video.managed || draftDirty(video)) && <span className="pv-card-flags">{showStatus(video) && <span data-status={video.status} title={statusLabel[video.status]}>{statusShort[video.status]}</span>}{!video.managed && <span data-tone="warn">待升级</span>}{draftDirty(video) && <span data-tone="draft">草稿未保存</span>}</span>}</span>
             </button></div>)}</div>
           </section>)}
-          {!loading && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整名称、提示词或采用状态筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
+          {!loading && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
         </section>
-        <aside className="pv-detail" aria-label="视频详情">
-          {selected && draft ? <>
-            <header><small>视频详情</small><h2 title={selected.name || selected.fileName}>{selected.name || selected.fileName}</h2></header>
-            {draft.expectedRevision !== selected.revision && <p className="pv-error">资料已被其他操作更新，草稿仍保留。请核对最新资料后重新编辑保存。</p>}
-            <form className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
+        {selected && draft && <aside className="pv-detail" aria-label="视频详情">
+          <header className="pv-detail-head"><div className="pv-detail-title"><small>视频详情</small><h2 title={selected.name || selected.fileName}>{selected.name || selected.fileName}</h2></div>
+            {menuWrap('detail', <Ellipsis size={17}/>, {label: '视频操作', className: 'pv-icon-button pv-ghost'}, <>
+              {menuItem('移动到…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name}); }, {disabled: locked || operationPending || !selected.managed, hint: selected.managed ? '会先核对影响' : '升级后可移动'})}
+              {menuItem('在访达中显示', () => void run('正在访达中显示…', async () => { await api(`/videos/${encodeURIComponent(selected.id)}/reveal`, {}, 'POST'); }), {disabled: locked})}
+              {menuItem('重新定位…', () => openRelink(selected), {disabled: locked || unresolved})}
+              <hr/>
+              {menuItem('移除视频记录…', () => setConfirmation({ kind: 'remove', video: selected, adoptionStamp: collection!.adoptionStamp }), {disabled: locked || unresolved || !collection, danger: true})}
+            </>)}
+            <button type="button" className="pv-icon-button pv-ghost" aria-label="关闭详情" onClick={() => setSelectedId('')}><X size={17}/></button>
+          </header>
+          <div className="pv-detail-meta"><span className={`pv-pill${selected.adoptedShots.length ? ' is-adopted' : ''}`}>{selected.adoptedShots.length ? `已采用 · ${selected.adoptedShots.length} 镜` : '候选'}</span><span className="pv-pill" data-status={selected.status}>{statusLabel[selected.status]}</span>{!selected.managed && <span className="pv-pill" data-tone="warn">旧视频 · 待升级</span>}
+            <button type="button" className="pv-view-button" title="也可以双击卡片或按 Enter" onClick={() => setExpandedId(selected.id)}><Play size={13}/>查看原视频</button></div>
+          <div className="pv-detail-scroll">
+            {draft.expectedRevision !== selected.revision && <div className="pv-callout" data-tone="bad" role="alert"><strong>资料已被其他操作更新，草稿仍保留。</strong><span>请核对最新资料后重新编辑保存；当前草稿不能直接覆盖。</span><button type="button" onClick={() => discardDraft(selected.id)}>放弃草稿，使用当前资料</button></div>}
+            {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。'}</span><button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></div>}
+            {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，可在访达中打开。采用不受影响。</span></div>}
+            {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</span>{!collection?.legacyUpgrade?.completed && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
+            <form id={formId} className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
               <fieldset disabled={locked}><legend className="pv-sr-only">编辑视频资料</legend>
                 <PromptFields value={draft.prompt} prompts={prompts} disabled={locked} onChange={prompt => setEdits(old => ({ ...old, [selected.id]: { ...draft, prompt } }))}/>
                 <div className="pv-basic-fields"><h3>视频资料</h3>
                 <label className="pv-field">视频名称<input value={draft.title} required onChange={e => setEdits(old => ({ ...old, [selected.id]: { ...draft, title: e.target.value } }))}/></label>
                 <label className="pv-field">备注（可选）<textarea value={draft.notes} rows={2} onChange={e => setEdits(old => ({ ...old, [selected.id]: { ...draft, notes: e.target.value } }))}/></label>
                 </div>
-                <div className="pv-actions"><button className="pv-primary" type="submit" disabled={!editChanged || !draft.title.trim() || !promptValid(draft.prompt, prompts) || draft.expectedRevision !== selected.revision}>保存资料</button>{editChanged && <button type="button" onClick={() => setEdits(old => { const next = { ...old }; delete next[selected.id]; return next; })}>放弃草稿，使用当前资料</button>}</div>
               </fieldset>
             </form>
-            <div className="pv-badges"><span>{statusLabel[selected.status]}</span><span>{selected.managed ? '项目托管副本' : '旧视频 · 待升级'}</span></div>
-            {!selected.managed && <p className="pv-notice">旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</p>}
-            <details className="pv-file-info"><summary>文件信息与路径</summary><dl className="pv-metadata"><div><dt>原文件名</dt><dd>{selected.fileName}</dd></div><div><dt>时长 / 编码</dt><dd>{duration(selected.durationMs)} · {selected.codec || '未知编码'}</dd></div><div><dt>文件大小</dt><dd>{bytes(selected.bytes)}</dd></div><div><dt>存放位置</dt><dd className="pv-path">{selected.path || '未提供路径'}</dd></div></dl></details>
-            <div className="pv-actions"><button type="button" disabled={locked || operationPending || !selected.managed} onClick={() => {setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name});}}>移动到…</button></div>
             <section className="pv-adoption"><h3>实际采用镜号</h3><p>{shotsLabel(selected.adoptedShots)}</p><button type="button" disabled={locked} onClick={onStoryboard}>前往分镜查看采用<ChevronRight size={14}/></button></section>
-            <div className="pv-file-actions"><button type="button" disabled={locked} onClick={() => void run('正在访达中显示…', async () => { await api(`/videos/${encodeURIComponent(selected.id)}/reveal`, {}, 'POST'); })}><FolderOpen size={15}/>在访达中显示</button><button type="button" disabled={locked || unresolved} onClick={() => {
-              if (terminal(taskRef.current?.receipt || null)) putTask(null);
-              setConfirmation({ kind: 'relink', video: selected, path: '' });
-            }} ref={relinkButton}>重新定位</button><button type="button" className="pv-danger" disabled={locked || unresolved || !collection} onClick={() => setConfirmation({ kind: 'remove', video: selected, adoptionStamp: collection!.adoptionStamp })}>移除视频记录</button></div>
-          </> : <div className="pv-empty"><Film size={32}/><p>单击视频查看参考提示词与采用镜号，双击查看原视频。</p></div>}
-        </aside>
+            <details className="pv-file-info"><summary>文件信息与路径</summary><dl className="pv-metadata"><div><dt>原文件名</dt><dd>{selected.fileName}</dd></div><div><dt>时长 / 编码</dt><dd>{duration(selected.durationMs)} · {selected.codec || '未知编码'}</dd></div><div><dt>文件大小</dt><dd>{bytes(selected.bytes)}</dd></div><div><dt>存放</dt><dd>{selected.managed ? '项目托管副本' : '旧视频 · 原位置'}</dd></div><div><dt>存放位置</dt><dd className="pv-path">{selected.path || '未提供路径'}</dd></div></dl></details>
+          </div>
+          <footer className={`pv-savebar${editChanged ? ' is-dirty' : ''}`}><span role="status">{draft.expectedRevision !== selected.revision ? '资料已更新，草稿不能直接保存' : editChanged ? '有未保存的修改（草稿按视频保留）' : '已保存'}</span>
+            {editChanged && draft.expectedRevision === selected.revision && <button type="button" disabled={locked} onClick={() => discardDraft(selected.id)}>放弃草稿</button>}
+            <button className="pv-primary" type="submit" form={formId} disabled={locked || !editChanged || !draft.title.trim() || !promptValid(draft.prompt, prompts) || draft.expectedRevision !== selected.revision}>保存资料</button></footer>
+        </aside>}
       </div>
     </div>
     {expandedVideo && <MediaViewer label="项目原视频预览" initialTime={initialPosition(expandedVideo)} onPosition={seconds => rememberPosition(expandedVideo, seconds)} target={{
