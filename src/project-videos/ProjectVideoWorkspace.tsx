@@ -1,6 +1,6 @@
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
 import type {
   AdoptedShot, ImportRequest, ProjectVideo, ProjectVideoCollection, ProjectVideoWorkspaceProps,
   PromptInput, Receipt, ReferencePrompt, UpdateVideoRequest, UpgradePreview,
@@ -14,6 +14,7 @@ import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDra
 import {rememberImportTarget} from '../import-presets.mjs';
 import {actionPending, capability, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
 import {ContentChangeBanner, ContentChangeDialog, useContentChange} from './ContentChange';
+import {MAX_REJECT, RejectBanner, RejectDialog, rejectNeedsCheck, rejectSubtree, useRejectTask} from './RejectArea';
 import type {FolderView} from './types';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
@@ -162,6 +163,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const [revealConfirm, setRevealConfirm] = useState(false);
   // 合同 D 的任务状态放在项目会话层：弹窗收起、切页、切项目都不会丢掉原请求
   const contentChange = useContentChange(projectId, request, (videoId, removed) => { if (removed) setSelectedId(old => old === videoId ? '' : old); void refresh(); });
+  // 废片收纳（#55）：同样放在项目会话层，原请求不随弹窗或切页丢失
+  const reject = useRejectTask(projectId, request, () => void refresh());
   const openContentChange = (video: ProjectVideo) => { if (!contentChange.open(video)) setNotice('另一个视频的内容变化处理还没有结清，请先在页面顶部查看它的结果。'); };
   const autoRevealRef = useRef('');
   const desktop = useDesktopAction(projectId, request);
@@ -251,8 +254,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   }
   const folders = collection?.folders || [];
   // 显示用的位置一律是项目内的文件夹名路径（如“第一场 / 补拍”），不显示 folder.path 这类磁盘绝对路径。
+  const roles = collection?.folderRoles;
+  const rejectSet = useMemo(() => rejectSubtree(folders, roles), [folders, roles]);
+  const rejectCheck = rejectNeedsCheck(folders, roles);
+  const rejectName = roles?.rejectFolderId ? folderTrail(folders, roles.rejectFolderId).map(f => f.name).join(' / ') : '';
   const folderLabel = (id: string) => id === 'root' ? '项目根目录' : folderTrail(folders, id).map(f => f.name).join(' / ');
-  const folderName = folderId === 'all' || folderId === 'root' ? '项目根目录' : folderLabel(folderId) || '当前文件夹';
+  const folderName = folderId === 'all' || folderId === 'root' || folderId === 'reject' ? '项目根目录' : folderLabel(folderId) || '当前文件夹';
   const folderBlocked = (id: string) => !!taskRef.current && !terminal(taskRef.current.receipt) && taskRef.current.kind === 'import' && folderContains(folders, id, taskRef.current.folderId);
   function navigateFolder(id: FolderView) {
     // Re-clicking the current folder must not blank the list: the folder effect would not run again.
@@ -520,7 +527,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     </div>;
   }
 
-  const modalOpen = importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm || !!contentChange.video && contentChange.visible;
+  const modalOpen = importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm || !!contentChange.video && contentChange.visible || !!reject.mode && reject.visible;
   const expandedVideo = active && !modalOpen ? videos.find(video => video.id === expandedId) : undefined;
   useEffect(() => setExpandedId(''), [active, projectId, modalOpen]);
   useEffect(() => { if (expandedId && !videos.some(video => video.id === expandedId)) setExpandedId(''); }, [collection, expandedId]);
@@ -540,17 +547,30 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const moveVideoTo = (videoId: string, target: string) => {
     if (readOnly || operationPending || sending || modalOpen) return;
     const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
+    if (target === 'reject' || rejectSet.has(target)) { if (!video.inRejectArea) markReject([videoId]); return; } // 移入废片区域一律走解除采用确认
     setOpenMenu(''); setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
   };
-  const folderCards = <FolderCards folders={folders} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || operationPending || !!sending || modalOpen ? undefined : moveVideoTo}/>;
+  /** 标记为废片（1–50 个）：只收已托管的视频；收纳处没有时先设置。 */
+  function markReject(ids: string[]) {
+    const list = ids.map(id => videos.find(v => v.id === id)).filter((v): v is ProjectVideo => !!v && !v.inRejectArea);
+    const movable = list.filter(v => v.managed);
+    if (!movable.length) { setNotice(list.length ? '所选视频是旧视频，升级后才能移入废片。' : '所选视频已经在废片里。'); return; }
+    if (movable.length > MAX_REJECT) { setNotice(`一次最多标记 ${MAX_REJECT} 个视频为废片，请分批操作。`); return; }
+    if (movable.length < list.length) setNotice(`${list.length - movable.length} 个旧视频需升级后才能移入废片，本次只处理其余 ${movable.length} 个。`);
+    setOpenMenu(''); setExpandedId('');
+    void reject.open(movable.map(v => ({id: v.id, name: v.name || v.fileName})), {roles, folders}).then(ok => { if (!ok) setNotice('上一笔废片收纳还没有结清，请先在页面顶部查看它的结果。'); });
+  }
+  const openRejectRole = () => { if (!reject.openRole({roles, folders})) setNotice('上一笔废片收纳还没有结清，请先在页面顶部查看它的结果。'); };
+  const rejectBlocked = locked || operationPending || reject.attention;
+  const folderCards = <FolderCards folders={folders.filter(f => !rejectSet.has(f.id))} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || operationPending || !!sending || modalOpen ? undefined : moveVideoTo}/>;
   const orderedFolders = useMemo(() => {
     const out: {folder: typeof folders[number]; depth: number}[] = [];
     const walk = (parentId: string, depth: number, seen: Set<string>) => {
       for (const folder of folders.filter(f => f.parentId === parentId && !seen.has(f.id))) { out.push({folder, depth}); walk(folder.id, depth + 1, new Set([...seen, folder.id])); }
     };
     walk('root', 0, new Set());
-    return out;
-  }, [folders]);
+    return out.filter(({folder}) => !rejectSet.has(folder.id)); // 收纳处子树不在普通文件夹栏显示，由末尾的“废片”入口进入
+  }, [folders, rejectSet]);
   const [dropFolder, setDropFolder] = useState('');
   // Folder chips accept internal video drags only; external files are stopped here and sent to the import entry.
   const folderDrop = (id: string, available = true) => ({
@@ -718,8 +738,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           <button type="button" className={`pv-folder-chip${dropFolder === 'root' ? ' is-drop-target' : ''}`} aria-current={folderId === 'root' ? 'page' : undefined} onClick={() => navigateFolder('root')} {...folderDrop('root')}><FolderOpen size={14}/><span>项目根目录</span>{receivingId === 'root' && <small className="pv-receiving">接收中</small>}</button>
           {orderedFolders.map(({folder, depth}) => <button key={folder.id} type="button" className={`pv-folder-chip${dropFolder === folder.id ? ' is-drop-target' : ''}`} aria-current={folderId === folder.id ? 'page' : undefined} title={folderLabel(folder.id) || folder.name} onClick={() => navigateFolder(folder.id)} {...folderDrop(folder.id, folder.available)}>
             {depth ? <CornerDownRight size={13}/> : <FolderIcon size={14}/>}<span>{folder.name}</span>{!folder.available && <small>不可用</small>}{receivingId === folder.id && <small className="pv-receiving">接收中</small>}</button>)}
+          <button type="button" className={`pv-folder-chip pv-folder-reject${dropFolder === 'reject' ? ' is-drop-target' : ''}`} aria-current={folderId === 'reject' ? 'page' : undefined} title={roles?.rejectFolderId ? `废片收纳处：${rejectName || '需核对'}` : '还没有设置废片收纳处'} onClick={() => navigateFolder('reject')} {...folderDrop('reject')}><Archive size={14}/><span>废片</span><small>{roles?.rejectVideoCount ?? 0}</small>{rejectCheck && <small>需核对</small>}</button>
           <button type="button" className="pv-folder-chip pv-folder-new" disabled={locked || operationPending || !collection} onClick={() => setFolderAction({kind: 'create', parentId: folderTarget(folderId)})}><FolderPlus size={14}/><span>新建文件夹</span></button>
-          {menuWrap('dir', <><span>当前目录</span><ChevronDown size={13}/></>, {className: 'pv-folder-chip', disabled: folderId === 'all', title: folderId === 'all' ? '“全部视频”不是一个具体目录' : `管理“${folderName}”`}, <>
+          {menuWrap('dir', <><span>当前目录</span><ChevronDown size={13}/></>, {className: 'pv-folder-chip', disabled: folderId === 'all' || folderId === 'reject', title: folderId === 'all' || folderId === 'reject' ? '这是聚合视图，不是一个具体目录' : `管理“${folderName}”`}, <>
             {!['all', 'root'].includes(folderId) && <>
               {menuItem('重命名文件夹…', () => setFolderAction({kind: 'rename-folder', folderId, label: folderName}), {disabled: dirDisabled})}
               {menuItem('移动文件夹…', () => setFolderAction({kind: 'move-folder', folderId, label: folderName}), {disabled: dirDisabled})}
@@ -765,6 +786,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
                 {desktopAction.kind === 'clipboard' && <p>{clipboardTips}</p>}</details>}</>}
         </div>}
         <ContentChangeBanner ctl={contentChange}/>
+        <RejectBanner ctl={reject}/>
+        {folderId === 'reject' && collection && <div className="pv-banner pv-reject-head" data-tone={rejectCheck ? 'warn' : undefined} role="status"><Archive size={15}/>
+          <span className="pv-banner-text">{!roles?.rejectFolderId ? '还没有设置废片收纳处。可以在视频上选“标记为废片…”，或先指定一个文件夹作为收纳处。'
+            : rejectCheck ? `收纳目录需核对：原收纳处找不到或不可用，没有用同名目录顶替。可以重新设置收纳处。`
+            : `废片收纳处：${rejectName}（含子文件夹）· ${roles.rejectVideoCount} 个视频。“全部视频”默认不显示废片；移回后不会自动恢复原来的采用。`}</span>
+          <button type="button" disabled={rejectBlocked || readOnly} onClick={openRejectRole}>{roles?.rejectFolderId ? '更改或取消收纳处…' : '设置收纳处…'}</button></div>}
         {!!collection && !collection.legacyUpgrade?.completed && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
       </div>
       <div className={`pv-main${selected && draft || multi ? ' pv-has-detail' : ''}`}>
@@ -788,7 +815,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
                 <span className={`pv-adoption-badge${video.adoptedShots.length ? ' is-adopted' : ''}`}>{video.adoptedShots.length ? `已采用 · ${video.adoptedShots.length} 镜` : '候选'}</span><span className="pv-duration">{duration(video.durationMs)}</span></span>
               <span className="pv-card-body"><strong title={video.name || video.fileName}>{video.name || video.fileName}</strong>
                 <small className="pv-card-prompt">{video.promptId ? prompts.find(p => p.id === video.promptId)?.title || '已关联参考提示词' : '无参考提示词'}</small>
-                {folderId === 'all' && <small className="pv-card-folder" title={cardFolder(video)}>{cardFolder(video)}</small>}
+                {(folderId === 'all' || folderId === 'reject') && <small className="pv-card-folder" title={cardFolder(video)}>{cardFolder(video)}</small>}
                 {(showStatus(video) || !video.managed || draftDirty(video)) && <span className="pv-card-flags">{showStatus(video) && <span data-status={video.verification?.state === 'content_changed' ? 'missing' : video.status} title={statusLabel[video.status]}>{video.verification?.state === 'content_changed' ? '内容已变化' : statusShort[video.status]}</span>}{!video.managed && <span data-tone="warn">待升级</span>}{draftDirty(video) && <span data-tone="draft">草稿未保存</span>}</span>}</span>
             </button></div>)}</div>
           </section>)}
@@ -796,6 +823,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           {multi && <div className="pv-selection-bar" role="toolbar" aria-label="已选视频操作"><strong>已选 {picked.length} 个视频</strong>
             <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} title={copyDisabledReason || '复制到系统剪贴板（⌘C）'} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制</button>
             <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} title={revealDisabledReason || '在访达中定位这些文件'} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>在访达中显示</button>
+            {folderId !== 'reject' && <button type="button" disabled={rejectBlocked} title={`移入废片收纳处（一次最多 ${MAX_REJECT} 个），会先核对影响`} onClick={() => markReject(pickedOrdered)}><Archive size={14}/>标记为废片</button>}
             <button type="button" onClick={() => applyPick([])}>取消选择</button>
             {(copyDisabledReason || revealDisabledReason) && <small>{copyDisabledReason || revealDisabledReason}</small>}</div>}
           {!loading && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
@@ -823,6 +851,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           <header className="pv-detail-head"><div className="pv-detail-title"><small>视频详情</small><h2 title={selected.name || selected.fileName}>{selected.name || selected.fileName}</h2></div>
             {menuWrap('detail', <Ellipsis size={17}/>, {label: '视频操作', className: 'pv-icon-button pv-ghost'}, <>
               {menuItem('移动到…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name}); }, {disabled: locked || operationPending || !selected.managed, hint: selected.managed ? '会先核对影响' : '升级后可移动'})}
+              {selected.inRejectArea
+                ? menuItem('移回…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, destinationFolderId: 'root', label: selected.name}); }, {disabled: rejectBlocked || !selected.managed, hint: '不会自动恢复采用'})
+                : menuItem('标记为废片…', () => markReject([selected.id]), {disabled: rejectBlocked || !selected.managed, hint: selected.adoptedShots.length ? '会先确认解除采用' : '移入废片收纳处'})}
               {menuItem('复制到剪贴板', () => copySelection([selected.id]), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : '⌘C'})}
               {['changed', 'untrusted'].includes(selected.status) && menuItem('处理内容变化…', () => openContentChange(selected), {disabled: locked || unresolved})}
               {menuItem('重新定位…', () => openRelink(selected), {disabled: locked || unresolved})}
@@ -866,7 +897,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           <hr/>
           {menuItem('查看原视频', () => setExpandedId(actionTargets[0]))}
           {menuItem('移动到…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, label: v.name}); }, {disabled: locked || operationPending || !videos.find(x => x.id === actionTargets[0])?.managed})}
+          {videos.find(x => x.id === actionTargets[0])?.inRejectArea && menuItem('移回…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, destinationFolderId: 'root', label: v.name}); }, {disabled: rejectBlocked, hint: '不会自动恢复采用'})}
         </>}
+        {actionTargets.some(id => !videos.find(v => v.id === id)?.inRejectArea) && <><hr/>{menuItem(actionTargets.length > 1 ? `标记 ${actionTargets.length} 个为废片…` : '标记为废片…', () => markReject(actionTargets), {disabled: rejectBlocked, hint: '会先核对影响'})}</>}
         {(copyDisabledReason || revealDisabledReason) && <p className="pv-menu-note">{copyDisabledReason || revealDisabledReason}</p>}
       </div>
     </div>}
@@ -944,7 +977,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
       })()}
     </Modal>}
     {active && contentChange.video && contentChange.visible && <ContentChangeDialog ctl={contentChange}/>}
-    <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else void refresh();}} onPending={setOperationPending}/>
+    {active && reject.mode && reject.visible && <RejectDialog ctl={reject} allFolders={folders}/>}
+    <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} excludeTargets={rejectSet} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else void refresh();}} onPending={setOperationPending}/>
     {active && confirmation && <Modal title={confirmation.kind === 'remove' ? '移除视频记录' : '重新定位视频'} locked={locked} onClose={() => setConfirmation(null)}>
       <p>项目：<strong>{projectName}</strong> · {confirmation.video.name}</p>
       {error && <p className="pv-error" role="alert">{error}</p>}
