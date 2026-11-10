@@ -1,7 +1,7 @@
 import express from 'express';
 import {ProjectScripts} from '../project-scripts/store.mjs';
 import {streamImage} from './image-import.mjs';
-export function projectAssetRouter(store, asyncRoute) {
+export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{}}={}) {
   const router = express.Router(),scripts=new ProjectScripts(store).init();
   router.post('/assets/:id/voice',express.json({limit:'15mb'}),asyncRoute(async(req,res)=>{
     const id=req.params.id;
@@ -24,7 +24,16 @@ export function projectAssetRouter(store, asyncRoute) {
   route('post', '/assets', req => store.create(req.body));
   route('get', '/assets/:id', req => store.get(req.params.id));
   router.get('/assets/:id/voice/:voiceId',asyncRoute(async(req,res)=>{const result=await store.voices.preview(store.get(req.params.id),req.params.voiceId);res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});res.type(result.mime).send(result.bytes);}));
-  route('put', '/assets/:id', req => store.save(req.params.id, req.body.asset, req.body.expected_revision));
+  route('put', '/assets/:id', async req => {
+    const previous=store.get(req.params.id),saved=await store.save(req.params.id, req.body.asset, req.body.expected_revision);
+    const oldImages=new Set(previous.images.map(i=>i.id));
+    // A selected project in the page remains explicit. Only a saved new image
+    // binding updates the next Finder intake's optional project suggestion.
+    if(saved.project_id&&saved.images.some(i=>i.archived_at===null&&!oldImages.has(i.id))){
+      try{if(store.project(saved.project_id).project_kind==='normal')await rememberTarget({kind:'photo',scope:'project',projectId:saved.project_id});}catch{/* Preferences cannot undo a saved asset. */}
+    }
+    return saved;
+  });
   route('post', '/assets/:id/archive', req => store.archive(req.params.id, req.body.archived === true, req.body.expected_revision));
   route('get', '/assets/:id/health', req => store.health(req.params.id));
   route('get', '/assets/:id/shots', req => store.associatedShots(req.params.id));

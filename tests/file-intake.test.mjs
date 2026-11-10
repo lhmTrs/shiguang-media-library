@@ -103,12 +103,12 @@ test('选择证明：核验过程中修改内容或替换路径都不能生成re
   assert.equal(f.intake.batches.size,0);
 });
 
-test('访达选择只接收单/多视频；混选、目录、链接在任何复制前拒绝',async t=>{
+test('访达选择接收支持媒体；含不支持文件、目录、链接在任何复制前拒绝',async t=>{
   const f=await fixture(t),txt=path.join(f.dir,'a.txt'),link=path.join(f.dir,'link.mp4');await fs.writeFile(txt,'text');await fs.symlink(f.file,link);
   assert.equal((await inspectSelection([f.file,f.file])).length,1);
   for(const selected of [[f.file,txt],[f.dir],[link]])await assert.rejects(inspectSelection(selected),e=>e.code==='INTAKE_VIDEO_ONLY');
   assert.equal((await f.catalog.list(f.project.id)).videos.length,0);
-  assert.match(plist(workflow("/a'b/node",'/safe/script','/private/config')),/fileSystemObject.movie/);
+  assert.match(plist(workflow("/a'b/node",'/safe/script','/private/config')),/fileSystemObject/);
   assert.equal(shellQuote("a'b"),"'a'\"'\"'b'");
 });
 
@@ -289,4 +289,11 @@ test('已处理：拒绝在途、不确定、移除未结清和旧结果；写�
   await f.intake.acknowledge(id,input());assert.equal(f.intake.status().needsAttention,0);
   b.items[0].error='later explicit operation failure';assert.equal(f.intake.status().needsAttention,1);assert.equal(f.intake.dto(b).acknowledged,false);
   b.libraryId='other library';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='LOCAL_INSTANCE_CHANGED');
+});
+
+test('相同回执目录切到另一素材库不改写旧批次或统计旧任务',async t=>{
+  const f=await fixture(t),id=randomUUID(),row={id,libraryId:f.intake.libraryId,mode:'move',status:'running',projectId:f.project.id,folderId:'root',items:[{id:randomUUID(),status:'ready',removal:'planned',bytes:1}]};
+  await f.intake.receipts.write('batches',id,row);const file=path.join(f.intake.receipts.base,'batches',id+'.json'),before=await fs.readFile(file);
+  const foreign=await new FileIntake({dataDir:f.dataDir,libraryId:'different-library',catalog:f.catalog,projects:f.projects}).init();
+  try{assert.equal(foreign.list().batches.length,0);assert.equal(foreign.status().activeCount,0);assert.equal(foreign.status().needsAttention,0);assert.deepEqual(await fs.readFile(file),before);}finally{await foreign.close();}
 });

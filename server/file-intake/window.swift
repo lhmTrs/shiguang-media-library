@@ -68,7 +68,7 @@ final class IntakePrompt: NSObject, NSWindowDelegate {
 }
 if args.count >= 2 && args[1] == "--start-alert" {
     guard args.count == 3, UUID(uuidString:args[2]) != nil else {exit(2)}
-    let prompt = IntakePrompt(handoffId:args[2],message:"本次选择已保留。启动本机素材服务后继续选择项目与文件夹，不会自动导入。")
+    let prompt = IntakePrompt(handoffId:args[2],message:"本次素材选择已保留。启动本机素材服务后继续确认素材类型与收纳目标，不会自动导入。")
     app.run()
     withExtendedLifetime(prompt) {}
     exit(2)
@@ -98,7 +98,7 @@ final class IntakeWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
         view.navigationDelegate = self
         window = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:690),
                           styleMask:[.titled,.closable,.resizable,.miniaturizable],backing:.buffered,defer:false)
-        window.title = "收纳视频到拾光"
+        window.title = "收纳素材到拾光"
         window.minSize = NSSize(width:600,height:560)
         window.delegate = self
         window.contentView = view

@@ -48,6 +48,9 @@ import { createStoryboardGeneration } from "./storyboard-generation/index.mjs";
 import {ProjectVideos} from './project-videos/store.mjs';
 import {projectVideoRouter} from './project-videos/router.mjs';
 import {FileIntake} from './file-intake/store.mjs';
+import {ManagedIntakeCatalog} from './file-intake/media-catalog.mjs';
+import {IntakePreferences} from './file-intake/preferences.mjs';
+import {protectManagedRoots} from './file-intake/root-policy.mjs';
 import {IntakeNative} from './file-intake/native.mjs';
 import {fileIntakeRouter} from './file-intake/router.mjs';
 import {createStoryboardVideo} from "./storyboard-video/index.mjs";
@@ -327,7 +330,9 @@ const storyboard = createStoryboardModule({ dataDir, lib, projectAssets });
 const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:storyboard.store,codex:codexService,projects});
 const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia});
 const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
-const fileIntake=await new FileIntake({dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
+const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStorage.sourceId}).init();
+const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
+const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
 const intakeNative=new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')});
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
@@ -457,11 +462,11 @@ app.use("/api", (req, res, next) => {
 // Storyboard shares the existing Host/origin, cookie and write-token gates.
 app.use("/api/storyboard-generation", storyboardGeneration.router);
 app.use("/api/storyboard-video", storyboardVideo.router);
-app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{withActivity:fn=>uploadHost.track(fn)}));
-app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
+app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
+app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,rememberTarget:target=>intakePreferences.remember([target]),withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
-app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute));
+app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{rememberTarget:target=>intakePreferences.remember([target])}));
 app.use("/api/prompt-codex", codexRouter(codexStore, codexService, codexMedia, codexBackup, asyncRoute));
 app.use("/api/concierge", concierge.router);
 app.use(TASK_ENTRY_BASE, (req, res, next) => {
@@ -674,7 +679,8 @@ app.post(
     res.json(await mysqlStorage.activate(req.body)),
   ),
 );
-app.get("/api/roots", (req, res) => res.json(lib.roots()));
+const visibleManagedRoots=protectManagedRoots(app,lib,process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'));
+app.get("/api/roots", (req, res) => res.json(visibleManagedRoots(lib.roots())));
 app.post("/api/roots/management-order", (req, res) => res.json(lib.setRootManagementOrder(req.body.ids)));
 app.get("/api/folder-browser", asyncRoute(async (req, res) => res.json(await folderBrowser.branch(req.query))));
 app.post("/api/folder-browser", asyncRoute(async (req, res) => {
@@ -688,7 +694,7 @@ app.post("/api/roots", asyncRoute(async (req, res) => {
   res.json({ root, job: lib.scan(root.id) });
 }));
 // 含已注销的根：只给「素材目录管理」界面用（/api/roots 仍只返回在管的根）
-app.get("/api/roots/all", (req, res) => res.json(lib.allRoots()));
+app.get("/api/roots/all", (req, res) => res.json(visibleManagedRoots(lib.allRoots())));
 app.patch("/api/roots/:id", asyncRoute(async (req, res) => {
   const result = lib.updateRoot(req.params.id, req.body);
   if (Object.hasOwn(req.body, "kind")) void reconcileWatcher?.refresh();

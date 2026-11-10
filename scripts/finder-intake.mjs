@@ -55,9 +55,9 @@ export async function intake(config,files,{onWindow}={}) {
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const [, , flag,config,separator,...files]=process.argv;
-  if(flag!=='--config'||separator!=='--')throw Error('请从访达右键入口使用收纳视频');
+  if(flag!=='--config'||separator!=='--')throw Error('请从访达右键入口使用收纳素材');
   try {await intake(config,files);}catch(e) {
-    console.error('收纳未开始：'+(e.status?e.message:'无法读取所选视频或准备本机窗口，请在拾光文件任务中重新安装右键入口'));
+    console.error('收纳未开始：'+(e.status?e.message:'无法读取所选素材或准备本机窗口，请在拾光文件任务中重新安装右键入口'));
     try {const c=await readConfig(config);await run(c.helper,['--error',e.message],{maxBuffer:8192});}catch{}
     process.exitCode=1;
   }

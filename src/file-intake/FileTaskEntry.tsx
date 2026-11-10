@@ -40,7 +40,7 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
         const completion = value.latestCompletion, key = completion ? completion.id + ':' + completion.updatedAt : '';
         if (completionRead.current && completion && key !== completionKey.current && completion.updatedAt > mountedAt.current) notifyFeedback({
           kind: completion.status === 'completed' ? 'success' : 'warning', source: '文件任务', key: 'file-intake-completion:' + key,
-          message: completion.status === 'completed' ? '视频已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
+          message: completion.status === 'completed' ? '素材已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
         });
         completionRead.current = true; completionKey.current = key;
         setStatus(value); setStatusError('');
@@ -78,7 +78,7 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
     writing.current = true; readVersion.current++; setReading(false); setBusy(label); setError('');
     try {
       const value = await api.current<IntakeBatch>(INTAKE_API + '/batches/' + encoded(batch.id) + suffix, body);
-      if (value.id !== batch.id || value.projectId !== batch.projectId || value.folderId !== batch.folderId || value.mode !== batch.mode) throw Error('回执固定目标不符，请保留原批次核对');
+      if (value.id !== batch.id || value.projectId !== batch.projectId || value.folderId !== batch.folderId || value.mode !== batch.mode || JSON.stringify(value.items.map(i=>i.destination))!==JSON.stringify(batch.items.map(i=>i.destination))) throw Error('回执固定目标不符，请保留原批次核对');
       if (!alive.current) return; installBatch(value);
       if (!item) setUncertain(old => {
         const pending = old[batch.id], nextItem = value.items.find(i => i.id === pending?.itemId);
@@ -123,10 +123,10 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
         <div className="fi-task-tabs" role="group" aria-label="文件任务分类"><button aria-pressed={!history} onClick={() => switchHistory(false)}>最近任务</button><button aria-pressed={history} onClick={() => switchHistory(true)}>已处理</button></div>
         <div className="fi-task-toolbar"><label>最近批次<select aria-label="选择文件收纳批次" value={selected?.id || ''} onChange={e => {selectionRef.current = e.target.value; setSelection(e.target.value);}}><option value="" disabled>暂无收纳批次</option>{shown.map(b => <option key={b.id} value={b.id}>{b.projectName} / {b.folderName || '根目录'} · {batchLabel[b.status]} · {b.items.length} 项</option>)}</select></label><button disabled={reading || !!busy} aria-label="刷新文件任务" onClick={() => void readBatches()}><RefreshCw size={15}/></button></div>
         {busy && <p className="fi-muted" role="status">{busy}…</p>}
-        {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3><p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择视频，右键“收纳视频到拾光”，确认目标后在这里查看。'}</p></div>}
+        {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3><p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择素材，右键“收纳素材到拾光”，确认目标后在这里查看。'}</p></div>}
         {selected?.canAcknowledge && <div className="fi-acknowledge"><span>{selected.acknowledged ? '原始结果保留，可随时恢复。' : '已知结果可收起，不再计入待处理；不会重试或移除文件。'}</span><button disabled={!!busy || !!uncertain[selected.id]} onClick={() => void mutate(selected, null, '/acknowledge', {acknowledged: !selected.acknowledged, resultKey: selected.resultKey}, selected.acknowledged ? '正在恢复待处理' : '正在标记已处理')}>{selected.acknowledged ? '恢复待处理' : '标记已处理'}</button></div>}
         {selected && <BatchDetails batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
-        <section className="fi-install"><h3>访达右键入口</h3><p>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.installed ? '入口已安装。若菜单尚未出现，请在系统设置中启用拾光快速操作。' : '安装后可从访达右键收纳视频。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p><button disabled={!status?.supported || !!busy || !!statusError} onClick={() => void install()}><Download size={14}/>{status?.installed ? '重新安装访达入口' : '安装访达入口'}</button>{installedMessage && <p role="status">{installedMessage}</p>}</section>
+        <section className="fi-install"><h3>访达右键入口</h3><p>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.upgradeNeeded ? '原视频入口已安装，点击升级后可收纳图片和音频。' : status.installed ? '入口已安装。若菜单尚未出现，请在系统设置中启用拾光快速操作。' : '安装后可从访达右键收纳图片、视频、音乐和音效。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p><button disabled={!status?.supported || !!busy || !!statusError} onClick={() => void install()}><Download size={14}/>{status?.upgradeNeeded ? '升级访达入口' : status?.installed ? '重新安装访达入口' : '安装访达入口'}</button>{installedMessage && <p role="status">{installedMessage}</p>}</section>
       </div>
     </aside>, document.body)}
   </div>;
