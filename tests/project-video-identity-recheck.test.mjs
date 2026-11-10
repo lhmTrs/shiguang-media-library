@@ -172,7 +172,7 @@ test('mtime-only edit with identical bytes refreshes both approvals and asset ti
 
 // 3. Content equality never substitutes for permanent physical identity.
 test('same inode changed bytes and replacement inode identical bytes both reject without refreshed approval',async t=>{
-  const f=await fixture(t),changed=await imported(f,'changed.mp4'),old=await fs.stat(changed.path),bytes=Buffer.from(f.bytes);bytes[bytes.length-1]^=1;
+  const f=await fixture(t),changed=await imported(f,'changed.mp4'),old=await fs.stat(changed.path),bytes=Buffer.from(f.bytes);const payload=bytes.indexOf(Buffer.from('mdat'));assert.ok(payload>0);bytes[payload+16]^=1;
   await fs.writeFile(changed.path,bytes);assert.equal((await fs.stat(changed.path)).ino,old.ino);assert.equal(bytes.length,f.bytes.length);await deniedWithoutWrites(f,changed);
   const replaced=await imported(f,'replacement.mp4'),prior=await fs.stat(replaced.path),replacement=path.join(f.dir,'replacement-owned.mp4');
   await fs.writeFile(replacement,f.bytes);await fs.rename(replaced.path,path.join(f.dir,'retained-original.mp4'));await fs.rename(replacement,replaced.path);
@@ -354,7 +354,7 @@ test('empty index cache: different content and concurrent cache writes cannot re
     const source=await imported(f,kind+'.mp4');await bind(f,source);const old=previousDevice(f,source,true),meta=f.catalog.metadata(f.project.id,old);
     f.lib.db.prepare('UPDATE assets SET sha256=NULL WHERE id=?').run(meta.data.mediaAssetId);
     if(kind==='different-bytes'){
-      const bytes=Buffer.from(f.bytes);bytes[bytes.length-1]^=1;await fs.writeFile(old.path,bytes);
+      const bytes=Buffer.from(f.bytes);const payload=bytes.indexOf(Buffer.from('mdat'));assert.ok(payload>0);bytes[payload+16]^=1;await fs.writeFile(old.path,bytes);
       await deniedWithoutWrites(f,old,()=>f.catalog.upgradeSource(f.project.id,old,meta.row.revision));
     }else{
       const probe=f.entry.media.probe;let injected=false,expected;
@@ -378,7 +378,7 @@ test('Finder reveal: changed content or revoked authority never open a replaceme
   const f=await fixture(t);let reveals=0;f.lib.reveal=async()=>{reveals++;};
   for(const kind of ['content','approval']){
     const source=await imported(f,'finder-deny-'+kind+'.mp4');await ctimeOnly(source);
-    if(kind==='content'){const bytes=Buffer.from(f.bytes);bytes[bytes.length-1]^=1;await fs.writeFile(source.path,bytes);}
+    if(kind==='content'){const bytes=Buffer.from(f.bytes);const payload=bytes.indexOf(Buffer.from('mdat'));assert.ok(payload>0);bytes[payload+16]^=1;await fs.writeFile(source.path,bytes);}
     else f.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(source.id);
     await deniedWithoutWrites(f,source,()=>f.catalog.reveal(f.project.id,source.id));
   }
