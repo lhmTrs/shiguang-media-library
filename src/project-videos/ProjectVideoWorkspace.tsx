@@ -11,6 +11,7 @@ import {Modal, ModalActions} from './Modal';
 import {FolderTree, FolderBreadcrumbs, FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains} from './folders';
+import {rememberImportTarget} from '../import-presets.mjs';
 import type {FolderView} from './types';
 
 type PromptDraft = { mode: PromptInput['mode']; id: string; title: string; text: string };
@@ -190,6 +191,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const requestRef = useRef(request); requestRef.current = request;
+  const libraryId = useRef<string>();
+  useEffect(() => {
+    let current = true;
+    void request<{instanceId: string}>('/session').then(value => {if (current) libraryId.current = value.instanceId;}).catch(() => {});
+    return () => {current = false; libraryId.current = undefined;};
+  }, [request]);
   const activeRef = useRef(active); activeRef.current = active;
   const generation = useRef(0);
   const listSerial = useRef(0);
@@ -365,6 +372,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     taskSendingRef.current = true; setTaskSending(true); setError('');
     const requestId = crypto.randomUUID();
     const target = folderTarget(folderRef.current);
+    rememberImportTarget(libraryId.current, 'video', {projectId, folderId: target});
     const body: ImportRequest = { requestId, folderId: target, fileName: file.name, bytes: file.size,
       title: title.trim() || undefined, notes: notes.trim() || undefined, prompt: promptInput(importPrompt) };
     const original = {kind: 'import' as const, requestId, queryId: requestId, receipt: null, uploadAttempted: false, error: '', api: frozenAPI(), file, folderId: target, folderName};

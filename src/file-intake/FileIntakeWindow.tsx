@@ -5,6 +5,7 @@ import {applyTheme, readTheme} from '../theme';
 import '../themes.css';
 import {BatchDetails} from './BatchDetails';
 import {intakeSession} from './session';
+import {readImportTarget, rememberImportTarget} from '../import-presets.mjs';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type IntakeBatch, type IntakeFolder, type IntakeRequest} from './types';
 import './file-intake.css';
 
@@ -48,7 +49,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       if (value.id !== handoffId) throw Error('收纳选择身份不符，请核对原窗口');
       setApi(() => request); setHandoff(value);
       const saved = readAttempt(handoffId); attempt.current = saved;
-      if (initialized.current !== handoffId) {initialized.current = handoffId; setSelected(saved?.fileIds || value.files.map(f => f.id)); setProjectId(saved?.projectId || ''); setFolderId(saved?.folderId || ''); setMode(saved?.mode || 'copy');}
+      if (initialized.current !== handoffId) {
+        const target = saved || readImportTarget(request.libraryId, 'video', value.projects);
+        initialized.current = handoffId; setSelected(saved?.fileIds || value.files.map(f => f.id)); setProjectId(target?.projectId || ''); setFolderId(target?.folderId || ''); setMode(saved?.mode || 'copy');
+      }
       if (value.batchId) {const receipt = await request<IntakeBatch>(INTAKE_API + '/batches/' + encoded(value.batchId), undefined, undefined, {signal: controller.signal}); if (current) accept(receipt);}
       else if (saved) {setUnknown(true); setError('原提交结果尚未确认。请核对原请求，不会再次发送。');}
     })().catch(e => {if (current && !controller.signal.aborted) setError(errorMessage(e));}).finally(() => {if (current) setLoading(false);});
@@ -92,6 +96,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   async function confirm() {
     if (!api || !handoff || handoff.preparation==='checking'||handoff.preparation==='failed'||sending.current || attempt.current || batch || !selected.length || !handoff.projects.some(p => p.id === projectId) || !folders.some(f => f.id === folderId) || mode === 'move' && !handoff.canTrash) return;
     const input: ConfirmInput = {requestId: crypto.randomUUID(), projectId, folderId, mode, fileIds: [...selected]};
+    rememberImportTarget(api.libraryId, 'video', input);
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
     catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。'));}}

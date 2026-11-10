@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
+import {imageNamePreset} from '../import-presets.mjs';
 import './asset-library.css';
 import {AssociatedShots} from './AssociatedShots';
 import {ProjectScript} from './ProjectScript';
@@ -22,7 +23,7 @@ type Health = { id: string; state: string; label: string };
 type Receipt = { id: string; status: string; mediaAssetId?: string; fileName: string; error?: string; candidates: { id: string; name: string; reason: string; previewUrl: string }[] };
 // 每个拖入项固定导入编号、绑定编号和新造型编号：回应丢失后按原编号核对，不重新上传、不重复绑定。
 type DropStage = 'create' | 'look' | 'import' | 'bind' | 'done';
-type DropItem = { key: string; file: File; preview: string; name: string; include: boolean; state: 'waiting' | 'working' | 'unknown' | 'duplicate' | 'failed' | 'done'; message: string; stage: DropStage; requestId: string; bindingId: string; newLookId: string; startedAt: number; createPending?: boolean; createAt?: number; preExisting?: string[]; pendingName?: string; adopted?: boolean; claims?: { id: string; name: string; revision: number; created_at: number; images: number; archived: boolean }[]; claimChoice?: string; assetId?: string; lookId?: string | null; mediaAssetId?: string; fileName?: string; receipt?: Receipt; candidate?: string };
+type DropItem = { key: string; file: File; preview: string; name: string; lookName: string; nameEdited?: boolean; lookEdited?: boolean; include: boolean; state: 'waiting' | 'working' | 'unknown' | 'duplicate' | 'failed' | 'done'; message: string; stage: DropStage; requestId: string; bindingId: string; newLookId: string; startedAt: number; createPending?: boolean; createAt?: number; preExisting?: string[]; pendingName?: string; adopted?: boolean; claims?: { id: string; name: string; revision: number; created_at: number; images: number; archived: boolean }[]; claimChoice?: string; assetId?: string; lookId?: string | null; mediaAssetId?: string; fileName?: string; receipt?: Receipt; candidate?: string };
 type DropJob = { mode: 'create' | 'attach'; kind: Kind; projectId: string; asset?: { id: string; name: string; looks: Look[] }; lookId: string | null; items: DropItem[]; running: boolean };
 const labels: Record<Kind, string> = { character: '人物', scene: '场景', prop: '道具' };
 const date = (v: number) => new Date(v).toLocaleString('zh-CN');
@@ -30,7 +31,6 @@ const preview = (b: Binding) => '/api/project-assets/bindings/' + b.id + '/previ
 const bindingSrc = (b: Binding) => b.revision ? preview(b) : '/api/project-assets/media/' + b.media_asset_id + '/preview';
 const empty = (s: string) => <div className="ca-empty">{s}</div>;
 const imageFile = (f: File) => /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?|avif)$/i.test(f.name);
-const baseName = (n: string) => n.replace(/\.[^.]+$/, '').trim().slice(0, 120) || '未命名';
 function Field({ label, value, onChange, long = false, placeholder, rows = 4 }: { label: string; value: string; onChange: (v: string) => void; long?: boolean; placeholder?: string; rows?: number }) {
   return <label className="ca-field"><span>{label}</span>{long
     ? <textarea aria-label={label} rows={rows} placeholder={placeholder} value={value} onChange={e => onChange(e.target.value)}/>
@@ -265,13 +265,13 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     if (accepted.length < files.length) setNotice(`已忽略 ${files.length - accepted.length} 个非图片文件`);
     return accepted.slice(0, 20);
   }
-  const makeItems = (files: File[], mode: 'create' | 'attach'): DropItem[] => files.map(f => ({ key: crypto.randomUUID(), file: f, preview: URL.createObjectURL(f), name: baseName(f.name), include: true, state: 'waiting', message: '', stage: mode === 'create' ? 'create' : 'look', requestId: crypto.randomUUID(), bindingId: crypto.randomUUID(), newLookId: crypto.randomUUID(), startedAt: 0 }));
+  const makeItems = (files: File[], mode: 'create' | 'attach', targetKind: Kind): DropItem[] => files.map(f => ({ key: crypto.randomUUID(), file: f, preview: URL.createObjectURL(f), ...imageNamePreset(f.name, targetKind), include: true, state: 'waiting', message: '', stage: mode === 'create' ? 'create' : 'look', requestId: crypto.randomUUID(), bindingId: crypto.randomUUID(), newLookId: crypto.randomUUID(), startedAt: 0 }));
   function dropOnGallery(e: React.DragEvent) {
     e.preventDefault(); dragDepth.current = 0; setDragTarget('');
     if (dropBlocked()) { setError('请先完成当前操作，再拖入图片'); return; }
     if (publicScope && kind !== 'character') return;
     const files = readDropFiles(e); if (!files) return;
-    setDropJob({ mode: 'create', kind, projectId: scope, lookId: null, items: makeItems(files, 'create'), running: false });
+    setDropJob({ mode: 'create', kind, projectId: scope, lookId: null, items: makeItems(files, 'create', kind), running: false });
   }
   async function dropOnCard(e: React.DragEvent, a: Asset) {
     e.preventDefault(); e.stopPropagation(); dragDepth.current = 0; setDragTarget('');
@@ -282,7 +282,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     await run('正在读取资料…', async () => {
       const full = await api<Asset>('/assets/' + a.id);
       const looks = full.looks.filter(l => !l.archived_at);
-      setDropJob({ mode: 'attach', kind: full.kind, projectId: full.project_id, asset: { id: full.id, name: full.name, looks }, lookId: full.kind === 'character' ? (looks.find(l => l.id === full.default_look_id)?.id ?? looks[0]?.id ?? null) : null, items: makeItems(files, 'attach'), running: false });
+      setDropJob({ mode: 'attach', kind: full.kind, projectId: full.project_id, asset: { id: full.id, name: full.name, looks }, lookId: full.kind === 'character' ? (looks.find(l => l.id === full.default_look_id)?.id ?? looks[0]?.id ?? null) : null, items: makeItems(files, 'attach', full.kind), running: false });
     });
   }
   useEffect(() => { if (!dropJob) return; const job = dropJob; return () => { if (dropJobRef.current !== job && dropJobRef.current?.items[0]?.key !== job.items[0]?.key) job.items.forEach(i => URL.revokeObjectURL(i.preview)); }; }, [dropJob?.items[0]?.key]);
@@ -295,14 +295,15 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     const rows = await Promise.all(['false', 'true'].map(archived => api<{ items: Asset[] }>('/assets?' + new URLSearchParams({ project_id: job.projectId, kind: job.kind, q: name, archived, page: '1' }))));
     return rows.flatMap(r => r.items).filter(a => a.name === name);
   }
-  async function ensureLook(assetId: string, fixedId: string): Promise<string> {
+  async function ensureLook(assetId: string, fixedId: string, requestedName?: string): Promise<string> {
     const a = await api<Asset>('/assets/' + assetId);
     if (a.looks.some(l => l.id === fixedId && !l.archived_at)) return fixedId;
-    const existing = a.looks.find(l => l.id === a.default_look_id && !l.archived_at) ?? a.looks.find(l => !l.archived_at);
+    const existing = requestedName ? a.looks.find(l => l.name === requestedName && !l.archived_at)
+      : a.looks.find(l => l.id === a.default_look_id && !l.archived_at) ?? a.looks.find(l => !l.archived_at);
     if (existing) return existing.id;
     if (a.archived_at) throw definite('资料已归档，图片没有添加');
     const next = structuredClone(a);
-    next.looks.push({ id: fixedId, name: '默认', description: '', tags: [], default_image_id: null, archived_at: null }); next.default_look_id ??= fixedId;
+    next.looks.push({ id: fixedId, name: requestedName || '默认', description: '', tags: [], default_image_id: null, archived_at: null }); next.default_look_id ??= fixedId;
     await api<Asset>('/assets/' + assetId, { asset: next, expected_revision: a.revision }, 'PUT');
     return fixedId;
   }
@@ -347,7 +348,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       }
       if (job.mode === 'attach' && !it.assetId) sync({ assetId: job.asset!.id });
       if (it.stage === 'look') {
-        if (job.kind === 'character' && !it.lookId) { const lookId = job.mode === 'attach' ? job.lookId : await ensureLook(it.assetId!, it.newLookId); if (!lookId) throw definite('请先为这个人物新建造型，再添加图片'); sync({ lookId }); }
+        if (job.kind === 'character' && !it.lookId) { const lookId = job.mode === 'attach' ? job.lookId : await ensureLook(it.assetId!, it.newLookId, it.lookEdited || imageNamePreset(it.file.name).structured ? it.lookName.trim() : undefined); if (!lookId) throw definite('请先为这个人物新建造型，再添加图片'); sync({ lookId }); }
         sync({ stage: 'import' });
       }
       if (it.stage === 'import') {
@@ -378,7 +379,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   async function runDropJob() {
     const job = dropJobRef.current; if (!job || job.running) return;
     const todo = job.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown'));
-    if (job.mode === 'create' && todo.some(i => !i.name.trim())) { setError('请为每张图片填写名称'); return; }
+    if (job.mode === 'create' && todo.some(i => !i.name.trim() || i.name.trim().length > 120)) { setError('请为每张图片填写不超过 120 字的名称'); return; }
+    if (job.mode === 'create' && job.kind === 'character' && todo.some(i => !i.lookName.trim() || i.lookName.trim().length > 120)) { setError('请为每张图片填写不超过 120 字的造型名称'); return; }
     if (job.kind === 'character' && job.mode === 'attach' && !job.lookId) { setError('请先为这个人物新建造型，再添加图片'); return; }
     setDropJob(j => j && { ...j, running: true }); setBusy('正在导入图片…');
     try { for (const item of todo) await processItem(job, dropJobRef.current?.items.find(i => i.key === item.key) ?? item); }
@@ -592,14 +594,15 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     {dropJob && <div className="ca-modal-backdrop" onKeyDown={e => { if (e.key === 'Escape') closeDropJob(); }}><div className="ca-modal ca-drop-dialog" role="dialog" aria-modal="true" aria-label={dropJob.mode === 'create' ? '拖入图片新建' + labels[dropJob.kind] : '添加参考图'}>
       <header><h2>{dropJob.mode === 'create' ? `用 ${dropJob.items.length} 张图片新建${labels[dropJob.kind]}` : `添加到“${dropJob.asset?.name}”`}</h2><button aria-label="关闭" disabled={dropJob.running} autoFocus onClick={closeDropJob}><X size={18}/></button></header>
       <div className="ca-modal-scroll"><div className="ca-modal-content">
-        {dropJob.mode === 'create' && <label className="ca-field ca-drop-kind"><span>类别</span><select aria-label="新建类别" value={dropJob.kind} disabled={dropJob.running || dropJob.items.some(i => i.state !== 'waiting') || publicScope} onChange={e => { const v = e.target.value as Kind; setDropJob(j => j && { ...j, kind: v }); }}>{(Object.keys(labels) as Kind[]).map(k => <option key={k} value={k}>{labels[k]}</option>)}</select></label>}
+        {dropJob.mode === 'create' && <label className="ca-field ca-drop-kind"><span>类别</span><select aria-label="新建类别" value={dropJob.kind} disabled={dropJob.running || dropJob.items.some(i => i.state !== 'waiting') || publicScope} onChange={e => { const v = e.target.value as Kind; setDropJob(j => j && { ...j, kind: v, items: j.items.map(i => { const preset = imageNamePreset(i.file.name, v); return { ...i, ...(!i.nameEdited ? { name: preset.name } : {}), ...(!i.lookEdited ? { lookName: preset.lookName } : {}) }; }) }); }}>{(Object.keys(labels) as Kind[]).map(k => <option key={k} value={k}>{labels[k]}</option>)}</select></label>}
         {dropJob.mode === 'attach' && dropJob.kind === 'character' && (dropJob.asset?.looks.length ? <label className="ca-field ca-drop-kind"><span>放进造型</span><select aria-label="放进造型" value={dropJob.lookId ?? ''} disabled={dropJob.running || dropJob.items.some(i => i.state !== 'waiting')} onChange={e => { const v = e.target.value; setDropJob(j => j && { ...j, lookId: v }); }}>{dropJob.asset.looks.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label> : <p className="ca-alert">这个人物还没有造型。请先在详情里新增造型，再添加图片。</p>)}
-        <p className="ca-muted">{dropJob.mode === 'create' ? '每张图片建立一个资料，名称默认取文件名，可以修改。图片会复制到项目的 picture 文件夹，并设为代表图。' : '图片会复制到项目的 picture 文件夹并立即保存到这份资料；还没有代表图时设为代表图。'}</p>
+        <p className="ca-muted">{dropJob.mode === 'create' ? '每张图片建立一个资料；人物按“人物_造型”预填，其余名称仅作建议，可在下方修改。拖到已有资料时以落点为准。图片复制后立即保存关联；已有代表图保持不变。' : '图片会复制到项目的 picture 文件夹并立即保存到这份资料；还没有代表图时设为代表图。'}</p>
         <ul className="ca-drop-list">{dropJob.items.map(i => <li key={i.key} className={'is-' + i.state}>
           {dropJob.items.length > 1 && <input type="checkbox" aria-label={'包含 ' + i.file.name} checked={i.include} disabled={dropJob.running || i.state !== 'waiting'} onChange={e => { const v = e.target.checked; patchItem(i.key, { include: v }); }}/>}
           <span className="ca-drop-thumb"><ReferencePreview src={i.preview} alt={i.file.name}/></span>
-          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || !i.include || !(i.state === 'waiting' || (i.state === 'failed' || i.state === 'unknown') && i.stage === 'create' && !i.assetId)} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v }); }}/> : <strong>{i.file.name}</strong>}
-            <small>{i.file.name} · {(i.file.size / 1024 / 1024).toFixed(2)} MB</small>
+          <span className="ca-drop-main">{dropJob.mode === 'create' ? <input aria-label={'名称：' + i.file.name} value={i.name} maxLength={120} disabled={dropJob.running || !i.include || !(i.state === 'waiting' || (i.state === 'failed' || i.state === 'unknown') && i.stage === 'create' && !i.assetId)} onChange={e => { const v = e.target.value; patchItem(i.key, { name: v, nameEdited: true }); }}/> : <strong>{i.file.name}</strong>}
+            {dropJob.mode === 'create' && dropJob.kind === 'character' && <input aria-label={'造型：' + i.file.name} title="造型名称" placeholder="造型名称" value={i.lookName} maxLength={120} disabled={dropJob.running || !i.include || !(i.state === 'waiting' || (i.state === 'failed' || i.state === 'unknown') && i.stage === 'create' && !i.assetId)} onChange={e => patchItem(i.key, { lookName: e.target.value, lookEdited: true })}/>}
+            <small>{i.file.name} · {(i.file.size / 1024 / 1024).toFixed(2)} MB{dropJob.mode === 'create' && dropJob.kind === 'character' ? ` · 人物：${i.name || '请填写'} / 造型：${i.lookName || '请填写'}` : ''}</small>
             {i.message && <small className={'ca-drop-message' + (i.state === 'failed' ? ' is-error' : '')} role={i.state === 'failed' || i.state === 'unknown' ? 'alert' : 'status'}>{i.message}</small>}
             {i.state === 'duplicate' && i.receipt && <span className="ca-drop-duplicate">{i.receipt.candidates.map(c => <label key={c.id}><input type="radio" name={'dup-' + i.key} checked={i.candidate === c.id} onChange={() => patchItem(i.key, { candidate: c.id })}/><span className="ca-drop-thumb small"><ReferencePreview src={c.previewUrl} alt={c.name}/></span>{c.name}<small>{c.reason}</small></label>)}<span className="ca-actions"><button disabled={dropJob.running || !i.candidate} onClick={() => void resolveDuplicate(i, 'reuse')}>使用原图</button><button disabled={dropJob.running} onClick={() => void resolveDuplicate(i, 'import')}>继续导入（重命名）</button></span></span>}
             {i.state === 'unknown' && !!i.claims?.length && <span className="ca-drop-duplicate" role="group" aria-label="待确认的同名资料">{i.claims.map(c => <label key={c.id}><input type="radio" name={'claim-' + i.key} checked={i.claimChoice === c.id} onChange={() => patchItem(i.key, { claimChoice: c.id })}/>{c.name}<small>V{c.revision} · {c.images} 张图 · 建立于 {date(c.created_at)}{c.archived ? ' · 已归档' : ''}</small></label>)}<span className="ca-actions"><button disabled={dropJob.running || !i.claimChoice || !!i.claims.find(c => c.id === i.claimChoice)?.archived} onClick={() => void adoptClaim(i)}>使用这份资料并添加图片</button></span></span>}

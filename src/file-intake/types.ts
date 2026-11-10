@@ -1,4 +1,4 @@
-export type IntakeRequest = <T = unknown>(url: string, body?: unknown, method?: string, options?: {signal?: AbortSignal}) => Promise<T>;
+export type IntakeRequest = {<T = unknown>(url: string, body?: unknown, method?: string, options?: {signal?: AbortSignal}): Promise<T>; readonly libraryId?: string};
 export type IntakeCompletion = {id: string; updatedAt: number; projectName: string; status: 'completed' | 'partial'; completed: number; failed: number; retained: number};
 export type IntakeStatus = {supported: boolean; installed: boolean; canTrash: boolean; activeCount: number; needsAttention: number; latestCompletion: IntakeCompletion | null};
 export type IntakeFile = {id: string; name: string; bytes: number; path: string};

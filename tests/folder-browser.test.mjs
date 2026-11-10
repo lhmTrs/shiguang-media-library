@@ -7,8 +7,9 @@ import { Library } from "../server/library.mjs";
 import { AssetCategories } from "../server/music-categories.mjs";
 import { Projects } from "../server/projects.mjs";
 import { FolderBrowser } from "../server/folder-browser.mjs";
+import {classificationParent} from '../src/import-presets.mjs';
 
-async function fixture(t) {
+async function fixture(t, directoryClassification = false) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sg-folder-")));
   const source = path.join(base, "音效 素材"), other = path.join(base, "另一个目录");
   await fs.mkdir(path.join(source, "转场", "呼啸", "快速"), { recursive: true });
@@ -19,13 +20,33 @@ async function fixture(t) {
   for (const rel of ["根.wav", "转场/普通.wav", "转场/呼啸/快.wav", "转场/呼啸/快速/更快.wav", "风_%/通配.wav", "风_其他/不能匹配.wav"])
     await fs.writeFile(path.join(source, rel), "fixture:" + rel);
   await fs.writeFile(path.join(other, "转场", "另一个.wav"), "other");
-  const lib = await new Library(path.join(base, "db")).init(); lib.enqueue = () => {};
+  const lib = await new Library(path.join(base, "db"), {directoryClassification}).init(); lib.enqueue = () => {};
   const categories = new AssetCategories(lib).init(), projects = new Projects(lib).init();
   const root = await lib.addRoot(source, "sfx"), root2 = await lib.addRoot(other, "sfx");
   for (const r of [root, root2]) { const job = lib.scan(r.id); while (job.status === "running") await new Promise(r => setTimeout(r, 10)); assert.equal(job.status, "done"); }
   t.after(async () => { lib.db.close(); await fs.rm(base, { recursive: true, force: true }); });
   return { lib, categories, projects, browser: new FolderBrowser(lib), root, root2, source, base };
 }
+
+test('音乐与音效复用真实分类目录：默认根散文件待确认，待确认视图可在根目录新建分类', async t => {
+  const {lib, browser, base} = await fixture(t, true);
+  for (const kind of ['music', 'sfx']) {
+    const managed = path.join(base, 'managed-' + kind); await fs.mkdir(managed);
+    await fs.writeFile(path.join(managed, '未分类.wav'), 'synthetic audio ' + kind);
+    const root = await lib.addRoot(managed, kind);
+    const job = lib.scan(root.id); while (job.status === 'running') await new Promise(r => setTimeout(r, 10));
+    assert.equal(job.status, 'done');
+    const loose = lib.list({directoryRoot: root.id, directory: '', includeChildren: '0'}).items[0];
+    assert.equal(loose.kind, kind); assert.equal(loose.category, '待确认'); assert.equal(loose.review, 1);
+    const created = await browser.create({root: root.id, directory: classificationParent('\u0000pending'), name: '新分类'});
+    assert.equal(created.directory, '新分类');
+    assert.ok((await fs.stat(path.join(managed, '新分类'))).isDirectory());
+    assert.ok((await browser.branch({root: root.id})).children.some(c => c.name === '新分类'));
+    assert.equal(lib.asset(loose.id).review, 1, '建分类不能自动搬动或确认根目录文件');
+    assert.equal(await fs.readFile(path.join(managed, '未分类.wav'), 'utf8'), 'synthetic audio ' + kind);
+    await assert.rejects(browser.create({root: root.id, directory: '', name: '新分类'}), /存在/);
+  }
+});
 
 test("真实目录：多级、空目录、同名目录按根隔离，直接/子树范围与通配符转义", async t => {
   const { lib, browser, root, root2 } = await fixture(t);
