@@ -107,3 +107,52 @@
 规范见 `docs/storyboard-v2/初始化JSON规范.md`。推荐在新电脑先 `npm run setup`，再 `npm run portable`；默认 SQLite，不要求安装 MySQL。
 
 `npm run test:storyboard` 与 `npm run test:project-assets` 运行相关单元测试；`npm run test:storyboard:browser` 运行当前项目数据库浏览器验收；`npm run test:storyboard:mysql` 在本机现有 MySQL 8.2 二进制上创建独立临时实例验收。所有测试只使用全新合成库和临时素材，不读作者凭据、不调用付费生成。旧版单独文件工作台浏览器脚本保留为历史工具，不代表当前数据库流程。
+
+### 项目视频的废片收纳（合同 v1）
+
+废片收纳处是项目中一个真实文件夹的角色，保存唯一 `rejectFolderId`。
+它涵盖整个子树，名称不决定角色。设置、切换、取消角色均先预览再确认；
+取消只恢复普通展示，不移动文件，也不恢复旧采用。目录或其祖先成功删除时，
+角色随同元数据事务清除；取消、失败回退不能清除。
+
+以下接口均在 `/api/project-videos/projects/:id` 下，沿用原本机会话、写权限与生成锁：
+
+- `GET ?folderId=reject`：收纳子树聚合列表。未设置时为空，不创建目录。
+  `all` 默认排除废片；显式 `includeRejected=true` 才包括。
+  列表附 `folderRoles:{revision,rejectFolderId,rejectVideoCount,needsReview}`、
+  `folders[].role` 和 `videos[].inRejectArea`。计数仅查询记录，不扫描磁盘或逐视频校验。
+  `needsReview` 表示角色目录无法确认，不能按同名目录自动接管。
+- `POST /folders/reject/preview`：
+  `{requestId,expectedRolesRevision,folderId}`，`folderId:null` 表示取消；
+  或用互斥的 `create:{parentId:'root',name:'废片'}` 明确创建并设置。
+  返回 `previewHash`、`roleChange`、`affectedShots`、`adoptionStamp`。
+  `POST /folders/reject` 使用同一请求、同一预览并带 `confirmRoleChange:true`；
+  若影响采用，须带 `confirmUnbind:true` 和完整 `confirmedUnbindShotIds`。
+- `POST /operations/preview`：单个 `kind:'move-video',sourceId`；
+  批量 `kind:'move-videos',sourceIds`（1–50 个唯一 ID），共享一个 `destinationFolderId`。
+  移入收纳子树必须带 `unbindAdoptions:true,expectedRolesRevision`。
+  预览返回 `sourceUnbindShots`、`overwriteTargetUnbindShots` 及其按镜号 ID 去重的
+  `affectedShots`，各元素为 `{id,number,sourceIds}`。同名选择为 `rename/overwrite`，
+  单个冲突键为 `item`，批量键为来源 ID。同批目标重名只能改名或取消，不能互相覆盖。
+  改名后缀从 `_0` 开始。
+- `POST /operations`：固定 `requestId,previewHash,confirmUnbind:true,confirmedUnbindShotIds`。
+  新模式必须完整匹配预览并集，无采用亦传 `[]`。目录、角色、来源或采用变化时重新核对。
+- `GET /operations/:requestId` 查询原结果。批量 `items` 含 `sourceId,status,error,unboundShotIds`，
+  逐项状态为 `ready/rolled-back/failed/unknown/not-run`。整批不会返回部分提交成功：
+  全部文件移动通过后才以一个元数据事务更新路径和解除采用，失败回退已移动项。
+  `unknown` 保留现场并停止后续项，禁止换请求编号自动补做。
+
+角色设置或新批量移动若只登记了预览，查询原请求返回 `unknown`、
+`phase:'preview'`、`errorCode:'OPERATION_NOT_STARTED'` 和 `canRecover:false`。
+这表示执行尚未确认，不能显示“目录已准备”或“已移入”；GET 不会代为执行。
+
+移入只解除当时的采用，保留来源 ID、标题、备注、提示词、历史 take、镜头和对白。
+一个镜头混用多个视频时，完整解除该镜头当前采用，原片段与候选不删除。
+覆盖目标按原规则退役目标记录，不能把被移动来源误当作删除对象。
+文件夹整体移入收纳处且含已采用视频时，首版拒绝，改为选择视频并核对。
+普通移回保留当前资料，不自动恢复旧采用。本批不增加“废片永远禁止采用”的限制。
+
+目录准备和视频移动是两个独立可结清步骤，各用固定请求编号；目录已创建、视频移动失败时，
+保留已确认创建的目录，不擅自删除。预览或执行响应丢失后只查询原请求。
+角色修订使用设置行版本（缺省 0），升级旧视频保留角色，旧备份缺角色按未设置兼容。
+备份并不携带原媒体，恢复仍须核对实际目录身份。

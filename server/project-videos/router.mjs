@@ -1,17 +1,21 @@
 import express from 'express';
+import {idOK} from '../project-assets/model.mjs';
 import {fail} from '../storyboard-video/model.mjs';
 const localPeer=req=>{if(!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress))fail('DESKTOP_LOCAL_ONLY','桌面操作仅限本机连接',403);};
 const sendAction=(res,v)=>res.status(['queued','checking','running','dispatching'].includes(v.status)?202:200).json(v);
 export function projectVideoRouter(store,{sendMedia,rememberTarget=async()=>{},withActivity=fn=>fn()}={}){
  const router=express.Router(),route=(method,url,fn)=>router[method]('/projects/:projectId'+url,(req,res,next)=>{try{Promise.resolve(withActivity(()=>store.media.track(()=>fn(req,res)))).catch(next);}catch(e){next(e);}});
+ const isRejectOperation=(id,requestId)=>{store.project(id);if(!idOK(requestId))fail('INVALID_REQUEST_ID','请求编号无效');const row=store.db.prepare('SELECT * FROM project_video_operations WHERE id=? AND project_id=?').get(requestId,id);return !!row&&JSON.parse(row.data_json).kind==='set-reject-area';};
  router.use(express.json({limit:'2mb'}));router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
- route('get','',(req,res)=>store.list(req.params.projectId,{folderId:req.query.folderId||'all',checkLegacyVideos:req.query.checkLegacyVideos==='true'}).then(v=>res.json(v)));
+ route('get','',(req,res)=>store.list(req.params.projectId,{folderId:req.query.folderId||'all',includeRejected:req.query.includeRejected==='true',checkLegacyVideos:req.query.checkLegacyVideos==='true'}).then(v=>res.json(v)));
+ route('post','/folders/reject/preview',async(req,res)=>res.json(await store.rejectArea.preview(req.params.projectId,req.body)));
+ route('post','/folders/reject',async(req,res)=>res.json(await store.rejectArea.execute(req.params.projectId,req.body)));
  route('post','/folders',async(req,res)=>res.json(await store.folders.create(req.params.projectId,req.body)));
  route('post','/folders/refresh',async(req,res)=>res.json(await store.folders.refresh(req.params.projectId,req.body.folderId||'root')));
  route('post','/operations/preview',async(req,res)=>res.json(await store.fileOperations.preview(req.params.projectId,req.body)));
- route('post','/operations',async(req,res)=>res.json(await store.fileOperations.execute(req.params.projectId,req.body)));
- route('get','/operations/:requestId',(req,res)=>res.json(store.fileOperations.dto(req.params.requestId,store.fileOperations.row(req.params.projectId,req.params.requestId))));
- route('post','/operations/:requestId/recover',async(req,res)=>res.json(await store.fileOperations.recover(req.params.projectId,req.params.requestId,req.body)));
+ route('post','/operations',async(req,res)=>{if(isRejectOperation(req.params.projectId,req.body.requestId))fail('INVALID_OPERATION','请通过收纳设置接口确认原预览',409);return res.json(await store.fileOperations.execute(req.params.projectId,req.body));});
+ route('get','/operations/:requestId',(req,res)=>res.json(isRejectOperation(req.params.projectId,req.params.requestId)?store.rejectArea.dto(req.params.requestId,store.rejectArea.row(req.params.projectId,req.params.requestId)):store.fileOperations.dto(req.params.requestId,store.fileOperations.row(req.params.projectId,req.params.requestId))));
+ route('post','/operations/:requestId/recover',async(req,res)=>{if(isRejectOperation(req.params.projectId,req.params.requestId))fail('INVALID_RECOVERY','收纳设置仅可查询原回执，不自动重复创建目录',409);return res.json(await store.fileOperations.recover(req.params.projectId,req.params.requestId,req.body));});
  route('post','/imports',async(req,res)=>{const result=await store.start(req.params.projectId,req.body);try{await rememberTarget({kind:'video',scope:'project',projectId:req.params.projectId,folderId:result.folderId||'root'});}catch{/* A preference cannot undo a durable import receipt. */}res.json(result);});
  route('put','/imports/:requestId/content',async(req,res)=>res.json(await store.upload(req.params.projectId,req.params.requestId,req)));
  route('get','/imports/:requestId',(req,res)=>res.json(store.receiptDTO(store.receipt(req.params.projectId,req.params.requestId))));
