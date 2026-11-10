@@ -22,7 +22,25 @@ export interface ProjectVideo {
   adoptedShots: AdoptedShot[];
   path: string;
   bytes: number;
+  /** 合同 C：可选，旧后台不返回。metadataChanged 表示已证明只有无关元数据变化、内容一致。 */
+  verification?: VideoVerification;
 }
+
+export type VideoVerification = {
+  state: 'verified' | 'checking' | 'needs_verification' | 'content_changed';
+  match: 'file' | 'media' | null;
+  metadataChanged: boolean;
+};
+
+/** 合同 v1：列表顶层的桌面操作能力。每次执行时后台仍会重新检测，前端不把它当永久授权。 */
+export type DesktopCapability = { available: boolean; code?: string; reason?: string };
+export type ProjectVideoCapabilities = {
+  version: number;
+  maxSelection: number;
+  clipboard: DesktopCapability;
+  revealMany: DesktopCapability;
+  mediaIdentity?: DesktopCapability & { version?: string };
+};
 
 export interface ReferencePrompt {
   id: string;
@@ -65,6 +83,7 @@ export interface ProjectVideoCollection {
   legacyUpgrade: {completed: boolean; count?: number};
   canTrash: boolean;
   readOnly?: boolean;
+  capabilities?: ProjectVideoCapabilities;
 }
 
 export interface UpgradePreview {
