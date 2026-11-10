@@ -59,6 +59,13 @@ try {
   assert.equal(await work().locator('select[aria-label="生成视频所属项目"]').count(), 0, '页内不再重复项目选择');
   await expect(card('清晨远景.mp4')).toBeVisible();
 
+  await check('默认打开项目根目录：只显示根目录视频和子文件夹，子文件夹里的视频不平铺', async () => {
+    await expect(work().getByRole('button', { name: '项目根目录', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(1);
+    await expect(card('手部特写.mp4')).toHaveCount(0);
+    await expect(work().locator('.pv-folder-card')).toHaveCount(2);
+  });
+
   await check('布局：未选中时不显示详情；详情先提示词后资料，不挂播放器；页面不整体滚动', async () => {
     await expect(detail()).toHaveCount(0);
     await card('清晨远景.mp4').click(); await expect(detail()).toBeVisible();
