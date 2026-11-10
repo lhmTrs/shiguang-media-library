@@ -12,7 +12,7 @@ import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
-import {capability, isPending, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
+import {actionPending, capability, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
 import type {FolderView} from './types';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
@@ -666,7 +666,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const copyDisabledReason = !clipCap.available ? clipCap.reason : actionTargets.length > maxSelection ? `一次最多 ${maxSelection} 个` : '';
   const revealDisabledReason = actionTargets.length > 1 && !revealCap.available ? revealCap.reason : actionTargets.length > maxSelection ? `一次最多 ${maxSelection} 个` : '';
   const desktopAction = desktop.action, desktopReceipt = desktopAction?.receipt || null;
-  const desktopPending = !!desktopAction && (desktopAction.busy || isPending(desktopReceipt));
+  const desktopPending = actionPending(desktopAction);
   // 进行中或结果待核对时，不允许开始新的桌面操作（只能先查询原请求或确认收起）。
   const desktopBlocked = desktopPending || !!desktopAction?.unknown;
   const clipboardTips = '能否粘贴由剪辑软件决定。在访达中请用 ⌘V 粘贴（⌘⌥V 会把原文件移出素材库）；用 Premiere 时建议在 首选项 → 媒体 中关闭“导入时将 XMP ID 写入文件”。';
@@ -734,9 +734,11 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               {desktopAction.kind === 'clipboard'
                 ? desktopReceipt.code === 'CLIPBOARD_CHANGED' ? '剪贴板在核验期间被其他内容改变，没有覆盖。需要时请再点一次复制。'
                   : desktopReceipt.count ? `已将 ${desktopReceipt.count} 个视频文件复制到系统剪贴板。` : `没有复制：${desktopReceipt.error || '所选视频都不能复制'}。`
+                : desktopAction.kind === 'reveal-preview' ? `已核对 ${desktopReceipt.eligible?.length ?? 0} 个文件，尚未在访达中显示。`
                 : revealDispatched(desktopReceipt) ? `已请求在访达显示 ${desktopReceipt.count ?? desktopReceipt.requested?.length ?? 0} 个文件${desktopReceipt.folderCount ? `（${desktopReceipt.folderCount} 个目录）` : ''}。` : '没有打开访达：所选文件都不能定位。'}
               {!!desktopReceipt.skipped?.length && ` 跳过 ${desktopReceipt.skipped.length} 个。`}
               {desktopAction.kind === 'clipboard' && !!desktopReceipt.copied?.some(item => item.managed === false) && ' 其中包含原位置的旧视频文件。'}</span>
+              {desktopAction.kind === 'reveal-preview' && !!desktopReceipt.eligible?.length && !!desktopReceipt.previewToken && <button type="button" onClick={() => setRevealConfirm(true)}>继续确认…</button>}
               <button type="button" className="pv-banner-close" aria-label="收起提示" onClick={() => desktop.clear()}><X size={13}/></button>
               {(!!desktopReceipt.skipped?.length || desktopAction.kind === 'clipboard' && !!desktopReceipt.count) && <details className="pv-banner-details"><summary>{desktopReceipt.skipped?.length ? '查看跳过原因与说明' : '粘贴说明'}</summary>
                 {!!desktopReceipt.skipped?.length && <ul>{skippedText(desktopReceipt.skipped).map(line => <li key={line}>{line}</li>)}</ul>}
@@ -894,11 +896,11 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
       </>}
       {task?.kind === 'upgrade' && terminal(task.receipt) && <ModalActions><button type="button" onClick={() => setUpgradeOpen(false)}>返回视频列表</button>{!collection?.legacyUpgrade?.completed && <button type="button" className="pv-primary" onClick={() => { putTask(null); void previewUpgrade(); }}>重新核对剩余旧视频</button>}</ModalActions>}
     </Modal>}
-    {active && revealConfirm && <Modal title="在访达中显示所选视频" locked={false} onClose={() => setRevealConfirm(false)}>
+    {active && revealConfirm && <Modal title="在访达中显示所选视频" locked={false} onClose={() => { const a = desktopAction; if (a?.kind === 'reveal-preview' && !actionPending(a) && !a.unknown) desktop.clear(); setRevealConfirm(false); }}>
       {(() => {
         const a = desktopAction, r = desktopReceipt;
         if (!a) return <p className="pv-muted">没有进行中的核对。</p>;
-        if (a.busy || isPending(r)) return <div className="pv-task" role="status"><strong>{a.kind === 'reveal' ? '正在请求访达显示…' : `正在核对所选 ${a.ids.length} 个视频…`}</strong>{!!r?.total && <progress value={r.processed || 0} max={r.total}/>}<p className="pv-muted">关闭窗口不会取消，结果会显示在页面顶部。</p></div>;
+        if (actionPending(a)) return <div className="pv-task" role="status"><strong>{a.kind === 'reveal' ? '正在请求访达显示…' : `正在核对所选 ${a.ids.length} 个视频…`}</strong>{!!r?.total && <progress value={r.processed || 0} max={r.total}/>}<p className="pv-muted">关闭窗口不会取消，结果会显示在页面顶部。</p></div>;
         if (a.unknown) return <div className="pv-task" role="status"><strong>结果待核对</strong><p>{a.error || r?.error}</p><code>{a.requestId}</code><ModalActions><button type="button" onClick={() => { desktop.clear(true); setRevealConfirm(false); }}>已核对，关闭</button><button type="button" className="pv-primary" onClick={() => void desktop.query()}>查询原请求</button></ModalActions></div>;
         if (a.error) return <><p className="pv-error" role="alert">{a.code === 'PREVIEW_STALE' ? '所选文件在核对之后发生了变化，没有打开访达。请重新核对。' : a.error}</p>
           <ModalActions><button type="button" onClick={() => { desktop.clear(); setRevealConfirm(false); }}>关闭</button>{a.kind === 'reveal' || a.code === 'PREVIEW_STALE' ? <button type="button" className="pv-primary" onClick={() => { const ids = a.ids; desktop.clear(); void desktop.start('reveal-preview', ids); }}>重新核对</button> : null}</ModalActions></>;

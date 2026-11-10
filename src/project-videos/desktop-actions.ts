@@ -26,6 +26,8 @@ export type DesktopAction = {
 
 const pendingStatuses: DesktopStatus[] = ['queued', 'checking', 'dispatching'];
 export const isPending = (r: DesktopReceipt | null) => !!r && pendingStatuses.includes(r.status);
+/** 真正“处理中”：正在请求，或最近一次回执是进行中且之后没有出现待核对/错误。查询失败后旧的进行中回执不再算处理中。 */
+export const actionPending = (a: DesktopAction | null) => !!a && (a.busy || isPending(a.receipt) && !a.unknown && !a.error);
 const terminalReceipt = (r: DesktopReceipt | null) => !!r && !pendingStatuses.includes(r.status);
 const errorStatus = (e: unknown) => (e as { status?: number }).status;
 const errorCode = (e: unknown) => String((e as { code?: string }).code || '');
@@ -63,7 +65,7 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
   };
 
   async function start(kind: DesktopActionKind, ids: string[], extra: Record<string, unknown> = {}) {
-    if (ref.current && (ref.current.busy || isPending(ref.current.receipt) || ref.current.unknown)) return null;
+    if (ref.current && (actionPending(ref.current) || ref.current.unknown)) return null;
     const requestId = crypto.randomUUID(), frozen = requestRef.current;
     put({ kind, requestId, projectId, ids, receipt: null, busy: true, unknown: false, error: '', code: '' });
     const path = kind === 'clipboard' ? '/videos/clipboard' : kind === 'reveal-preview' ? '/videos/reveal/preview' : '/videos/reveal';
@@ -72,14 +74,17 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
     return requestId;
   }
 
-  /** 只读查询原请求；任何情况下都不重新提交。 */
+  /** 只读查询原请求；任何情况下都不重新提交。查询本身失败（断网、404、500）只说明“读不到结果”，不代表原操作没有执行：一律记为待核对。 */
   async function query() {
     const current = ref.current; if (!current || current.busy) return;
     update(current.requestId, { busy: true });
     try { accept(current.requestId, await requestRef.current<DesktopReceipt>(base + `/desktop-actions/${encodeURIComponent(current.requestId)}`)); }
     catch (e) {
-      if (errorStatus(e) === 404) update(current.requestId, { busy: false, unknown: true, error: '后台没有找到这笔请求的回执；它可能没有被接收。请核对结果后再决定是否重新操作，不会自动重发。', code: errorCode(e) });
-      else fail(current.requestId, e);
+      const status = errorStatus(e);
+      const text = status === 404 ? '后台暂时没有找到这笔请求的回执。原操作可能还没登记，也可能已经执行，请稍后再查询原请求；不会自动重发。'
+        : status ? `查询原请求失败（${status}）：${message(e)}。原操作可能仍在进行或已经完成，请再次查询；不会自动重发。`
+        : `查询原请求时连接中断：${message(e)}。原操作可能仍在进行或已经完成，请再次查询；不会自动重发。`;
+      update(current.requestId, { busy: false, unknown: true, error: text, code: errorCode(e) });
     }
   }
 
@@ -92,7 +97,7 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
   }, [action]);
 
   /** 收起结果。结果待核对时只有用户明确表示“已核对”（force）才收起；进行中的请求不能收起。 */
-  const clear = (force = false) => { const c = ref.current; if (!c || c.busy || isPending(c.receipt) || c.unknown && !force) return; put(null); };
+  const clear = (force = false) => { const c = ref.current; if (!c || actionPending(c) || c.unknown && !force) return; put(null); };
   const settled = !action || (!action.busy && !action.unknown && (terminalReceipt(action.receipt) || !!action.error));
   return { action, start, query, clear, settled };
 }

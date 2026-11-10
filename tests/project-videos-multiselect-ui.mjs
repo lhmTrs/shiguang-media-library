@@ -41,7 +41,7 @@ const banner = () => work().locator('.pv-desktop-banner');
 const modal = () => page.locator('.pv-modal');
 
 // ---- 合同 v1 模拟 ----
-const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, asyncStaleReveal: false, asyncFailClipboard: false, singleReveal: 0 };
+const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, asyncStaleReveal: false, asyncFailClipboard: false, previewAsync: false, getFailures: [], gets: 0, singleReveal: 0 };
 async function installMocks() {
   await page.route(url => /\/api\/project-videos\/projects\/[^/]+$/.test(url.pathname), async route => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -57,11 +57,16 @@ async function installMocks() {
     await route.fulfill({ status: 202, json: { requestId: body.requestId, projectId, action: 'clipboard', status: 'checking', processed: 0, total: all.length } });
   });
   await page.route('**/api/project-videos/projects/*/desktop-actions/*', async route => {
-    const id = decodeURIComponent(route.request().url().split('/').pop()); const r = mock.receipts.get(id);
+    const id = decodeURIComponent(route.request().url().split('/').pop()); const r = mock.receipts.get(id); mock.gets++;
+    const failure = mock.getFailures.shift();
+    if (failure === 'abort') return route.abort('failed');
+    if (failure) return route.fulfill({ status: failure, json: { error: failure === 404 ? '没有这笔请求' : '服务器内部错误', code: failure === 404 ? 'NOT_FOUND' : 'INTERNAL' } });
     await route.fulfill(r ? { json: r } : { status: 404, json: { error: '没有这笔请求', code: 'NOT_FOUND' } });
   });
   await page.route('**/api/project-videos/projects/*/videos/reveal/preview', async route => {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'reveal-preview', body });
+    const done = { requestId: body.requestId, projectId, action: 'reveal-preview', status: 'completed', previewToken: 'tok-' + body.requestId.slice(0, 6), expiresAt: Date.now() + 120000, eligible: body.ids.map(id => ({ id, name: id, managed: true })), skipped: [], folderCount: 1, folders: [{ key: 'a', label: '项目根目录', count: body.ids.length }] };
+    if (mock.previewAsync) { mock.receipts.set(body.requestId, done); return route.fulfill({ status: 202, json: { requestId: body.requestId, projectId, action: 'reveal-preview', status: 'checking', processed: 0, total: body.ids.length } }); }
     await route.fulfill({ json: { requestId: body.requestId, projectId, status: 'completed', previewToken: 'tok-' + body.requestId.slice(0, 6), expiresAt: Date.now() + 120000, eligible: body.ids.map(id => ({ id, name: id, managed: true })), skipped: [], folderCount: 2, folders: [{ key: 'a', label: '项目根目录', count: body.ids.length - 1 }, { key: 'b', label: '第一场', count: 1 }] } });
   });
   await page.route('**/api/project-videos/projects/*/videos/reveal', async route => {
@@ -177,6 +182,39 @@ try {
     mock.asyncFailClipboard = true; await bar().getByRole('button', { name: '复制' }).click();
     await expect(banner()).toContainText('所选视频都不能复制'); await expect(banner()).not.toContainText('已将');
     await banner().getByRole('button', { name: '收起提示' }).click(); await expect(banner()).toHaveCount(0);
+  });
+
+  for (const failure of ['abort', 404, 500]) await check(`复制：202 后查询原请求失败（${failure}）→ 显示待核对与查询按钮，不卡在处理中、不重发`, async () => {
+    const posts0 = posts('clipboard').length; mock.getFailures = [failure];
+    await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await bar().getByRole('button', { name: '复制' }).click();
+    await expect(banner()).toContainText('结果待核对'); await expect(banner().getByRole('button', { name: '查询原请求' })).toBeVisible();
+    await expect(banner()).not.toContainText('正在核验并复制');
+    const gets = mock.gets; await page.waitForTimeout(2600); assert.equal(mock.gets, gets, '查询失败后不应继续自动轮询');
+    await expect(bar().getByRole('button', { name: '复制' })).toBeDisabled();
+    await banner().getByRole('button', { name: '查询原请求' }).click(); await expect(banner()).toContainText('已将 1 个视频文件复制到系统剪贴板');
+    assert.equal(posts('clipboard').length, posts0 + 1, '整个过程只提交一次');
+    await banner().getByRole('button', { name: '收起提示' }).click(); await expect(banner()).toHaveCount(0);
+  });
+
+  await check('批量核对：202 后查询失败 → 弹窗显示待核对与查询按钮；查询成功后可继续确认', async () => {
+    const pre0 = posts('reveal-preview').length; mock.previewAsync = true; mock.getFailures = [500];
+    await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await bar().getByRole('button', { name: '在访达中显示' }).click();
+    await expect(modal()).toContainText('结果待核对'); await expect(modal().getByRole('button', { name: '查询原请求' })).toBeVisible();
+    await modal().getByRole('button', { name: '查询原请求' }).click(); await expect(modal()).toContainText(/将在 \d+ 个目录中定位 2 个文件/);
+    assert.equal(posts('reveal-preview').length, pre0 + 1, '核对只提交一次'); mock.previewAsync = false;
+    await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0); await expect(banner()).toHaveCount(0);
+  });
+
+  await check('核对完成后用 ✕ 关闭：不显示“没有打开访达”，也不派发；核对中关闭，完成后可继续确认', async () => {
+    const run0 = posts('reveal').length;
+    await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await bar().getByRole('button', { name: '在访达中显示' }).click();
+    await expect(modal()).toContainText(/将在 \d+ 个目录中定位/); await modal().getByRole('button', { name: '关闭' }).first().click();
+    await expect(modal()).toHaveCount(0); await expect(work()).not.toContainText('没有打开访达'); assert.equal(posts('reveal').length, run0);
+    mock.previewAsync = true; await bar().getByRole('button', { name: '在访达中显示' }).click(); await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
+    await expect(banner()).toContainText('已核对 2 个文件，尚未在访达中显示'); await expect(work()).not.toContainText('没有打开访达');
+    mock.previewAsync = false; await banner().getByRole('button', { name: '继续确认…' }).click();
+    await modal().getByRole('button', { name: /在访达中定位 2 个文件/ }).click(); await expect(modal()).toContainText('已请求在访达显示 2 个文件');
+    assert.equal(posts('reveal').length, run0 + 1); await modal().getByRole('button', { name: '完成' }).click();
   });
 
   await check('能力不可用时禁用复制并说明原因；切到别的目录后多选被清除', async () => {
