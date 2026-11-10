@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
+import path from 'node:path';
 import {Receipts,uuid,stamp,same,unchanged,revalidateSelection,error} from './files.mjs';
 
 const stable = value => JSON.stringify(value);
@@ -9,13 +10,13 @@ const pending = new Set(['queued','copying','duplicate','unknown']);
 const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
 const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copiedBytes||0,status:i.status,
   error:i.error,code:i.code,videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
-  managedProjectName:i.managedProjectName,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
+  managedProjectName:i.managedProjectName,destination:i.destination,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
 
 export class FileIntake {
-  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir}) {
-    this.receipts=new Receipts(dataDir);this.catalog=catalog;this.projects=projects;
+  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir,generic,preferences}) {
+    this.generic=generic;this.preferences=preferences;this.receipts=new Receipts(dataDir);this.catalog=catalog;this.projects=projects;
     this.withActivity=withActivity;this.trash=trash||((file,expected)=>this.boundTrash(file,expected));
-    this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.closing=false;this.finalizing=new Set();
+    this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.foreignIds=new Set();this.closing=false;this.finalizing=new Set();
     this.operation=Promise.resolve();this.writes=Promise.resolve();this.work=null;this.instance=randomUUID();this.timer=null;this.libraryId=libraryId;
   }
   async init() {
@@ -27,6 +28,9 @@ export class FileIntake {
           items:[{id:b.id,name:'文件任务回执不可读',bytes:0,status:'unknown',error:'原回执保留，未自动重发或移除原文件'}]};
         this.batches.set(b.id,b);continue;
       }
+      // A shared journal location does not make another library's receipts ours.
+      // Leave foreign bytes untouched and out of the active library's task list.
+      if(b.libraryId!==this.libraryId){this.foreignIds.add(b.id);continue;}
       let removalInterrupted=false;
       for(const i of b.items)if(b.mode==='move'&&i.status==='ready'&&i.removal!=='complete') {
         i.status=i.removal==='planned'?'unknown':'source_retained';
@@ -51,15 +55,15 @@ export class FileIntake {
   serial(fn) {const work=this.operation.then(fn);this.operation=work.catch(()=>{});return work;}
   assertOpen(){if(this.initializationError)throw this.initializationError;if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，已确认的文件任务保留',503);}
   assertLibrary(b){if(b.invalid)throw error('INTAKE_RECEIPT_INVALID','文件任务回执不可读，原件与原回执保留，不能自动继续');if(b.libraryId!==this.libraryId)throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库实例，未继续或移除原文件');}
-  resultKey(b) {return createHash('sha256').update(stable({libraryId:b.libraryId,projectId:b.projectId,folderId:b.folderId,mode:b.mode,status:b.status,
+  resultKey(b) {return createHash('sha256').update(stable({libraryId:b.libraryId,projectId:b.projectId,folderId:b.folderId,targets:b.version===2?b.items.map(i=>[i.id,i.destination]):undefined,mode:b.mode,status:b.status,
     items:b.items.map(i=>[i.id,i.status,i.requestId,i.code,i.error,i.videoId,i.assetId,i.copiedBytes,i.removal])})).digest('hex');}
   canAcknowledge(b) {return !b.invalid&&b.libraryId===this.libraryId&&['completed','partial','interrupted'].includes(b.status)&&b.items.length>0&&
     b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
   acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
-  dto(b) {return {id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
+  dto(b) {return {version:b.version,id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
     mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
     canAcknowledge:this.canAcknowledge(b),acknowledged:this.acknowledged(b),acknowledgedAt:this.acknowledged(b)?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
-  batch(id) {if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
+  batch(id) {if(this.foreignIds.has(id))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
   list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
   status(){const all=[...this.batches.values()],items=all.flatMap(b=>b.items);
     const last=all.filter(b=>['completed','partial'].includes(b.status)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];return {
@@ -86,25 +90,26 @@ export class FileIntake {
   async handoff(id) {
     const h=await this.receipts.read('handoffs',id);
     const b=[...this.batches.values()].find(b=>b.handoffId===id);
-    return {id:h.id,files:h.files.map(({id,name,bytes,path})=>({id,name,bytes,path})),
+    return {id:h.id,files:h.files.map(({id,name,bytes,path,mediaKind})=>({id,name,bytes,path,mediaKind:mediaKind||'video'})),
       projects:this.projects.list().filter(p=>!p.archived).map(({id,name})=>({id,name})),canTrash:this.canTrash,batchId:b?.id,
-      preparation:h.preparation,preparationError:h.preparationError};
+      preparation:h.preparation,preparationError:h.preparationError,preferences:this.preferences?.snapshot(this.projects.list()).targets};
   }
   async folders(projectId) {
     this.catalog.project(projectId);
     return {folders:[{id:'root',name:'项目根目录',relativePath:''},...this.catalog.folders.rows(projectId).map(({id,name,relativePath})=>({id,name,relativePath}))]};
   }
-  async confirm(handoffId,input) {return this.serial(async()=>{
+  async confirm(handoffId,input) {if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input));return this.serial(async()=>{
     this.assertOpen();
     if(!uuid(input.requestId)||!uuid(input.projectId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length)
       throw error('INTAKE_INVALID_INPUT','请选择视频、项目、目标文件夹与收纳方式',400);
     if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE','废纸篓组件不可用；请使用保留原文件的复制方式');
     const h=await this.receipts.read('handoffs',handoffId), ids=[...new Set(input.fileIds)];
     if(ids.length!==input.fileIds.length||ids.some(id=>!h.files.some(f=>f.id===id)))throw error('INTAKE_INVALID_INPUT','所选文件不属于这次访达选择',400);
+    if(h.files.some(f=>ids.includes(f.id)&&(f.mediaKind||'video')!=='video'))throw error('INTAKE_INVALID_INPUT','旧版入口只处理视频，请升级入口后确认其他素材',400);
     const args=stable({handoffId,projectId:input.projectId,folderId:input.folderId||'root',mode:input.mode,fileIds:ids});
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
-    if(h.preparation==='checking')throw error('INTAKE_SELECTION_CHECKING','正在后台核验原视频，完成后即可确认收纳',422);
+    if(h.preparation==='checking')throw error('INTAKE_SELECTION_CHECKING','正在后台核验原文件，完成后即可确认收纳',422);
     if(h.preparation==='failed')throw error('INTAKE_SELECTION_FAILED',h.preparationError,422);
     if(h.preparation==='ready'&&h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_FAILED','本次选择的内容证明不完整，请从访达重新选择',422);
     const project=this.catalog.project(input.projectId,true), target=await this.catalog.prepare(input.projectId,input.folderId||'root');
@@ -112,8 +117,45 @@ export class FileIntake {
     const b={id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:project.id,projectName:project.name,folderId:input.folderId||'root',
       folderName:folder?.relativePath||'项目根目录',target,mode:input.mode,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',
       items:h.files.filter(f=>ids.includes(f.id)).map(f=>({...f,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0}))};
-    await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);this.kick();return this.dto(b);
+    await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);await this.rememberTargets([{kind:'video',scope:'project',projectId:b.projectId,folderId:b.folderId}]);this.kick();return this.dto(b);
   });}
+  async rememberTargets(targets){try{await this.preferences?.remember(targets);}catch{this.preferenceWarning='目标偏好未能保存，下次请重新选择；任务已接收';}}
+  context(b,i){
+    if(b.version!==2)return {catalog:this.catalog,projectId:b.projectId,target:b.target,folderId:b.folderId};
+    const d=i.destination;
+    return {catalog:d.scope==='project'&&d.kind==='video'?this.catalog:this.generic.bind(d,i.target),projectId:d.projectId||'',target:i.target,folderId:d.folderId||'root'};
+  }
+  async confirmUnified(handoffId,input){
+    let acceptanceStarted=false;try{
+    this.assertOpen();
+    if(!this.generic||!uuid(input.requestId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length||!Array.isArray(input.targets)||input.targets.length!==input.fileIds.length)
+      throw error('INTAKE_INVALID_INPUT','请逐项确认素材类型与收纳目标',400);
+    if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE','废纸篓组件不可用，请使用复制方式');
+    const h=await this.receipts.read('handoffs',handoffId),ids=[...new Set(input.fileIds)];
+    if(ids.length!==input.fileIds.length||new Set(input.targets.map(t=>t.fileId)).size!==ids.length||ids.some(id=>!h.files.some(f=>f.id===id)||!input.targets.some(t=>t.fileId===id)))throw error('INTAKE_INVALID_INPUT','文件清单与目标不匹配',400);
+    const args=stable({version:2,handoffId,mode:input.mode,fileIds:ids,targets:input.targets});
+    const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
+    if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
+    if(h.preparation!=='ready'||h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_CHECKING','原文件内容核验尚未完成，请稍候或重新选择',422);
+    const items=[],sharedImages=new Map();
+    // Keep the confirmed list order: the first successful image only supplies a
+    // default where the destination still has no representative image.
+    for(const id of ids){const f=h.files.find(f=>f.id===id),destination=structuredClone(input.targets.find(t=>t.fileId===id).destination);
+      const kind=f.mediaKind||'video';
+      if(!destination||!(kind==='audio'?['music','sfx'].includes(destination.kind):kind===destination.kind)||!['library','project'].includes(destination.scope))throw error('INTAKE_TYPE_MISMATCH','文件类型与目标不一致，未开始任何收纳',400);
+      if(destination.fileName&&(typeof destination.fileName!=='string'||path.basename(destination.fileName)!==destination.fileName||/[\\/\x00-\x1f]/.test(destination.fileName)||path.extname(destination.fileName).toLowerCase()!==path.extname(f.name).toLowerCase()))throw error('INTAKE_INVALID_INPUT','只可修改副本名称，请保留原扩展名',400);
+      let target,label;
+      if(destination.scope==='project'&&destination.kind==='video'){
+        const p=this.catalog.project(destination.projectId,true);destination.folderId??='root';target=await this.catalog.prepare(p.id,destination.folderId);
+        const folder=(await this.folders(p.id)).folders.find(v=>v.id===destination.folderId);if(!folder)throw error('TARGET_CHANGED','目标文件夹不存在');label=p.name+' / '+(folder.relativePath||'项目根目录');
+      }else{target=await this.generic.prepare(destination,{sharedImages,requestGroupId:input.requestId});label=target.label||({photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'}[destination.kind]+' / '+(destination.directory||'待确认'));}
+      items.push({...f,destination,target,destinationLabel:label,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0});
+    }
+    const labels=[...new Set(items.map(i=>i.destinationLabel))],projectIds=[...new Set(items.map(i=>i.destination.projectId||''))];
+    const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items};
+    acceptanceStarted=true;await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);await this.rememberTargets(items.map(i=>i.destination));this.kick();return this.dto(b);
+    }catch(e){if(!acceptanceStarted)Object.assign(e,{accepted:false,requestId:input.requestId});throw e;}
+  }
   summarize(b) {
     if(b.items.some(i=>i.status==='copying'))b.status='running';
     else if(b.items.some(i=>i.status==='queued'))b.status='queued';
@@ -143,9 +185,9 @@ export class FileIntake {
         this.timer=setTimeout(()=>this.kick(),1000);
     });
   }
-  async managed(i) {
+  async managed(i,kind) {
     const asset=this.catalog.db.prepare('SELECT * FROM assets WHERE path=? AND trashed=0').get(i.path);
-    if(!asset||String(asset.dev)!==i.identity.dev||String(asset.ino)!==i.identity.ino||asset.size!==i.bytes||asset.mtime!==i.identity.mtimeMs)return false;
+    if(!asset||(kind&&asset.kind!==kind)||String(asset.dev)!==i.identity.dev||String(asset.ino)!==i.identity.ino||asset.size!==i.bytes||asset.mtime!==i.identity.mtimeMs)return false;
     for(const r of this.catalog.db.prepare('SELECT * FROM project_video_records').all()) {
       const d=JSON.parse(r.data_json);
       if(d.removedAt||!d.managed||d.mediaAssetId!==asset.id)continue;
@@ -157,62 +199,64 @@ export class FileIntake {
   }
   applyReceipt(i,r) {
     i.error=r.error||undefined;i.adoptionStamp=r.adoptionStamp;i.candidates=r.candidates;
-    if(r.status==='ready'){i.status='ready';i.videoId=r.videoId;i.copiedBytes=i.bytes;}
+    if(r.status==='ready'){i.status='ready';i.videoId=r.videoId;i.assetId=r.assetId;i.creativeAssetId=r.creativeAssetId;i.lookId=r.lookId;i.bindingId=r.bindingId;i.copiedBytes=i.bytes;}
     else if(r.status==='duplicate')i.status='duplicate';
     else if(r.status==='failed'){i.status='failed';i.error=r.error;}
     else i.status='unknown';
   }
   async process(b,i) {
-    this.assertOpen();this.assertLibrary(b);await this.catalog.current(b.projectId,b.target);
+    const {catalog,projectId,target,folderId}=this.context(b,i);
+    this.assertOpen();this.assertLibrary(b);await catalog.current(projectId,target);
     const currentIdentity=await revalidateSelection(i);
     if(!same(currentIdentity,i.identity)){i.selectionIdentity??={...i.identity};i.identity=currentIdentity;await this.save(b);}
-    if(await this.managed(i))return;
-    const args={requestId:i.requestId,fileName:i.name,bytes:i.bytes,prompt:{mode:'none'},folderId:b.folderId};
-    const started=await this.catalog.startIntake(b.projectId,args,b.target);
+    if((b.version!==2||i.destination.scope==='library')&&await this.managed(i,i.destination?.kind))return;
+    const args={requestId:i.requestId,fileName:i.destination?.fileName||i.name,bytes:i.bytes,prompt:{mode:'none'},folderId};
+    const started=await catalog.startIntake(projectId,args,target);
     if(started.status!=='waiting') {this.applyReceipt(i,started);return;}
     i.status='copying';b.status='running';i.error=undefined;i.copiedBytes=0;await this.save(b);
     let handle;
     try {handle=await fs.open(i.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}
-    catch(e){await this.catalog.resolve(b.projectId,i.requestId,{choice:'cancel'});throw e;}
+    catch(e){await catalog.resolve(projectId,i.requestId,{choice:'cancel'});throw e;}
     const self=this;
     const hash=createHash('sha256');let lastSaved=0;
     async function* content() {
-      if(!same(stamp(await handle.stat()),i.identity))throw error('INTAKE_SOURCE_CHANGED','原视频已变化');
+      if(!same(stamp(await handle.stat()),i.identity))throw error('INTAKE_SOURCE_CHANGED','原文件已变化');
       for await(const chunk of handle.createReadStream({autoClose:false})) {
         self.assertOpen();i.copiedBytes+=chunk.length;hash.update(chunk);
         if(Date.now()-lastSaved>500){await self.save(b);lastSaved=Date.now();}
         yield chunk;
       }
-      if(!same(stamp(await handle.stat()),i.identity))throw error('INTAKE_SOURCE_CHANGED','复制期间原视频发生变化，未移除原文件');
+      if(!same(stamp(await handle.stat()),i.identity))throw error('INTAKE_SOURCE_CHANGED','复制期间原文件发生变化，未移除原文件');
       await unchanged(i.path,i.identity);
-      if(i.selectionSha256&&hash.copy().digest('hex')!==i.selectionSha256)throw error('INTAKE_SOURCE_CHANGED','原视频内容与选择时不同，未发布或移除原文件');
+      if(i.selectionSha256&&hash.copy().digest('hex')!==i.selectionSha256)throw error('INTAKE_SOURCE_CHANGED','原文件内容与选择时不同，未发布或移除原文件');
     }
     try {
-      const r=await this.catalog.upload(b.projectId,i.requestId,content());i.sha256=hash.digest('hex');this.applyReceipt(i,r);
+      const r=await catalog.upload(projectId,i.requestId,content());i.sha256=hash.digest('hex');this.applyReceipt(i,r);
       await this.save(b);
       if(i.status==='ready')await this.completeReady(b,i);
-      else if(i.status==='duplicate'&&b.defaultChoice&&b.items.indexOf(i)>(b.defaultChoiceAfter??-1)) {
+      else if(i.status==='duplicate'&&b.defaultChoice&&b.items.indexOf(i)>(b.defaultChoiceAfter??-1)&&stable(i.destination)===b.defaultChoiceDestination) {
         const candidate=i.candidates?.[0];
         const choice=b.defaultChoice;
         if(choice==='import'||choice==='reuse'&&i.candidates?.length===1) {
-          const result=await this.catalog.resolve(b.projectId,i.requestId,{choice,candidateId:candidate?.id});
+          const result=await catalog.resolve(projectId,i.requestId,{choice,candidateId:candidate?.id});
           this.applyReceipt(i,result);if(i.status==='ready')await this.completeReady(b,i);
         }
       }
     } catch(e) {
-      const r=this.catalog.receipt(b.projectId,i.requestId);
+      const r=catalog.receipt(projectId,i.requestId);
       if(r.published||r.status==='unknown'){i.status='unknown';i.error='文件可能已复制，需核对原回执；未重发或移除原文件';}
       throw e;
     } finally {await handle.close();}
   }
   async completeReady(b,i) {
+    const {catalog,projectId,target,folderId}=this.context(b,i);
     // Only this instance's durable ready intake stages qualify for removal.
     // A retained stage is a visible housekeeping warning, never a failed import.
     this.finalizing.add(i.id);
-    try{return await this.withActivity(()=>this.catalog.media.track(async()=>{
+    try{return await this.withActivity(()=>catalog.media.track(async()=>{
       let warning;
-      try{await this.catalog.cleanupIntakeStage(b.projectId,i.requestId);}
-      catch(e){warning='视频已收纳；临时副本保留待核对：'+e.message;i.error=warning;}
+      try{await catalog.cleanupIntakeStage(projectId,i.requestId);}
+      catch(e){warning='素材已收纳；临时副本保留待核对：'+e.message;i.error=warning;}
       await this.finishMove(b,i);
       if(warning&&i.status==='ready')i.error=warning;
     }));}finally{this.finalizing.delete(i.id);}
@@ -230,19 +274,21 @@ export class FileIntake {
     }finally{this.catalog.media.children.delete(child);this.catalog.media.exits.delete(child);}
   }
   async finishMove(b,i) {
+    const {catalog,projectId,target,folderId}=this.context(b,i);
     if(b.mode!=='move'||i.status!=='ready')return;
     // A durable successful registration is required before even considering the
     // source. Reuse/managed files and files indexed during copying are retained.
     try {
-      const raw=this.catalog.receipt(b.projectId,i.requestId);
-      const source=await this.catalog.verifiedSource(b.projectId,i.videoId);
+      const raw=catalog.receipt(projectId,i.requestId);
+      if(raw.reused){i.status='source_retained';i.error='已收纳，原文件未移除：复用了已有素材';return;}
+      const source=await catalog.verifiedSource(projectId,i.videoId||i.assetId);
       if(raw.status!=='ready'||source.path===i.path) {i.status='source_retained';i.error='已收纳，原文件未移除：采用的是同一已管理文件';return;}
       await unchanged(i.path,i.identity);
-      if(this.catalog.db.prepare('SELECT id FROM assets WHERE path=? AND trashed=0').get(i.path))throw error('SOURCE_MANAGED','原文件已被素材库管理，请使用素材库移动入口');
-      const d=await this.catalog.hash(source.path,source.identity);
+      if(catalog.db.prepare('SELECT id FROM assets WHERE path=? AND trashed=0').get(i.path))throw error('SOURCE_MANAGED','原文件已被素材库管理，请使用素材库移动入口');
+      const d=await catalog.hash(source.path,source.identity);
       if(!i.sha256||d.hash!==i.sha256)throw error('INTAKE_COPY_UNVERIFIED','目标不是已完整校验的原文件副本');
       await unchanged(i.path,i.identity);this.assertOpen();
-      i.removal='planned';await this.save(b);await this.catalog.media.verify(source);
+      i.removal='planned';await this.save(b);await catalog.media.verify(source);
       await unchanged(i.path,i.identity);
       if(!i.parentIdentity)throw error('INTAKE_SOURCE_UNBOUND','原文件夹身份未固定，原件保留');
       const target=await this.trash(i.path,{identity:i.identity,parent:i.parentIdentity,sha256:i.sha256});i.trashPath=target;await this.save(b);
@@ -263,27 +309,29 @@ export class FileIntake {
     this.assertOpen();const b=this.batch(id);this.assertLibrary(b);const i=b.items.find(i=>i.id===itemId);
     if(!i||i.status!=='duplicate')throw error('INTAKE_ITEM_NOT_WAITING','原文件任务状态已变化，请重新读取');
     if(!['import','rename','reuse','overwrite','cancel'].includes(input.choice))throw error('INVALID_CHOICE','请选择同名处理方式',400);
-    if(input.choice!=='cancel')await this.catalog.current(b.projectId,b.target);
+    const {catalog,projectId,target}=this.context(b,i);
+    if(input.choice!=='cancel')await catalog.current(projectId,target);
     try {
-      const r=await this.withActivity(()=>this.catalog.media.track(()=>this.catalog.resolve(b.projectId,i.requestId,input)));
+      const r=await this.withActivity(()=>catalog.media.track(()=>catalog.resolve(projectId,i.requestId,input)));
       this.applyReceipt(i,r);
       if(input.choice==='cancel')i.status='cancelled';
       if(input.applyRemaining&&['import','rename','reuse'].includes(input.choice)) {
-        b.defaultChoice=input.choice==='rename'?'import':input.choice;b.defaultChoiceAfter=b.items.indexOf(i);
+        b.defaultChoice=input.choice==='rename'?'import':input.choice;b.defaultChoiceDestination=stable(i.destination);b.defaultChoiceAfter=b.items.indexOf(i);
         // Small files may all reach the duplicate state before the user chooses.
         // Apply the explicit decision to later waiting items as well as new ones.
-        for(const next of b.items.slice(b.defaultChoiceAfter+1))if(next.status==='duplicate') {
+        for(const next of b.items.slice(b.defaultChoiceAfter+1))if(next.status==='duplicate'&&stable(next.destination)===stable(i.destination)) {
+          const {catalog,projectId}=this.context(b,next);
           if(b.defaultChoice==='reuse'&&next.candidates?.length!==1){next.error='存在多个同名候选，请逐项核对后复用';continue;}
           try {
-            const candidate=next.candidates?.[0],result=await this.withActivity(()=>this.catalog.media.track(()=>
-              this.catalog.resolve(b.projectId,next.requestId,{choice:b.defaultChoice,candidateId:candidate?.id})));
+            const candidate=next.candidates?.[0],result=await this.withActivity(()=>catalog.media.track(()=>
+              catalog.resolve(projectId,next.requestId,{choice:b.defaultChoice,candidateId:candidate?.id})));
             this.applyReceipt(next,result);if(next.status==='ready')await this.completeReady(b,next);
-          }catch(e){this.applyReceipt(next,this.catalog.receiptDTO(this.catalog.receipt(b.projectId,next.requestId)));next.error=e.message;}
+          }catch(e){this.applyReceipt(next,catalog.receiptDTO(catalog.receipt(projectId,next.requestId)));next.error=e.message;}
           await this.save(b);
         }
       }
       if(i.status==='ready')await this.completeReady(b,i);
-    } catch(e) {this.applyReceipt(i,this.catalog.receiptDTO(this.catalog.receipt(b.projectId,i.requestId)));throw e;}
+    } catch(e) {this.applyReceipt(i,catalog.receiptDTO(catalog.receipt(projectId,i.requestId)));throw e;}
     finally {this.summarize(b);await this.save(b);this.kick();}
     return this.dto(b);
   });}
@@ -291,14 +339,15 @@ export class FileIntake {
     const b=this.batch(id);this.assertLibrary(b);
     for(const i of b.items) {
       if(!['unknown','duplicate'].includes(i.status))continue;
-      let r;try{r=this.catalog.receipt(b.projectId,i.requestId);}catch(e){if(e.code!=='IMPORT_NOT_FOUND')continue;}
+      const {catalog,projectId}=this.context(b,i);
+      let r;try{r=catalog.receipt(projectId,i.requestId);}catch(e){if(e.code!=='IMPORT_NOT_FOUND')continue;}
       if(!r){i.code='INTAKE_NOT_STARTED';i.error='原导入未被接收，可明确重试；原文件保留';i.status='failed';continue;}
       if(r.status==='ready') {
-        this.applyReceipt(i,this.catalog.receiptDTO(r));
+        this.applyReceipt(i,catalog.receiptDTO(r));
         if(b.mode==='move'&&i.removal!=='complete'){i.status='source_retained';i.error='已核对原收纳成功；中断后的原文件保留，不自动移除';}
-      } else if(r.status==='duplicate')this.applyReceipt(i,this.catalog.receiptDTO(r));
-      else if(r.status==='failed'&&!r.published){this.applyReceipt(i,this.catalog.receiptDTO(r));}
-      else if(r.status==='waiting'&&r.instance!==this.catalog.instance&&!this.catalog.running.has(i.requestId)){
+      } else if(r.status==='duplicate')this.applyReceipt(i,catalog.receiptDTO(r));
+      else if(r.status==='failed'&&!r.published){this.applyReceipt(i,catalog.receiptDTO(r));}
+      else if(r.status==='waiting'&&r.instance!==catalog.instance&&!catalog.running.has(i.requestId)){
         i.status='failed';i.code='INTAKE_NOT_STARTED';i.error='原回执确认尚未接收文件，可明确重试；原文件保留';
       }
       else {i.status='unknown';i.error='原导入结果尚未核清，未重发或移除原文件';}
@@ -308,11 +357,11 @@ export class FileIntake {
   async retry(id,itemId) {return this.serial(async()=>{
     this.assertOpen();const b=this.batch(id);this.assertLibrary(b);const i=b.items.find(i=>i.id===itemId);
     if(!i||i.status!=='failed')throw error('INTAKE_RETRY_REFUSED','只有明确失败的未完成文件可以重试');
-    let r;try{r=this.catalog.receipt(b.projectId,i.requestId);}catch{}
-    if(r?.status==='waiting'&&r.instance!==this.catalog.instance&&!r.published&&!this.catalog.running.has(i.requestId))
-      await this.catalog.resolve(b.projectId,i.requestId,{choice:'cancel'});
+    const {catalog,projectId,target,folderId}=this.context(b,i);let r;try{r=catalog.receipt(projectId,i.requestId);}catch{}
+    if(r?.status==='waiting'&&r.instance!==catalog.instance&&!r.published&&!catalog.running.has(i.requestId))
+      await catalog.resolve(projectId,i.requestId,{choice:'cancel'});
     else if(r&&(r.status!=='failed'||r.published))throw error('INTAKE_RESULT_UNKNOWN','原导入可能已接收，请先核对原回执');
-    await unchanged(i.path,i.identity);await this.catalog.current(b.projectId,b.target);
+    await unchanged(i.path,i.identity);await catalog.current(projectId,target);
     i.attempts.push({requestId:i.requestId,status:i.status,error:i.error});i.requestId=randomUUID();i.status='queued';i.error=undefined;
     this.summarize(b);await this.save(b);this.kick();return this.dto(b);
   });}
@@ -320,7 +369,7 @@ export class FileIntake {
   async close(){this.beginClose();let timer;
     const settling=(async()=>{await this.operation;if(this.work)await this.work;
       for(const b of this.batches.values())if(b.items.some(i=>i.status==='queued')){b.status='interrupted';await this.save(b);}
-      await this.writes;if(this.lastError)throw this.lastError;
+      await this.writes;await this.preferences?.close();if(this.lastError)throw this.lastError;
     })();
     try{await Promise.race([settling,new Promise((_,reject)=>{timer=setTimeout(()=>reject(error('FILE_INTAKE_WORK_UNSETTLED','文件任务尚未正常结清，未强制结束')),10000);})]);}
     finally{clearTimeout(timer);}
