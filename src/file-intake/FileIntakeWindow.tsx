@@ -54,7 +54,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       setUnknown(!!saved || !!value.batchId);
       if (initialized.current !== handoffId) {
         initialized.current = handoffId; setSelected(saved?.fileIds || value.files.map(f => f.id)); setMode(saved?.mode || 'copy');
-        setDestinations(Object.fromEntries(value.files.map(f=>[f.id,saved?.version===2?saved.targets.find(t=>t.fileId===f.id)?.destination||null:initialDestination(f,value.preferences||{})])));
+        setDestinations(Object.fromEntries(value.files.map(f=>[f.id,saved?(saved.version===2?saved.targets.find(t=>t.fileId===f.id)?.destination||null:{kind:'video' as const,scope:'project' as const,projectId:saved.projectId,folderId:saved.folderId}):initialDestination(f,value.preferences||{})])));
       }
       if (value.batchId) {const receipt = await request<IntakeBatch>(INTAKE_API + '/batches/' + encoded(value.batchId), undefined, undefined, {signal: controller.signal}); if (current) accept(receipt);}
       else if (saved) {setUnknown(true); setError('原提交结果尚未确认。请核对原请求，不会再次发送。');}

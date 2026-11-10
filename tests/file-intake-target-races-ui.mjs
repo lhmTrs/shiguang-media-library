@@ -139,6 +139,16 @@ try{
   const fixed=await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id);
   await ap.route('**/api/file-intake/batches/*',route=>route.abort('failed'));await ap.reload();
   try{await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(ap,'人物名',apid)).toBeDisabled();await expect(field(ap,'人物名',apid)).toHaveValue('回执核对人物');assert.equal(await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id),fixed);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+acceptedUnknown.id+'/confirm')).length,1);record('C7-accepted-receipt-loss-keeps-frozen-target','PASS',{});}catch(e){record('C7-accepted-receipt-loss-keeps-frozen-target','FAIL',{message:e.message});process.exitCode=1;}await ap.close();
+
+  // A pre-v2 request keeps its original project/folder instead of current prefs.
+  const legacyFolder=await api('/project-videos/projects/'+project.id+'/folders',{requestId:crypto.randomUUID(),parentId:'root',name:'旧版固定文件夹'});
+  const legacyFolderId=legacyFolder.id||legacyFolder.folder?.id;assert.ok(legacyFolderId);
+  const old=await receipts.handoff([video]),lp=await pageFor(old),lid=old.files[0].id;
+  const legacyInput={requestId:crypto.randomUUID(),projectId:project.id,folderId:legacyFolderId,mode:'copy',fileIds:[lid]};
+  await lp.evaluate(({id,input})=>sessionStorage.setItem('shiguang.file-intake.'+id,JSON.stringify(input)),{id:old.id,input:legacyInput});await lp.reload();
+  await expect(lp.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
+  for(let i=0;i<2;i++){await expect(field(lp,'收纳范围',lid)).toHaveValue('project');await expect(field(lp,'目标项目',lid)).toHaveValue(project.id);await expect(field(lp,'目标分类',lid)).toHaveValue(legacyFolderId);await expect(field(lp,'目标分类',lid)).toBeDisabled();if(i===0){await lp.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(lp.locator('.fi-confirm > .fi-error')).toContainText('尚未取得权威批次回执');}}
+  assert.deepEqual(await lp.evaluate(id=>JSON.parse(sessionStorage.getItem('shiguang.file-intake.'+id)),old.id),legacyInput);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+old.id+'/confirm')).length,0);record('C8-legacy-journal-keeps-original-project-folder','PASS',{});await lp.close();
 }catch(e){harnessError=e.stack||String(e);console.error(harnessError);process.exitCode=1;}
 finally{
   for(const release of releases)release();
