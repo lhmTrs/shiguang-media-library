@@ -1,6 +1,6 @@
 import express from 'express';
 import {streamImage} from '../project-assets/image-import.mjs';
-import {uuid,error} from './files.mjs';
+import {uuid,error,revalidateSelection} from './files.mjs';
 export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}={}) {
   const router=express.Router();router.use(express.json({limit:'256kb'}));
   router.use((_req,_res,next)=>next(store.initializationError));
@@ -15,9 +15,16 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   route('post','/install',async(_req,res)=>res.json(await withActivity(()=>native.install())));
   route('get','/handoffs/:id',async(req,res)=>res.json(await store.handoff(req.params.id)));
   route('get','/handoffs/:id/files/:fileId/preview',async(req,res)=>{
+    const media=store.catalog.media;
+    await withActivity(()=>media.track(async()=>{
+    media.responses.add(res);
+    try{
     if(!uuid(req.params.fileId))throw error('INTAKE_NOT_FOUND','图片选择不存在',404);const h=await store.receipts.read('handoffs',req.params.id);const f=h.files.find(v=>v.id===req.params.fileId);
     if(!f||f.mediaKind!=='photo'||h.preparation!=='ready'||!/^[a-f0-9]{64}$/.test(f.selectionSha256||''))throw error('INTAKE_SELECTION_CHECKING','图片尚未完成核验',422);
-    await withActivity(()=>store.catalog.media.track(()=>streamImage(f.path,f.selectionSha256,res)));
+    await revalidateSelection(f);
+    await streamImage(f.path,f.selectionSha256,res,{media,verifySource:()=>revalidateSelection(f)});
+    }finally{media.responses.delete(res);}
+    }));
   });
   route('get','/projects/:id/folders',async(req,res)=>res.json(await store.folders(req.params.id)));
   route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body))));
@@ -33,7 +40,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   route('post','/batches/:id/reconcile',async(req,res)=>res.json(await withActivity(()=>store.reconcile(req.params.id))));
   route('post','/batches/:id/items/:item/resolve',async(req,res)=>res.json(await store.resolve(req.params.id,req.params.item,req.body)));
   route('post','/batches/:id/items/:item/retry',async(req,res)=>res.json(await withActivity(()=>store.retry(req.params.id,req.params.item))));
-  router.use((e,_req,res,_next)=>res.status(e.status||500).json({code:e.code||'INTAKE_FAILED',
-    error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{})}));
+  router.use((e,_req,res,_next)=>{if(res.destroyed||res.writableEnded)return;if(res.headersSent){res.destroy();return;}res.status(e.status||500).json({code:e.code||'INTAKE_FAILED',
+    error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{})});});
   return router;
 }
