@@ -14,7 +14,7 @@ export type DesktopItem = { id: string; name?: string; managed?: boolean };
 export type DesktopSkipped = { id: string; name?: string; code: string; reason: string };
 export type DesktopReceipt = {
   requestId: string; projectId?: string; action?: string; status: DesktopStatus;
-  processed?: number; total?: number; statusUrl?: string; code?: string; error?: string;
+  processed?: number; total?: number; statusUrl?: string; code?: string; error?: string; reason?: string; ack?: string;
   requestedCount?: number; count?: number;
   copied?: DesktopItem[]; requested?: DesktopItem[]; eligible?: DesktopItem[]; skipped?: DesktopSkipped[];
   previewToken?: string; expiresAt?: string | number; folderCount?: number; folders?: { key: string; label: string; count: number }[];
@@ -52,7 +52,9 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
   const accept = (requestId: string, receipt: DesktopReceipt) => {
     if (receipt.requestId && receipt.requestId !== requestId) throw Object.assign(Error('回执编号与原请求不一致，请查询原请求。'), { code: 'RECEIPT_MISMATCH' });
     if (receipt.projectId && receipt.projectId !== projectId) throw Object.assign(Error('回执不属于当前项目，请查询原请求。'), { code: 'RECEIPT_MISMATCH' });
-    update(requestId, { receipt, busy: false, unknown: receipt.status === 'unknown', error: '', code: receipt.code || '' });
+    // 一律按回执里的 status 判断，不按 HTTP 200 判断：异步 202 之后查询到的终态也可能是 failed / unknown。
+    if (receipt.status === 'failed') { update(requestId, { receipt, busy: false, unknown: false, error: receipt.error || receipt.reason || failureText(receipt.code), code: receipt.code || '' }); return; }
+    update(requestId, { receipt, busy: false, unknown: receipt.status === 'unknown', error: receipt.status === 'unknown' ? receipt.error || receipt.reason || '' : '', code: receipt.code || '' });
   };
   const fail = (requestId: string, e: unknown) => {
     // 没有 HTTP 状态 = 回应丢失：动作可能已在桌面生效，只能查询，不能重发。
@@ -95,4 +97,12 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
   return { action, start, query, clear, settled };
 }
 
+export function failureText(code?: string) {
+  return code === 'PREVIEW_STALE' ? '所选文件在核对之后发生了变化，请重新核对。'
+    : code === 'CLIPBOARD_CHANGED' ? '剪贴板在核验期间被其他内容改变，没有覆盖。需要时请再点一次复制。'
+    : code === 'NO_VALID_FILES' ? '所选视频都不能使用。'
+    : code ? `操作没有完成（${code}）。` : '操作没有完成。';
+}
+/** 批量在访达中显示：只有后台确认已派发、且确有文件时才算“已请求”。 */
+export const revealDispatched = (r: DesktopReceipt | null) => !!r && r.status !== 'failed' && r.status !== 'unknown' && r.ack === 'dispatched' && (r.count ?? r.requested?.length ?? 0) > 0;
 export const skippedText = (items: DesktopSkipped[] = []) => items.map(item => `${item.name || item.id}：${item.reason || item.code}`);

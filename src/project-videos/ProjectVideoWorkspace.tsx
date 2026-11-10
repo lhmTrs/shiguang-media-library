@@ -12,7 +12,7 @@ import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
-import {capability, isPending, skippedText, useDesktopAction} from './desktop-actions';
+import {capability, isPending, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
 import type {FolderView} from './types';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
@@ -733,7 +733,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               {desktopAction.kind === 'clipboard'
                 ? desktopReceipt.code === 'CLIPBOARD_CHANGED' ? '剪贴板在核验期间被其他内容改变，没有覆盖。需要时请再点一次复制。'
                   : desktopReceipt.count ? `已将 ${desktopReceipt.count} 个视频文件复制到系统剪贴板。` : `没有复制：${desktopReceipt.error || '所选视频都不能复制'}。`
-                : `已请求在访达显示 ${desktopReceipt.count ?? desktopReceipt.requested?.length ?? 0} 个文件${desktopReceipt.folderCount ? `（${desktopReceipt.folderCount} 个目录）` : ''}。`}
+                : revealDispatched(desktopReceipt) ? `已请求在访达显示 ${desktopReceipt.count ?? desktopReceipt.requested?.length ?? 0} 个文件${desktopReceipt.folderCount ? `（${desktopReceipt.folderCount} 个目录）` : ''}。` : '没有打开访达：所选文件都不能定位。'}
               {!!desktopReceipt.skipped?.length && ` 跳过 ${desktopReceipt.skipped.length} 个。`}
               {desktopAction.kind === 'clipboard' && !!desktopReceipt.copied?.some(item => item.managed === false) && ' 其中包含原位置的旧视频文件。'}</span>
               <button type="button" className="pv-banner-close" aria-label="收起提示" onClick={() => desktop.clear()}><X size={13}/></button>
@@ -912,7 +912,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               <button type="button" className="pv-primary" disabled={!eligible.length || !r.previewToken} onClick={() => { const ids = a.ids, token = r.previewToken; desktop.clear(); void desktop.start('reveal', ids, {previewToken: token}); }}><FolderOpen size={15}/>在访达中定位 {eligible.length} 个文件</button></ModalActions>
           </>;
         }
-        if (a.kind === 'reveal' && r) return <><p>已请求在访达显示 {r.count ?? r.requested?.length ?? 0} 个文件{r.folderCount ? `（${r.folderCount} 个目录）` : ''}。</p>{!!r.skipped?.length && <details><summary>跳过 {r.skipped.length} 个</summary><ul>{skippedText(r.skipped).map(line => <li key={line}>{line}</li>)}</ul></details>}
+        if (a.kind === 'reveal' && r) return <>{revealDispatched(r) ? <p>已请求在访达显示 {r.count ?? r.requested?.length ?? 0} 个文件{r.folderCount ? `（${r.folderCount} 个目录）` : ''}。</p> : <p className="pv-error" role="alert">没有打开访达：所选文件都不能定位。</p>}{!!r.skipped?.length && <details><summary>跳过 {r.skipped.length} 个</summary><ul>{skippedText(r.skipped).map(line => <li key={line}>{line}</li>)}</ul></details>}
           <ModalActions><button type="button" className="pv-primary" onClick={() => { desktop.clear(); setRevealConfirm(false); }}>完成</button></ModalActions></>;
         return null;
       })()}

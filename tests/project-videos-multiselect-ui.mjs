@@ -41,7 +41,7 @@ const banner = () => work().locator('.pv-desktop-banner');
 const modal = () => page.locator('.pv-modal');
 
 // ---- 合同 v1 模拟 ----
-const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, singleReveal: 0 };
+const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, asyncStaleReveal: false, asyncFailClipboard: false, singleReveal: 0 };
 async function installMocks() {
   await page.route(url => /\/api\/project-videos\/projects\/[^/]+$/.test(url.pathname), async route => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -51,7 +51,8 @@ async function installMocks() {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'clipboard', body });
     const all = body.ids.map(id => ({ id, name: 'v-' + id.slice(0, 4), managed: true }));
     const final = { requestId: body.requestId, projectId, action: 'clipboard', status: all.length > 1 ? 'partial' : 'completed', requestedCount: all.length, count: all.length > 1 ? all.length - 1 : 1, copied: all.length > 1 ? all.slice(0, -1) : all, skipped: all.length > 1 ? [{ id: all.at(-1).id, name: all.at(-1).name, code: 'SOURCE_MISSING', reason: '文件缺失' }] : [] };
-    mock.receipts.set(body.requestId, final);
+    mock.receipts.set(body.requestId, mock.asyncFailClipboard ? { requestId: body.requestId, projectId, action: 'clipboard', status: 'failed', code: 'NO_VALID_FILES', error: '所选视频都不能复制：文件缺失', requestedCount: all.length, count: 0, copied: [], skipped: all.map(x => ({ ...x, code: 'SOURCE_MISSING', reason: '文件缺失' })) } : final);
+    mock.asyncFailClipboard = false;
     if (mock.dropNextClipboard) { mock.dropNextClipboard = false; return route.abort('failed'); }
     await route.fulfill({ status: 202, json: { requestId: body.requestId, projectId, action: 'clipboard', status: 'checking', processed: 0, total: all.length } });
   });
@@ -66,6 +67,11 @@ async function installMocks() {
   await page.route('**/api/project-videos/projects/*/videos/reveal', async route => {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'reveal', body });
     if (mock.staleNextReveal) { mock.staleNextReveal = false; return route.fulfill({ status: 409, json: { error: '核对后文件已变化', code: 'PREVIEW_STALE' } }); }
+    if (mock.asyncStaleReveal) { // 异步：POST 202，随后查询到终态 failed / PREVIEW_STALE（HTTP 200）
+      mock.asyncStaleReveal = false;
+      mock.receipts.set(body.requestId, { requestId: body.requestId, projectId, action: 'reveal', status: 'failed', code: 'PREVIEW_STALE', requested: [], skipped: [], count: 0 });
+      return route.fulfill({ status: 202, json: { requestId: body.requestId, projectId, action: 'reveal', status: 'dispatching', processed: 0, total: body.ids.length } });
+    }
     await route.fulfill({ json: { requestId: body.requestId, projectId, action: 'reveal', status: 'completed', requested: body.ids.map(id => ({ id })), skipped: [], count: body.ids.length, folderCount: 2, ack: 'dispatched' } });
   });
   // 单个“在访达中显示”也拦截，测试不打开真实访达
@@ -159,6 +165,18 @@ try {
     await modal().getByRole('button', { name: /在访达中定位/ }).click(); await expect(modal()).toContainText('请重新核对');
     await modal().getByRole('button', { name: '重新核对' }).click(); await expect(modal()).toContainText('将在 2 个目录中定位');
     await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0);
+  });
+
+  await check('异步回执以 status 为准：202 后查询到 failed 不显示成功（访达核对过期、复制无可用文件）', async () => {
+    await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] });
+    mock.asyncStaleReveal = true; await bar().getByRole('button', { name: '在访达中显示' }).click();
+    await modal().getByRole('button', { name: /在访达中定位/ }).click();
+    await expect(modal()).toContainText('请重新核对'); await expect(modal()).not.toContainText('已请求在访达显示');
+    await expect(modal().getByRole('button', { name: '重新核对' })).toBeVisible();
+    await modal().locator('.pv-dialog-actions').getByRole('button', { name: '关闭' }).click(); await expect(modal()).toHaveCount(0);
+    mock.asyncFailClipboard = true; await bar().getByRole('button', { name: '复制' }).click();
+    await expect(banner()).toContainText('所选视频都不能复制'); await expect(banner()).not.toContainText('已将');
+    await banner().getByRole('button', { name: '收起提示' }).click(); await expect(banner()).toHaveCount(0);
   });
 
   await check('能力不可用时禁用复制并说明原因；切到别的目录后多选被清除', async () => {
