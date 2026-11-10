@@ -119,6 +119,57 @@ try {
     assert.equal(live(await api('/project-assets/assets/' + hero.id)).length, live(before).length + 1);
     await dialog().getByRole('button', { name: '完成', exact: true }).click();
   });
+  await check('明确人物_造型只拆第一个下划线，人工编辑与切换类别保持，原文件名不改', async () => {
+    await dropFiles(work().locator('.ca-gallery'), ['预填人物_长袍_三视图.png']);
+    await expect(dialog().getByLabel('名称：预填人物_长袍_三视图.png')).toHaveValue('预填人物');
+    await expect(dialog().getByLabel('造型：预填人物_长袍_三视图.png')).toHaveValue('长袍_三视图');
+    await dialog().getByLabel('名称：预填人物_长袍_三视图.png').fill('人工人物');
+    await dialog().getByLabel('造型：预填人物_长袍_三视图.png').fill('人工造型_完整保留');
+    await dialog().getByLabel('新建类别').selectOption('prop');
+    await expect(dialog().getByLabel('名称：预填人物_长袍_三视图.png')).toHaveValue('人工人物');
+    await dialog().getByLabel('新建类别').selectOption('character');
+    await expect(dialog().getByLabel('造型：预填人物_长袍_三视图.png')).toHaveValue('人工造型_完整保留');
+    await dialog().getByRole('button', {name:/^新建 1 个人物/}).click();
+    await expect(dialog().locator('.ca-drop-list li')).toContainText('已新建');
+    const rows = (await api('/project-assets/assets?project_id='+project.id+'&kind=character&q='+encodeURIComponent('人工人物'))).items;
+    const a = await api('/project-assets/assets/'+rows[0].id);
+    assert.equal(a.looks[0].name,'人工造型_完整保留'); assert.equal(live(a)[0].last_known_name,'预填人物_长袍_三视图.png');
+    await dialog().getByRole('button',{name:'完成',exact:true}).click(); await expect(work()).toHaveAttribute('aria-busy','false');
+  });
+  await check('已有人物卡片落点优先，文件名不覆盖人物、已选造型或已有代表图', async () => {
+    const before = await api('/project-assets/assets/'+hero.id);
+    await dropFiles(card('陈川'), ['其他人_全新造型.png']);
+    await expect(dialog()).toContainText('添加到“陈川”'); await expect(dialog().getByLabel('放进造型')).toHaveValue(lookId);
+    await dialog().getByRole('button',{name:'添加图片',exact:true}).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('已添加');
+    const a = await api('/project-assets/assets/'+hero.id);
+    assert.equal(a.name,'陈川'); assert.equal(a.looks.length,before.looks.length); assert.equal(a.looks[0].default_image_id,coverId);
+    assert.equal(live(a).at(-1).look_id,lookId);
+    await dialog().getByRole('button',{name:'完成',exact:true}).click(); await expect(work()).toHaveAttribute('aria-busy','false');
+  });
+  await check('相机名不自动建立人物，补充名称后可以继续；不按长度强行改归属', async () => {
+    const creates=count.create;
+    await dropFiles(work().locator('.ca-gallery'), ['IMG_0012.png']);
+    await expect(dialog().getByLabel('名称：IMG_0012.png')).toHaveValue('');
+    await dialog().getByRole('button',{name:/^新建 1 个人物/}).click(); assert.equal(count.create,creates);
+    await dialog().getByLabel('名称：IMG_0012.png').fill('明确命名');
+    await dialog().getByRole('button',{name:/^新建 1 个人物/}).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('已新建');
+    await dialog().getByRole('button',{name:'完成',exact:true}).click(); await expect(work()).toHaveAttribute('aria-busy','false');
+  });
+  await check('指定造型创建成功但丢回应，按固定造型编号恢复，不增建默认造型或重复上传', async () => {
+    let dropped=false;
+    await page.route('**/api/project-assets/assets/*',async route=>{
+      if(dropped||route.request().method()!=='PUT'||!route.request().postDataJSON()?.asset?.looks?.some(l=>l.name==='外套_新款'))return route.fallback();
+      dropped=true; await route.fetch(); await route.abort('failed');
+    });
+    const content=count.content;
+    await dropFiles(work().locator('.ca-gallery'), ['造型恢复人物_外套_新款.png']);
+    await dialog().getByRole('button',{name:/^新建 1 个人物/}).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('结果待核对'); assert.ok(dropped);
+    await expect(dialog().getByLabel('造型：造型恢复人物_外套_新款.png')).toBeDisabled();
+    await dialog().locator('footer').getByRole('button',{name:'核对结果'}).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('已新建');
+    const rows=(await api('/project-assets/assets?project_id='+project.id+'&kind=character&q='+encodeURIComponent('造型恢复人物'))).items;
+    const a=await api('/project-assets/assets/'+rows[0].id); assert.equal(a.looks.length,1);assert.equal(a.looks[0].name,'外套_新款');assert.equal(live(a).length,1);assert.equal(count.content,content+1);
+    await dialog().getByRole('button',{name:'完成',exact:true}).click(); await expect(work()).toHaveAttribute('aria-busy','false');await page.unrouteAll({behavior:'wait'});
+  });
   assert.deepEqual(errors, []);
   passed = true;
 } catch (e) { if (page) await page.screenshot({ path: path.join(temp, 'failure.png'), fullPage: true }).catch(() => {}); console.error('失败截图：' + path.join(temp, 'failure.png')); throw e; }

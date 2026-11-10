@@ -8,7 +8,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance', 'acknowledgement'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance', 'acknowledgement', 'presets'].includes(selectedCase));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(root, '../素材管理器/collab/results/FINDER-VIDEO-INTAKE-20261109', selectedCase === 'completion' ? 'frontend-completion/ui' : selectedCase === 'confirm-binding' ? 'frontend-confirm-binding/ui' : 'frontend-ui'));
 await fs.mkdir(evidence, {recursive: true});
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
@@ -23,7 +23,7 @@ function setup() {
       item('conflict', 'duplicate', {adoptionStamp: 'stamp-v1', candidates: [{id: 'candidate-a', name: '目标同名.mp4', reason: '同名视频', adoptedShots: [{id: 'shot-7', number: '007'}, {id: 'shot-8', number: '008'}], mediaUrl: '/api/synthetic-preview/candidate-a'}, {id: 'candidate-b', name: '另一个候选.mp4', reason: '同名视频', adoptedShots: [], mediaUrl: '/api/synthetic-preview/candidate-b'}]}),
       item('copying', 'copying', {copiedBytes: 2048}), item('unknown', 'unknown', {code: 'RECEIPT_UNKNOWN', error: '原回执仍待核对'}), item('failed', 'failed', {error: '合成可重试失败'}), item('retained', 'source_retained', {videoId: 'video-retained'}), item('global-managed', 'managed', {assetId: 'asset-global'}), item('project-managed', 'managed', {managedProjectId: 'original-project', managedProjectName: '原合成项目', videoId: 'original-video'}),
     ]}, {id: 'batch-other', projectId: 'project-b', projectName: '合成乙项目', folderId: 'root', folderName: '根目录', mode: 'copy', createdAt: 2, updatedAt: 2, status: 'completed', items: [item('ready', 'ready', {videoId: 'ready-video'})]}],
-    confirm: 'accept', resolve: 'normal', retry: 'normal', confirmBodies: [], resolveBodies: [], retryCount: 0, reconcileCount: 0, installCount: 0,
+    confirm: 'accept', resolve: 'normal', retry: 'normal', confirmBodies: [], resolveBodies: [], retryCount: 0, reconcileCount: 0, installCount: 0, videoImports: [],
   };
 }
 async function routeApi(route) {
@@ -31,6 +31,10 @@ async function routeApi(route) {
   requests.push({path: url.pathname, method, body});
   const respond = (value, status = 200) => route.fulfill({status, json: clone(value)});
   if (url.pathname === '/api/session') return respond({app: 'shiguang-local-media', instanceId: 'synthetic-instance', token: 'synthetic-token'});
+  if (url.pathname.startsWith('/api/project-videos/projects/project-b')) {
+    if (method === 'GET') return respond({project:{id:'project-b',name:'合成乙项目'},videos:[],prompts:[],adoptionStamp:'empty',folders:[{id:'folder-b',parentId:'root',name:'合成视频文件夹',path:'合成视频文件夹',available:true}],breadcrumbs:[],folderRevision:1,currentFolderId:url.searchParams.get('folderId')||'all',canTrash:true,legacyUpgrade:{completed:true}});
+    if (method === 'POST' && url.pathname.endsWith('/imports')) {fixture.videoImports.push(body); return route.abort('failed');}
+  }
   if (!url.pathname.startsWith('/api/file-intake/')) return respond({error: 'Unexpected synthetic test endpoint'}, 404);
   if (method === 'POST') assert.equal(req.headers()['x-local-token'], 'synthetic-token');
   const endpoint = url.pathname.slice('/api/file-intake'.length);
@@ -89,14 +93,69 @@ async function choose() {await page.getByLabel('收纳目标项目').selectOptio
 async function check(name, fn) {if (selectedCase !== 'all' && !name.startsWith(selectedCase + ' ')) return; phase = name; await fn(); checks.push(name); console.log('PASS ' + name);}
 try {
   await fs.writeFile(path.join(temp, 'index.html'), '<html><div id="root"></div><script type="module" src="/fixture.tsx"></script></html>');
-  await fs.writeFile(path.join(temp, 'fixture.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{FileIntakeWindow,FileTaskEntry}from${JSON.stringify(path.join(root, 'src/file-intake/index.ts'))};import{GlobalFeedback}from${JSON.stringify(path.join(root, 'src/global-feedback.tsx'))};
+  await fs.writeFile(path.join(temp, 'fixture.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{FileIntakeWindow,FileTaskEntry}from${JSON.stringify(path.join(root, 'src/file-intake/index.ts'))};import{GlobalFeedback}from${JSON.stringify(path.join(root, 'src/global-feedback.tsx'))};import{ProjectVideoWorkspace}from${JSON.stringify(path.join(root, 'src/project-videos/ProjectVideoWorkspace.tsx'))};
 import ${JSON.stringify(path.join(root, 'src/style.css'))};import ${JSON.stringify(path.join(root, 'src/themes.css'))};import ${JSON.stringify(path.join(root, 'src/library-workspace.css'))};
 const request=async(url,body,method,options)=>{const response=await fetch('/api'+url,{method:method||(body===undefined?'GET':'POST'),headers:{'content-type':'application/json','x-local-token':'synthetic-token'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:options?.signal});const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error),{...value,status:response.status});return value;};
 const entry=<FileTaskEntry request={request} onView={(project,id)=>{window.views.push([project,id]);}}/>;
-createRoot(document.getElementById('root')).render(location.hash==='#intake'?<FileIntakeWindow handoffId="${handoffId}"/>:location.hash==='#drawer-layout'?<><div className="app library-workspace"><aside className="sidebar">合成侧栏</aside><main><header className="topbar library-topbar"><div className="breadcrumb">合成页面</div><div className="topbar-actions">{entry}</div></header><section style={{height:1500,padding:30}}><button id="background-action">底层页面操作</button><h1>合成视频页面</h1></section></main></div><GlobalFeedback/></>:<>{entry}<GlobalFeedback/></>);`);
+createRoot(document.getElementById('root')).render(location.hash==='#video-workspace'?<><ProjectVideoWorkspace active={true} projectId="project-b" projects={[{id:'project-b',name:'合成乙项目'}]} request={request} onProject={()=>{}} onStoryboard={()=>{}}/><GlobalFeedback/></>:location.hash==='#intake'?<FileIntakeWindow handoffId="${handoffId}"/>:location.hash==='#drawer-layout'?<><div className="app library-workspace"><aside className="sidebar">合成侧栏</aside><main><header className="topbar library-topbar"><div className="breadcrumb">合成页面</div><div className="topbar-actions">{entry}</div></header><section style={{height:1500,padding:30}}><button id="background-action">底层页面操作</button><h1>合成视频页面</h1></section></main></div><GlobalFeedback/></>:<>{entry}<GlobalFeedback/></>);`);
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+  await check('presets explicit confirmation remembers video target; mere selection and cancel do not', async () => {
+    await fresh(true); await choose(); await page.getByLabel('收纳目标文件夹').selectOption('folder-a');
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('');
+    await choose(); await page.getByLabel('收纳目标文件夹').selectOption('folder-a');
+    await page.getByRole('radio', {name: /移动到素材库/}).check();
+    await page.getByRole('button', {name: '确认收纳', exact: true}).click();
+    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。')).toBeVisible();
+    fixture.handoff.batchId = undefined;
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-a');
+    await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('folder-a');
+    await expect(page.getByRole('radio', {name: /复制并保留原文件/})).toBeChecked();
+    assert.equal(fixture.confirmBodies.length, 1, '恢复默认目标不会自动提交');
+    await page.getByLabel('收纳目标项目').selectOption('project-b');
+    await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('root');
+  });
+  await check('presets website import confirms the same target used by the next browser intake; navigation alone never submits', async () => {
+    await fresh(true); await page.goto(origin + '/?video-workspace#video-workspace');
+    await page.getByRole('navigation',{name:'视频文件夹树'}).getByRole('button',{name:'合成视频文件夹',exact:true}).click();
+    await page.locator('input[type=file]').setInputFiles({name:'合成目标.mp4',mimeType:'video/mp4',buffer:Buffer.from('synthetic-only')});
+    await page.getByRole('button',{name:'下一步，核对导入',exact:true}).click();
+    assert.equal(fixture.videoImports.length,0);
+    await page.getByRole('button',{name:'确认复制并导入',exact:true}).click();
+    await expect.poll(()=>fixture.videoImports.length).toBe(1);
+    assert.equal(fixture.videoImports[0].folderId,'folder-b');
+    await page.goto(origin + '/?browser-intake#intake');
+    await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-b');
+    await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('folder-b');
+    assert.equal(fixture.confirmBodies.length,0); assert.equal(fixture.videoImports.length,1);
+  });
+  await check('presets unknown submission uses its fixed journal even if a different default was saved', async () => {
+    await fresh(true);
+    await page.evaluate(id => {
+      localStorage.setItem('shiguang.importTarget.v1:synthetic-instance:video', JSON.stringify({projectId:'project-b',folderId:'folder-b'}));
+      sessionStorage.setItem('shiguang.file-intake.' + id, JSON.stringify({requestId:'22222222-2222-4222-8222-222222222222',projectId:'project-a',folderId:'folder-a',mode:'copy',fileIds:['f1']}));
+    }, handoffId);
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-a');
+    await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('folder-a');
+    await expect(page.getByLabel('收纳目标项目')).toBeDisabled();
+    await page.getByRole('button',{name:'核对原提交结果',exact:true}).click();
+    assert.equal(fixture.confirmBodies.length,0); await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-a');
+  });
+  await check('presets removed projects, removed folders and another library cache cannot redirect an intake', async () => {
+    await fresh(true);
+    await page.evaluate(() => localStorage.setItem('shiguang.importTarget.v1:synthetic-instance:video', JSON.stringify({projectId:'missing-project',folderId:'folder-a'})));
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('');
+    await page.evaluate(() => localStorage.setItem('shiguang.importTarget.v1:synthetic-instance:video', JSON.stringify({projectId:'project-a',folderId:'deleted-folder'})));
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('project-a');
+    await expect(page.getByLabel('收纳目标文件夹')).toHaveValue('root');
+    await page.evaluate(() => {
+      localStorage.removeItem('shiguang.importTarget.v1:synthetic-instance:video');
+      localStorage.setItem('shiguang.importTarget.v1:another-library:video', JSON.stringify({projectId:'project-b',folderId:'folder-b'}));
+    });
+    await page.reload(); await expect(page.getByLabel('收纳目标项目')).toHaveValue('');
+    assert.equal(fixture.confirmBodies.length,0);
+  });
   await check('acknowledgement clears old failure badge, preserves history and can restore without retry',async()=>{
     await fresh();const batch=fixture.batches[0];batch.status='partial';batch.canAcknowledge=true;batch.resultKey='current-result';
     batch.items=[1,2,3,4].map(n=>({id:'old-'+n,name:'old-'+n+'.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'INTAKE_SOURCE_CHANGED',error:'合成旧选择失败'}));fixture.batches=[batch];fixture.status.needsAttention=4;fixture.status.activeCount=0;await page.reload();

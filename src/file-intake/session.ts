@@ -9,7 +9,7 @@ export async function intakeSession(signal?: AbortSignal): Promise<IntakeRequest
     return value;
   }
   const original = await session();
-  return async <T,>(url: string, body?: unknown, method?: string, options?: {signal?: AbortSignal}): Promise<T> => {
+  const request: IntakeRequest = async <T,>(url: string, body?: unknown, method?: string, options?: {signal?: AbortSignal}): Promise<T> => {
     if (!url.startsWith(INTAKE_API + '/') || url.includes('://')) throw Error('收纳请求地址无效');
     const headers = new Headers(), verb = (method || (body === undefined ? 'GET' : 'POST')).toUpperCase();
     if (verb !== 'GET') {
@@ -23,4 +23,5 @@ export async function intakeSession(signal?: AbortSignal): Promise<IntakeRequest
     if (!response.ok) throw Object.assign(Error(value.error || value.message || '收纳请求未完成'), {status: response.status, code: value.code, accepted: value.accepted, requestId: value.requestId});
     return value as T;
   };
+  return Object.assign(request, {libraryId: original.instanceId});
 }
