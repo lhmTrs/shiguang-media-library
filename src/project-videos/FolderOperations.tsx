@@ -6,10 +6,12 @@ import {folderContains, folderTrail, uniqueShots} from './folders';
 import type {ConflictChoice, Folder, FolderOperation, OperationPlan, OperationReceipt, ProjectVideoRequest} from './types';
 
 export type FolderAction = {kind: 'create'; parentId: string} | (FolderOperation & {label: string});
-export function FolderOperations({action, active, folders, projectId, request, canTrash, readOnly, folderBlocked, onClose, onComplete, onPending}: {
+export function FolderOperations({action, active, folders, projectId, request, canTrash, readOnly, folderBlocked, onClose, onComplete, onPending, excludeTargets}: {
   action: FolderAction | null; active: boolean; folders: Folder[]; projectId: string; request: ProjectVideoRequest;
   canTrash: boolean; readOnly: boolean; folderBlocked: (id: string) => boolean;
   onClose: () => void; onComplete: (receipt?: OperationReceipt) => void; onPending: (pending: boolean) => void;
+  /** 不能作为普通移动目标的目录（废片收纳处子树：移入废片要走“标记为废片”的解除采用确认）。 */
+  excludeTargets?: Set<string>;
 }) {
   const [name, setName] = useState(''), [destination, setDestination] = useState('root');
   const [mode, setMode] = useState<'trash' | 'contents-to-root'>('contents-to-root');
@@ -107,8 +109,8 @@ export function FolderOperations({action, active, folders, projectId, request, c
         <fieldset className="pv-operation-fields" disabled={busy || readOnly}>
           {action.kind === 'rename-folder' && <label className="pv-field">文件夹名称<input value={name} onChange={e => {setName(e.target.value); invalidate();}}/></label>}
           {(action.kind === 'move-video' || action.kind === 'move-folder') && <label className="pv-field">目标文件夹<select value={destination} onChange={e => {setDestination(e.target.value); invalidate();}}>
-            <option value="root">项目根目录</option>{folders.filter(f => f.available && !(action.kind === 'move-folder' && action.folderId && folderContains(folders, action.folderId, f.id))).map(f => <option key={f.id} value={f.id}>{folderTrail(folders, f.id).map(part => part.name).join(' / ') || f.name}</option>)}
-          </select><small>选择项目内的目标目录，下一步核对移动影响。</small></label>}
+            <option value="root">项目根目录</option>{folders.filter(f => f.available && !excludeTargets?.has(f.id) && !(action.kind === 'move-folder' && action.folderId && folderContains(folders, action.folderId, f.id))).map(f => <option key={f.id} value={f.id}>{folderTrail(folders, f.id).map(part => part.name).join(' / ') || f.name}</option>)}
+          </select><small>选择项目内的目标目录，下一步核对移动影响。{excludeTargets?.size ? '要收纳为废片，请用“标记为废片…”。' : ''}</small></label>}
           {action.kind === 'delete-folder' && <label className="pv-field">删除方式<select value={mode} onChange={e => {setMode(e.target.value as typeof mode); invalidate();}}><option value="contents-to-root">内容移到项目根目录，再删除空文件夹</option><option value="trash" disabled={!canTrash}>整个文件夹与全部内容移到废纸篓{!canTrash ? '（当前环境不可用）' : ''}</option></select></label>}
         </fieldset>
         {plan && <div className="pv-operation-plan"><h3>{plan.description}</h3><p>{plan.files} 个文件 · {plan.folders} 个文件夹</p>

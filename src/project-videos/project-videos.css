@@ -382,3 +382,13 @@
 .pv-folder-unavailable .pv-folder-visual > svg:first-child { opacity: .5; }
 .pv-folder-unavailable .pv-folder-card-hint { color: var(--c-b34747, var(--muted)); }
 @media (prefers-reduced-motion: reduce) { .pv-workspace .pv-folder-card { transition: none; } }
+/* 废片收纳（#55） */
+.pv-workspace .pv-folder-reject small { color: var(--muted); }
+.pv-reject-steps { display: flex; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.pv-reject-steps li { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+.pv-reject-steps li[data-state="current"] { color: var(--green); border-color: var(--green); font-weight: 600; }
+.pv-reject-items { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; max-height: 220px; overflow: auto; }
+.pv-reject-items li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pv-reject-items li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-reject-items li small { flex: none; color: var(--muted); }
+.pv-reject-items li[data-status="failed"] small, .pv-reject-items li[data-status="unknown"] small { color: var(--pv-warn); }

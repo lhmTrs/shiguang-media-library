@@ -24,6 +24,8 @@ export interface ProjectVideo {
   bytes: number;
   /** 合同 C：可选，旧后台不返回。metadataChanged 表示已证明只有无关元数据变化、内容一致。 */
   verification?: VideoVerification;
+  /** 废片收纳（#55）：视频位于收纳处子树内。由后台按 rejectFolderId 派生，旧后台不返回。 */
+  inRejectArea?: boolean;
 }
 
 export type VideoVerification = {
@@ -84,6 +86,35 @@ export interface ProjectVideoCollection {
   canTrash: boolean;
   readOnly?: boolean;
   capabilities?: ProjectVideoCapabilities;
+  /** 废片收纳（#55）：rejectFolderId 是唯一权威来源；revision 用于设置/取消时的并发核对。旧后台不返回。 */
+  folderRoles?: FolderRoles;
+}
+
+/** needsReview：角色指针或目录不可用，需要用户核对；前端不猜同名目录。 */
+export type FolderRoles = { revision: number; rejectFolderId: string | null; rejectVideoCount: number; needsReview?: boolean };
+export type RejectShot = AdoptedShot & { sourceIds?: string[] };
+/** POST /folders/reject/preview 的回执（合同 v1）。 */
+export type RejectRolePlan = {
+  requestId: string; previewHash: string; ready: boolean; expectedRolesRevision: number; adoptionStamp?: string;
+  roleChange: { beforeFolderId: string | null; afterFolderId: string | null; willCreate: boolean; name?: string };
+  /** 目标目录（含子树）内当前的视频记录数。 */
+  rejectVideoCount?: number;
+  affectedShots: RejectShot[];
+};
+/** move-videos（unbindAdoptions:true）预览：在普通 OperationPlan 之上增加解除采用的明细。 */
+export type RejectMovePlan = OperationPlan & {
+  sourceUnbindShots?: RejectShot[]; overwriteTargetUnbindShots?: RejectShot[];
+  willUnbindAdoptions?: boolean; rolesRevision?: number; adoptionStamp?: string;
+};
+/** 逐项结果（Codex 2310 回执）：ready 已移入；rolled-back 已回退；not-run 因前项失败或待核对没有执行。 */
+export type BatchItemStatus = 'ready' | 'rolled-back' | 'failed' | 'unknown' | 'not-run';
+export type BatchReceipt = Omit<OperationReceipt, 'status'> & {
+  status: OperationReceipt['status'] | 'partial';
+  /** 权威的解除采用并集（含被覆盖的同名目标）。 */
+  unboundShotIds?: string[];
+  /** 仅预览、执行尚未登记：status=unknown, phase=preview, errorCode=OPERATION_NOT_STARTED。 */
+  phase?: 'preview' | 'execution'; errorCode?: string; canRecover?: boolean; folderRoles?: FolderRoles;
+  items?: { sourceId: string; name?: string; status: BatchItemStatus; unboundShotIds?: string[]; error?: string }[];
 }
 
 export interface UpgradePreview {
@@ -122,8 +153,8 @@ export interface ProjectVideoWorkspaceProps {
   focusVideo?: {projectId: string; videoId: string; request: number};
 }
 
-export type FolderView = 'all' | 'root' | string;
-export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean};
+export type FolderView = 'all' | 'root' | 'reject' | string;
+export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | null};
 export type ConflictChoice = 'rename' | 'overwrite';
 export type FolderOperation = {
   kind: 'move-video' | 'rename-folder' | 'move-folder' | 'delete-folder';
