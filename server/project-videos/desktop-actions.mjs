@@ -53,9 +53,9 @@ export class ProjectVideoDesktopActions {
   }
   clipboard(id,input){
     const ids=idsFor(input);
-    return this.journal.start(id,'clipboard',input,async s=>{
+    return this.journal.start(id,'clipboard',input,async(s,admitted)=>{
       const cap=await this.native.capabilities();if(!cap.clipboard.available)fail(cap.clipboard.code||'CLIPBOARD_UNAVAILABLE',cap.clipboard.reason||'文件剪贴板不可用',409);
-      const expectedChangeCount=await this.native.clipboardVersion();
+      const expectedChangeCount=await admitted;
       const {eligible,skipped}=await this.eligible(id,ids,s);
       const base={requestId:s.requestId,projectId:id,action:'clipboard',requestedCount:ids.length,skipped};
       if(!eligible.length)return {...base,status:'failed',count:0,copied:[],code:'NO_VALID_FILES'};
@@ -66,7 +66,7 @@ export class ProjectVideoDesktopActions {
       catch(e){if(e.effectUnknown===false||['CLIPBOARD_CHANGED','CLIPBOARD_UNAVAILABLE','DESKTOP_UNAVAILABLE'].includes(e.code)){s.dispatched=false;this.journal.save(s);}throw e;}
       if(result.ack!=='written'||result.count!==eligible.length)fail('CLIPBOARD_ACK_UNKNOWN','文件剪贴板写入结果未确认，请核对原请求',409);
       return {...base,status:skipped.length?'partial':'completed',count:eligible.length,copied:eligible.map(({id,name,managed,verification})=>({id,name,managed,verification}))};
-    });
+    },()=>this.native.clipboardVersion());
   }
   revealPreview(id,input){
     const ids=idsFor(input);

@@ -36,13 +36,14 @@ export class VideoActionJournal {
     if(['checking','running'].includes(s.status))return {requestId:s.requestId,projectId:s.projectId,action:s.action,status:s.status==='running'?'dispatching':'checking',progress:s.progress,processed:s.progress.checked,total:s.progress.total,statusUrl:`/api/project-videos/projects/${s.projectId}/desktop-actions/${s.requestId}`};
     return s.result||{requestId:s.requestId,projectId:s.projectId,action:s.action,status:s.status,progress:s.progress,code:s.code,reason:s.reason};
   }
-  start(id,action,input,run) {
+  start(id,action,input,run,prepare) {
     const {s,repeated}=this.begin(id,action,input);
     if(repeated)return this.dto(s);
+    const admitted=prepare?Promise.resolve().then(()=>prepare(s)):null;admitted?.catch(()=>{});
     const work=this.tail.catch(()=>{}).then(()=>this.catalog.media.track(async()=>{
       try {
         if(this.closed)fail('VIDEO_CLOSING','视频模块正在关闭',503);
-        s.result=await run(s);s.status=s.result.status||'completed';this.save(s);
+        s.result=await run(s,admitted);s.status=s.result.status||'completed';this.save(s);
       } catch(e) {
         // Once dispatched, lack of an ACK means UNKNOWN, never "not done".
         s.status=s.dispatched?'unknown':'failed';s.code=e.code||'VIDEO_ACTION_FAILED';s.reason=e.status?e.message:'视频操作未完成，请查询原请求';

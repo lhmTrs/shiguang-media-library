@@ -43,6 +43,15 @@ test('A: clipboard changes during hashing are not overwritten; unknown dispatch 
   f.native.copyFiles=()=>assert.fail('must not repeat');assert.deepEqual(f.catalog.desktop.clipboard(f.project.id,input),unknown);
 });
 
+test('A: clipboard version is frozen on admission, including time spent queued behind another desktop job',async t=>{
+  const f=await fixture(t),source=await imported(f);let release;
+  f.catalog.actionJournal.tail=new Promise(r=>{release=r;});
+  const action=f.catalog.desktop.clipboard(f.project.id,{requestId:randomUUID(),ids:[source.id]});
+  await new Promise(r=>setImmediate(r));f.native.version++;release();
+  const result=await finish(f,action);
+  assert.equal(result.code,'CLIPBOARD_CHANGED');assert.equal(result.status,'failed');assert.equal(f.native.copies.length,0);
+});
+
 test('B: preview has no Finder effect; explicit execution reports dispatched and distinct folders',async t=>{
   const f=await fixture(t),one=await imported(f),folder=await f.catalog.folders.create(f.project.id,{requestId:randomUUID(),parentId:'root',name:'合成子目录'}),two=await imported(f,undefined,folder.id);
   const preview=await finish(f,f.catalog.desktop.revealPreview(f.project.id,{requestId:randomUUID(),ids:[one.id,two.id]}));
