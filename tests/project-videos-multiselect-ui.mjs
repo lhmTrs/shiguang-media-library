@@ -45,7 +45,7 @@ const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { availa
 async function installMocks() {
   await page.route(url => /\/api\/project-videos\/projects\/[^/]+$/.test(url.pathname), async route => {
     if (route.request().method() !== 'GET') return route.fallback();
-    const data = await (await route.fetch()).json(); data.capabilities = mock.capabilities; await route.fulfill({ json: data });
+    const res = await route.fetch(), data = await res.json(); if (res.ok()) data.capabilities = mock.capabilities; else console.log('LIST', res.status(), JSON.stringify(data).slice(0, 200)); await route.fulfill({ status: res.status(), json: data });
   });
   await page.route('**/api/project-videos/projects/*/videos/clipboard', async route => {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'clipboard', body });
