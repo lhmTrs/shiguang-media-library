@@ -452,3 +452,94 @@ test('independent delta: committed folder metadata blocks recovery of an old err
   assert.equal(await present(currentParent), true); assert.equal(await present(currentChild), true);
   assert.deepEqual(f.catalog.folders.rows(f.project.id), before);
 });
+
+async function independentReceiptHttp(t, f) {
+  const {default: express} = await import('express');
+  const {createServer} = await import('node:http');
+  const {projectVideoRouter} = await import('../server/project-videos/router.mjs');
+  const app = express(); app.use('/api/project-videos', projectVideoRouter(f.catalog));
+  const server = createServer(app);
+  await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
+  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  const url = `http://127.0.0.1:${server.address().port}/api/project-videos/projects/${f.project.id}`;
+  return {
+    post: (route, body) => fetch(url + route, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}),
+    get: route => fetch(url + route),
+  };
+}
+
+test('independent receipt: GET after role create preview reports not started, performs no mkdir, and permits explicit same-request execution', async t => {
+  const f = await fixture(t), http = await independentReceiptHttp(t, f);
+  const requestId = randomUUID(), root = await f.catalog.folders.rootPath(f.project.id);
+  const beforeRoles = f.catalog.folders.roleState(f.project.id), beforeFolders = f.catalog.folders.rows(f.project.id);
+  const settings = () => f.lib.db.prepare('SELECT * FROM project_video_settings ORDER BY id').all();
+  const beforeSettings = settings(), mkdir = fs.mkdir.bind(fs), execute = f.catalog.rejectArea.execute.bind(f.catalog.rejectArea);
+  let mkdirCalls = 0, executionCalls = 0;
+  t.mock.method(fs, 'mkdir', (...args) => {mkdirCalls++; return mkdir(...args);});
+  t.mock.method(f.catalog.rejectArea, 'execute', (...args) => {executionCalls++; return execute(...args);});
+  const response = await http.post('/folders/reject/preview', {requestId, expectedRolesRevision: beforeRoles.revision, create: {parentId: 'root', name: '仅预览收纳处'}});
+  assert.equal(response.status, 200); const p = await response.json(); assert.equal(p.ready, true);
+  for (let n = 0; n < 2; n++) {
+    const queried = await http.get('/operations/' + requestId); assert.equal(queried.status, 200);
+    const receipt = await queried.json();
+    assert.equal(receipt.requestId, requestId); assert.equal(receipt.status, 'unknown');
+    assert.equal(receipt.phase, 'preview'); assert.equal(receipt.errorCode, 'OPERATION_NOT_STARTED');
+    assert.equal(receipt.canRecover, false); assert.deepEqual(receipt.unboundShotIds, []);
+    assert.match(receipt.error, /预览/);
+  }
+  assert.equal(mkdirCalls, 0); assert.equal(executionCalls, 0); assert.equal(await present(root), false);
+  assert.deepEqual(f.catalog.folders.roleState(f.project.id), beforeRoles); assert.deepEqual(f.catalog.folders.rows(f.project.id), beforeFolders);
+  assert.deepEqual(settings(), beforeSettings); assert.equal(f.catalog.rejectArea.active.size, 0);
+  assert.equal(f.catalog.rejectArea.row(f.project.id, requestId).status, 'preview');
+  // Only this explicit POST may start the operation; GET has preserved the preview.
+  const started = await http.post('/folders/reject', {...confirmation(p), confirmRoleChange: true}); assert.equal(started.status, 200);
+  await f.catalog.rejectArea.active.get(requestId);
+  const done = await (await http.get('/operations/' + requestId)).json();
+  assert.equal(done.status, 'ready', done.error); assert.equal(done.requestId, requestId); assert.equal(executionCalls, 1);
+  assert.ok(mkdirCalls > 0); assert.equal(done.folderId, p.roleChange.afterFolderId);
+  assert.equal(f.catalog.folders.roleState(f.project.id).rejectFolderId, p.roleChange.afterFolderId);
+  assert.equal(await present(path.join(root, '仅预览收纳处')), true);
+  t.mock.restoreAll();
+});
+
+test('independent receipt: GET after batch preview reports not started with not-run items and no moves or unbinds until explicit execution', async t => {
+  const f = await fixture(t); initialize(f);
+  const area = await folder(f, '仅预览批量收纳处'); await setRole(f, area.id);
+  const a = await imported(f, 'preview-a.mp4'), b = await imported(f, 'preview-b.mp4'); await bind(f, a, [0]); await bind(f, b, [1]);
+  const http = await independentReceiptHttp(t, f), requestId = randomUUID(), before = base(f);
+  const operations = f.catalog.fileOperations, execute = operations.execute.bind(operations), detach = f.catalog.detachSources.bind(f.catalog);
+  let executionCalls = 0, detachCalls = 0, fileChanges = 0;
+  for (const name of ['link', 'unlink', 'rename']) {
+    const original = fs[name].bind(fs); t.mock.method(fs, name, (...args) => {fileChanges++; return original(...args);});
+  }
+  t.mock.method(operations, 'execute', (...args) => {executionCalls++; return execute(...args);});
+  t.mock.method(f.catalog, 'detachSources', (...args) => {detachCalls++; return detach(...args);});
+  const response = await http.post('/operations/preview', {requestId, kind: 'move-videos', sourceIds: [a.id, b.id], destinationFolderId: area.id, unbindAdoptions: true, expectedRolesRevision: f.catalog.folders.roleState(f.project.id).revision});
+  assert.equal(response.status, 200); const p = await response.json(); assert.equal(p.ready, true); assert.equal(p.affectedShots.length, 2);
+  for (let n = 0; n < 2; n++) {
+    const queried = await http.get('/operations/' + requestId); assert.equal(queried.status, 200);
+    const receipt = await queried.json();
+    assert.equal(receipt.requestId, requestId); assert.equal(receipt.status, 'unknown');
+    assert.equal(receipt.phase, 'preview'); assert.equal(receipt.errorCode, 'OPERATION_NOT_STARTED'); assert.equal(receipt.canRecover, false);
+    assert.deepEqual(receipt.items.map(item => item.sourceId), [a.id, b.id]); assert.deepEqual(receipt.items.map(item => item.status), ['not-run', 'not-run']);
+    assert.deepEqual(receipt.unboundShotIds, []); for (const item of receipt.items) assert.deepEqual(item.unboundShotIds, []);
+  }
+  assert.equal(executionCalls, 0); assert.equal(detachCalls, 0); assert.equal(fileChanges, 0);
+  assert.deepEqual(base(f).plan, before.plan); assert.deepEqual(base(f).takes, before.takes);
+  for (const item of [a, b]) {
+    assert.deepEqual(source(f, item), item); assert.deepEqual(await fs.readFile(item.path), f.bytes);
+    assert.equal(await present(path.join(area.path, item.name)), false);
+  }
+  assert.equal(operations.row(f.project.id, requestId).status, 'preview'); assert.deepEqual(operations.row(f.project.id, requestId).steps, []);
+  // No polling helper resubmits: the one explicit execution keeps the original ID.
+  const started = await http.post('/operations', confirmation(p)); assert.equal(started.status, 200); await f.catalog.queue;
+  const done = await (await http.get('/operations/' + requestId)).json();
+  assert.equal(done.status, 'ready', done.error); assert.equal(done.requestId, requestId); assert.equal(executionCalls, 1); assert.equal(detachCalls, 1);
+  assert.ok(fileChanges > 0); assert.deepEqual(done.items.map(item => item.status), ['ready', 'ready']); assert.deepEqual(base(f).plan.adopted, {});
+  assert.deepEqual(base(f).takes, before.takes); assert.deepEqual(base(f).shots, before.shots);
+  for (const item of [a, b]) {
+    assert.equal(source(f, item).path, path.join(area.path, item.name)); assert.equal(await present(item.path), false);
+    assert.equal(f.catalog.metadata(f.project.id, source(f, item)).data.removedAt, 0);
+  }
+  t.mock.restoreAll();
+});

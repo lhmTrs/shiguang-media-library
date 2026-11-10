@@ -23,8 +23,8 @@ export class ProjectVideoRejectArea {
   }
   save(id,requestId,s){this.db.prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=?').run(canonical(s),Date.now(),requestId,id);}
   dto(requestId,s){
-    const interrupted=s.status==='running'&&!this.active.has(requestId),folderRoles=s.folderRoles||this.folders.roleState(s.projectId);
-    return{requestId,status:interrupted?'unknown':s.status==='preview'?'ready':s.status,phase:s.status==='preview'?'preview':'execution',folderId:folderRoles.rejectFolderId,folderRoles,roleChange:s.plan.roleChange,unboundShotIds:s.unboundShotIds||[],error:interrupted?'上次收纳设置未取得最终回执，请核对原请求':s.error||null,errorCode:interrupted?'REJECT_AREA_INTERRUPTED':s.errorCode||null,canRecover:false};
+    const notStarted=s.status==='preview',interrupted=s.status==='running'&&!this.active.has(requestId),folderRoles=s.folderRoles||this.folders.roleState(s.projectId);
+    return{requestId,status:interrupted||notStarted?'unknown':s.status,phase:notStarted?'preview':'execution',folderId:folderRoles.rejectFolderId,folderRoles,roleChange:s.plan.roleChange,unboundShotIds:s.unboundShotIds||[],error:notStarted?'当前只有预览，执行尚未确认，请核对原请求；收纳处未报告准备完成':interrupted?'上次收纳设置未取得最终回执，请核对原请求':s.error||null,errorCode:notStarted?'OPERATION_NOT_STARTED':interrupted?'REJECT_AREA_INTERRUPTED':s.errorCode||null,canRecover:false};
   }
   normalize(input){
     if(!input||!idOK(input.requestId))fail('INVALID_REQUEST_ID','收纳设置请求编号无效');
