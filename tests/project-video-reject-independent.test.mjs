@@ -351,3 +351,104 @@ test('independent: complete shutdown waits for tracked role work and leaves no r
   assert.equal(f.catalog.folders.roleState(f.project.id).rejectFolderId, null);
   assert.equal(await present(path.join(await f.catalog.folders.rootPath(f.project.id), 'closing-role')), false);
 });
+
+for (const commitSucceeded of [true, false]) {
+  test(`independent delta: unreadable durable result after ${commitSucceeded ? 'COMMIT' : 'transaction rollback'} never triggers speculative filesystem rollback`, async t => {
+    const f = await fixture(t); initialize(f);
+    const area = await folder(f, '读回失败收纳处'); await setRole(f, area.id);
+    const a = await imported(f, 'readback.mp4'); await bind(f, a, [0]);
+    const before = base(f).plan;
+    const p = await plan(f, {kind: 'move-videos', sourceIds: [a.id], destinationFolderId: area.id, unbindAdoptions: true});
+    const operations = f.catalog.fileOperations;
+    const tx = f.entry.store.tx.bind(f.entry.store), row = operations.row.bind(operations), save = operations.save.bind(operations);
+    const perform = operations.perform.bind(operations), rollback = operations.rollback.bind(operations);
+    let failRead = false, deniedReads = 0, rollbackCalls = 0, performResult;
+    const savedStatuses = [];
+    t.mock.method(operations, 'save', (id, requestId, data) => {
+      if (requestId === p.requestId) {
+        savedStatuses.push(data.status);
+        if (!commitSucceeded && data.status === 'ready') throw Error('independent delta: READY write rejected inside transaction');
+      }
+      return save(id, requestId, data);
+    });
+    t.mock.method(f.entry.store, 'tx', fn => {
+      try {
+        const result = tx(fn);
+        if (commitSucceeded) {failRead = true; throw Error('independent delta: committed ACK lost');}
+        return result;
+      } catch (e) {failRead = true; throw e;}
+    });
+    t.mock.method(operations, 'row', (id, requestId) => {
+      if (failRead && deniedReads === 0 && requestId === p.requestId) {deniedReads++; throw Error('independent delta: durable read temporarily unavailable');}
+      return row(id, requestId);
+    });
+    t.mock.method(operations, 'rollback', (...args) => {rollbackCalls++; return rollback(...args);});
+    t.mock.method(operations, 'perform', async (...args) => {performResult = await perform(...args); return performResult;});
+    const done = await finish(f, p);
+    t.mock.restoreAll();
+    const durable = row(f.project.id, p.requestId), destination = path.join(area.path, a.name);
+    t.diagnostic(JSON.stringify({commitSucceeded, returned: performResult?.status, durable: durable.status, query: done.status, deniedReads, rollbackCalls, wroteUnknown: savedStatuses.includes('unknown'), originalExists: await present(a.path), destinationExists: await present(destination)}));
+    assert.equal(deniedReads, 1); assert.equal(performResult.status, 'unknown'); assert.equal(rollbackCalls, 0);
+    assert.equal(savedStatuses.includes('unknown'), false, 'An unavailable read must not overwrite a potentially committed READY');
+    assert.equal(savedStatuses.includes('failed'), false); assert.equal(await present(a.path), false);
+    assert.deepEqual(await fs.readFile(destination), f.bytes);
+    if (commitSucceeded) {
+      assert.equal(durable.status, 'ready'); assert.equal(done.status, 'ready'); assert.equal(source(f, a).path, destination);
+      assert.deepEqual(base(f).plan.adopted, {});
+      assert.equal((await operations.recover(f.project.id, p.requestId, {action: 'rollback'})).status, 'ready');
+      assert.equal(await present(destination), true); assert.equal(await present(a.path), false);
+    } else {
+      assert.equal(durable.status, 'running'); assert.equal(done.status, 'unknown'); assert.equal(source(f, a).path, a.path);
+      assert.deepEqual(base(f).plan, before);
+      assert.equal((await operations.recover(f.project.id, p.requestId, {action: 'rollback'})).status, 'failed');
+      assert.equal(await present(destination), false); assert.deepEqual(await fs.readFile(a.path), f.bytes);
+      assert.deepEqual(base(f).plan, before);
+    }
+  });
+}
+
+test('independent delta: every source revision is checked before undoing any bytes from an old UNKNOWN journal', async t => {
+  const f = await fixture(t), area = await folder(f, '旧回执收纳处'); await setRole(f, area.id);
+  const a = await imported(f, 'earlier.mp4'), b = await imported(f, 'later.mp4');
+  const p = await plan(f, {kind: 'move-videos', sourceIds: [a.id, b.id], destinationFolderId: area.id, unbindAdoptions: true});
+  // Recreate a crash journal after all IO, before the metadata transaction. The
+  // old reverse loop would undo b first and only discover a's later edit at end.
+  const operations = f.catalog.fileOperations, s = operations.row(f.project.id, p.requestId);
+  s.status = 'running'; operations.save(f.project.id, p.requestId, s);
+  for (const move of s.moves) {
+    s.currentItemId = move.sourceId;
+    await operations.step(f.project.id, p.requestId, s, move.source, move.target, move.kind);
+  }
+  delete s.currentItemId; s.status = 'unknown'; operations.save(f.project.id, p.requestId, s);
+  const meta = f.catalog.metadata(f.project.id, a);
+  f.entry.store.tx(() => f.catalog.record(f.project.id, a.id, {...meta.data, notes: 'independent delta: newer source edit'}, meta.row.revision + 1));
+  const rename = fs.rename.bind(fs); let undoCalls = 0;
+  const mock = t.mock.method(fs, 'rename', (...args) => {undoCalls++; return rename(...args);});
+  await assert.rejects(operations.recover(f.project.id, p.requestId, {action: 'rollback'}), e => e.code === 'RECOVERY_CONFLICT');
+  mock.mock.restore();
+  assert.equal(undoCalls, 0, 'All source metadata must be checked before even the last item is moved back');
+  for (const item of [a, b]) {
+    assert.equal(await present(item.path), false); assert.deepEqual(await fs.readFile(path.join(area.path, item.name)), f.bytes);
+    assert.equal(source(f, item).path, item.path);
+  }
+  assert.equal(f.catalog.metadata(f.project.id, a).data.notes, 'independent delta: newer source edit');
+  assert.equal(operations.row(f.project.id, p.requestId).status, 'unknown');
+});
+
+test('independent delta: committed folder metadata blocks recovery of an old erroneous UNKNOWN journal before filesystem changes', async t => {
+  const f = await fixture(t), parent = await folder(f, '原目录'), child = await folder(f, '子目录', parent.id), destination = await folder(f, '目标');
+  const p = await plan(f, {kind: 'move-folder', folderId: parent.id, destinationFolderId: destination.id});
+  assert.equal((await finish(f, p)).status, 'ready');
+  const operations = f.catalog.fileOperations, s = operations.row(f.project.id, p.requestId);
+  assert.deepEqual(s.sourceRows, []); // No source guard can mask the folder guard.
+  s.status = 'unknown'; operations.save(f.project.id, p.requestId, s);
+  const before = f.catalog.folders.rows(f.project.id), currentParent = path.join(destination.path, parent.name), currentChild = path.join(currentParent, child.name);
+  const rename = fs.rename.bind(fs), mkdir = fs.mkdir.bind(fs); let filesystemChanges = 0;
+  t.mock.method(fs, 'rename', (...args) => {filesystemChanges++; return rename(...args);});
+  t.mock.method(fs, 'mkdir', (...args) => {filesystemChanges++; return mkdir(...args);});
+  await assert.rejects(operations.recover(f.project.id, p.requestId, {action: 'rollback'}), e => e.code === 'RECOVERY_CONFLICT');
+  t.mock.restoreAll();
+  assert.equal(filesystemChanges, 0); assert.equal(await present(parent.path), false);
+  assert.equal(await present(currentParent), true); assert.equal(await present(currentChild), true);
+  assert.deepEqual(f.catalog.folders.rows(f.project.id), before);
+});
