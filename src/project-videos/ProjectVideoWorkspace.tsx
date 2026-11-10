@@ -513,7 +513,10 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const draftDirty = (video: ProjectVideo) => !!edits[video.id] && JSON.stringify(edits[video.id]) !== JSON.stringify(editFor(video));
   // “全部视频”聚合时服务端不逐个核验，状态都是“尚未核验”；页头已说明，卡片上不再逐张重复。
   const showStatus = (video: ProjectVideo) => video.status !== 'available' && !(folderId === 'all' && video.status === 'unchecked');
-  const cardFolder = (video: ProjectVideo) => !video.folderId || video.folderId === 'root' ? '项目根目录' : folderLabel(video.folderId) || (video.folderName && !/^([/\\]|[A-Za-z]:)/.test(video.folderName) ? video.folderName : '未核对目录');
+  // 只有字面 'root' 是项目根目录；folderId 为 null 表示项目托管目录之外的旧来源，如实标注，不冒充根目录，也不显示磁盘路径。
+  const cardFolder = (video: ProjectVideo) => video.folderId === 'root' ? '项目根目录'
+    : !video.folderId ? (video.managed ? '未核对目录' : '旧视频 · 原位置')
+    : folderLabel(video.folderId) || (video.folderName && !/^([/\\]|[A-Za-z]:)/.test(video.folderName) ? video.folderName : '未核对目录');
   const discardDraft = (id: string) => setEdits(old => { const next = { ...old }; delete next[id]; return next; });
   const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ kind: 'relink', video, path: '' }); };
   // Video moves always open the move-video preview; nothing is moved by the drop itself.

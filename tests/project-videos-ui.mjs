@@ -94,6 +94,17 @@ try {
     await chip('项目根目录').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(1);
     await chip('全部视频').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(3);
     await expect(card('集市跟拍.mp4').locator('.pv-card-folder')).toHaveText('第一场'); // 位置用文件夹名，不显示磁盘路径
+    await expect(card('清晨远景.mp4').locator('.pv-card-folder')).toHaveText('项目根目录');
+    // 项目托管目录之外的旧来源：folderId 为 null，不能标成“项目根目录”，也不显示磁盘路径
+    await page.route(url => url.pathname.endsWith('/project-videos/projects/' + projectId) && url.searchParams.get('folderId') === 'all', async route => {
+      const data = await (await route.fetch()).json();
+      data.videos.push({ ...data.videos[0], id: 'legacy-null-folder', name: '旧外部来源.mp4', fileName: 'old.mp4', folderId: null, folderName: undefined, managed: false, path: '/synthetic/legacy/old.mp4' });
+      await route.fulfill({ json: data });
+    });
+    await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click();
+    await expect(card('旧外部来源.mp4').locator('.pv-card-folder')).toHaveText('旧视频 · 原位置');
+    await page.unrouteAll({ behavior: 'wait' }); await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click();
+    await expect(card('旧外部来源.mp4')).toHaveCount(0);
     await chip('第一场').click(); await card('手部特写.mp4').dragTo(chip('第二场'));
     await expect(modal()).toContainText('移动视频'); assert.equal((await api(pv('?folderId=all'))).videos.find(v => v.id === bId).folderId, f1id, '拖放本身不应移动');
     await modal().getByRole('button', { name: /核对操作影响/ }).click(); await modal().getByRole('button', { name: /确认执行/ }).click();
