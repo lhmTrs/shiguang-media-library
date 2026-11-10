@@ -206,6 +206,16 @@
 .pv-banner-details { flex-basis: 100%; font-size: 12px; }
 .pv-banner-details ul { margin: 6px 0; padding-left: 18px; }
 .pv-banner-details p { margin: 4px 0 0; opacity: .9; }
+/* 内容变化处理（#52） */
+.pv-callout-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-change-modal { width: min(620px, 100%); }
+.pv-change-modal .pv-modal-content > * + * { margin-top: 12px; }
+.pv-change-compare > div { grid-template-columns: 64px minmax(0, 1fr); }
+.pv-change-player { display: grid; place-items: center; min-height: 64px; border: 1px dashed var(--line); border-radius: 8px; background: var(--c-f7f9fa); overflow: hidden; }
+.pv-change-player video { display: block; width: 100%; max-height: 300px; background: #000; }
+.pv-change-file { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.pv-change-file legend { padding: 0 4px; font-weight: 600; font-size: 13px; }
+.pv-change-file small { color: var(--muted); font-size: 12px; }
 /* Unresolved folder operation notice rendered by FolderOperations outside the hidden-able content. */
 .pv-session > .pv-task { position: absolute; left: 20px; right: 20px; bottom: 14px; z-index: 25; margin: 0; box-shadow: 0 8px 24px color-mix(in srgb, var(--c-24292c) 16%, transparent); }
 .pv-session > .pv-task p { margin: 0; }
