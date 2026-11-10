@@ -39,9 +39,8 @@ try {
   const f = await fixture({ after: fn => cleanups.push(fn) });
   const fx = []; for (let i = 0; i < 16; i++) fx.push(await imported(f));
   initialize(f); await bind(f, fx[0], [0]); await bind(f, fx[1], [1, 2]);
-  for (const [i, v] of fx.entries()) if (i !== 1 && i !== 10) await replaceBytes(f, v);
+  for (const [i, v] of fx.entries()) if (i !== 1) await replaceBytes(f, v); // fx10 也先改画面，让入口在任何环境都可见
   await replaceBytes(f, fx[1], { duration: 1.5 }); // 变短，fx1 第二段越界
-  await appendXmp(fx[10]); // 只改元数据
   const fxApp = express(); fxApp.use('/api/project-videos', projectVideoRouter(f.catalog, { sendMedia: async (_q, res, _file, handle) => { res.setHeader('content-type', 'video/mp4'); res.end(await handle.readFile()); } }));
   const fxServer = http.createServer(fxApp); await new Promise(r => fxServer.listen(0, '127.0.0.1', r));
   cleanups.unshift(async () => { fxServer.closeAllConnections(); await new Promise(r => fxServer.close(r)); });
@@ -292,11 +291,17 @@ try {
   });
 
   await check('只改元数据：核对回应丢失时只查询原请求，显示内容一致、不开放接受', async () => {
-    const id = fx[10].id, before = postsFor(id, '/changes/preview'); dropNext = '/changes/preview'; forceKind = 'metadata_only';
-    await openChange(id); await expect(modal()).toContainText('结果待核对');
+    // 入口可见之后，再把 fx10 恢复成原画面并附加 XMP：有内容指纹的环境真实判为 metadata_only；
+    // 没有指纹的环境（真实为 not_comparable）才由 forceKind 改写，以便检查文案。
+    const id = fx[10].id, before = postsFor(id, '/changes/preview');
+    await card(id).click(); await expect(detail().getByRole('button', { name: '处理内容变化…' })).toBeVisible();
+    await fs.writeFile(fx[10].path, f.bytes); await appendXmp(fx[10]);
+    const kinds = realKinds.length; dropNext = '/changes/preview'; forceKind = 'metadata_only';
+    await detail().getByRole('button', { name: '处理内容变化…' }).click(); await expect(modal()).toContainText('处理内容变化'); await expect(modal()).toContainText('结果待核对');
     await modal().getByRole('button', { name: '查询原请求' }).click(); await expect(modal()).toContainText('视频内容一致'); forceKind = '';
     await expect(modal().getByRole('button', { name: '继续使用当前内容' })).toHaveCount(0);
     assert.equal(postsFor(id, '/changes/preview'), before + 1, '只提交一次核对');
+    console.log('metadata-only check real changeKind:', realKinds.slice(kinds).join(','));
     await modal().getByRole('button', { name: '知道了' }).click(); await expect(modal()).toHaveCount(0);
   });
 
