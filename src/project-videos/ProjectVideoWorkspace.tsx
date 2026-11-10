@@ -141,8 +141,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   useFeedbackToast(error, {source: '生成视频'});
   const [notice, setNotice] = useState('');
   useFeedbackToast(notice, {source: '生成视频', kind: 'auto'});
-  const [folderId, setFolderId] = useState<FolderView>('all');
-  const folderRef = useRef<FolderView>('all');
+  // 默认打开项目根目录：建了文件夹就是为了收纳，进入页面时只看根目录的视频和文件夹；“全部视频”仍可一键切换。
+  const [folderId, setFolderId] = useState<FolderView>('root');
+  const folderRef = useRef<FolderView>('root');
   const [folderAction, setFolderAction] = useState<FolderAction | null>(null);
   const [operationPending, setOperationPending] = useState(false);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
