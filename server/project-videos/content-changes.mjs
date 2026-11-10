@@ -71,6 +71,9 @@ export class ProjectVideoContentChanges {
       const invalid=this.invalid(before.adoption,sourceId,candidate.probe.durationMs),otherActiveReferences=this.otherReferences({...before.source,identity:candidate.originalIdentity});
       const changeKind=before.meta.data.contentFingerprint&&candidate.contentFingerprint?(same(before.meta.data.contentFingerprint,candidate.contentFingerprint)?'metadata_only':'content_changed'):'not_comparable';
       const preview={changeKind,token:randomUUID(),expiresAt:Date.now()+600000,context,candidate,adoptionStamp:before.adoption.stamp,expectedRevision:input.expectedRevision,invalidShotIds:invalid.map(s=>s.id)};
+      // Preparation may take time. The published token and its owned file must
+      // expire together, rather than measuring file lifetime from copy start.
+      this.snapshots.get(path.dirname(candidate.file)).expiresAt=preview.expiresAt;
       s.preview=preview;
       return {requestId:s.requestId,projectId:id,sourceId,status:'ready',expectedRevision:input.expectedRevision,adoptionStamp:before.adoption.stamp,contentToken:preview.token,expiresAt:preview.expiresAt,changeKind,before:{durationMs:before.source.durationMs,codec:before.source.codec,oldContentAvailable:false},candidate:{durationMs:candidate.probe.durationMs,codec:candidate.probe.codec,supported:candidate.probe.supported,bytes:candidate.identity.size,mediaUrl:`/api/project-videos/projects/${id}/videos/${sourceId}/changes/${preview.token}/media`,thumbnailUrl:null},affectedAdoptedShots:(before.adoption.shots.get(sourceId)||[]).map(publicShot),invalidAdoptedShots:invalid,otherActiveReferences,canAccept:changeKind!=='metadata_only',canTrash:!otherActiveReferences.length&&!!(this.catalog.lib.trashBin||this.catalog.trashInjected),reasons:[]};
     });
@@ -85,7 +88,12 @@ export class ProjectVideoContentChanges {
   async open(id,sourceId,token){
     const p=this.find(id,sourceId,token,'changes-preview');this.catalog.verification.assertAuthority(p.context);
     if(!p.candidate.probe.supported)fail('CODEC_UNSUPPORTED','浏览器不支持此编码，请使用本机播放器核对',415);
-    return {...await this.catalog.media.open({path:p.candidate.file,identity:p.candidate.identity}),path:p.candidate.file};
+    // Keep showing the frozen candidate if the original bytes change again,
+    // but never serve it after the registered location loses its authority.
+    await this.catalog.verification.checkLocation(p.context);
+    const opened=await this.catalog.media.open({path:p.candidate.file,identity:p.candidate.identity});
+    try{this.catalog.verification.assertAuthority(p.context);return {...opened,path:p.candidate.file};}
+    catch(e){await this.catalog.media.release(opened.handle);throw e;}
   }
   async checkCandidate(id,sourceId,input,p){
     const c=this.catalog,current=this.expected(id,sourceId,input);

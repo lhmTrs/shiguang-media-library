@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fixture,imported,finish,initialize,bind,replaceBytes} from './helpers/project-video-desktop-fixture.mjs';
 
@@ -38,6 +39,38 @@ test('D: candidate edited after preview, stale record and changed adoption do no
   await replaceBytes(f,source,{color:'green'});
   const result=await finish(f,f.catalog.changes.accept(f.project.id,source.id,{requestId:randomUUID(),expectedRevision:p.expectedRevision,adoptionStamp:p.adoptionStamp,contentToken:p.contentToken,confirmAcceptContent:true,confirmedUnbindShotIds:[]}));
   assert.equal(result.status,'failed');assert.equal(f.catalog.metadata(f.project.id,source).row.revision,p.expectedRevision);assert.equal(Object.keys(f.entry.store.baseState(f.project.id).plan.adopted).length,3);
+});
+
+test('D: frozen candidate remains readable after original byte edits, but not after the registered storage root is replaced',async t=>{
+  const f=await fixture(t),source=await imported(f);await replaceBytes(f,source);const p=await preview(f,source);
+  await replaceBytes(f,source,{color:'green'});
+  const frozen=await f.catalog.changes.open(f.project.id,source.id,p.contentToken);await f.entry.media.release(frozen.handle);
+  const root=f.catalog.directory,retained=root+'-retained',folder=path.basename(path.dirname(source.path));
+  await fs.rename(root,retained);await fs.mkdir(root);await fs.rename(path.join(retained,folder),path.join(root,folder));
+  await assert.rejects(f.catalog.changes.open(f.project.id,source.id,p.contentToken),e=>e.status===409||e.status===403);
+  assert.equal(f.entry.media.handles.size,0);
+});
+
+test('D: published snapshot and token share their deadline after preparation, with no early cleanup',async t=>{
+  const f=await fixture(t),source=await imported(f);await replaceBytes(f,source);
+  const realNow=Date.now,realProbe=f.entry.media.probe.bind(f.entry.media),start=realNow();let now=start;
+  try{
+    Date.now=()=>now;f.entry.media.probe=async file=>{const value=await realProbe(file);now+=20000;return value;};
+    const p=await preview(f,source);f.entry.media.probe=realProbe;
+    const snapshot=[...f.catalog.changes.snapshots.values()][0];assert.equal(snapshot.expiresAt,p.expiresAt);assert.equal(p.expiresAt,start+620000);
+    now=start+610000;await f.catalog.changes.cleanup();
+    const opened=await f.catalog.changes.open(f.project.id,source.id,p.contentToken);await f.entry.media.release(opened.handle);
+    now=p.expiresAt+1;await f.catalog.changes.cleanup();assert.equal(f.catalog.changes.snapshots.size,0);
+  }finally{Date.now=realNow;f.entry.media.probe=realProbe;}
+});
+
+test('D: authority lost while opening a candidate releases the opened descriptor',async t=>{
+  const f=await fixture(t),source=await imported(f);await replaceBytes(f,source);const p=await preview(f,source);
+  const realOpen=f.entry.media.open.bind(f.entry.media),realAssert=f.catalog.verification.assertAuthority.bind(f.catalog.verification);let lose=false;
+  f.entry.media.open=async value=>{const opened=await realOpen(value);lose=true;return opened;};
+  f.catalog.verification.assertAuthority=context=>{if(lose)throw Object.assign(Error('authority changed'),{code:'VIDEO_CONFLICT',status:409});return realAssert(context);};
+  try{await assert.rejects(f.catalog.changes.open(f.project.id,source.id,p.contentToken),e=>e.code==='VIDEO_CONFLICT');assert.equal(f.entry.media.handles.size,0);}
+  finally{f.entry.media.open=realOpen;f.catalog.verification.assertAuthority=realAssert;}
 });
 
 test('D: keep removal works with missing file and does not delete shot/dialogue or change file references elsewhere',async t=>{
