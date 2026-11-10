@@ -364,3 +364,23 @@ test('empty index cache: different content and concurrent cache writes cannot re
     }
   }
 });
+
+// Finder reveal must use the same content-bound recheck as preview. The native
+// Finder call is stubbed: this test never opens Finder or reads user media.
+test('Finder reveal: unchanged bytes after metadata drift retain video and adopted bindings',async t=>{
+  const f=await fixture(t);initialize(f);const source=await imported(f,'finder-metadata.mp4');await bind(f,source);const before=snapshot(f,source.id);
+  await ctimeOnly(source);let reveals=0;
+  f.lib.reveal=async assetId=>{reveals++;assert.equal(assetId,before.asset.id);assert.equal(f.catalog.isManaged(f.project.id,f.entry.store.source(f.project.id,source.id)),true);};
+  assert.deepEqual(await f.catalog.reveal(f.project.id,source.id),{ok:true});
+  assert.equal(reveals,1);preserved(f,source.id,before);
+});
+test('Finder reveal: changed content or revoked authority never open a replacement',async t=>{
+  const f=await fixture(t);let reveals=0;f.lib.reveal=async()=>{reveals++;};
+  for(const kind of ['content','approval']){
+    const source=await imported(f,'finder-deny-'+kind+'.mp4');await ctimeOnly(source);
+    if(kind==='content'){const bytes=Buffer.from(f.bytes);bytes[bytes.length-1]^=1;await fs.writeFile(source.path,bytes);}
+    else f.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(source.id);
+    await deniedWithoutWrites(f,source,()=>f.catalog.reveal(f.project.id,source.id));
+  }
+  assert.equal(reveals,0);
+});
