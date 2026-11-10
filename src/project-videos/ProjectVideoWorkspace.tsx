@@ -159,6 +159,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const [ctxPos, setCtxPos] = useState<{x: number; y: number} | null>(null);
   const [marquee, setMarquee] = useState<{x: number; y: number; w: number; h: number} | null>(null);
   const [revealConfirm, setRevealConfirm] = useState(false);
+  const autoRevealRef = useRef('');
   const desktop = useDesktopAction(projectId, request);
   const applyPick = (next: string[]) => { if (next.length > 1) { setMultiPicked(next); setSelectedId(''); } else { setMultiPicked([]); setSelectedId(next[0] || ''); } };
   const focusedRequest = useRef<number>();
@@ -627,7 +628,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     if (!revealCap.available) { setError(`不能批量在访达中显示：${revealCap.reason}`); return; }
     if (ids.length > maxSelection) { setError(`一次最多定位 ${maxSelection} 个视频，当前已选 ${ids.length} 个。`); return; }
     if (!desktop.settled) { setError('上一笔桌面操作还没有结束或结果待核对，请先查看它的结果。'); return; }
-    desktop.clear(); setRevealConfirm(true); void desktop.start('reveal-preview', ids);
+    // 用户要求：所选视频能在同一个访达窗口里打开时，核对通过后直接打开，不再弹确认；分散在多个目录时才弹窗确认。
+    // 先按已知目录预判：同一目录则后台核对、不弹窗；核对结果仍以后台返回的目录数为准（见下方 effect）。
+    const folderKeys = new Set(ids.map(id => videos.find(v => v.id === id)?.folderId ?? `none:${id}`));
+    desktop.clear(); autoRevealRef.current = 'pending';
+    if (folderKeys.size !== 1 || [...folderKeys][0].startsWith('none:')) { autoRevealRef.current = ''; setRevealConfirm(true); }
+    void desktop.start('reveal-preview', ids).then(requestId => { if (autoRevealRef.current === 'pending') autoRevealRef.current = requestId || ''; });
   }
   function libraryKeys(e: React.KeyboardEvent<HTMLElement>) {
     const target = e.target as HTMLElement;
@@ -666,6 +672,16 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const copyDisabledReason = !clipCap.available ? clipCap.reason : actionTargets.length > maxSelection ? `一次最多 ${maxSelection} 个` : '';
   const revealDisabledReason = actionTargets.length > 1 && !revealCap.available ? revealCap.reason : actionTargets.length > maxSelection ? `一次最多 ${maxSelection} 个` : '';
   const desktopAction = desktop.action, desktopReceipt = desktopAction?.receipt || null;
+  // 同一目录的核对完成后：后台也确认只有 1 个目录且有可定位文件 → 直接派发；否则（多目录、全部不能定位）打开确认窗。
+  useEffect(() => {
+    const a = desktopAction, r = desktopReceipt;
+    if (!a || a.kind !== 'reveal-preview' || !autoRevealRef.current || autoRevealRef.current !== 'pending' && autoRevealRef.current !== a.requestId) return;
+    if (a.busy || a.unknown || a.error || !r || ['queued', 'checking', 'dispatching'].includes(r.status)) return;
+    autoRevealRef.current = '';
+    const folders = r.folderCount ?? r.folders?.length ?? 0;
+    if (r.status !== 'failed' && folders <= 1 && (r.eligible?.length || 0) > 0 && r.previewToken) { const ids = a.ids, token = r.previewToken; desktop.clear(); void desktop.start('reveal', ids, {previewToken: token}); }
+    else setRevealConfirm(true);
+  }, [desktopAction]);
   const desktopPending = actionPending(desktopAction);
   // 进行中或结果待核对时，不允许开始新的桌面操作（只能先查询原请求或确认收起）。
   const desktopBlocked = desktopPending || !!desktopAction?.unknown;

@@ -80,9 +80,11 @@ try {
   // ---- 转发：页面发出的桌面操作 → 真实后端（替身原生）；编号双向替换 ----
   const toFx = new Map([[projectId, f.project.id], ...appIds.map((id, i) => [id, fx[i].id])]), toApp = new Map([...toFx].map(([a, b]) => [b, a]));
   const swap = (text, map) => { let out = text; for (const [a, b] of map) out = out.split(a).join(b); return out; };
-  const counters = { forwarded: 0 }; let dropNext = '';
+  const counters = { forwarded: 0 }; let dropNext = '', mutateBeforeReveal = false;
   async function forward(route, suffix) {
     const req = route.request(), body = req.postData();
+    // 模拟“核对之后、派发之前文件内容被改”：在执行请求到达后台前改写文件内容
+    if (mutateBeforeReveal && suffix === '/videos/reveal') { mutateBeforeReveal = false; await replaceBytes(f, fx[0]); }
     const res = await fetch(fxBase + suffix, { method: req.method(), headers: { 'content-type': 'application/json' }, body: body ? swap(body, toFx) : undefined });
     const text = swap(await res.text(), toApp); counters.forwarded++;
     if (dropNext && suffix.startsWith(dropNext)) { dropNext = ''; return route.abort('failed'); } // 真实请求已到后端，只丢回应
@@ -126,24 +128,21 @@ try {
     assert.equal(f.native.copies.length, before + 1, '查询不应重复写剪贴板'); await banner().getByRole('button', { name: '收起提示' }).click();
   });
 
-  await check('批量在访达中显示（真实回执）：先核对目录数，确认后才派发', async () => {
+  await check('批量在访达中显示（真实回执）：同一目录核对通过后直接派发，不弹确认', async () => {
     const before = f.native.reveals.length; await pick([0, 1]);
     await bar().getByRole('button', { name: '在访达中显示' }).click();
-    await expect(modal()).toContainText(/将在 \d+ 个目录中定位 2 个文件/, { timeout: 20000 }); assert.equal(f.native.reveals.length, before, '确认前不派发');
-    await modal().getByRole('button', { name: /在访达中定位 2 个文件/ }).click();
-    await expect(modal()).toContainText('已请求在访达显示 2 个文件', { timeout: 20000 }); assert.equal(f.native.reveals.length, before + 1);
-    await modal().getByRole('button', { name: '完成' }).click(); await expect(modal()).toHaveCount(0);
+    await expect(banner()).toContainText('已请求在访达显示 2 个文件', { timeout: 20000 }); await expect(modal()).toHaveCount(0);
+    assert.equal(f.native.reveals.length, before + 1, '原生只派发一次');
+    await banner().getByRole('button', { name: '收起提示' }).click();
   });
 
-  await check('核对后内容改变：真实执行被拒，不显示已请求，原生不派发', async () => {
-    const before = f.native.reveals.length; await pick([0, 1]);
-    await bar().getByRole('button', { name: '在访达中显示' }).click(); await expect(modal()).toContainText(/将在 \d+ 个目录中定位 2 个文件/, { timeout: 20000 });
-    await replaceBytes(f, fx[0]);
-    await modal().getByRole('button', { name: /在访达中定位 2 个文件/ }).click();
-    await expect(modal()).not.toContainText('已请求在访达显示 2 个文件', { timeout: 20000 });
-    await expect(modal().locator('.pv-error, [role=alert]')).toBeVisible({ timeout: 20000 });
-    assert.equal(f.native.reveals.length, before, '内容改变后不应派发');
-    await modal().locator('.pv-dialog-actions').getByRole('button').first().click(); await expect(modal()).toHaveCount(0);
+  await check('核对后、派发前内容改变：真实执行被拒，不显示已请求，原生不派发', async () => {
+    const before = f.native.reveals.length; await pick([0, 1]); mutateBeforeReveal = true;
+    await bar().getByRole('button', { name: '在访达中显示' }).click();
+    const failed = page.locator('.pv-desktop-banner[data-tone="bad"], .pv-modal .pv-error');
+    await expect(failed.first()).toBeVisible({ timeout: 20000 });
+    await expect(work()).not.toContainText('已请求在访达显示 2 个文件');
+    assert.equal(f.native.reveals.length, before, '内容改变后不应派发'); assert.equal(mutateBeforeReveal, false, '应已在执行前改写内容');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
