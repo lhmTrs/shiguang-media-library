@@ -50,6 +50,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       if (value.id !== handoffId) throw Error('收纳选择身份不符，请核对原窗口');
       setApi(() => request); setHandoff(value);
       const saved = readAttempt(handoffId); attempt.current = saved;
+      // Freeze the original attempt before awaiting a possibly lost batch read.
+      setUnknown(!!saved || !!value.batchId);
       if (initialized.current !== handoffId) {
         initialized.current = handoffId; setSelected(saved?.fileIds || value.files.map(f => f.id)); setMode(saved?.mode || 'copy');
         setDestinations(Object.fromEntries(value.files.map(f=>[f.id,saved?.version===2?saved.targets.find(t=>t.fileId===f.id)?.destination||null:initialDestination(f,value.preferences||{})])));
@@ -86,19 +88,20 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
   async function confirm() {
-    if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || batch || !selected.length || selected.some(id=>!destinations[id]||!readyTargets[id]) || mode === 'move' && !handoff.canTrash) return;
+    if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || unknown || handoff.batchId || batch || !selected.length || selected.some(id=>!destinations[id]||!readyTargets[id]) || mode === 'move' && !handoff.canTrash) return;
     const input: ConfirmInput = {version:2,requestId:crypto.randomUUID(),mode,fileIds:[...selected],targets:selected.map(fileId=>({fileId,destination:submittedDestination(destinations[fileId]!)}))};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
     catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。'));}}
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
-  const files = handoff?.files.filter(f => selected.includes(f.id)) || [], locked = busy || unknown || !!batch;
+  const files = handoff?.files.filter(f => selected.includes(f.id)) || [], locked = loading || busy || unknown || !!batch || !!attempt.current || !!handoff?.batchId;
   return <main className="fi-root fi-window"><section className="fi-confirm" aria-label="收纳素材到拾光" aria-busy={loading || busy}>
     <header className="fi-heading"><FolderInput size={23}/><div><h1>收纳素材到拾光</h1><p>{batch ? receiptKind === 'submitted' ? '任务已接收，后台继续处理' : receiptKind === 'other' ? '另一窗口已接收此选择' : '查看既有任务，没有新建任务' : '选择目标，一次确认，后台收纳'}</p></div></header>
     {loading && <p role="status" className="fi-muted">正在读取本次访达选择…</p>}
     {!loading && !handoff && <div className="fi-empty"><AlertCircle size={24}/><p>尚未读取到本次收纳选择。请先启动拾光，再重试读取。</p><button onClick={() => setReload(n => n + 1)}><RefreshCw size={14}/>启动拾光后重新读取</button></div>}
-    {handoff && !batch && <>
+    {handoff?.batchId&&!batch&&!attempt.current&&<p className="fi-muted" role="status">正在核对既有收纳任务，原目标以任务回执为准；不会重新提交。</p>}
+    {handoff && !batch && !(handoff.batchId&&!attempt.current) && <>
       <div className="fi-selection-summary"><strong>{files.length} 个文件</strong><span>{bytes(files.reduce((sum, f) => sum + f.bytes, 0))}</span></div>
       {handoff.preparation==='checking'&&<p className="fi-muted" role="status">正在后台核验原文件，可先选择项目和文件夹；完成后即可确认收纳。</p>}
       {handoff.preparation==='failed'&&<p className="fi-error" role="alert">{handoff.preparationError}</p>}

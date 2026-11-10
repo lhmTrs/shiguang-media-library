@@ -18,6 +18,8 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   const [folders,setFolders]=useState<IntakeFolder[]>([]),[reading,setReading]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[newFolder,setNewFolder]=useState(''),[creating,setCreating]=useState(false),[proposal,setProposal]=useState<Proposal|null>(null),[checking,setChecking]=useState(false);
   const valueRef=useRef(value);valueRef.current=value;
   const lockedRef=useRef(locked);lockedRef.current=locked;
+  const mounted=useRef(true);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const kind=value?.kind,scope=value?.scope,project=value?.projectId||'';
   const name=value?.characterName??value?.imageProposal?.characterName??'',look=value?.lookName??value?.imageProposal?.lookName??'',proposalKey=JSON.stringify([scope,project,name,look]);
   const locationKey=JSON.stringify([kind,scope,project,value?.directory||'',value?.folderId||'root']);
@@ -45,7 +47,7 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   const selected=value?.scope==='project'?value.folderId||'root':value?.directory||'';
   const ready=!locked&&!!value&&!reading&&!checking&&!creating&&!error&&(scope==='project'?!!project&&(kind==='photo'?proposalRef.current===proposalKey&&!!proposal:folders.some(f=>f.id===selected)):folders.some(f=>f.id===selected));
   useEffect(()=>{onReady(ready);return()=>onReady(false);},[ready]);
-  async function createFolder(){if(locked||!value||!newFolder.trim()||creating)return;const version=location.current.version;setCreating(true);setError('');try{const r=await api<{relativePath:string}>(INTAKE_API+'/categories/'+value.kind,{directory:value.directory||'',name:newFolder});const current=valueRef.current;if(!lockedRef.current&&current&&location.current.version===version)onChange({...current,directory:r.relativePath});setNewFolder('');setRefresh(n=>n+1);}catch(e){if(!lockedRef.current&&location.current.version===version)setError(errorMessage(e));}finally{setCreating(false);}}
+  async function createFolder(){if(locked||!value||!newFolder.trim()||creating)return;const version=location.current.version;setCreating(true);setError('');try{const r=await api<{relativePath:string}>(INTAKE_API+'/categories/'+value.kind,{directory:value.directory||'',name:newFolder});if(!mounted.current)return;const current=valueRef.current;if(!lockedRef.current&&current&&location.current.version===version)onChange({...current,directory:r.relativePath});setNewFolder('');setRefresh(n=>n+1);}catch(e){if(mounted.current&&!lockedRef.current&&location.current.version===version)setError(errorMessage(e));}finally{if(mounted.current)setCreating(false);}}
   const updateFilename=(text:string)=>{if(!value)return;const next=imageNamePreset(text),change:Partial<DestinationDraft>={fileName:text};if(!value.characterNameManual)change.characterName=next.name;if(!value.lookNameManual)change.lookName=next.lookName;onChange({...value,...change});};
   return <section className="fi-item" aria-label={'收纳设置 '+file.name}>
     {file.mediaKind==='photo'&&(previewReady?<img src={'/api'+INTAKE_API+'/handoffs/'+encoded(handoffId)+'/files/'+encoded(file.id)+'/preview'} width="160" height="100" alt={file.name}/>:<p role="status">正在准备图片预览…</p>)}

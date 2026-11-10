@@ -324,6 +324,37 @@ export class ManagedIntakeCatalog {
     if(!same(stamp(await opened.handle.stat()),opened.identity) || !same(stamp(await fs.lstat(file)),opened.identity) || await fs.realpath(file)!==file)
       throw error('SOURCE_CHANGED','文件或其路径在核验期间发生变化');
   }
+  durabilityProof(s,file,identity,hash) {
+    return {version:1,path:file,identity,hash,target:digest(s.target)};
+  }
+  assertDurable(s,file=s.resultPath,identity=s.resultIdentity,hash=s.resultHash) {
+    // A legacy ready/commit journal proves registration, not that copyOnly's
+    // final file and directory entries were synced. Never upgrade it on read.
+    if(!s.durability || canonical(s.durability)!==canonical(this.durabilityProof(s,file,identity,hash)))
+      throw error('SOURCE_UNTRUSTED','正式副本缺少文件及目录同步证明；原件与接收副本保留');
+  }
+  async syncPublished(s,file,opened,d) {
+    await this.current(s.target);await this.verifyHeld(file,opened);
+    await opened.handle.sync();
+    await this.verifyHeld(file,opened);
+    // Sync leaf first, then every pinned ancestor through the pre-existing
+    // anchor. This also persists personal_item/type/project directories made
+    // during prepare, without following links or recreating a changed target.
+    const proofs=[...new Map([this.anchor,...s.target.proofs].map(p=>[p.path,p])).values()].reverse();
+    for(const proof of proofs) {
+      await this.current(s.target);
+      const handle=await fs.open(proof.path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+      try {
+        const st=await handle.stat();
+        if(!st.isDirectory() || !sameDirectory(directoryIdentity(st),proof.identity)) throw error('TARGET_CHANGED','同步目录不是原固定目标');
+        await handle.sync();
+        if(!sameDirectory(directoryIdentity(await handle.stat()),proof.identity)) throw error('TARGET_CHANGED','同步期间目录身份已变化');
+        await this.current(s.target);
+      } finally {await handle.close();}
+    }
+    await this.verifyHeld(file,opened);await this.current(s.target);
+    return this.durabilityProof(s,file,d.identity,d.hash);
+  }
   async upload(target,id,stream) {
     const s=this.read(target,id);
     if(s.status!=='waiting' || s.instance!==this.instance || this.running.has(id)) throw error('IMPORT_BUSY','原请求已接收或中断，不能重发');
@@ -442,7 +473,7 @@ export class ManagedIntakeCatalog {
         preparer.inspect=async(id,...args)=>id===mediaId ? {state:'available',sha256:d.hash,name:path.basename(file)} : this.assets.inspect(id,...args);
         prepared=await preparer.prepare(bindingInput(this.imageTarget(s.target),previous,mediaId,s.ids.bindingId),previous);
       }
-      await this.current(s.target);await this.verifyHeld(file,opened);
+      s.durability=await this.syncPublished(s,file,opened,d);
       const commit={assetId:mediaId,path:file,identity:d.identity,hash:d.hash,
         creativeId:prepared?.id,revision:prepared?(previous?.revision??0)+1:undefined,contentHash:prepared?digest(contentOf(prepared)):undefined};
       s.commit=commit;s.status='committing';this.persist(s);
@@ -477,6 +508,7 @@ export class ManagedIntakeCatalog {
   async recover(s) {
     this.assertReceiptLibrary(s);
     const c=s.commit;await this.current(s.target,{image:false});
+    this.assertDurable(s,c.path,c.identity,c.hash);
     const d=await this.hash(c.path,c.identity);
     if(d.hash!==c.hash) throw error('SOURCE_CHANGED','事务副本摘要不同');
     const a=this.db.prepare('SELECT * FROM assets WHERE id=?').get(c.assetId);this.assertAsset(a,s,c.path,d);
@@ -493,6 +525,7 @@ export class ManagedIntakeCatalog {
     if(!uuid(assetId)) throw error('SOURCE_UNTRUSTED','素材编号无效');
     const receipts=this.receipts.list().filter(s=>this.ownsReceipt(s) && s.status==='ready' && s.assetId===assetId && canonical(s.target)===canonical(target));
     const s=receipts.sort((a,b)=>a.createdAt-b.createdAt).at(-1);if(!s) throw error('SOURCE_UNTRUSTED','没有此固定目标的成功回执');
+    this.assertDurable(s);
     await this.current(target,{image:false});
     const a=this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId),d=await this.hash(s.resultPath,s.resultIdentity);
     if(!a || d.hash!==s.resultHash || a.sha256!==s.resultHash || assetProof(this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId))!==assetProof(a)) throw error('SOURCE_UNTRUSTED','正式文件或原登记未通过成功回执核验');

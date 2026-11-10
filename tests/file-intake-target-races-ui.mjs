@@ -84,7 +84,7 @@ try{
   assert.equal(await u.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),unknown.id),journal);
   await u.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(u.locator('.fi-confirm > .fi-error')).toContainText('尚未取得权威批次回执');
   const unknownPosts=requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+unknown.id+'/confirm')).length;assert.equal(unknownPosts,1);
-  await shot(u,'unknown-category-changed-to-root');record('C1-unknown-target-is-rewritten-in-ui','PASS',{expected:'原定分类 stays fixed even if unavailable',actual:await field(u,'目标分类',uid).inputValue(),original:JSON.parse(journal),journalUnchanged:true,confirmPosts:unknownPosts});await u.close();
+  await shot(u,'unknown-category-changed-to-root');record('C1-frozen-missing-category-preserved','PASS',{expected:'原定分类 stays fixed even if unavailable',actual:await field(u,'目标分类',uid).inputValue(),original:JSON.parse(journal),journalUnchanged:true,confirmPosts:unknownPosts});await u.close();
 
   const project=await api('/projects',{name:'独立人物项目',software:'',note:''});
   // Explicit names survive a matching intermediate filename and subsequent renames.
@@ -92,11 +92,11 @@ try{
   await field(m,'人物名',mid).fill('林舟');
   await m.getByText('修改导入后的文件名',{exact:true}).click();await field(m,'副本名称',mid).fill('林舟_夜行.png');await expect(field(m,'人物名',mid)).toHaveValue('林舟');
   await field(m,'副本名称',mid).fill('周扬_便装.png');await expect(field(m,'人物名',mid)).toHaveValue('林舟');await expect(confirm(m)).toBeEnabled();
-  await shot(m,'manual-character-overwritten');record('C2-explicit-character-overwritten-by-second-rename','PASS',{steps:['source 苏禾_日常.png','explicit character 林舟','rename 林舟_夜行.png','rename 周扬_便装.png'],expected:'林舟',actual:await field(m,'人物名',mid).inputValue()});
+  await shot(m,'manual-character-overwritten');record('C2-manual-name-survives-renames','PASS',{steps:['source 苏禾_日常.png','explicit character 林舟','rename 林舟_夜行.png','rename 周扬_便装.png'],expected:'林舟',actual:await field(m,'人物名',mid).inputValue()});
 
   // The serialized submit intentionally lacks draft names; reload must still show the proposal.
   await blockConfirm(m);const imageJournal=await m.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),manual.id);await m.reload();await expect(m.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(m,'人物名',mid)).toBeDisabled();await expect(field(m,'人物名',mid)).toHaveValue('林舟');await expect(field(m,'造型名',mid)).toHaveValue('便装');
-  await shot(m,'unknown-image-target-blank');record('C3-unknown-image-target-disappears','PASS',{expected:'Show immutable imageProposal character/look',actual:{character:await field(m,'人物名',mid).inputValue(),look:await field(m,'造型名',mid).inputValue()},original:JSON.parse(imageJournal)});await m.close();
+  await shot(m,'unknown-image-target-blank');record('C3-frozen-image-target-restored','PASS',{expected:'Show immutable imageProposal character/look',actual:{character:await field(m,'人物名',mid).inputValue(),look:await field(m,'造型名',mid).inputValue()},original:JSON.parse(imageJournal)});await m.close();
 
   // Async create returns after an explicit new media-kind choice; it must not undo it.
   const race=await receipts.handoff([music]),r=await pageFor(race),rid=race.files[0].id;
@@ -107,7 +107,7 @@ try{
   await section.getByRole('button',{name:'创建分类',exact:true}).click();await fetched;
   await field(r,'素材类型',rid).selectOption('sfx');await expect(field(r,'素材类型',rid)).toHaveValue('sfx');release();
   await expect(section.getByRole('button',{name:'创建分类',exact:true})).toBeVisible();await expect(field(r,'新分类名称',rid)).toHaveValue('');await expect(field(r,'素材类型',rid)).toHaveValue('sfx');await expect(field(r,'目标分类',rid)).toHaveValue('');
-  await shot(r,'late-folder-response-reverts-audio-kind');record('C4-late-folder-create-overwrites-new-audio-choice','PASS',{explicitLatestChoice:'sfx',actual:await field(r,'素材类型',rid).inputValue(),actualDirectory:await field(r,'目标分类',rid).inputValue(),fault:'Delay only the real POST response after folder is created'});await r.close();
+  await shot(r,'late-folder-response-reverts-audio-kind');record('C4-late-category-response-ignored','PASS',{explicitLatestChoice:'sfx',actual:await field(r,'素材类型',rid).inputValue(),actualDirectory:await field(r,'目标分类',rid).inputValue(),fault:'Delay only the real POST response after folder is created'});await r.close();
 
   // Deferred source verification waits before loading the real preview.
   const delayed=await receipts.handoff([png],{deferFingerprint:true}),d=await pageFor(delayed),did=delayed.files[0].id;
@@ -117,7 +117,28 @@ try{
   await expect.poll(()=>img.evaluate(e=>e.naturalWidth)).toBeGreaterThan(0);
   const after=await img.evaluate(e=>({complete:e.complete,width:e.naturalWidth,src:e.getAttribute('src')}));
   const preview=await d.request.get(origin+after.src);assert.equal(preview.status(),200);
-  assert.ok(after.width>0);await shot(d,'prepared-image-preview-still-broken');record('C5-image-preview-does-not-retry-after-verification','PASS',{before,after,endpointStatusWhenReady:preview.status(),handoffId:delayed.id});await d.close();
+  assert.ok(after.width>0);await shot(d,'prepared-image-preview-still-broken');record('C5-preview-waits-until-ready','PASS',{before,after,endpointStatusWhenReady:preview.status(),handoffId:delayed.id});await d.close();
+
+  // Removing and restoring a row creates a new editor instance. Its predecessor
+  // must never be allowed to apply the delayed category response.
+  const remount=await receipts.handoff([music]),rp=await pageFor(remount),rpid=remount.files[0].id;
+  await field(rp,'素材类型',rpid).selectOption('music');await expect(confirm(rp)).toBeEnabled();
+  const rs=rp.getByRole('region',{name:'收纳设置 独立音乐.wav',exact:true});await rs.getByText('新建分类文件夹',{exact:true}).click();await field(rp,'新分类名称',rpid).fill('移除前分类');
+  let readFolder,releaseFolder,finishedFolder;const folderRead=new Promise(r=>readFolder=r),folderGate=new Promise(r=>releaseFolder=r),folderFinished=new Promise(r=>finishedFolder=r);releases.push(releaseFolder);
+  await rp.route('**/api/file-intake/categories/music',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();readFolder();await folderGate;await route.fulfill({response});finishedFolder();});
+  await rs.getByRole('button',{name:'创建分类',exact:true}).click();await folderRead;
+  await rp.getByRole('button',{name:'移除 独立音乐.wav',exact:true}).click();await rp.getByRole('button',{name:'恢复 独立音乐.wav',exact:true}).click();await field(rp,'素材类型',rpid).selectOption('sfx');
+  releaseFolder();await folderFinished;await pause(150);
+  try{await expect(field(rp,'素材类型',rpid)).toHaveValue('sfx');record('C6-unmounted-category-response-ignored','PASS',{});}catch(e){record('C6-unmounted-category-response-ignored','FAIL',{message:e.message});process.exitCode=1;}await rp.close();
+
+  // The server accepted the original request, but both the confirm response and
+  // subsequent receipt read are lost. Recovery must remain read-only throughout.
+  const acceptedUnknown=await receipts.handoff([png]),ap=await pageFor(acceptedUnknown),apid=acceptedUnknown.files[0].id;
+  await photoProject(ap,apid,project.id);await field(ap,'人物名',apid).fill('回执核对人物');await expect(confirm(ap)).toBeEnabled();
+  await ap.route('**/api/file-intake/handoffs/*/confirm',async route=>{await route.fetch();await route.abort('failed');});await confirm(ap).click();await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
+  const fixed=await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id);
+  await ap.route('**/api/file-intake/batches/*',route=>route.abort('failed'));await ap.reload();
+  try{await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(ap,'人物名',apid)).toBeDisabled();await expect(field(ap,'人物名',apid)).toHaveValue('回执核对人物');assert.equal(await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id),fixed);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+acceptedUnknown.id+'/confirm')).length,1);record('C7-accepted-receipt-loss-keeps-frozen-target','PASS',{});}catch(e){record('C7-accepted-receipt-loss-keeps-frozen-target','FAIL',{message:e.message});process.exitCode=1;}await ap.close();
 }catch(e){harnessError=e.stack||String(e);console.error(harnessError);process.exitCode=1;}
 finally{
   for(const release of releases)release();

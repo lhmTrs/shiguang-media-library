@@ -679,7 +679,7 @@ app.post(
     res.json(await mysqlStorage.activate(req.body)),
   ),
 );
-const visibleManagedRoots=protectManagedRoots(app,lib,process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'));
+const visibleManagedRoots=protectManagedRoots(app,lib,managedIntake.directory);
 app.get("/api/roots", (req, res) => res.json(visibleManagedRoots(lib.roots())));
 app.post("/api/roots/management-order", (req, res) => res.json(lib.setRootManagementOrder(req.body.ids)));
 app.get("/api/folder-browser", asyncRoute(async (req, res) => res.json(await folderBrowser.branch(req.query))));

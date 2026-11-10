@@ -43,6 +43,16 @@ async function start(f,d,{target,bound}={},fileName='test.png',bytes=png,request
   return {target,bound,input,upload:()=>bound.upload(d.projectId||'',requestId,Readable.from([bytes]))};
 }
 async function proposal(f,name='合成人物',look='日常') {return (await f.managed.imageProposal(f.project.id,name,look)).destination;}
+async function withSyncHook(hook,run) {
+  const open=fs.open,handles=[];
+  fs.open=async function(file,...args) {
+    const handle=await open.call(this,file,...args),sync=handle.sync;
+    handles.push(handle);
+    handle.sync=()=>hook(String(file),()=>sync.call(handle));
+    return handle;
+  };
+  try {return await run();} finally {fs.open=open;assert.ok(handles.every(h=>h.fd===-1),'all owned file/directory descriptors must close');}
+}
 
 test('all four library kinds copy independent bytes, derive classification, persist private idempotent receipts, never probe',async t=>{
   const f=await fixture(t);
@@ -168,10 +178,16 @@ test('project proposal is read-only, requires explicit IDs/revisions; same-batch
   const sharedImages=new Map(),p1=await prepared(f,d,{sharedImages}),p2=await prepared(f,d,{sharedImages});
   assert.deepEqual(p1.target.imageIds,p2.target.imageIds);
   const first=await start(f,d,p1,'first.png'),second=await start(f,d,p2,'second.png',Buffer.concat([png,Buffer.from('2')]));
-  const [a,b]=await Promise.all([first.upload(),second.upload()]);assert.equal(a.status,'ready');assert.equal(b.status,'ready');
+  // Concurrent streams may reach the serialized commit in either order. The
+  // cover belongs to the first successful commit, not Promise.all's index.
+  const readyOrder=[],write=f.managed.receipts.write.bind(f.managed.receipts);
+  f.managed.receipts.write=(s,options)=>{const result=write(s,options);if(s.status==='ready') readyOrder.push(s.bindingId);return result;};
+  let a,b;
+  try {[a,b]=await Promise.all([first.upload(),second.upload()]);} finally {f.managed.receipts.write=write;}
+  assert.equal(a.status,'ready');assert.equal(b.status,'ready');assert.equal(readyOrder.length,2);
   assert.equal(a.creativeAssetId,b.creativeAssetId);assert.equal(a.lookId,b.lookId);assert.notEqual(a.bindingId,b.bindingId);
   const character=f.assets.get(a.creativeAssetId);assert.equal(character.images.length,2);assert.equal(character.looks.length,1);
-  assert.equal(character.default_look_id,a.lookId);assert.equal(character.looks[0].default_image_id,a.bindingId);
+  assert.equal(character.default_look_id,a.lookId);assert.equal(character.looks[0].default_image_id,readyOrder[0]);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM creative_assets').get().n,1);
   assert.ok(f.lib.asset(a.assetId).path.includes(path.sep+'picture'+path.sep));
   await assert.rejects(first.bound.current(f.other.id),e=>e.code==='TARGET_CHANGED');
@@ -333,6 +349,101 @@ test('parent move removes only its disposable original after durable generic reg
   const h=await intake.receipts.handoff([file]),d={kind:'photo',scope:'library'},batch=await intake.confirm(h.id,{version:2,requestId:randomUUID(),mode:'move',fileIds:[h.files[0].id],targets:[{fileId:h.files[0].id,destination:d}]});
   await settled(intake);const item=intake.batch(batch.id).items[0];assert.equal(item.status,'ready');assert.equal(item.removal,'complete');assert.equal(calls,1);
   assert.deepEqual(await fs.readFile(f.lib.asset(item.assetId).path),png);await assert.rejects(fs.access(file),{code:'ENOENT'});
+});
+
+test('formal file and all pinned directory entries sync leaf-first before committing library or project images',async t=>{
+  for(const scope of ['library','project']) await t.test(scope,async t=>{
+    const f=await fixture(t),d=scope==='project'?await proposal(f):{kind:'photo',scope},selected=await start(f,d),events=[];
+    const expected=[path.join(selected.target.target,'test.png'),...[...new Set(selected.target.proofs.map(p=>p.path))].reverse()];
+    const write=f.managed.receipts.write.bind(f.managed.receipts);
+    f.managed.receipts.write=(s,options)=>{
+      if(['committing','ready'].includes(s.status)) {
+        assert.deepEqual(events.filter(file=>expected.includes(file)),expected);
+        assert.equal(s.durability.version,1);assert.equal(s.durability.path,s.published);assert.equal(s.durability.hash,sha(png));
+      }
+      return write(s,options);
+    };
+    try {
+      await withSyncHook(async(file,sync)=>{await sync();events.push(file);},async()=>assert.equal((await selected.upload()).status,'ready'));
+    } finally {f.managed.receipts.write=write;}
+    const s=selected.bound.receipt('',selected.input.requestId);
+    assert.deepEqual(s.durability.identity,s.resultIdentity);
+    await fs.access(s.stage);
+  });
+});
+
+test('EIO at formal file, target or created ancestor sync retains source/stage and UNKNOWN across restart',async t=>{
+  for(const failure of ['file','target','personal_item','anchor','project']) await t.test(failure,async t=>{
+    const f=await fixture(t),d=failure==='project'?await proposal(f):{kind:'photo',scope:'library'};
+    const file=path.join(f.dir,'original.png');await fs.writeFile(file,png);let trashCalls=0,failedPath;
+    const intake=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,trash:async()=>{trashCalls++;assert.fail('unsynced copy must retain its source');}}).init();
+    t.after(()=>intake.close());
+    const h=await intake.receipts.handoff([file]);
+    let batch;
+    await withSyncHook(async(file,sync)=>{
+      const s=f.managed.receipts.list()[0];
+      const expected=s&&(failure==='file'?s.published:failure==='personal_item'?f.managed.directory:failure==='anchor'?f.managed.anchor.path:s.target.target);
+      if(file===expected) {failedPath=file;throw Object.assign(Error('fixture formal sync EIO'),{code:'EIO'});}
+      return sync();
+    },async()=>{
+      batch=await intake.confirm(h.id,{version:2,requestId:randomUUID(),mode:'move',fileIds:[h.files[0].id],targets:[{fileId:h.files[0].id,destination:d}]});
+      await settled(intake);
+    });
+    assert.ok(failedPath);assert.equal(trashCalls,0);assert.equal(intake.batch(batch.id).items[0].status,'unknown');
+    const raw=f.managed.receipts.list()[0];assert.equal(raw.status,'unknown');assert.equal(raw.durability,undefined);assert.equal(raw.commit,undefined);assert.equal(raw.stageCleanup,undefined);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM assets').get().n,0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM creative_assets').get().n,0);
+    assert.deepEqual(await fs.readFile(file),png);assert.deepEqual(await fs.readFile(raw.stage),png);await fs.access(raw.published);
+    const restarted=await new ManagedIntakeCatalog(f.options).init(),bound=restarted.bind(raw.target.destination,raw.target);
+    assert.equal(bound.receipt('',raw.id).status,'unknown');
+    await assert.rejects(bound.resolve('',raw.id,{choice:'import'}),e=>e.code==='IMPORT_BUSY');
+    await assert.rejects(bound.verifiedSource('',raw.ids.mediaId),e=>e.code==='SOURCE_UNTRUSTED');
+    await fs.access(raw.stage);
+  });
+});
+
+test('file or ancestor substitution during durability barriers refuses registration and preserves stage',async t=>{
+  for(const change of ['file','directory']) await t.test(change,async t=>{
+    const f=await fixture(t),d={kind:'photo',scope:'library'},selected=await start(f,d);let replaced=false;
+    await withSyncHook(async(file,sync)=>{
+      await sync();
+      const raw=selected.bound.receipt('',selected.input.requestId);
+      if(!replaced && file===(change==='file'?raw.published:selected.target.target)) {
+        replaced=true;await fs.rename(file,file+'.original');
+        if(change==='file') await fs.writeFile(file,png);else await fs.mkdir(file,{mode:0o700});
+      }
+    },async()=>await assert.rejects(selected.upload(),e=>['SOURCE_CHANGED','TARGET_CHANGED'].includes(e.code)));
+    assert.equal(replaced,true);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM assets').get().n,0);
+    const raw=selected.bound.receipt('',selected.input.requestId);assert.equal(raw.status,'unknown');assert.equal(raw.durability,undefined);await fs.access(raw.stage);
+  });
+});
+
+test('legacy ready and commit journals without durability proof never gain cleanup or source-removal authority',async t=>{
+  for(const status of ['ready','committing']) await t.test(status,async t=>{
+    const f=await fixture(t),d={kind:'photo',scope:'library'},selected=await start(f,d),result=await selected.upload();
+    const raw=selected.bound.receipt('',selected.input.requestId);delete raw.durability;raw.status=status;f.managed.persist(raw);
+    if(status==='ready') await assert.rejects(selected.bound.cleanupIntakeStage('',raw.id),e=>e.code==='SOURCE_UNTRUSTED');
+    const restarted=await new ManagedIntakeCatalog(f.options).init(),bound=restarted.bind(d,selected.target);
+    assert.equal(bound.receipt('',raw.id).status,status==='ready'?'ready':'unknown');
+    await assert.rejects(bound.verifiedSource('',result.assetId),e=>e.code==='SOURCE_UNTRUSTED');
+    assert.equal(bound.receipt('',raw.id).durability,undefined);await fs.access(raw.stage);await fs.access(raw.published);
+  });
+});
+
+test('parent move retains original and stage if a ready journal lacks its matching durability proof',async t=>{
+  const f=await fixture(t),file=path.join(f.dir,'original.png');await fs.writeFile(file,png);let trashCalls=0;
+  const intake=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,trash:async()=>{trashCalls++;assert.fail('legacy ready must not authorize trash');}}).init();
+  t.after(()=>intake.close());
+  const write=f.managed.receipts.write.bind(f.managed.receipts);
+  f.managed.receipts.write=(s,options)=>{if(s.status==='ready') delete s.durability;return write(s,options);};
+  try {
+    const h=await intake.receipts.handoff([file]),d={kind:'photo',scope:'library'};
+    const batch=await intake.confirm(h.id,{version:2,requestId:randomUUID(),mode:'move',fileIds:[h.files[0].id],targets:[{fileId:h.files[0].id,destination:d}]});
+    await settled(intake);
+    const item=intake.batch(batch.id).items[0];assert.equal(item.status,'source_retained');assert.equal(item.removal,undefined);assert.equal(trashCalls,0);
+    const raw=f.managed.receipts.list()[0];assert.equal(raw.status,'ready');assert.equal(raw.stageCleanup,undefined);
+    assert.deepEqual(await fs.readFile(file),png);await fs.access(raw.stage);
+  } finally {f.managed.receipts.write=write;}
 });
 
 test('same journal dataDir with another actual SQLite library never reads, rewrites, recovers or previews foreign requests',async t=>{
