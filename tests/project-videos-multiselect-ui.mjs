@@ -41,7 +41,7 @@ const banner = () => work().locator('.pv-desktop-banner');
 const modal = () => page.locator('.pv-modal');
 
 // ---- 合同 v1 模拟 ----
-const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, asyncStaleReveal: false, asyncFailClipboard: false, previewAsync: false, getFailures: [], gets: 0, singleReveal: 0 };
+const mock = { capabilities: { version: 1, maxSelection: 50, clipboard: { available: true }, revealMany: { available: true } }, posts: [], receipts: new Map(), dropNextClipboard: false, staleNextReveal: false, asyncStaleReveal: false, asyncFailClipboard: false, previewAsync: false, previewFolders: 2, getFailures: [], gets: 0, singleReveal: 0 };
 async function installMocks() {
   await page.route(url => /\/api\/project-videos\/projects\/[^/]+$/.test(url.pathname), async route => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -67,7 +67,7 @@ async function installMocks() {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'reveal-preview', body });
     const done = { requestId: body.requestId, projectId, action: 'reveal-preview', status: 'completed', previewToken: 'tok-' + body.requestId.slice(0, 6), expiresAt: Date.now() + 120000, eligible: body.ids.map(id => ({ id, name: id, managed: true })), skipped: [], folderCount: 1, folders: [{ key: 'a', label: '项目根目录', count: body.ids.length }] };
     if (mock.previewAsync) { mock.receipts.set(body.requestId, done); return route.fulfill({ status: 202, json: { requestId: body.requestId, projectId, action: 'reveal-preview', status: 'checking', processed: 0, total: body.ids.length } }); }
-    await route.fulfill({ json: { requestId: body.requestId, projectId, status: 'completed', previewToken: 'tok-' + body.requestId.slice(0, 6), expiresAt: Date.now() + 120000, eligible: body.ids.map(id => ({ id, name: id, managed: true })), skipped: [], folderCount: 2, folders: [{ key: 'a', label: '项目根目录', count: body.ids.length - 1 }, { key: 'b', label: '第一场', count: 1 }] } });
+    await route.fulfill({ json: { requestId: body.requestId, projectId, status: 'completed', previewToken: 'tok-' + body.requestId.slice(0, 6), expiresAt: Date.now() + 120000, eligible: body.ids.map(id => ({ id, name: id, managed: true })), skipped: [], folderCount: mock.previewFolders, folders: mock.previewFolders === 1 ? [{ key: 'a', label: '项目根目录', count: body.ids.length }] : [{ key: 'a', label: '项目根目录', count: body.ids.length - 1 }, { key: 'b', label: '第一场', count: 1 }] } });
   });
   await page.route('**/api/project-videos/projects/*/videos/reveal', async route => {
     const body = route.request().postDataJSON(); mock.posts.push({ kind: 'reveal', body });
@@ -196,13 +196,23 @@ try {
     await banner().getByRole('button', { name: '收起提示' }).click(); await expect(banner()).toHaveCount(0);
   });
 
-  await check('批量核对：202 后查询失败 → 弹窗显示待核对与查询按钮；查询成功后可继续确认', async () => {
-    const pre0 = posts('reveal-preview').length; mock.previewAsync = true; mock.getFailures = [500];
+  await check('批量核对：202 后查询失败 → 显示待核对与查询按钮；查询成功（同一目录）后直接打开，只核对一次', async () => {
+    const pre0 = posts('reveal-preview').length, run0 = posts('reveal').length; mock.previewAsync = true; mock.getFailures = [500];
     await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await bar().getByRole('button', { name: '在访达中显示' }).click();
-    await expect(modal()).toContainText('结果待核对'); await expect(modal().getByRole('button', { name: '查询原请求' })).toBeVisible();
-    await modal().getByRole('button', { name: '查询原请求' }).click(); await expect(modal()).toContainText(/将在 \d+ 个目录中定位 2 个文件/);
-    assert.equal(posts('reveal-preview').length, pre0 + 1, '核对只提交一次'); mock.previewAsync = false;
-    await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0); await expect(banner()).toHaveCount(0);
+    await expect(modal()).toHaveCount(0);
+    await expect(banner()).toContainText('结果待核对'); await expect(banner().getByRole('button', { name: '查询原请求' })).toBeVisible();
+    await banner().getByRole('button', { name: '查询原请求' }).click(); await expect(banner()).toContainText('已请求在访达显示 2 个文件');
+    assert.equal(posts('reveal-preview').length, pre0 + 1, '核对只提交一次'); assert.equal(posts('reveal').length, run0 + 1); mock.previewAsync = false;
+    await banner().getByRole('button', { name: '收起提示' }).click(); await expect(banner()).toHaveCount(0);
+  });
+
+  await check('同一目录的多选：核对通过后直接在访达中打开，不弹确认', async () => {
+    const run0 = posts('reveal').length; mock.previewFolders = 1;
+    await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await card(order[2]).click({ modifiers: ['Meta'] });
+    await bar().getByRole('button', { name: '在访达中显示' }).click();
+    await expect(banner()).toContainText('已请求在访达显示 3 个文件'); await expect(modal()).toHaveCount(0);
+    assert.equal(posts('reveal').length, run0 + 1); assert.match(posts('reveal').at(-1).body.previewToken, /^tok-/);
+    mock.previewFolders = 2; await banner().getByRole('button', { name: '收起提示' }).click();
   });
 
   await check('核对完成后用 ✕ 关闭：不显示“没有打开访达”，也不派发；核对中关闭，完成后可继续确认', async () => {
@@ -210,11 +220,14 @@ try {
     await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await bar().getByRole('button', { name: '在访达中显示' }).click();
     await expect(modal()).toContainText(/将在 \d+ 个目录中定位/); await modal().getByRole('button', { name: '关闭' }).first().click();
     await expect(modal()).toHaveCount(0); await expect(work()).not.toContainText('没有打开访达'); assert.equal(posts('reveal').length, run0);
-    mock.previewAsync = true; await bar().getByRole('button', { name: '在访达中显示' }).click(); await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
+    // 跨目录的选择：一开始就弹确认；核对中关闭，完成后可继续确认
+    await work().getByRole('button', { name: '全部视频', exact: true }).click(); await card('甲.mp4').click(); await card('戊.mp4').click({ modifiers: ['Meta'] });
+    mock.previewAsync = true; await bar().getByRole('button', { name: '在访达中显示' }).click(); await expect(modal()).toBeVisible(); await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
     await expect(banner()).toContainText('已核对 2 个文件，尚未在访达中显示'); await expect(work()).not.toContainText('没有打开访达');
     mock.previewAsync = false; await banner().getByRole('button', { name: '继续确认…' }).click();
     await modal().getByRole('button', { name: /在访达中定位 2 个文件/ }).click(); await expect(modal()).toContainText('已请求在访达显示 2 个文件');
     assert.equal(posts('reveal').length, run0 + 1); await modal().getByRole('button', { name: '完成' }).click();
+    await work().getByRole('button', { name: '项目根目录', exact: true }).click(); await expect(cards()).toHaveCount(4);
   });
 
   await check('能力不可用时禁用复制并说明原因；切到别的目录后多选被清除', async () => {
