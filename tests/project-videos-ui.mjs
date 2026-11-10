@@ -55,7 +55,8 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.method() === 'PUT' && r.url().includes('/project-videos/') && r.url().endsWith('/content')) count.content++; });
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.getByLabel('生成视频所属项目').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  assert.equal(await work().locator('select[aria-label="生成视频所属项目"]').count(), 0, '页内不再重复项目选择');
   await expect(card('清晨远景.mp4')).toBeVisible();
 
   await check('布局：未选中时不显示详情；详情先提示词后资料，不挂播放器；页面不整体滚动', async () => {
@@ -92,6 +93,7 @@ try {
     await chip('第一场').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(2);
     await chip('项目根目录').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(1);
     await chip('全部视频').click(); await expect(work().locator('.pv-card:not(.pv-folder-card)')).toHaveCount(3);
+    await expect(card('集市跟拍.mp4').locator('.pv-card-folder')).toHaveText('第一场'); // 位置用文件夹名，不显示磁盘路径
     await chip('第一场').click(); await card('手部特写.mp4').dragTo(chip('第二场'));
     await expect(modal()).toContainText('移动视频'); assert.equal((await api(pv('?folderId=all'))).videos.find(v => v.id === bId).folderId, f1id, '拖放本身不应移动');
     await modal().getByRole('button', { name: /核对操作影响/ }).click(); await modal().getByRole('button', { name: /确认执行/ }).click();
