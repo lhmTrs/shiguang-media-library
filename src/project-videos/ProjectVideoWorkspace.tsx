@@ -13,6 +13,7 @@ import {FolderOperations, type FolderAction} from './FolderOperations';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import {actionPending, capability, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
+import {ContentChangeDialog} from './ContentChange';
 import type {FolderView} from './types';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
@@ -159,6 +160,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const [ctxPos, setCtxPos] = useState<{x: number; y: number} | null>(null);
   const [marquee, setMarquee] = useState<{x: number; y: number; w: number; h: number} | null>(null);
   const [revealConfirm, setRevealConfirm] = useState(false);
+  const [changeVideo, setChangeVideo] = useState<ProjectVideo | null>(null);
   const autoRevealRef = useRef('');
   const desktop = useDesktopAction(projectId, request);
   const applyPick = (next: string[]) => { if (next.length > 1) { setMultiPicked(next); setSelectedId(''); } else { setMultiPicked([]); setSelectedId(next[0] || ''); } };
@@ -516,7 +518,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     </div>;
   }
 
-  const modalOpen = importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm;
+  const modalOpen = importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm || !!changeVideo;
   const expandedVideo = active && !modalOpen ? videos.find(video => video.id === expandedId) : undefined;
   useEffect(() => setExpandedId(''), [active, projectId, modalOpen]);
   useEffect(() => { if (expandedId && !videos.some(video => video.id === expandedId)) setExpandedId(''); }, [collection, expandedId]);
@@ -784,7 +786,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               <span className="pv-card-body"><strong title={video.name || video.fileName}>{video.name || video.fileName}</strong>
                 <small className="pv-card-prompt">{video.promptId ? prompts.find(p => p.id === video.promptId)?.title || '已关联参考提示词' : '无参考提示词'}</small>
                 {folderId === 'all' && <small className="pv-card-folder" title={cardFolder(video)}>{cardFolder(video)}</small>}
-                {(showStatus(video) || !video.managed || draftDirty(video)) && <span className="pv-card-flags">{showStatus(video) && <span data-status={video.status} title={statusLabel[video.status]}>{statusShort[video.status]}</span>}{!video.managed && <span data-tone="warn">待升级</span>}{draftDirty(video) && <span data-tone="draft">草稿未保存</span>}</span>}</span>
+                {(showStatus(video) || !video.managed || draftDirty(video)) && <span className="pv-card-flags">{showStatus(video) && <span data-status={video.verification?.state === 'content_changed' ? 'missing' : video.status} title={statusLabel[video.status]}>{video.verification?.state === 'content_changed' ? '内容已变化' : statusShort[video.status]}</span>}{!video.managed && <span data-tone="warn">待升级</span>}{draftDirty(video) && <span data-tone="draft">草稿未保存</span>}</span>}</span>
             </button></div>)}</div>
           </section>)}
           {marquee && <div className="pv-marquee" aria-hidden="true" style={{left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h}}/>}
@@ -819,6 +821,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {menuWrap('detail', <Ellipsis size={17}/>, {label: '视频操作', className: 'pv-icon-button pv-ghost'}, <>
               {menuItem('移动到…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name}); }, {disabled: locked || operationPending || !selected.managed, hint: selected.managed ? '会先核对影响' : '升级后可移动'})}
               {menuItem('复制到剪贴板', () => copySelection([selected.id]), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : '⌘C'})}
+              {['changed', 'untrusted'].includes(selected.status) && menuItem('处理内容变化…', () => setChangeVideo(selected), {disabled: locked || unresolved})}
               {menuItem('重新定位…', () => openRelink(selected), {disabled: locked || unresolved})}
               <hr/>
               {menuItem('移除视频记录…', () => setConfirmation({ kind: 'remove', video: selected, adoptionStamp: collection!.adoptionStamp }), {disabled: locked || unresolved || !collection, danger: true})}
@@ -830,7 +833,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             <button type="button" className="pv-view-button" title="也可以双击卡片或按 Enter" onClick={() => setExpandedId(selected.id)}><Play size={13}/>查看原视频</button></span></div>
           <div className="pv-detail-scroll">
             {draft.expectedRevision !== selected.revision && <div className="pv-callout" data-tone="bad" role="alert"><strong>资料已被其他操作更新，草稿仍保留。</strong><span>请核对最新资料后重新编辑保存；当前草稿不能直接覆盖。</span><button type="button" onClick={() => discardDraft(selected.id)}>放弃草稿，使用当前资料</button></div>}
-            {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。'}</span><button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></div>}
+            {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : selected.verification?.state === 'content_changed' ? '视频内容已发生变化' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : selected.verification?.state === 'content_changed' ? '位置和名称没变，但画面或声音与登记时不同。可以预览当前内容，再决定继续使用还是不再使用；在你决定前，原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。可以先核对并预览当前内容。'}</span>
+              <span className="pv-callout-actions">{selected.status !== 'missing' && <button type="button" disabled={locked || unresolved} onClick={() => setChangeVideo(selected)}>处理内容变化…</button>}<button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></span></div>}
             {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，可在访达中打开。采用不受影响。</span></div>}
             {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</span>{!collection?.legacyUpgrade?.completed && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
             <form id={formId} className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
@@ -936,6 +940,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         return null;
       })()}
     </Modal>}
+    {active && changeVideo && <ContentChangeDialog video={changeVideo} projectId={projectId} request={request} onClose={() => setChangeVideo(null)} onChanged={removed => { if (removed) setSelectedId(''); void refresh(); }}/>}
     <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else void refresh();}} onPending={setOperationPending}/>
     {active && confirmation && <Modal title={confirmation.kind === 'remove' ? '移除视频记录' : '重新定位视频'} locked={locked} onClose={() => setConfirmation(null)}>
       <p>项目：<strong>{projectName}</strong> · {confirmation.video.name}</p>

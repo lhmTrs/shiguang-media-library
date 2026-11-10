@@ -8,8 +8,8 @@ import type { ProjectVideoCapabilities, ProjectVideoRequest } from './types';
  * - 回应丢失（没有 HTTP 状态）记为“结果待核对”，只能查询原请求，绝不自动重发。
  */
 
-export type DesktopActionKind = 'clipboard' | 'reveal-preview' | 'reveal';
-export type DesktopStatus = 'queued' | 'checking' | 'dispatching' | 'completed' | 'partial' | 'failed' | 'unknown';
+export type DesktopActionKind = 'clipboard' | 'reveal-preview' | 'reveal' | 'change-preview' | 'accept-change' | 'remove-preview' | 'remove';
+export type DesktopStatus = 'queued' | 'checking' | 'dispatching' | 'running' | 'ready' | 'completed' | 'partial' | 'failed' | 'unknown';
 export type DesktopItem = { id: string; name?: string; managed?: boolean };
 export type DesktopSkipped = { id: string; name?: string; code: string; reason: string };
 export type DesktopReceipt = {
@@ -18,13 +18,23 @@ export type DesktopReceipt = {
   requestedCount?: number; count?: number;
   copied?: DesktopItem[]; requested?: DesktopItem[]; eligible?: DesktopItem[]; skipped?: DesktopSkipped[];
   previewToken?: string; expiresAt?: string | number; folderCount?: number; folders?: { key: string; label: string; count: number }[];
+  // 合同 D：内容变化核对 / 接受 / 移除
+  changeKind?: 'content_changed' | 'not_comparable' | 'metadata_only'; contentToken?: string; adoptionStamp?: string; expectedRevision?: number;
+  before?: { durationMs?: number; codec?: string; oldContentAvailable?: boolean; thumbnailUrl?: string | null };
+  candidate?: { durationMs?: number; codec?: string; supported?: boolean; bytes?: number; mediaUrl?: string; thumbnailUrl?: string | null };
+  affectedAdoptedShots?: { id: string; number: number | string }[];
+  invalidAdoptedShots?: { id: string; number: number | string; reason?: string; newDurationMs?: number }[];
+  otherActiveReferences?: unknown[]; canAccept?: boolean; canTrash?: boolean; reasons?: string[];
+  keptAdoptedShotIds?: string[]; unboundShotIds?: string[]; acceptanceKind?: string; revision?: number;
+  removalToken?: string; record?: { removed?: boolean; unboundShotIds?: string[] };
+  file?: { action?: 'keep' | 'trash' | 'none'; status?: 'kept' | 'trashed' | 'failed' | 'unknown'; code?: string; reason?: string };
 };
 export type DesktopAction = {
   kind: DesktopActionKind; requestId: string; projectId: string; ids: string[];
   receipt: DesktopReceipt | null; busy: boolean; unknown: boolean; error: string; code: string;
 };
 
-const pendingStatuses: DesktopStatus[] = ['queued', 'checking', 'dispatching'];
+const pendingStatuses: DesktopStatus[] = ['queued', 'checking', 'dispatching', 'running'];
 export const isPending = (r: DesktopReceipt | null) => !!r && pendingStatuses.includes(r.status);
 /** 真正“处理中”：正在请求，或最近一次回执是进行中且之后没有出现待核对/错误。查询失败后旧的进行中回执不再算处理中。 */
 export const actionPending = (a: DesktopAction | null) => !!a && (a.busy || isPending(a.receipt) && !a.unknown && !a.error);
@@ -68,8 +78,12 @@ export function useDesktopAction(projectId: string, request: ProjectVideoRequest
     if (ref.current && (actionPending(ref.current) || ref.current.unknown)) return null;
     const requestId = crypto.randomUUID(), frozen = requestRef.current;
     put({ kind, requestId, projectId, ids, receipt: null, busy: true, unknown: false, error: '', code: '' });
-    const path = kind === 'clipboard' ? '/videos/clipboard' : kind === 'reveal-preview' ? '/videos/reveal/preview' : '/videos/reveal';
-    try { accept(requestId, await frozen<DesktopReceipt>(base + path, { requestId, ids, ...extra }, 'POST')); }
+    // 合同 D 的动作针对单个视频：路径带 sourceId，请求体不带 ids。
+    const one = `/videos/${encodeURIComponent(ids[0] || '')}`;
+    const path = { clipboard: '/videos/clipboard', 'reveal-preview': '/videos/reveal/preview', reveal: '/videos/reveal',
+      'change-preview': one + '/changes/preview', 'accept-change': one + '/accept-change', 'remove-preview': one + '/remove/preview', remove: one + '/remove' }[kind];
+    const body = ['clipboard', 'reveal-preview', 'reveal'].includes(kind) ? { requestId, ids, ...extra } : { requestId, ...extra };
+    try { accept(requestId, await frozen<DesktopReceipt>(base + path, body, 'POST')); }
     catch (e) { fail(requestId, e); }
     return requestId;
   }
