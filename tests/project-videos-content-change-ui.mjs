@@ -37,7 +37,7 @@ const closeX = () => page.locator('.pv-modal > header button[aria-label="关闭"
 try {
   // ---- 真实后端 + 测试替身 ----
   const f = await fixture({ after: fn => cleanups.push(fn) });
-  const fx = []; for (let i = 0; i < 12; i++) fx.push(await imported(f));
+  const fx = []; for (let i = 0; i < 16; i++) fx.push(await imported(f));
   initialize(f); await bind(f, fx[0], [0]); await bind(f, fx[1], [1, 2]);
   for (const [i, v] of fx.entries()) if (i !== 1 && i !== 10) await replaceBytes(f, v);
   await replaceBytes(f, fx[1], { duration: 1.5 }); // 变短，fx1 第二段越界
@@ -60,7 +60,7 @@ try {
 
   // ---- 转发：本项目的全部视频接口 → 同一个真实后台；只替换项目编号 ----
   const swap = (text, a, b) => text.split(a).join(b);
-  const posts = [], realKinds = []; let forceKind = '', dropNext = '', fake202 = '', failNextQuery = false, mutateAfterReady = null;
+  const posts = [], realKinds = []; let forceKind = '', dropNext = '', fake202 = '', failNextQuery = false, mutateAfterReady = null, holdLatest = null;
   const base = `/api/project-videos/projects/${projectId}`;
   await page.route(url => url.pathname === base || url.pathname.startsWith(base + '/'), async route => {
     const req = route.request(), url = new URL(req.url()), suffix = url.pathname.slice(base.length);
@@ -75,6 +75,7 @@ try {
     if (req.method() === 'POST') posts.push({ suffix, body: body ? JSON.parse(body) : null });
     const res = await fetch(target, { method: req.method(), headers: { 'content-type': 'application/json' }, body });
     let text = swap(await res.text(), f.project.id, projectId);
+    if (holdLatest && req.method() === 'GET' && url.search.includes('folderId=all')) { const gate = holdLatest; holdLatest = null; gate.reached(); await gate.release; } // 延迟交付“重新核对”的最新资料读取
     if (text.includes('"changeKind"')) { const j = JSON.parse(text); realKinds.push(j.changeKind); if (forceKind) { j.changeKind = forceKind; if (forceKind === 'metadata_only') j.canAccept = false; text = JSON.stringify(j); } }
     if (mutateAfterReady && text.includes('"changeKind"') && text.includes('"status":"ready"')) { const m = mutateAfterReady; mutateAfterReady = null; await m(); }
     if (req.method() === 'POST' && dropNext && suffix.endsWith(dropNext)) { dropNext = ''; return route.abort('failed'); } // 后台已执行，只丢回应
@@ -84,10 +85,12 @@ try {
     }
     await route.fulfill({ status: res.status, contentType: 'application/json', body: text });
   });
+  const refreshListMenu = async () => { await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click(); };
   const postsFor = (id, s) => posts.filter(p => p.suffix === `/videos/${id}${s}`).length;
 
   await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
   await expect(card(fx[0].id)).toContainText(/内容已变化|待核验/);
+  const fxNames = Object.fromEntries((await f.catalog.list(f.project.id, { folderId: 'all' })).videos.map(v => [v.id, v.name || v.fileName]));
 
   await check('继续使用：点击后才播放冻结内容，勾选接受；用 Esc 退出成功结果也刷新列表（R3）', async () => {
     forceKind = 'content_changed'; await openChange(fx[0].id); await expect(modal()).toContainText('视频内容已发生变化'); forceKind = '';
@@ -174,8 +177,10 @@ try {
     await expect(banner()).toContainText('结果待核对'); await expect(banner()).toContainText(requestId);
     await banner().getByRole('button', { name: '打开' }).click(); await expect(modal()).toContainText(requestId); await expect(modal()).toContainText('只会查询原请求');
     await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
-    await banner().getByRole('button', { name: '查询原请求' }).click(); await expect(banner()).toHaveCount(0);
+    await banner().getByRole('button', { name: '查询原请求' }).click(); await expect(banner()).toContainText('已有结果，请查看'); // 结果未读，入口保留（RR3）
     await expect(card(fx[6].id)).not.toContainText(/内容已变化|待核验/); // 查询到终态后刷新
+    await banner().getByRole('button', { name: '打开' }).click(); await expect(modal()).toContainText('已接受当前内容');
+    await modal().getByRole('button', { name: '完成' }).click(); await expect(banner()).toHaveCount(0);
     assert.equal(postsFor(fx[6].id, '/changes/preview'), previews, '回来后不应另起核对');
     assert.equal(postsFor(fx[6].id, '/accept-change'), 1, '丢回应后不重发接受');
   });
@@ -218,8 +223,67 @@ try {
     await modal().getByRole('button', { name: '完成' }).click();
   });
 
+  await check('迟到的“重新核对”读取不能抹掉后来视频的待核对写请求（RR1）', async () => {
+    const A = fx[12].id, B = fx[13].id;
+    await openChange(A); await expect(modal()).toContainText(changedText);
+    const v = await fxState(A); await f.catalog.update(f.project.id, A, { expectedRevision: v.revision, title: '并发改名', notes: '', prompt: { mode: 'none' } });
+    await modal().getByLabel(ACCEPT).check(); await modal().getByRole('button', { name: '继续使用当前内容' }).click();
+    await expect(modal().locator('.pv-error')).toBeVisible();
+    let release; const gate = { reached: null, release: new Promise(r => release = r) }; const arrived = new Promise(r => gate.reached = r); holdLatest = gate;
+    const previewsA = postsFor(A, '/changes/preview');
+    await modal().getByRole('button', { name: '重新核对' }).click(); await arrived; // 最新资料已在后台读出，回应被延迟
+    await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
+    await openChange(B); await expect(modal()).toContainText(changedText); dropNext = '/accept-change';
+    await modal().getByLabel(ACCEPT).check(); await modal().getByRole('button', { name: '继续使用当前内容' }).click();
+    await expect(modal()).toContainText('结果待核对'); const requestId = posts.filter(p => p.suffix === `/videos/${B}/accept-change`).at(-1).body.requestId;
+    release(); await page.waitForTimeout(800); // 放出 A 的迟到回应
+    await expect(modal()).toContainText('结果待核对'); await expect(modal()).toContainText(requestId);
+    await expect(modal()).toContainText(fxNames[B]);
+    assert.equal(postsFor(A, '/changes/preview'), previewsA, '迟到读取不应为 A 另起核对');
+    await modal().getByRole('button', { name: '查询原请求' }).click(); await expect(modal()).toContainText('已接受当前内容');
+    assert.equal(postsFor(B, '/accept-change'), 1, 'B 不重发');
+    await modal().getByRole('button', { name: '完成' }).click(); await expect(modal()).toHaveCount(0);
+  });
+
+  await check('整体 unknown 但记录已确认移除（RR2）：刷新列表，弹窗与顶部都显示已确认的记录事实，文件仍待核对', async () => {
+    const id = fx[14].id, journal = f.catalog.actionJournal, save = journal.save.bind(journal); let injected = false;
+    journal.save = s => { if (!injected && s.status === 'partial' && s.result?.record?.removed) { injected = true; throw Error('测试：最终回执保存失败'); } return save(s); };
+    f.catalog.fileOperations.trash = async () => { throw Object.assign(Error('废纸篓结果尚未核清'), { code: 'TRASH_UNSETTLED', effectUnknown: true }); };
+    try {
+      await openChange(id); await modal().getByRole('button', { name: '不再使用…' }).click();
+      await modal().getByLabel(TRASH).check(); await modal().getByRole('button', { name: '移除记录并移到废纸篓' }).click();
+      await expect(modal()).toContainText('结果待核对', { timeout: 20000 }); assert.ok(injected, '注入点已触发');
+      await expect(modal()).toContainText('已确认：视频记录已移除'); await expect(modal()).toContainText('文件：处理结果待核对');
+      await expect(card(id)).toHaveCount(0); // 已知事实：通知父层并刷新
+      await page.keyboard.press('Escape'); await expect(banner()).toContainText('记录已移除，文件处理结果待核对');
+      await banner().getByRole('button', { name: '查询原请求' }).click(); await expect(banner()).toContainText('记录已移除');
+      assert.equal(postsFor(id, '/remove'), 1);
+      await banner().getByRole('button', { name: '打开' }).click(); await expect(modal()).toContainText('已确认：视频记录已移除');
+      await modal().getByRole('button', { name: '已核对，收起' }).click(); await expect(banner()).toHaveCount(0);
+    } finally { journal.save = save; f.catalog.fileOperations.trash = originalTrash; }
+  });
+
+  await check('收起后才到达的部分完成（RR3）：文件没有移到废纸篓的结果保留顶部入口，看过并收起后才消失', async () => {
+    const id = fx[15].id; let entered, fail; const inTrash = new Promise(r => entered = r);
+    f.catalog.fileOperations.trash = () => new Promise((_, reject) => { fail = reject; entered(); });
+    try {
+      await openChange(id); await modal().getByRole('button', { name: '不再使用…' }).click();
+      await modal().getByLabel(TRASH).check(); await modal().getByRole('button', { name: '移除记录并移到废纸篓' }).click();
+      await inTrash; await expect(modal()).toContainText('正在移除记录');
+      await closeX(); await expect(modal()).toHaveCount(0); await expect(banner()).toContainText('处理中');
+      fail(Object.assign(Error('测试：废纸篓暂不可用'), { code: 'TRASH_FAILED', status: 409 }));
+      await expect(banner()).toContainText('记录已移除，文件没有移到废纸篓，请查看结果', { timeout: 10000 });
+      await expect(card(id)).toHaveCount(0);
+      await refreshListMenu(); await expect(banner()).toBeVisible(); // 列表刷新不清除未读结果
+      await banner().getByRole('button', { name: '打开' }).click();
+      await expect(modal()).toContainText('没有移到废纸篓，本次没有移动文件（测试：废纸篓暂不可用）');
+      await modal().getByRole('button', { name: '完成' }).click(); await expect(modal()).toHaveCount(0); await expect(banner()).toHaveCount(0);
+      assert.equal(postsFor(id, '/remove'), 1);
+    } finally { f.catalog.fileOperations.trash = originalTrash; }
+  });
+
   await check('核对之后文件又被改：继续使用被真实后台拒绝，可重新核对', async () => {
-    const id = fx[11].id; mutateAfterReady = () => replaceBytes(f, fx[11], { color: 'blue' });
+    const id = fx[11].id; mutateAfterReady = () => replaceBytes(f, fx[11], { color: 'yellow' }); // 第三种颜色：不回到原画面（原为蓝色）
     await openChange(id); await expect(modal()).toContainText(changedText);
     await modal().getByLabel(ACCEPT).check(); await modal().getByRole('button', { name: '继续使用当前内容' }).click();
     await expect(modal().locator('.pv-error')).toBeVisible(); await expect(modal()).not.toContainText('已接受当前内容');

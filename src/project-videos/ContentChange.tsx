@@ -12,7 +12,9 @@ import type { ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from '
  * - 继续使用：明确勾选接受；新时长导致越界的采用必须精确确认解除（镜号本身保留）。
  * - 不再使用：先取得移除影响（remove/preview），文件每次单选保留或移到废纸篓，再明确确认。
  * - 写操作成功的终态只通知父层一次（刷新列表），与用户用哪种方式退出无关。
- * - “重新核对”先读取这条视频的最新修订，再发只读的新核对；不重发原写请求。
+ * - “重新核对”先读取这条视频的最新修订，再发只读的新核对；不重发原写请求。读取期间换了视频/任务或收起，迟到的回应作废。
+ * - 已确认的事实（record.removed）独立于整体状态：即使整体待核对，也通知父层并显示。
+ * - 写操作的结果在用户看到之前保留页面顶部入口（包括收起后才到达的失败或部分完成）。
  */
 const duration = (ms?: number) => !ms || !Number.isFinite(ms) ? '未知' : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const size = (n?: number) => !n ? '未知' : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -37,20 +39,34 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
   const a = act.action, r = a?.receipt || null, pending = actionPending(a);
   if (a?.kind === 'change-preview' && r?.status === 'ready') preview.current = r;
   if (a?.kind === 'remove-preview' && r?.status === 'ready') removal.current = r;
-  const fileUnknown = a?.kind === 'remove' && !!r?.record?.removed && r?.file?.status === 'unknown';
+  // 已确认的事实：记录已移除（来自后台权威回执，不因整体待核对或后续查询失败而失效）
+  const recordRemoved = a?.kind === 'remove' && !!r?.record?.removed;
+  const fileUnknown = recordRemoved && !['kept', 'trashed', 'failed'].includes(r?.file?.status || '');
   // 未结清：请求进行中、结果待核对、或记录已移除但文件结果未知
   const unresolved = !!a && (pending || a.unknown || fileUnknown);
+  // 写操作的结果是否已被用户在窗口里看到；没看到的结果（含收起后才到达的失败/部分完成）保留顶部入口
+  const write = a?.kind === 'accept-change' || a?.kind === 'remove';
+  const resultKey = a && write && !pending ? `${a.requestId}:${r?.status || ''}:${r?.file?.status || ''}:${a.unknown ? 'u' : ''}:${a.error ? 'e' : ''}` : '';
+  const [seenKey, setSeenKey] = useState('');
+  // 只有弹窗真正渲染出这条结果时才算看到（切到别的页面或项目时弹窗不渲染）
+  const markSeen = (key: string) => { if (key) setSeenKey(old => old === key ? old : key); };
+  const unread = !!resultKey && seenKey !== resultKey;
+  const attention = unresolved || unread;
+  // 迟到回调用的实时状态与代次
+  const live = useRef({ a, video, attention }); live.current = { a, video, attention };
+  const generation = useRef(0);
 
-  // 写操作的成功终态只通知一次（刷新列表 / 取消选中），无论用户用哪种方式退出
+  // 写操作的已确认结果只通知一次（刷新列表 / 取消选中），无论用户用哪种方式退出、整体是否待核对
   useEffect(() => {
-    if (!a || !r || !video || notified.current.has(a.requestId) || pending || a.error) return;
-    const accepted = a.kind === 'accept-change' && r.status === 'completed' && !a.unknown;
-    const removed = a.kind === 'remove' && !!r.record?.removed && ['completed', 'partial', 'unknown'].includes(r.status);
-    if (accepted || removed) { notified.current.add(a.requestId); changedRef.current(video.id, removed); }
+    if (!a || !r || !video || notified.current.has(a.requestId) || pending) return;
+    const accepted = a.kind === 'accept-change' && r.status === 'completed' && !a.unknown && !a.error;
+    if (accepted || recordRemoved) { notified.current.add(a.requestId); changedRef.current(video.id, recordRemoved); }
   }, [a, r, pending]);
 
   function reset() { setPlaying(false); setAcceptOk(false); setUnbindOk(false); setFileAction(''); setRemoveOk(false); }
   function start(kind: 'change-preview' | 'remove-preview', target: ProjectVideo, rev: number) {
+    // 当前任务未结清或结果未读时绝不丢弃它（迟到的回调也走这里）
+    const cur = live.current; if (cur.attention && cur.a) return;
     act.clear(true); reset(); setNotice('');
     if (kind === 'change-preview') { preview.current = null; removal.current = null; setView('review'); } else { removal.current = null; setView('remove'); }
     void act.start(kind, [target.id], { expectedRevision: rev });
@@ -58,25 +74,30 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
   /** 打开：同一视频已有任务时只恢复显示，不另起核对；别的视频有未结清任务时不开始新任务。 */
   function open(target: ProjectVideo) {
     if (video?.id === target.id && a) { setVisible(true); return true; }
-    if (video && unresolved) { setVisible(true); return false; }
+    if (video && attention) { setVisible(true); return false; }
+    generation.current++; live.current = { a: null, video: target, attention: false }; act.clear(true);
     setVideo(target); setRevision(target.revision); setVisible(true); start('change-preview', target, target.revision); return true;
   }
   /** 重新核对：先读取这条视频的最新资料与修订（只读 GET），再发新的只读核对。 */
   async function recheck(kind: 'change-preview' | 'remove-preview') {
     if (!video) return;
+    const ticket = ++generation.current, id = video.id, requestId = a?.requestId;
+    // 读取期间用户换了视频、收起或开始了别的请求：这次读取作废，不碰当前任务
+    const stale = () => generation.current !== ticket || live.current.video?.id !== id || live.current.a?.requestId !== requestId;
     try {
       const list = await request<ProjectVideoCollection>(`/project-videos/projects/${encodeURIComponent(projectId)}?folderId=all`);
+      if (stale()) return;
       const latest = list.videos.find(v => v.id === video.id);
       if (!latest) { act.clear(true); preview.current = null; removal.current = null; setNotice('这条视频记录已经不存在，无需再处理。'); return; }
       setVideo(latest); setRevision(latest.revision); start(kind, latest, latest.revision);
-    } catch (e) { setNotice(`读取最新资料失败：${e instanceof Error ? e.message : String(e)}。稍后再试。`); }
+    } catch (e) { if (stale()) return; setNotice(`读取最新资料失败：${e instanceof Error ? e.message : String(e)}。稍后再试。`); }
   }
   /** 收起：已结清的任务一并清除；未结清的保留，可从页面顶部重新打开。 */
   function hide() {
-    setVisible(false);
-    if (!unresolved) { act.clear(true); setVideo(null); preview.current = null; removal.current = null; reset(); setNotice(''); }
+    setVisible(false); generation.current++;
+    if (!unresolved && (!resultKey || seenKey === resultKey)) { act.clear(true); setVideo(null); preview.current = null; removal.current = null; reset(); setNotice(''); }
   }
-  function forget() { act.clear(true); setVisible(false); setVideo(null); preview.current = null; removal.current = null; reset(); setNotice(''); }
+  function forget() { generation.current++; act.clear(true); setVisible(false); setVideo(null); preview.current = null; removal.current = null; reset(); setNotice(''); }
   function accept() {
     const p = preview.current; if (!video || !p) return;
     const invalid = (p.invalidAdoptedShots || []).map(s => s.id);
@@ -87,7 +108,7 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
     act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction });
   }
   return {
-    act, video, visible, setVisible, unresolved, fileUnknown, notice, view, setView, playing, setPlaying, acceptOk, setAcceptOk, unbindOk, setUnbindOk,
+    act, video, visible, setVisible, unresolved, unread, resultKey, markSeen, attention, recordRemoved, fileUnknown, notice, view, setView, playing, setPlaying, acceptOk, setAcceptOk, unbindOk, setUnbindOk,
     fileAction, setFileAction, removeOk, setRemoveOk, preview: preview.current, removal: removal.current,
     open, recheck, hide, forget, accept, remove, startRemove: () => { if (video) start('remove-preview', video, revision); },
   };
@@ -95,16 +116,24 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
 
 /** 页面顶部的入口：弹窗收起后，未结清的任务仍可重新打开或查询原请求。 */
 export function ContentChangeBanner({ ctl }: { ctl: ContentChangeController }) {
-  if (!ctl.video || ctl.visible || !ctl.unresolved) return null;
-  const a = ctl.act.action;
+  if (!ctl.video || ctl.visible || !ctl.attention) return null;
+  const a = ctl.act.action, r = a?.receipt;
+  const state = actionPending(a) ? '处理中'
+    : ctl.recordRemoved && (ctl.fileUnknown || a?.unknown) ? '记录已移除，文件处理结果待核对'
+    : a?.unknown ? '结果待核对'
+    : ctl.recordRemoved && r?.file?.status === 'failed' ? '记录已移除，文件没有移到废纸篓，请查看结果'
+    : a?.error ? '没有完成，请查看原因'
+    : '已有结果，请查看';
   return <div className="pv-banner" data-tone="warn" role="status">
-    <AlertTriangle size={15}/><span className="pv-banner-text">内容变化处理：“{ctl.video.name || ctl.video.fileName}” {actionPending(a) ? '处理中' : ctl.fileUnknown ? '记录已移除，文件处理结果待核对' : '结果待核对'}{a ? <> <code>{a.requestId}</code></> : null}</span>
-    {!actionPending(a) && <button type="button" onClick={() => void ctl.act.query()}><RefreshCw size={13}/>查询原请求</button>}
+    <AlertTriangle size={15}/><span className="pv-banner-text">内容变化处理：“{ctl.video.name || ctl.video.fileName}” {state}{a ? <> <code>{a.requestId}</code></> : null}</span>
+    {ctl.unresolved && !actionPending(a) && <button type="button" onClick={() => void ctl.act.query()}><RefreshCw size={13}/>查询原请求</button>}
     <button type="button" onClick={() => ctl.setVisible(true)}>打开</button>
   </div>;
 }
 
 export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
+  const { resultKey, markSeen } = ctl;
+  useEffect(() => { markSeen(resultKey); }, [resultKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const video = ctl.video; if (!video) return null;
   const a = ctl.act.action, r = a?.receipt || null, pending = actionPending(a), p = ctl.preview, rp = ctl.removal;
   const invalid = p?.invalidAdoptedShots || [], affected = p?.affectedAdoptedShots || [], removeShots = rp?.affectedAdoptedShots || [];
@@ -117,7 +146,9 @@ export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
   } else if (a && pending) {
     body = <div className="pv-task" role="status"><strong>{{ 'change-preview': '正在核对当前文件…', 'remove-preview': '正在核对移除影响…', 'accept-change': '正在接受当前内容…', remove: '正在移除记录…' }[a.kind as string] || '处理中…'}</strong>{!!r?.total && <progress value={r.processed || 0} max={r.total}/>}{!r?.total && <progress aria-label="处理中"/>}<p className="pv-muted">可以关闭窗口继续浏览，结果会保留在页面顶部。</p></div>;
   } else if (a?.unknown) {
-    body = <div className="pv-task" role="status"><strong>结果待核对</strong><p>{a.error || r?.error || '没有取得最终结果。原操作可能仍在进行或已经完成。'}</p><p>请求编号：<code>{a.requestId}</code></p><p className="pv-muted">只会查询原请求，不会重新提交。</p></div>;
+    body = <div className="pv-task" role="status"><strong>结果待核对</strong>
+      {ctl.recordRemoved && <p>已确认：视频记录已移除{r?.record?.unboundShotIds?.length ? `，解除 ${r.record.unboundShotIds.length} 个镜号的采用（镜号本身保留）` : ''}。文件：{fileText(r?.file)}。</p>}
+      <p>{a.error || r?.error || '没有取得最终结果。原操作可能仍在进行或已经完成。'}</p><p>请求编号：<code>{a.requestId}</code></p><p className="pv-muted">只会查询原请求，不会重新提交。</p></div>;
     actions = <><button type="button" onClick={ctl.forget}>已核对，收起</button><button type="button" className="pv-primary" onClick={() => void ctl.act.query()}><RefreshCw size={14}/>查询原请求</button></>;
   } else if (a?.error) {
     body = <p className="pv-error" role="alert">{a.code === 'VIDEO_IN_USE' ? '这个视频正在播放或被占用。请先关闭它的预览，再重新核对。' : a.error}</p>;
