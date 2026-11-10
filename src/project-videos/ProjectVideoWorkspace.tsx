@@ -637,11 +637,13 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {!!collection && !collection.legacyUpgrade?.completed && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
       </div>
       <div className={`pv-main${selected && draft ? ' pv-has-detail' : ''}`}>
-        <section className="pv-library" aria-label="视频列表">
+        {/* 外部视频文件拖到列表区任意位置即可导入（先核对再复制）；提示只在拖动时出现，平时不占一行。 */}
+        <section className={`pv-library${dragging ? ' pv-dragging' : ''}`} aria-label="视频列表"
+          onDragOver={e => { if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked && !importUnavailable && !(task && !terminal(task.receipt))) { e.dataTransfer.dropEffect = 'copy'; setDragging(true); } else e.dataTransfer.dropEffect = 'none'; }}
+          onDragLeave={e => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
+          onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
           <div className="pv-library-head"><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频{folderId === 'all' ? ' · 全部文件夹聚合，文件状态打开时核验' : ''}{loading && collection ? ' · 正在刷新…' : ''}</span><span className="pv-save-location" title={folderName}>导入到：<strong>{folderName}</strong></span></div>
-          <div className={`pv-dropzone${dragging ? ' pv-dragging' : ''}`} onDragOver={e => { if (e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) { e.preventDefault(); if (!locked && !importUnavailable) setDragging(true); } }} onDragLeave={() => setDragging(false)} onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
-            <Upload size={15}/><span>把一个视频文件拖到这里，导入到“{folderName}”（会先核对再复制）</span><button type="button" disabled={locked || !collection || importUnavailable || !!task && !terminal(task.receipt)} onClick={() => fileInput.current?.click()}>选择文件…</button>
-          </div>
+          {dragging && <div className="pv-drop-overlay" role="status"><Upload size={18}/><span>松开导入一个视频到“{folderName}”，会先核对再复制</span></div>}
           {!collection && loading && <p className="pv-empty">正在读取项目视频…</p>}
           {view === 'prompts' && childFolderCount > 0 && <div className="pv-cards pv-folder-cards" role="group" aria-label="当前层子文件夹">{folderCards}</div>}
           {groups.map(group => <section key={group.id} className="pv-group">

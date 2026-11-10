@@ -145,6 +145,18 @@ try {
     await expect(card('丢回应.mp4')).toBeVisible();
   });
 
+  await check('拖入提示平时不占位，外部文件拖到列表区时才出现，松开进入导入核对', async () => {
+    await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await expect(card('清晨远景.mp4')).toBeVisible();
+    await expect(work().locator('.pv-drop-overlay')).toHaveCount(0);
+    const library = work().getByRole('region', { name: '视频列表' });
+    const dt = await page.evaluateHandle(() => { const d = new DataTransfer(); d.items.add(new File([new Uint8Array(32)], '拖入测试.mp4', { type: 'video/mp4' })); return d; });
+    await library.dispatchEvent('dragenter', { dataTransfer: dt }); await library.dispatchEvent('dragover', { dataTransfer: dt });
+    await expect(work().locator('.pv-drop-overlay')).toContainText('会先核对再复制');
+    await library.dispatchEvent('drop', { dataTransfer: dt });
+    await expect(work().locator('.pv-drop-overlay')).toHaveCount(0); await expect(modal()).toContainText('拖入测试.mp4');
+    await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0);
+  });
+
   await check('键盘：⋯ 菜单可用方向键与 Esc 操作，焦点回到按钮', async () => {
     const trigger = work().getByRole('button', { name: '更多视频操作' }); await trigger.focus(); await page.keyboard.press('Enter');
     const menu = page.getByRole('menu'); await expect(menu).toBeVisible();
