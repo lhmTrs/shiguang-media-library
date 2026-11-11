@@ -206,7 +206,7 @@ try {
     const bar = page.getByLabel('整批项目', {exact: true});
     // Initial display: no single project is pretended; each kind keeps its own history, said plainly.
     await expect(bar).toHaveValue(''); await expect(bar.locator('option:checked')).toHaveText('各自沿用上次');
-    await expect(page.locator('.fi-projectbar')).toContainText('照片和视频上次用的项目不同');
+    await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
     await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
     await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
     // A per-file manual target, set before the bar changes.
@@ -216,7 +216,7 @@ try {
     await pop.getByRole('button', {name: '场景', exact: true}).click(); await pop.getByRole('radio', {name: '雨夜街口', exact: true}).click();
     await pop.getByRole('button', {name: '放进去', exact: true}).click();
     // Explicit change to 雨巷: unnamed photo and video both follow it; named and manual files do not move.
-    await bar.selectOption(P2); await expect(page.locator('.fi-projectbar')).not.toContainText('照片和视频上次用的项目不同');
+    await bar.selectOption(P2); await expect(page.locator('.fi-projectbar')).not.toContainText('照片和视频的默认去处不同');
     await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
     await expect(group('需要你决定')).toContainText('阿青_泳衣.png'); // 雨巷 has no 阿青: the agreed new-character question
     await expect(group('项目「穿越计」 › 外景')).toContainText('穿越计视频16.mp4');
@@ -231,6 +231,47 @@ try {
     assert.equal(d('p1').projectId, P1); assert.equal(d('p1').scope, 'project');
     assert.deepEqual([d('p2').projectId, d('p2').assetKind, d('p2').assetId], [P1, 'scene', 's1']);
     assert.equal(fx.confirmBodies.length, 1);
+  });
+
+  await check('project bar with history on one side only stays neutral and can pick the same project (FE6 R1)', async () => {
+    const files = names => names.map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
+    // Independent review counterexample: only 穿越计 exists, photo history 穿越计, no video history.
+    await fresh(f => {
+      f.options.projects = [f.options.projects[0]]; f.handoff.projects = [f.handoff.projects[0]];
+      f.handoff.routingPreferences.lastProjectId = {photo: P1, video: null}; f.handoff.routingPreferences.lastVideoFolderByProject = {};
+      f.handoff.files = files([['p1', '阿青_泳衣.png', 'photo'], ['v2', 'canvas_77.mp4', 'video']]);
+    });
+    const bar = page.getByLabel('整批项目', {exact: true});
+    await expect(bar).toHaveValue(''); await expect(bar.locator('option:checked')).toHaveText('各自沿用上次');
+    await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
+    await expect(group('视频素材 › 待确认')).toContainText('canvas_77.mp4');
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
+    // The one project can be chosen explicitly, and the video follows it.
+    await bar.selectOption(P1); await expect(bar).toHaveValue(P1);
+    await expect(group('项目「穿越计」 › 项目根目录')).toContainText('canvas_77.mp4'); await expect(group('视频素材 › 待确认')).toHaveCount(0);
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    let b = fx.confirmBodies[0];
+    assert.deepEqual(target(b, 'v2').destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root'});
+    assert.equal(target(b, 'p1').destination.projectId, P1); assert.equal(fx.confirmBodies.length, 1);
+
+    // Only video history: neutral too; without a pick the request keeps each kind's own default.
+    await fresh(f => {
+      f.handoff.routingPreferences.lastProjectId = {photo: null, video: P2};
+      f.handoff.files = files([['p2', 'image_0931.png', 'photo'], ['v2', 'canvas_77.mp4', 'video']]);
+    });
+    await expect(page.getByLabel('整批项目', {exact: true})).toHaveValue('');
+    await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
+    await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4'); await expect(group('摄影照片 › 待确认')).toContainText('image_0931.png');
+    await confirmButton().click(); await expect(accepted()).toBeVisible(); b = fx.confirmBodies[0];
+    assert.deepEqual(target(b, 'v2').destination, {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'});
+    assert.deepEqual(target(b, 'p2').destination, {kind: 'photo', scope: 'library', directory: ''});
+
+    // Zero followers: every name carries its project; the bar shows that project and claims nothing else.
+    await fresh(f => {f.handoff.routingPreferences.lastProjectId = {photo: null, video: null}; f.handoff.files = files([['v1', '穿越计视频16.mp4', 'video']]);});
+    await expect(page.getByLabel('整批项目', {exact: true})).toHaveValue(P1);
+    await expect(page.locator('.fi-projectbar')).not.toContainText('默认去处不同');
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.equal(target(fx.confirmBodies[0], 'v1').destination.projectId, P1);
   });
 
   await check('footer stays clickable while an editable settings panel is open (FE5 R2)', async () => {

@@ -94,7 +94,7 @@ export function suggest(file, ctx) {
       return {destination: {kind: 'video', scope: 'project', projectId: last.id, folderId}, group: 'video:' + last.id + ':' + folderId, reason: forced ? '跟随整批项目' : '沿用上次的项目和文件夹', follows: last.id};
     }
     const dir = libDir('video');
-    return {destination: {kind: 'video', scope: 'library', directory: dir}, group: 'library:video:' + dir, reason: '没有可用的项目'};
+    return {destination: {kind: 'video', scope: 'library', directory: dir}, group: 'library:video:' + dir, reason: '没有可用的项目', follows: ''};
   }
   if (file.mediaKind === 'photo') {
     // A project name at the start only counts when the remainder lands on something real.
@@ -109,8 +109,8 @@ export function suggest(file, ctx) {
     // it must not fall through to another project or become a new character named after the project.
     if (!project && !own) project = forced || batch || lastProject('photo');
     const r = suggestPhoto(file, options, s, project, text, hint);
-    // `follows`: the project this photo was checked against without its name saying so.
-    return project && !own ? {...r, follows: project.id} : r;
+    // `follows`: the project this photo was checked against without its name saying so ('' = none).
+    return own ? r : {...r, follows: project ? project.id : ''};
   }
   return suggestAudio(file, prefs, libDir);
 }
@@ -143,14 +143,17 @@ function suggestAudio(file, prefs, libDir) {
 }
 
 /**
- * What the project bar shows when nothing was picked: the one project every file without a
- * project in its name will follow, or null + mixed when photos and videos follow different ones.
+ * What the project bar shows when nothing was picked. It only names a project when every file
+ * the bar would steer (no project in its name) already goes by that project; otherwise it stays
+ * neutral, so the user can pick any project — including the one some files already use.
+ * `follows` is a project id, or '' for a file that follows no project (no history at all).
  */
-export function barDefault(files, options, suggestions, prefs = {}) {
-  const ids = [...new Set(files.map(f => suggestions[f.id]?.follows).filter(Boolean))];
+export function barDefault(files, options, suggestions) {
+  const ids = [...new Set(files.map(f => suggestions[f.id]?.follows).filter(v => v !== undefined))];
   if (ids.length > 1) return {projectId: null, mixed: true};
-  if (ids.length === 1) return {projectId: ids[0], mixed: false};
-  return {projectId: defaultProject(files, options, prefs)?.id || null, mixed: false};
+  if (ids.length === 1) return {projectId: ids[0] || null, mixed: false};
+  // Nothing follows the bar (every name carries its project): show the batch's own project.
+  return {projectId: batchProject(files, options)?.id || null, mixed: false};
 }
 
 /** Project the window's project bar starts on: the batch's own, else the last photo/video project. */

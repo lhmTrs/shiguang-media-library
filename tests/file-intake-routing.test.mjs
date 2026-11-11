@@ -134,22 +134,51 @@ test('project bar default shows only what the files will really follow', () => {
   const mixed = [v('canvas_77.mp4'), ph('canvas_12.png')];
   let all = suggestAll(mixed, options, prefs);
   assert.equal(all['canvas_77.mp4'].follows, P3); assert.equal(all['canvas_12.png'].follows, P1);
-  assert.deepEqual(barDefault(mixed, options, all, prefs), {projectId: null, mixed: true});
+  assert.deepEqual(barDefault(mixed, options, all), {projectId: null, mixed: true});
   // Only a video: the bar shows the video's history, matching its target.
   const video = [v('canvas_77.mp4')];
   all = suggestAll(video, options, prefs);
-  assert.deepEqual(barDefault(video, options, all, prefs), {projectId: P3, mixed: false});
+  assert.deepEqual(barDefault(video, options, all), {projectId: P3, mixed: false});
   assert.equal(all['canvas_77.mp4'].destination.projectId, P3);
   // Names that carry a project do not follow anything and do not split the bar.
   const named = [v('穿越计视频16.mp4'), ph('canvas_12.png')];
   all = suggestAll(named, options, prefs);
   assert.equal(all['穿越计视频16.mp4'].follows, undefined);
-  assert.deepEqual(barDefault(named, options, all, prefs), {projectId: P1, mixed: false});
+  assert.deepEqual(barDefault(named, options, all), {projectId: P1, mixed: false});
   // A photo whose name names a project but matches nothing follows nothing either.
   assert.equal(suggestAll([ph('穿越计_天台.png')], options, prefs)['穿越计_天台.png'].follows, undefined);
   // After an explicit choice every unnamed file follows it.
   all = suggestAll(mixed, options, prefs, P3);
   assert.equal(all['canvas_77.mp4'].follows, P3); assert.equal(all['canvas_12.png'].follows, P3);
-  // Nothing follows (audio only): falls back to the old default.
-  assert.deepEqual(barDefault([au('a.m4a', 10)], options, suggestAll([au('a.m4a', 10)], options, prefs), prefs), {projectId: P1, mixed: false});
+  // Nothing follows the bar (audio only): no project is claimed.
+  assert.deepEqual(barDefault([au('a.m4a', 10)], options, suggestAll([au('a.m4a', 10)], options, prefs)), {projectId: null, mixed: false});
+});
+
+test('project bar stays neutral when one kind has history and the other has none (FE6)', () => {
+  // Independent review counterexample: one project, photo history 穿越计, no video history.
+  const one = {...options, projects: [options.projects[0]]};
+  const onlyPhoto = {...prefs, lastProjectId: {photo: P1, video: null}, lastVideoFolderByProject: {}};
+  const files = [ph('阿青_泳衣.png'), v('canvas_77.mp4')];
+  let all = suggestAll(files, one, onlyPhoto);
+  assert.equal(all['阿青_泳衣.png'].follows, P1); assert.equal(all['canvas_77.mp4'].follows, '');
+  assert.equal(all['canvas_77.mp4'].destination.scope, 'library');
+  assert.deepEqual(barDefault(files, one, all), {projectId: null, mixed: true}, 'must not claim 穿越计 while the video goes to the library');
+  // Picking that same project explicitly moves the video into it.
+  all = suggestAll(files, one, onlyPhoto, P1);
+  assert.deepEqual(all['canvas_77.mp4'].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root'});
+  // Only video history: the photo has no project to be checked against.
+  const onlyVideo = {...prefs, lastProjectId: {photo: null, video: P3}};
+  all = suggestAll([ph('canvas_12.png'), v('canvas_77.mp4')], options, onlyVideo);
+  assert.equal(all['canvas_12.png'].follows, ''); assert.equal(all['canvas_77.mp4'].follows, P3);
+  assert.deepEqual(barDefault([ph('canvas_12.png'), v('canvas_77.mp4')], options, all), {projectId: null, mixed: true});
+  // No history at all: neutral, and nothing is shown as a chosen project.
+  const none = {...prefs, lastProjectId: {photo: null, video: null}};
+  all = suggestAll([v('canvas_77.mp4')], one, none);
+  assert.deepEqual(barDefault([v('canvas_77.mp4')], one, all), {projectId: null, mixed: false});
+  // Video-only history and only a video: the bar names the project the video really goes to.
+  all = suggestAll([v('canvas_77.mp4')], options, onlyVideo);
+  assert.deepEqual(barDefault([v('canvas_77.mp4')], options, all), {projectId: P3, mixed: false});
+  // Zero followers (every name carries its project): the bar shows that batch project.
+  all = suggestAll([v('穿越计视频16.mp4')], options, none);
+  assert.deepEqual(barDefault([v('穿越计视频16.mp4')], options, all), {projectId: P1, mixed: false});
 });

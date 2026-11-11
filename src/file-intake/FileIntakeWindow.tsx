@@ -148,7 +148,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const named = useMemo(() => files.map(f => drafts[f.id]?.fileName ? {...f, name: drafts[f.id].fileName!} : f), [files.map(f => f.id + (drafts[f.id]?.fileName || '') + (f.durationSec ?? '')).join('|')]);
   const suggestions = useMemo(() => options ? suggestAll(named, options, prefs, projectOverride || undefined) : {}, [named, options, prefs, projectOverride]);
   // Shown value == effective value: one shared project, or 「各自沿用上次」 when photo and video history differ.
-  const bar = options && !projectOverride ? barDefault(named, options, suggestions, prefs) : null;
+  const bar = options && !projectOverride ? barDefault(named, options, suggestions) : null;
   const barProject = !options ? '' : projectOverride || bar?.projectId || '';
   const barMixed = !!bar?.mixed;
   const rows: Row[] = files.map((file, i) => {
@@ -350,7 +350,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     {options && !batch && !locked && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
       <label><span>项目</span><select aria-label="整批项目" title="选一个项目，名字里没写项目的文件都去这里；名字里写了项目的、单独设置过的不受影响" value={barProject} onChange={e => setProjectOverride(e.target.value)}>
         {!barProject && <option value="">{barMixed ? '各自沿用上次' : '选择项目'}</option>}{options.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-      {barMixed && <span className="fi-muted">照片和视频上次用的项目不同，选一个就统一</span>}
+      {barMixed && <span className="fi-muted">照片和视频的默认去处不同，选一个项目就统一</span>}
     </div>}
     <div className="fi-body">
       {loading && <p role="status" className="fi-muted">正在读取本次访达选择…</p>}

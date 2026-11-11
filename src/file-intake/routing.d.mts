@@ -11,4 +11,4 @@ export function batchProject(files: readonly IntakeFile[], options: RoutingOptio
 export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?: Partial<RoutingPreferences>; batch?: RoutingOptions['projects'][number] | null; forced?: RoutingOptions['projects'][number] | null}): RouteSuggestion;
 export function defaultProject(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): RoutingOptions['projects'][number] | null;
 export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>, forcedProjectId?: string): Record<string, RouteSuggestion>;
-export function barDefault(files: readonly IntakeFile[], options: RoutingOptions, suggestions: Record<string, RouteSuggestion>, prefs?: Partial<RoutingPreferences>): {projectId: string | null; mixed: boolean};
+export function barDefault(files: readonly IntakeFile[], options: RoutingOptions, suggestions: Record<string, RouteSuggestion>): {projectId: string | null; mixed: boolean};
