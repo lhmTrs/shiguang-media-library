@@ -1,7 +1,7 @@
 // Pure routing suggestions for the simple intake window. Synthetic names only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {suggest, suggestAll, audioKindFor, isGenericName, longestPrefix, batchProject} from '../src/file-intake/routing.mjs';
+import {suggest, suggestAll, barDefault, audioKindFor, isGenericName, longestPrefix, batchProject} from '../src/file-intake/routing.mjs';
 
 const P1 = 'p1', P2 = 'p2', P3 = 'p3';
 const options = {
@@ -127,4 +127,29 @@ test('audio presets by duration with inclusive 60–120 middle band', () => {
   const s = one(au('雨声.wav', 42));
   assert.deepEqual(s.destination, {kind: 'sfx', scope: 'library', directory: ''}); assert.match(s.reason, /0:42/);
   assert.equal(one(au('x.m4a', null)).decision, 'audio-kind');
+});
+
+test('project bar default shows only what the files will really follow', () => {
+  // Photo history 穿越计, video history 雨巷, no project in any name: the bar must not pretend one project.
+  const mixed = [v('canvas_77.mp4'), ph('canvas_12.png')];
+  let all = suggestAll(mixed, options, prefs);
+  assert.equal(all['canvas_77.mp4'].follows, P3); assert.equal(all['canvas_12.png'].follows, P1);
+  assert.deepEqual(barDefault(mixed, options, all, prefs), {projectId: null, mixed: true});
+  // Only a video: the bar shows the video's history, matching its target.
+  const video = [v('canvas_77.mp4')];
+  all = suggestAll(video, options, prefs);
+  assert.deepEqual(barDefault(video, options, all, prefs), {projectId: P3, mixed: false});
+  assert.equal(all['canvas_77.mp4'].destination.projectId, P3);
+  // Names that carry a project do not follow anything and do not split the bar.
+  const named = [v('穿越计视频16.mp4'), ph('canvas_12.png')];
+  all = suggestAll(named, options, prefs);
+  assert.equal(all['穿越计视频16.mp4'].follows, undefined);
+  assert.deepEqual(barDefault(named, options, all, prefs), {projectId: P1, mixed: false});
+  // A photo whose name names a project but matches nothing follows nothing either.
+  assert.equal(suggestAll([ph('穿越计_天台.png')], options, prefs)['穿越计_天台.png'].follows, undefined);
+  // After an explicit choice every unnamed file follows it.
+  all = suggestAll(mixed, options, prefs, P3);
+  assert.equal(all['canvas_77.mp4'].follows, P3); assert.equal(all['canvas_12.png'].follows, P3);
+  // Nothing follows (audio only): falls back to the old default.
+  assert.deepEqual(barDefault([au('a.m4a', 10)], options, suggestAll([au('a.m4a', 10)], options, prefs), prefs), {projectId: P1, mixed: false});
 });

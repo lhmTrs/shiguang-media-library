@@ -8,7 +8,7 @@ import '../themes.css';
 import {BatchDetails} from './BatchDetails';
 import {intakeSession} from './session';
 import {TargetEditor, initialDestination, submittedDestination, type DestinationDraft} from './TargetEditor';
-import {defaultProject, stem, suggestAll} from './routing.mjs';
+import {barDefault, stem, suggestAll} from './routing.mjs';
 import {CategoryPopover, FolderPopover, GroupHeader, Popover, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type ImageProposal, type IntakeBatch, type IntakeRequest, type MediaKind, type NamePreviewItem, type RoutingOptions} from './types';
 import './file-intake.css';
@@ -32,6 +32,8 @@ function readAttempt(id: string): ConfirmInput | null {
   try {const v = JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id) || 'null'); return v && typeof v.requestId === 'string' && ['copy', 'move'].includes(v.mode) && Array.isArray(v.fileIds) && v.fileIds.every((f: unknown) => typeof f === 'string') && (v.version===2&&Array.isArray(v.targets)||typeof v.projectId==='string'&&typeof v.folderId==='string') ? v : null;} catch {return null;}
 }
 const proposalKey = (d: DestinationDraft) => [d.projectId, d.characterName, d.lookName].join('\u0000');
+// Where a previewed standard name was computed for; a stale preview is never shown under a new destination.
+const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderId, d.assetId, d.characterName, d.lookName].join('|');
 const isCharacter = (d: DestinationDraft | null): d is DestinationDraft => !!d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind;
 const groupKey = (d: DestinationDraft | null, pending: boolean) => pending || !d ? 'decide'
   : d.scope === 'library' ? 'library:' + d.kind + ':' + (d.directory || '')
@@ -53,7 +55,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [selected, setSelected] = useState<string[]>([]), [mode, setMode] = useState<'copy' | 'move'>('copy'), [standardNames, setStandardNames] = useState(false);
   const [options, setOptions] = useState<RoutingOptions | null>(null), [optionsError, setOptionsError] = useState(''), [optionsReload, setOptionsReload] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [proposals, setProposals] = useState<Record<string, ProposalState>>({});
-  const [names, setNames] = useState<Record<string, NamePreviewItem>>({}), [namesError, setNamesError] = useState('');
+  const [names, setNames] = useState<Record<string, NamePreviewItem & {for?: string}>>({}), [namesError, setNamesError] = useState('');
   const [checked, setChecked] = useState<string[]>([]), [open, setOpen] = useState<Record<string, boolean>>({}), [popover, setPopover] = useState('');
   // Project bar (whole batch), the per-file panel's position and the just-moved file's short highlight.
   const [projectOverride, setProjectOverride] = useState(''), [panelAt, setPanelAt] = useState<{top: number; left: number; maxHeight: number} | null>(null), [flash, setFlash] = useState('');
@@ -145,7 +147,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const libraryDir = (kind: MediaKind) => prefs?.lastLibraryDirectory?.[kind] ?? (handoff?.preferences?.[kind]?.scope === 'library' ? handoff.preferences[kind]!.directory || '' : '');
   const named = useMemo(() => files.map(f => drafts[f.id]?.fileName ? {...f, name: drafts[f.id].fileName!} : f), [files.map(f => f.id + (drafts[f.id]?.fileName || '') + (f.durationSec ?? '')).join('|')]);
   const suggestions = useMemo(() => options ? suggestAll(named, options, prefs, projectOverride || undefined) : {}, [named, options, prefs, projectOverride]);
-  const barProject = options ? projectOverride || defaultProject(named, options, prefs)?.id || '' : '';
+  // Shown value == effective value: one shared project, or 「各自沿用上次」 when photo and video history differ.
+  const bar = options && !projectOverride ? barDefault(named, options, suggestions, prefs) : null;
+  const barProject = !options ? '' : projectOverride || bar?.projectId || '';
+  const barMixed = !!bar?.mixed;
   const rows: Row[] = files.map((file, i) => {
     const draft = drafts[file.id], s = suggestions[file.id];
     const fallback = !options ? initialDestination(file, handoff?.preferences || {}) : null;
@@ -157,7 +162,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
       reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
-      problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: names[file.id]?.proposedFileName ?? null};
+      problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
   });
   // Character targets are checked against the project before confirmation. Each key is
   // fetched once; a late answer only fills its own key, so it cannot overwrite a newer choice.
@@ -180,9 +185,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   useEffect(() => {
     if (!api || !previewBody) {setNames({}); setNamesError(''); return;}
     const controller = new AbortController(); let current = true;
+    const keys = Object.fromEntries(rows.filter(r => r.destination).map(r => [r.file.id, nameKey(r.destination!)]));
     const timer = setTimeout(() => {
       api<{items: NamePreviewItem[]}>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/name-preview', JSON.parse(previewBody), undefined, {signal: controller.signal})
-        .then(v => {if (current) {setNames(Object.fromEntries((v.items || []).map(i => [i.fileId, i]))); setNamesError('');}})
+        .then(v => {if (current) {setNames(Object.fromEntries((v.items || []).map(i => [i.fileId, {...i, for: keys[i.fileId]}]))); setNamesError('');}})
         .catch(e => {if (current && !controller.signal.aborted) {setNames({}); setNamesError(errorMessage(e));}});
     }, 250);
     return () => {current = false; clearTimeout(timer); controller.abort();};
@@ -342,8 +348,9 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     </header>
 
     {options && !batch && !locked && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
-      <label><span>项目</span><select aria-label="整批项目" title="整批默认用这个项目；单个文件点它这一行另选；名字里写了项目的不受影响" value={barProject} onChange={e => setProjectOverride(e.target.value)}>
-        {!barProject && <option value="">选择项目</option>}{options.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      <label><span>项目</span><select aria-label="整批项目" title="选一个项目，名字里没写项目的文件都去这里；名字里写了项目的、单独设置过的不受影响" value={barProject} onChange={e => setProjectOverride(e.target.value)}>
+        {!barProject && <option value="">{barMixed ? '各自沿用上次' : '选择项目'}</option>}{options.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      {barMixed && <span className="fi-muted">照片和视频上次用的项目不同，选一个就统一</span>}
     </div>}
     <div className="fi-body">
       {loading && <p role="status" className="fi-muted">正在读取本次访达选择…</p>}

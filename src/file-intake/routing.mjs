@@ -91,7 +91,7 @@ export function suggest(file, ctx) {
     if (last) {
       const remembered = prefs.lastVideoFolderByProject?.[last.id];
       const folderId = remembered && (last.videoFolders || []).some(f => f.id === remembered) ? remembered : 'root';
-      return {destination: {kind: 'video', scope: 'project', projectId: last.id, folderId}, group: 'video:' + last.id + ':' + folderId, reason: forced ? '跟随整批项目' : '沿用上次的项目和文件夹'};
+      return {destination: {kind: 'video', scope: 'project', projectId: last.id, folderId}, group: 'video:' + last.id + ':' + folderId, reason: forced ? '跟随整批项目' : '沿用上次的项目和文件夹', follows: last.id};
     }
     const dir = libDir('video');
     return {destination: {kind: 'video', scope: 'library', directory: dir}, group: 'library:video:' + dir, reason: '没有可用的项目'};
@@ -108,28 +108,49 @@ export function suggest(file, ctx) {
     // A project name whose remainder matches nothing stays a general photo with a hint:
     // it must not fall through to another project or become a new character named after the project.
     if (!project && !own) project = forced || batch || lastProject('photo');
-    const found = project && matchInProject(project, text);
-    if (found?.type === 'asset') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, assetKind: found.asset.kind, assetId: found.asset.id, assetRevision: found.asset.revision},
-      group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
-    if (found?.type === 'character') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
-      group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」' + (found.look ? '' : '，将新建造型「' + found.lookName + '」')};
-    // Agreed order: a possible new character is asked about before category matching.
-    // When the name also starts with an existing category, that category is offered as the other answer.
-    const category = longestPrefix((options.photoCategories || []).filter(c => c.id), s);
-    const preset = imageNamePreset(text);
-    if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
-      group: 'decide', decision: 'new-character', reason: category ? '像人物，也像分类' : '项目里还没有这个人物', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
-    // Library photos still carry the name-based person/look guess, so switching one to a project
-    // in its 「改…」 panel starts prefilled. These fields are dropped when a library target is submitted.
-    const guess = {characterName: preset.name, lookName: preset.lookName};
-    if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id, ...guess}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
-    return {destination: {kind: 'photo', scope: 'library', directory: '', ...guess}, group: 'library:photo:', reason: '名字认不出', hint};
+    const r = suggestPhoto(file, options, s, project, text, hint);
+    // `follows`: the project this photo was checked against without its name saying so.
+    return project && !own ? {...r, follows: project.id} : r;
   }
+  return suggestAudio(file, prefs, libDir);
+}
+
+function suggestPhoto(file, options, s, project, text, hint) {
+  const found = project && matchInProject(project, text);
+  if (found?.type === 'asset') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, assetKind: found.asset.kind, assetId: found.asset.id, assetRevision: found.asset.revision},
+    group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
+  if (found?.type === 'character') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
+    group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」' + (found.look ? '' : '，将新建造型「' + found.lookName + '」')};
+  // Agreed order: a possible new character is asked about before category matching.
+  // When the name also starts with an existing category, that category is offered as the other answer.
+  const category = longestPrefix((options.photoCategories || []).filter(c => c.id), s);
+  const preset = imageNamePreset(text);
+  if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
+    group: 'decide', decision: 'new-character', reason: category ? '像人物，也像分类' : '项目里还没有这个人物', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
+  // Library photos still carry the name-based person/look guess, so switching one to a project
+  // in its 「改…」 panel starts prefilled. These fields are dropped when a library target is submitted.
+  const guess = {characterName: preset.name, lookName: preset.lookName};
+  if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id, ...guess}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
+  return {destination: {kind: 'photo', scope: 'library', directory: '', ...guess}, group: 'library:photo:', reason: '名字认不出', hint};
+}
+
+function suggestAudio(file, prefs, libDir) {
   // Audio stays in the general music/sfx library; only the kind is preset.
   const preset = audioKindFor(file.durationSec, prefs.lastAudioKind);
   if (!preset) return {destination: null, group: 'decide', decision: 'audio-kind', reason: file.durationSec === undefined ? '正在读取时长' : '没读到音频时长'};
   const dir = libDir(preset.kind);
   return {destination: {kind: preset.kind, scope: 'library', directory: dir}, group: 'library:' + preset.kind + ':' + dir, reason: formatDuration(file.durationSec) + ' · ' + preset.reason};
+}
+
+/**
+ * What the project bar shows when nothing was picked: the one project every file without a
+ * project in its name will follow, or null + mixed when photos and videos follow different ones.
+ */
+export function barDefault(files, options, suggestions, prefs = {}) {
+  const ids = [...new Set(files.map(f => suggestions[f.id]?.follows).filter(Boolean))];
+  if (ids.length > 1) return {projectId: null, mixed: true};
+  if (ids.length === 1) return {projectId: ids[0], mixed: false};
+  return {projectId: defaultProject(files, options, prefs)?.id || null, mixed: false};
 }
 
 /** Project the window's project bar starts on: the batch's own, else the last photo/video project. */

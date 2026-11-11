@@ -158,3 +158,5 @@
 .fi-simple .fi-grow{flex:1}
 .fi-simple .fi-panel-body .fi-keep-note{display:none}
 .fi-simple .fi-panel-body .fi-item>p[role=status]{color:var(--fi-accent)}
+/* The footer stays usable while the per-file panel is open (it sits above the scrim). */
+.fi-simple .fi-foot{position:relative;z-index:32}

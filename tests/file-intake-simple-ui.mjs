@@ -196,6 +196,57 @@ try {
     assert.equal(fx.confirmBodies.length, 0);
   });
 
+  await check('project bar with different photo and video history shows what really happens (FE5 R1)', async () => {
+    // Independent review counterexample: photo history 穿越计, video history 雨巷, no project in canvas_77.mp4.
+    await fresh(f => {
+      f.handoff.routingPreferences.lastProjectId = {photo: P1, video: P2};
+      f.handoff.files = [['v1', '穿越计视频16.mp4', 'video'], ['v2', 'canvas_77.mp4', 'video'], ['p1', '阿青_泳衣.png', 'photo'], ['p2', 'image_0931.png', 'photo']]
+        .map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
+    });
+    const bar = page.getByLabel('整批项目', {exact: true});
+    // Initial display: no single project is pretended; each kind keeps its own history, said plainly.
+    await expect(bar).toHaveValue(''); await expect(bar.locator('option:checked')).toHaveText('各自沿用上次');
+    await expect(page.locator('.fi-projectbar')).toContainText('照片和视频上次用的项目不同');
+    await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
+    // A per-file manual target, set before the bar changes.
+    await page.getByRole('checkbox', {name: '选择 image_0931.png', exact: true}).check();
+    await group('摄影照片 › 待确认').getByRole('button', {name: '放进项目…', exact: true}).click();
+    const pop = page.getByRole('dialog', {name: '放进项目', exact: true});
+    await pop.getByRole('button', {name: '场景', exact: true}).click(); await pop.getByRole('radio', {name: '雨夜街口', exact: true}).click();
+    await pop.getByRole('button', {name: '放进去', exact: true}).click();
+    // Explicit change to 雨巷: unnamed photo and video both follow it; named and manual files do not move.
+    await bar.selectOption(P2); await expect(page.locator('.fi-projectbar')).not.toContainText('照片和视频上次用的项目不同');
+    await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
+    await expect(group('需要你决定')).toContainText('阿青_泳衣.png'); // 雨巷 has no 阿青: the agreed new-character question
+    await expect(group('项目「穿越计」 › 外景')).toContainText('穿越计视频16.mp4');
+    // Explicit change to 穿越计: everything unnamed follows it, video into that project's last folder.
+    await bar.selectOption(P1); await expect(bar).toHaveValue(P1);
+    await expect(group('项目「穿越计」 › 外景')).toContainText('canvas_77.mp4');
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    const b = fx.confirmBodies[0], d = id => target(b, id).destination;
+    assert.deepEqual(b.fileIds, ['v1', 'v2', 'p1', 'p2']);
+    for (const id of ['v1', 'v2']) assert.deepEqual([d(id).kind, d(id).projectId, d(id).folderId], ['video', P1, 'f-out'], id);
+    assert.equal(d('p1').projectId, P1); assert.equal(d('p1').scope, 'project');
+    assert.deepEqual([d('p2').projectId, d('p2').assetKind, d('p2').assetId], [P1, 'scene', 's1']);
+    assert.equal(fx.confirmBodies.length, 1);
+  });
+
+  await check('footer stays clickable while an editable settings panel is open (FE5 R2)', async () => {
+    await fresh(); await page.setViewportSize({width: 600, height: 560});
+    await settle();
+    await page.locator('.fi-foot label', {hasText: '移动'}).click(); await expect(page.getByRole('radio', {name: '移动', exact: true})).toBeChecked();
+    await page.getByRole('button', {name: '单独设置 image_0931.png', exact: true}).click();
+    const panel = page.getByRole('dialog', {name: '收纳设置 image_0931.png', exact: true}); await expect(panel).toBeVisible();
+    await expect(page.locator('.fi-scrim')).toBeVisible();
+    // The real click must land on the button itself, not on the scrim or the panel.
+    const hit = await confirmButton().evaluate(el => {const r = el.getBoundingClientRect(), top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!top && el.contains(top);});
+    assert.equal(hit, true, 'confirm button centre is covered');
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.equal(fx.confirmBodies.length, 1); assert.equal(fx.confirmBodies[0].mode, 'move');
+  });
+
   await check('removed files leave the submission and can be restored; audio kind can be switched', async () => {
     await fresh();
     for (const name of ['小雨_校服.png', '片尾.m4a']) {await page.getByRole('button', {name: '单独设置 ' + name, exact: true}).click(); await page.getByRole('button', {name: '移除 ' + name, exact: true}).click();}
