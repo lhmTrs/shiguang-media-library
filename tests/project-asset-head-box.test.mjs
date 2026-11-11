@@ -129,3 +129,45 @@ test('a native HEIC conversion feeds the detector JPEG in the browser preview or
   assert.deepEqual(await fs.readFile(file),original);
   await assert.rejects(fs.stat(snapshot),{code:'ENOENT'});
 });
+
+test('undo restores both old and untouched origins, without clearing history of a manual edit', async t=>{
+  const f=await setup(t);let a=f.a;
+  const legacyId=a.images[2].id;
+  const row=f.db.prepare('SELECT data_json FROM creative_image_bindings WHERE id=?').get(legacyId);
+  const data=JSON.parse(row.data_json);delete data.crop_source;
+  f.db.prepare('UPDATE creative_image_bindings SET data_json=? WHERE id=?').run(JSON.stringify(data),legacyId);
+  a=f.store.get(a.id);
+  assert.deepEqual(a.images.slice(1,3).map(b=>b.crop_source),['untouched',null]);
+  for(const b of a.images.slice(1,3)){b.crop={x:31,y:24,zoom:2};b.crop_source='manual';}
+  a=await f.store.save(a.id,a,a.revision);
+  for(const [index,source] of [[1,'untouched'],[2,null]]){
+    Object.assign(a.images[index],{crop:DEFAULT,crop_source:source,crop_manually_edited:false});
+  }
+  a=await f.store.save(a.id,a,a.revision);
+  assert.deepEqual(a.images.slice(1,3).map(b=>[b.crop,b.crop_source,b.crop_manually_edited]),[[DEFAULT,'untouched',true],[DEFAULT,null,true]]);
+  f.store.headBox=f.headBox;
+  a.looks[0].default_image_id=a.images[1].id;
+  a=await f.store.save(a.id,a,a.revision);
+  assert.deepEqual(a.images[1].crop,DEFAULT);
+  assert.equal(f.calls.length,0);
+});
+
+test('replacement while the private copy is being removed rejects GET and prevents auto on save',async t=>{
+  const f=await setup(t),original=await fs.readFile(f.image),rm=fs.rm;
+  let replace=false;
+  t.mock.method(fs,'rm',async(file,...args)=>{
+    const result=await rm(file,...args);
+    if(replace&&String(file).includes('shiguang-head-box-'))await fs.writeFile(f.image,'replacement during private snapshot cleanup');
+    return result;
+  });
+  replace=true;
+  await assert.rejects(f.headBox.get(f.a.images[0].id),{code:'IMAGE_BINDING_STALE'});
+  await fs.writeFile(f.image,original);
+  f.store.headBox=f.headBox;
+  let a=f.store.get(f.a.id);a.looks[0].default_image_id=a.images[1].id;
+  a=await f.store.save(a.id,a,a.revision);
+  replace=false;
+  assert.equal(a.looks[0].default_image_id,a.images[1].id);
+  assert.deepEqual(a.images[1].crop,DEFAULT);
+  assert.equal(a.images[1].crop_source,'untouched');
+});

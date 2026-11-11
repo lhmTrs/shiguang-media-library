@@ -38,7 +38,7 @@ export class ProjectAssetHeadBox {
   }
   prepare(){
     if(!this.native||this.controller.signal.aborted)return;
-    void this.native.track(()=>this.native.helper({prepare:true})).catch(()=>{});
+    void this.native.track(()=>this.native.helper({prepare:true})).catch(e=>{this.prepareError=e.code||'NATIVE_FAILED';});
   }
   beginClose(){this.controller.abort();}
   async close(){
@@ -46,7 +46,8 @@ export class ProjectAssetHeadBox {
     await Promise.all([Promise.allSettled([...this.active]),this.native?.close?.()]);
   }
   detect(binding){
-    if(!this.native)return Promise.resolve({status:'unsupported'});
+    if(!this.native||platform.has(this.prepareError))return Promise.resolve({status:'unsupported'});
+    if(this.prepareError)return Promise.resolve({status:'error'});
     if(this.controller.signal.aborted||this.active.size>=2)return Promise.resolve({status:'busy'});
     const signal=AbortSignal.any([this.controller.signal,AbortSignal.timeout(2100)]);
     const work=Promise.resolve().then(()=>this.withActivity(async()=>{
@@ -57,16 +58,23 @@ export class ProjectAssetHeadBox {
       // have different output dimensions, so also key on the preview variant.
       const key='vision-face-v1:'+binding.expected_sha256+':'+/\.(heic|heif)$/i.test(file);
       const cached=this.cache.get(key);
+      const verifyRegistration=()=>{
+        let current;
+        try{current=registeredPhoto(this.store,binding);}catch{throw stale();}
+        if(current.path!==media.path||current.root_id!==media.root_id||current.registeredRootPath!==media.registeredRootPath)
+          throw stale();
+      };
       try{
         if(cached&&cached.until>Date.now()){
           const current=await imageDigest(file,{signal,maxBytes:MAX_BYTES});
           if(current.hash!==binding.expected_sha256)throw stale();
-          return cached.result;
+          verifyRegistration();return cached.result;
         }
         const result=await withHeadImage(file,binding.expected_sha256,MAX_BYTES,signal,async snapshot=>{
           const decoded=await this.native.detectFace(snapshot);
           return decoded.status==='unsupported'?{status:'unsupported'}:decoded.status==='not_found'?{status:'not_found'}:pickHeadBox(decoded.width,decoded.height,decoded.faces);
         });
+        verifyRegistration();
         if(['found','not_found'].includes(result.status)){
           if(this.cache.size>=128)this.cache.delete(this.cache.keys().next().value);
           this.cache.set(key,{result,until:Date.now()+CACHE_MS});

@@ -58,8 +58,15 @@ export async function withHeadImage(file,expected,limit,signal,use){
     }
     signal.throwIfAborted();
     const result=await use(decodePath);
+    // Cleanup can yield to a replacement at the original path. Hold the
+    // original descriptor until cleanup completes, and verify after that wait.
+    await fs.rm(dir,{recursive:true,force:true});
+    dir=null;
     signal.throwIfAborted();
     await unchanged(file,handle,before);
+    await handle.close();
+    if(await fs.realpath(file)!==file||identity(await fs.lstat(file))!==identity(before))
+      throw fault('图片正在变化，请重新选择',409);
     return result;
   }finally{
     try{
