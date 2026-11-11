@@ -9,7 +9,7 @@ import {BatchDetails} from './BatchDetails';
 import {intakeSession} from './session';
 import {TargetEditor, initialDestination, submittedDestination, type DestinationDraft} from './TargetEditor';
 import {barDefault, stem, suggestAll} from './routing.mjs';
-import {CategoryPopover, FolderPopover, GroupHeader, Popover, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
+import {CategoryPopover, FolderPopover, GroupHeader, Popover, ProjectPicker, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type ImageProposal, type IntakeBatch, type IntakeRequest, type MediaKind, type NamePreviewItem, type RoutingOptions} from './types';
 import './file-intake.css';
 
@@ -158,11 +158,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const decision = draft?.manual ? undefined : s?.decision;
     const p = isCharacter(destination) && destination.projectId && destination.characterName && destination.lookName ? proposals[proposalKey(destination)] : undefined;
     const needsProposal = isCharacter(destination) && !decision;
-    const ready = !!destination && !decision && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
+    const assetMissing = !!destination?.assetKind && !destination.assetId;
+    const ready = !!destination && !decision && !assetMissing && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
     const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
-      reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
-      problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
+      reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, fallbackLook: decision ? s?.fallbackLook : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
+      problem: needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
   });
   // Character targets are checked against the project before confirmation. Each key is
   // fetched once; a late answer only fills its own key, so it cannot overwrite a newer choice.
@@ -194,7 +195,9 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     return () => {current = false; clearTimeout(timer); controller.abort();};
   }, [api, previewBody, handoffId]);
 
-  const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination, manual: true}]))}));
+  // A person/look picked here (decision buttons, 放进项目…) is an explicit choice: a later rename keeps it.
+  const pinned = (d: DestinationDraft | null) => d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind ? {...d, characterNameManual: true, lookNameManual: true} : d;
+  const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination: pinned(destination), manual: true}]))}));
   const rename = (id: string, fileName: string) => setDrafts(old => ({...old, [id]: {...old[id], destination: old[id]?.destination ?? null, manual: !!old[id]?.manual, fileName}}));
   const remove = (id: string) => {setSelected(old => old.filter(x => x !== id)); setChecked(old => old.filter(x => x !== id));};
   const pending = rows.filter(r => !r.ready).length;
@@ -249,7 +252,6 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const lastPhotoProject = rows.find(r => r.destination?.kind === 'photo' && r.destination.scope === 'project')?.destination?.projectId || prefs?.lastProjectId?.photo || undefined;
   // Character photos already named 人物_造型 keep their name, so the switch only shows when it changes something.
   const willRename = rows.some(r => r.destination?.scope === 'project' && !(isCharacter(r.destination) && stem(r.name) === r.destination.characterName + '_' + r.destination.lookName));
-  const decided = rows.length - pending;
 
   // One floating panel for the whole window: a row that changes group must not remount it.
   // It opens under the clicked file; the rest of the window dims; 完成 shows where the file went.
@@ -277,8 +279,13 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     <div className="fi-panel-head"><Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
       <div><strong title={r.name}>{r.name}</strong><small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
       <button className="fi-icon-button" aria-label="关闭" onClick={() => closePanel()}>×</button></div>
-    <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
-      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return; // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
+    <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} assetProjects={options?.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
+      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return;
+      // Renaming the copy is not choosing a destination: an automatic one is routed again from the new
+      // name (an existing look is matched, a missing one is still asked about). A destination set by hand
+      // keeps every field the user typed or picked; only untouched person/look fields follow the name.
+      if (v.fileName !== undefined && v.fileName !== (drafts[r.file.id]?.fileName ?? r.file.name) && !drafts[r.file.id]?.manual) {rename(r.file.id, v.fileName); return;}
+      // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
       // kind's last category (as before); later switches start at 待确认, and the same kind keeps its category.
       const pickedKind = (v.kind === 'music' || v.kind === 'sfx') && v.scope === 'library' && !v.directory && Object.keys(v).length === 3;
       const next = !pickedKind ? v : {...v, directory: r.destination?.kind === v.kind ? r.destination.directory || '' : drafts[r.file.id]?.manual ? '' : libraryDir(v.kind)}; setDrafts(old => ({...old, [r.file.id]: {...old[r.file.id], destination: next, manual: true, fileName: v.fileName ?? old[r.file.id]?.fileName}}));}} onReady={() => undefined}/>
@@ -298,6 +305,13 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     ? <span className="fi-choice" role="group" aria-label={'去向 ' + r.file.name}>
         <button disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建人物</button>
         {r.alternative ? <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: r.alternative!.directory})}>分类·{r.alternative.name}</button>
+          : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>摄影照片</button>}
+      </span>
+    : r.decision === 'new-look'
+    ? <span className="fi-choice" role="group" aria-label={'去向 ' + r.file.name}>
+        <button disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建造型「{r.destination?.lookName}」</button>
+        {/* Only offer an existing look; a character with none gets the general photos instead. */}
+        {r.fallbackLook ? <button disabled={locked} onClick={() => setDestination([r.file.id], {...r.destination!, lookName: r.fallbackLook!})}>放进造型「{r.fallbackLook}」</button>
           : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>摄影照片</button>}
       </span>
     : audioSwitch(r);
@@ -335,21 +349,31 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   }
 
   const single = rows.length === 1 && rows[0];
+  const lastIds: {photo?: string | null; video?: string | null} = prefs?.lastProjectId || {};
+  const recentProjects = [...new Set([lastIds.photo, lastIds.video].filter((x): x is string => !!x))]
+    .map(id => ({id, why: lastIds.photo === id && lastIds.video === id ? '上次照片和视频' : lastIds.photo === id ? '上次照片' : '上次视频'}));
   const status = checking ? <span className="fi-pill" role="status"><span className="fi-spinner"/>正在核验原文件</span>
     : prepFailed ? null : handoff && !batch ? <span className="fi-pill fi-pill-ok"><ShieldCheck size={13}/>已核验</span> : null;
-  const summary = files.length ? (pending ? '已分好 ' + decided + ' 个 · 还差 ' + pending + ' 个' : '全部已分好') + ' · ' + bytes(files.reduce((s, f) => s + f.bytes, 0)) : '';
+  // The header says what is true: decisions first, then files parked in 待确认; 全部已分好 only when neither.
+  const toDecide = rows.filter(r => r.decision || r.problem || !r.destination).length;
+  const parked = rows.filter(r => !r.manual && !r.decision && r.destination?.scope === 'library' && !r.destination.directory && (r.destination.kind === 'photo' || r.destination.kind === 'video'));
+  const parkedUnit = parked.every(r => r.destination!.kind === 'photo') ? ' 张' : ' 个';
+  const totalSize = files.length > 1 ? bytes(files.reduce((s, f) => s + f.bytes, 0)) : '';
+  const summaryWarn = toDecide ? '还差 ' + toDecide + ' 个要你决定' : '';
+  const summaryRest = [toDecide ? (parked.length ? parked.length + parkedUnit + '先放待确认' : '')
+    : parked.length ? parked.length + parkedUnit + '名字认不出，先放进待确认' : pending ? '正在核对人物和造型…' : '全部已分好', totalSize].filter(Boolean).join(' · ');
   const countLabel = (n: number) => {const kinds = new Set(files.map(f => f.mediaKind)); return kinds.size === 1 ? n + (files[0].mediaKind === 'photo' ? ' 张照片' : files[0].mediaKind === 'audio' ? ' 个音频' : ' 个视频') : n + ' 个文件';};
 
   return <main className={'fi-root fi-window fi-simple' + (native ? ' fi-native' : '')}><section className="fi-shell" aria-label="收纳素材到拾光" aria-busy={loading || busy}>
     <header className="fi-bar">
       <h1 className="fi-sr">收纳素材到拾光</h1>
-      <div className="fi-bar-title"><strong>{batch ? receiptKind === 'submitted' ? '已交给后台收纳' : receiptKind === 'other' ? '另一窗口已接收此选择' : '查看既有任务' : files.length ? '收纳 ' + countLabel(files.length) : '收纳素材'}</strong>{!batch && <span className={pending ? 'fi-warn-text' : 'fi-muted'}>{summary}</span>}</div>
+      <div className="fi-bar-title"><strong>{batch ? receiptKind === 'submitted' ? '已交给后台收纳' : receiptKind === 'other' ? '另一窗口已接收此选择' : '查看既有任务' : files.length ? '收纳 ' + countLabel(files.length) : '收纳素材'}</strong>{!batch && files.length > 0 && <span className="fi-bar-summary">{summaryWarn && <span className="fi-warn-text">{summaryWarn}</span>}{summaryWarn && summaryRest && <span className="fi-muted"> · </span>}{summaryRest && <span className="fi-muted">{summaryRest}</span>}</span>}</div>
       {status}
     </header>
 
-    {options && !batch && !locked && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
-      <label><span>项目</span><select aria-label="整批项目" title="选一个项目，名字里没写项目的文件都去这里；名字里写了项目的、单独设置过的不受影响" value={barProject} onChange={e => setProjectOverride(e.target.value)}>
-        {!barProject && <option value="">{barMixed ? '各自沿用上次' : '选择项目'}</option>}{options.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    {options && !batch && !locked && !single && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
+      <span className="fi-projectbar-label">项目</span>
+      <ProjectPicker projects={options.projects} value={barProject} placeholder={barMixed ? '各自沿用上次' : '选择项目'} recent={recentProjects} onChange={setProjectOverride}/>
       {barMixed && <span className="fi-muted">照片和视频的默认去处不同，选一个项目就统一</span>}
     </div>}
     <div className="fi-body">
@@ -361,17 +385,19 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         {prepFailed && <p className="fi-error" role="alert">{handoff.preparationError}</p>}
         {optionsError && !locked && <p className="fi-error" role="alert">没能读取项目和分类，自动分组暂不可用：{optionsError}<button onClick={() => setOptionsReload(n => n + 1)}><RefreshCw size={13}/>重新读取</button></p>}
         {!files.length && <p className="fi-muted">请至少保留一个文件。</p>}
-        {single ? <div className="fi-single">
+        {single ? <div className="fi-single fi-single-side">
           <Thumb file={single.file} handoffId={handoffId} ready={!checking && !prepFailed} size="large"/>
-          <div className="fi-single-name"><RowName row={single}/><small>{fileMeta(single)} · 来自「{folderLabel(single.file.path)}」</small></div>
-          <div className={'fi-single-dest' + (single.decision || single.problem ? ' fi-single-warn' : '')}>
-            {single.decision ? <><span>{single.reason}</span>{decisionControls(single)}</>
-              : single.destination ? <><span>收到 <strong>{destLabel(single.destination)}</strong></span><small>{single.problem || single.checking || single.reason}</small>{single.hint && <small className="fi-single-hint">{single.hint}</small>}{single.file.mediaKind === 'audio' && audioSwitch(single)}</>
-              : <span>{single.problem}</span>}
-            <button className="fi-link" data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '单独设置 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '单独设置…'}</button>
+          <div className="fi-single-info">
+            <div className="fi-single-name"><RowName row={single}/><small>{fileMeta(single)} · 来自「{folderLabel(single.file.path)}」</small></div>
+            <div className={'fi-single-dest' + (single.decision || single.problem ? ' fi-single-warn' : '')}>
+              {single.decision ? <><small>{single.reason}</small>{decisionControls(single)}</>
+                : single.destination ? <><small>收到</small><strong>{destLabel(single.destination)}</strong><small className={single.problem ? 'fi-error' : ''}>{single.problem || single.checking || (single.reason === '名字认不出' ? '名字认不出，先放这里' : single.reason)}</small>{single.hint && <small className="fi-single-hint">{single.hint}</small>}{single.file.mediaKind === 'audio' && audioSwitch(single)}</>
+                : <span>{single.problem}</span>}
+            </div>
+            <span className="fi-single-actions">
+              <button data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '改去处 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '改去处…'}</button>
+            </span>
           </div>
-          {single.file.mediaKind === 'photo' && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'put:single' ? '' : 'put:single')}>放进项目…</button>
-            {popover === 'put:single' && <PutPopover options={options} count={1} defaultProject={single.destination?.projectId || barProject || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination([single.file.id], d); setPopover('');}}/>}</span>}
         </div> : groups.map(renderGroup)}
         {removed.length > 0 && <p className="fi-removed-line">已移除 {removed.length} 个{removed.map(f => <button key={f.id} className="fi-link" disabled={locked} aria-label={'恢复 ' + f.name} onClick={() => setSelected(old => [...old, f.id])}>恢复 {f.name}</button>)}</p>}
         {namesError && standardNames && <p className="fi-muted">暂时算不出新名字；确认后仍会按规范命名。</p>}

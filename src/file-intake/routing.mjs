@@ -13,6 +13,19 @@ export const AUDIO_SFX_MAX = 60, AUDIO_MUSIC_MIN = 120;
 export const stem = name => String(name).normalize('NFKC').replace(/\.[^.]+$/, '').trim();
 const fold = s => String(s).normalize('NFKC').toLowerCase();
 const rest = (text, head) => text.slice(head.length).replace(SEP, '');
+// Separators people put between person, look and the rest of a name.
+const PART = /[\s_\-—·.、,，:：()（）\[\]【】]+/;
+const parts = text => String(text).split(PART).filter(Boolean);
+/**
+ * Person/look guess for a name that matches nothing yet. Any common separator counts
+ * (李四-校服, 李四 校服, 李四·校服), and only the part right after the person is the look,
+ * so 王五_视频3_05 guesses 王五 · 视频3 rather than a look named 视频3_05.
+ */
+export function guessPersonLook(text) {
+  const p = parts(text), first = p[0] || '';
+  const preset = imageNamePreset(p.length > 1 ? first + '_' + p[1] : String(text));
+  return {...preset, lookName: preset.structured ? p[1] : preset.lookName};
+}
 
 /** Longest item whose name is a prefix of text (case-insensitive, NFKC). */
 export function longestPrefix(items, text, nameOf = item => item.name) {
@@ -53,9 +66,12 @@ function matchInProject(project, text) {
   if (character) {
     const tail = rest(text, character.name.normalize('NFKC'));
     const looks = character.looks || [];
-    const look = (tail && (looks.find(l => fold(l.name) === fold(tail)) || longestPrefix(looks, tail)))
-      || (!tail ? looks.find(l => l.id === character.defaultLookId) || looks[0] : null);
-    return {type: 'character', character, look: look || null, lookName: look ? look.name : (tail || '默认')};
+    const fallback = looks.find(l => l.id === character.defaultLookId) || looks[0] || null;
+    // A look is only ever an existing one: the whole tail, its start, or any later part of the
+    // name that starts with a look (张大山_视频3_额伤正脸_05 → 额伤). Nothing here creates a look.
+    const look = !tail ? fallback : looks.find(l => fold(l.name) === fold(tail)) || longestPrefix(looks, tail)
+      || parts(tail).map(part => longestPrefix(looks, part)).find(Boolean) || null;
+    return {type: 'character', character, look, lookName: look ? look.name : parts(tail)[0] || '默认', fallbackLook: fallback ? fallback.name : null};
   }
   return null;
 }
@@ -119,12 +135,16 @@ function suggestPhoto(file, options, s, project, text, hint) {
   const found = project && matchInProject(project, text);
   if (found?.type === 'asset') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, assetKind: found.asset.kind, assetId: found.asset.id, assetRevision: found.asset.revision},
     group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
+  // A look the character doesn't have is asked about, like a new character: never created silently.
+  if (found?.type === 'character' && !found.look) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
+    group: 'decide', decision: 'new-look', fallbackLook: found.fallbackLook,
+    reason: found.fallbackLook ? '「' + found.character.name + '」还没有造型「' + found.lookName + '」' : '「' + found.character.name + '」还没有任何造型'};
   if (found?.type === 'character') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
-    group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」' + (found.look ? '' : '，将新建造型「' + found.lookName + '」')};
+    group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」'};
   // Agreed order: a possible new character is asked about before category matching.
   // When the name also starts with an existing category, that category is offered as the other answer.
   const category = longestPrefix((options.photoCategories || []).filter(c => c.id), s);
-  const preset = imageNamePreset(text);
+  const preset = guessPersonLook(text);
   if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
     group: 'decide', decision: 'new-character', reason: category ? '像人物，也像分类' : '项目里还没有这个人物', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
   // Library photos still carry the name-based person/look guess, so switching one to a project

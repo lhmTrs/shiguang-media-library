@@ -54,6 +54,7 @@ async function routeApi(route) {
   if (ep === '/routing-options') return fx.routing404 ? respond({error: 'Not found'}, 404) : respond(fx.options);
   if (ep === '/image-proposal') {
     const p = fx.options.projects.find(x => x.id === url.searchParams.get('projectId')), name = url.searchParams.get('name'), lookName = url.searchParams.get('lookName');
+    (fx.proposalProjects ||= []).push(p?.id);
     const c = p.assets.find(a => a.kind === 'character' && a.name === name), l = c?.looks.find(x => x.name === lookName);
     return respond({destination: {projectId: p.id, characterId: c?.id || null, characterRevision: c?.revision ?? null, lookId: l?.id || null, lookRevision: l?.revision ?? null, newCharacter: !c, newLook: !l, characterName: name, lookName}, message: ''});
   }
@@ -95,6 +96,14 @@ async function fresh(configure = () => {}) {
 const confirmButton = () => page.locator('.fi-confirm-button');
 const accepted = () => page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true});
 const group = title => page.getByRole('region', {name: title, exact: true});
+// The project bar is a page-drawn picker; its current project id is on data-value.
+const projectBar = () => page.getByRole('button', {name: '整批项目', exact: true});
+const PROJECT_NAMES = {[P1]: '穿越计', [P2]: '雨巷'};
+async function pickProject(id) {
+  await projectBar().click();
+  await page.getByRole('listbox', {name: '项目', exact: true}).getByRole('option', {name: new RegExp('^' + PROJECT_NAMES[id])}).click();
+  await expect(projectBar()).toHaveAttribute('data-value', id);
+}
 const target = (b, id) => b.targets.find(t => t.fileId === id);
 async function settle() {
   await page.getByRole('group', {name: '去向 小雨_校服.png', exact: true}).getByRole('button', {name: '新建人物', exact: true}).click();
@@ -162,7 +171,7 @@ try {
     // Independent review counterexample (FE3): a lone 穿越计_天台.png must show the same hint as in the grid.
     await fresh(f => {f.handoff.files = [{id: 'x1', name: '穿越计_天台.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/穿越计_天台.png'}];});
     const dest = page.locator('.fi-single-dest');
-    await expect(dest).toContainText('收到 摄影照片 › 待确认'); await expect(dest).toContainText('名字里有项目「穿越计」');
+    await expect(dest).toContainText('摄影照片 › 待确认'); await expect(dest).toContainText('名字里有项目「穿越计」');
     await expect(page.getByRole('region', {name: '需要你决定', exact: true})).toHaveCount(0);
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(fx.confirmBodies[0].targets, [{fileId: 'x1', destination: {kind: 'photo', scope: 'library', directory: ''}}]);
@@ -173,11 +182,11 @@ try {
     // Equal two-way choices, no primary colour inside the decision rows.
     await expect(page.getByRole('region', {name: '需要你决定', exact: true}).locator('.fi-primary')).toHaveCount(0);
     // Project bar: an unrecognised video follows the batch project; a project named in the file name does not.
-    const bar = page.getByLabel('整批项目', {exact: true}); await expect(bar).toHaveValue(P1);
-    await bar.selectOption(P2);
+    await expect(projectBar()).toHaveAttribute('data-value', P1);
+    await pickProject(P2);
     await expect(page.getByRole('region', {name: '项目「雨巷」 › 项目根目录', exact: true})).toContainText('canvas_77.mp4');
     await expect(page.getByRole('region', {name: '项目「穿越计」 › 外景', exact: true})).toContainText('穿越计视频16.mp4');
-    await bar.selectOption(P1);
+    await pickProject(P1);
     // Clicking the row (not its buttons) opens the anchored panel over a dimmed window.
     await page.locator('.fi-row', {hasText: '小雨_校服.png'}).click({position: {x: 300, y: 12}});
     const panel = page.getByRole('dialog', {name: '收纳设置 小雨_校服.png', exact: true}); await expect(panel).toBeVisible();
@@ -203,9 +212,9 @@ try {
       f.handoff.files = [['v1', '穿越计视频16.mp4', 'video'], ['v2', 'canvas_77.mp4', 'video'], ['p1', '阿青_泳衣.png', 'photo'], ['p2', 'image_0931.png', 'photo']]
         .map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
     });
-    const bar = page.getByLabel('整批项目', {exact: true});
+    const bar = projectBar();
     // Initial display: no single project is pretended; each kind keeps its own history, said plainly.
-    await expect(bar).toHaveValue(''); await expect(bar.locator('option:checked')).toHaveText('各自沿用上次');
+    await expect(bar).toHaveAttribute('data-value', ''); await expect(bar).toHaveText('各自沿用上次');
     await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
     await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
     await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
@@ -216,12 +225,12 @@ try {
     await pop.getByRole('button', {name: '场景', exact: true}).click(); await pop.getByRole('radio', {name: '雨夜街口', exact: true}).click();
     await pop.getByRole('button', {name: '放进去', exact: true}).click();
     // Explicit change to 雨巷: unnamed photo and video both follow it; named and manual files do not move.
-    await bar.selectOption(P2); await expect(page.locator('.fi-projectbar')).not.toContainText('照片和视频的默认去处不同');
+    await pickProject(P2); await expect(page.locator('.fi-projectbar')).not.toContainText('照片和视频的默认去处不同');
     await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4');
     await expect(group('需要你决定')).toContainText('阿青_泳衣.png'); // 雨巷 has no 阿青: the agreed new-character question
     await expect(group('项目「穿越计」 › 外景')).toContainText('穿越计视频16.mp4');
     // Explicit change to 穿越计: everything unnamed follows it, video into that project's last folder.
-    await bar.selectOption(P1); await expect(bar).toHaveValue(P1);
+    await pickProject(P1);
     await expect(group('项目「穿越计」 › 外景')).toContainText('canvas_77.mp4');
     await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
     await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
@@ -241,13 +250,13 @@ try {
       f.handoff.routingPreferences.lastProjectId = {photo: P1, video: null}; f.handoff.routingPreferences.lastVideoFolderByProject = {};
       f.handoff.files = files([['p1', '阿青_泳衣.png', 'photo'], ['v2', 'canvas_77.mp4', 'video']]);
     });
-    const bar = page.getByLabel('整批项目', {exact: true});
-    await expect(bar).toHaveValue(''); await expect(bar.locator('option:checked')).toHaveText('各自沿用上次');
+    const bar = projectBar();
+    await expect(bar).toHaveAttribute('data-value', ''); await expect(bar).toHaveText('各自沿用上次');
     await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
     await expect(group('视频素材 › 待确认')).toContainText('canvas_77.mp4');
     await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣.png');
     // The one project can be chosen explicitly, and the video follows it.
-    await bar.selectOption(P1); await expect(bar).toHaveValue(P1);
+    await pickProject(P1);
     await expect(group('项目「穿越计」 › 项目根目录')).toContainText('canvas_77.mp4'); await expect(group('视频素材 › 待确认')).toHaveCount(0);
     await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     let b = fx.confirmBodies[0];
@@ -259,7 +268,7 @@ try {
       f.handoff.routingPreferences.lastProjectId = {photo: null, video: P2};
       f.handoff.files = files([['p2', 'image_0931.png', 'photo'], ['v2', 'canvas_77.mp4', 'video']]);
     });
-    await expect(page.getByLabel('整批项目', {exact: true})).toHaveValue('');
+    await expect(projectBar()).toHaveAttribute('data-value', '');
     await expect(page.locator('.fi-projectbar')).toContainText('照片和视频的默认去处不同');
     await expect(group('项目「雨巷」 › 项目根目录')).toContainText('canvas_77.mp4'); await expect(group('摄影照片 › 待确认')).toContainText('image_0931.png');
     await confirmButton().click(); await expect(accepted()).toBeVisible(); b = fx.confirmBodies[0];
@@ -268,10 +277,150 @@ try {
 
     // Zero followers: every name carries its project; the bar shows that project and claims nothing else.
     await fresh(f => {f.handoff.routingPreferences.lastProjectId = {photo: null, video: null}; f.handoff.files = files([['v1', '穿越计视频16.mp4', 'video']]);});
-    await expect(page.getByLabel('整批项目', {exact: true})).toHaveValue(P1);
-    await expect(page.locator('.fi-projectbar')).not.toContainText('默认去处不同');
+    await expect(page.locator('.fi-projectbar')).toHaveCount(0); // one file: no project bar, its own 改去处 instead
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.equal(target(fx.confirmBodies[0], 'v1').destination.projectId, P1);
+  });
+
+  await check('post-release fixes: one-file layout, honest header, new look asked, page-drawn project picker', async () => {
+    const files = names => names.map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
+    // One photo: no project bar, one 改去处 button that opens the panel, header without a repeated size.
+    await fresh(f => {f.handoff.routingPreferences.lastProjectId = {photo: null, video: null}; f.handoff.files = files([['x1', 'E采用末帧_用户确认.png', 'photo']]);});
+    await expect(page.locator('.fi-projectbar')).toHaveCount(0);
+    await expect(page.locator('.fi-bar-title')).toContainText('1 张名字认不出，先放进待确认'); await expect(page.locator('.fi-bar-title')).not.toContainText('KB');
+    await expect(page.locator('.fi-single-dest')).toContainText('名字认不出，先放这里');
+    await expect(page.getByRole('button', {name: '放进场景或道具…', exact: true})).toHaveCount(0); // scenes and props now live in the panel
+    await page.getByRole('button', {name: '改去处 E采用末帧_用户确认.png', exact: true}).click();
+    await expect(page.getByRole('dialog', {name: '收纳设置 E采用末帧_用户确认.png', exact: true})).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // Header: decisions first, then what is parked in 待确认; 全部已分好 only when neither.
+    await fresh();
+    await expect(page.locator('.fi-bar-title')).toContainText('还差 2 个要你决定 · 1 张先放待确认');
+    await settle();
+    await expect(page.locator('.fi-bar-title')).toContainText('1 张名字认不出，先放进待确认');
+    await expect(page.locator('.fi-bar-title')).not.toContainText('全部已分好');
+
+    // A look the character doesn't have is a decision; picking the default look keeps the person.
+    await fresh(f => {f.handoff.files = files([['n1', '阿青_婚纱.png', 'photo']]); f.handoff.files.push(...files([['n2', '阿青_视频3_泳衣正脸_05.png', 'photo']]));});
+    const ask = page.getByRole('group', {name: '去向 阿青_婚纱.png', exact: true});
+    await expect(group('需要你决定')).toContainText('「阿青」还没有造型「婚纱」');
+    await expect(ask.getByRole('button', {name: '新建造型「婚纱」', exact: true})).toBeVisible();
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_视频3_泳衣正脸_05.png');
+    await ask.getByRole('button', {name: '放进造型「日常」', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    const b = fx.confirmBodies[0];
+    assert.equal(target(b, 'n1').destination.imageProposal.lookName, '日常'); assert.equal(target(b, 'n1').destination.imageProposal.newLook, false);
+    assert.equal(target(b, 'n2').destination.imageProposal.lookName, '泳衣'); assert.equal(target(b, 'n2').destination.imageProposal.newLook, false);
+
+    // Picker: recent first with the reason, search past eight projects, keyboard choice, Esc closes.
+    await fresh(f => {
+      const extra = Array.from({length: 8}, (_, i) => ({id: 'cccccccc-cccc-4ccc-8ccc-' + String(i).padStart(12, '0'), name: '短剧' + (i + 1)}));
+      f.options.projects.push(...extra.map(p => ({...p, videoFolders: [{id: 'root', name: '项目根目录', relativePath: ''}], assets: []})));
+      f.handoff.projects.push(...extra);
+      f.handoff.routingPreferences.lastProjectId = {photo: P1, video: P2};
+      f.handoff.files = files([['v2', 'canvas_77.mp4', 'video'], ['p2', 'image_0931.png', 'photo']]);
+    });
+    await projectBar().click();
+    const list = page.getByRole('listbox', {name: '项目', exact: true});
+    await expect(list.getByRole('option').nth(0)).toContainText('穿越计上次照片'); await expect(list.getByRole('option').nth(1)).toContainText('雨巷上次视频');
+    await expect(list.getByRole('option')).toHaveCount(10);
+    const search = page.getByLabel('搜索项目', {exact: true}); await expect(search).toBeFocused();
+    await search.fill('短剧1'); await expect(list.getByRole('option')).toHaveCount(1);
+    await search.fill('短剧'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+    await expect(projectBar()).toHaveText('短剧2'); await expect(list).toHaveCount(0);
+    await expect(group('项目「短剧2」 › 项目根目录')).toContainText('canvas_77.mp4');
+    await projectBar().click(); await page.keyboard.press('Escape'); await expect(list).toHaveCount(0);
+    assert.equal(fx.confirmBodies.length, 0);
+  });
+
+  await check('renaming in the panel routes again; a hand-set target stays; scenes and props in the panel (POLISH-1 rework)', async () => {
+    const files = names => names.map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
+    const panelFor = name => page.getByRole('dialog', {name: '收纳设置 ' + name, exact: true});
+    const renameTo = async (id, name, to) => {await page.locator('[data-file-id="' + id + '"]').click(); await panelFor(name).getByLabel('副本名称 ' + id, {exact: true}).fill(to); await panelFor(name).getByRole('button', {name: '完成', exact: true}).click();};
+    await fresh(f => {
+      f.options.projects[1].assets = [{id: 'c9', kind: 'character', name: '小满', revision: 1, defaultLookId: null, looks: []}];
+      f.handoff.files = files([['n1', '阿青_婚纱.png', 'photo'], ['n2', '阿青_婚纱2.png', 'photo'], ['n3', '阿青_婚纱3.png', 'photo'], ['p2', 'image_0931.png', 'photo']]);
+    });
+    // 1. Renamed to a name with an existing look: matched, no question, no new look.
+    await renameTo('n1', '阿青_婚纱.png', '阿青_泳衣_留档.png');
+    await expect(page.getByRole('group', {name: '去向 阿青_婚纱.png', exact: true})).toHaveCount(0);
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣_留档.png');
+    // 2. Renamed to a name that still has no look: still asked.
+    await renameTo('n2', '阿青_婚纱2.png', '阿青_礼服.png');
+    await expect(group('需要你决定')).toContainText('「阿青」还没有造型「礼服」');
+    // 3. A target set by hand stays when the copy is renamed.
+    await page.getByRole('group', {name: '去向 阿青_婚纱3.png', exact: true}).getByRole('button', {name: '放进造型「日常」', exact: true}).click();
+    await renameTo('n3', '阿青_婚纱3.png', '阿青_泳衣_备份.png');
+    // 4. Scene from the panel: 场景/道具 picks the project's first one; the request carries the asset.
+    await page.locator('[data-file-id="p2"]').click();
+    await panelFor('image_0931.png').getByRole('group', {name: '收纳范围 p2', exact: true}).getByRole('button', {name: '场景/道具', exact: true}).click();
+    await expect(panelFor('image_0931.png').getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await panelFor('image_0931.png').getByRole('button', {name: '完成', exact: true}).click();
+    await expect(group('项目「穿越计」 · 场景和道具')).toContainText('image_0931.png');
+    await page.getByRole('group', {name: '去向 阿青_婚纱2.png', exact: true}).getByRole('button', {name: '新建造型「礼服」', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    const b = fx.confirmBodies[0], d = id => target(b, id).destination;
+    assert.deepEqual([d('n1').fileName, d('n1').imageProposal.lookName, d('n1').imageProposal.newLook], ['阿青_泳衣_留档.png', '泳衣', false]);
+    assert.deepEqual([d('n2').fileName, d('n2').imageProposal.lookName, d('n2').imageProposal.newLook], ['阿青_礼服.png', '礼服', true]);
+    assert.deepEqual([d('n3').fileName, d('n3').imageProposal.lookName], ['阿青_泳衣_备份.png', '日常'], 'the hand-set look is not replaced by the new name');
+    assert.deepEqual(d('p2'), {kind: 'photo', scope: 'project', projectId: P1, assetKind: 'scene', assetId: 's1', assetRevision: 5});
+
+    // A character without any look: no invented 默认 choice, the other answer is 摄影照片.
+    await fresh(f => {
+      f.options.projects[1].assets = [{id: 'c9', kind: 'character', name: '小满', revision: 1, defaultLookId: null, looks: []}];
+      f.handoff.routingPreferences.lastProjectId = {photo: P2, video: P2}; f.handoff.files = files([['m1', '小满_校服.png', 'photo']]);
+    });
+    const ask = page.getByRole('group', {name: '去向 小满_校服.png', exact: true});
+    await expect(page.locator('.fi-single-dest')).toContainText('「小满」还没有任何造型');
+    await expect(ask.getByRole('button')).toHaveText(['新建造型「校服」', '摄影照片']);
+    await ask.getByRole('button', {name: '摄影照片', exact: true}).click(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'm1').destination, {kind: 'photo', scope: 'library', directory: ''});
+  });
+
+  await check('switching a scene/prop choice to a project without any never becomes a person target (POLISH-2)', async () => {
+    const P3 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await fresh(f => {
+      // A = 穿越计 (scene 雨夜街口), B = 雨巷 (nothing), C = 道具项目 (prop 灯笼).
+      f.options.projects.push({id: P3, name: '道具项目', videoFolders: [{id: 'root', name: '项目根目录', relativePath: ''}], assets: [{id: 'pp', kind: 'prop', name: '灯笼', revision: 2, defaultLookId: null, looks: []}]});
+      f.handoff.projects.push({id: P3, name: '道具项目'});
+      f.handoff.files = [{id: 'x1', name: '穿越计_阿青_泳衣_复验.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/穿越计_阿青_泳衣_复验.png'}];
+    });
+    const panel = page.getByRole('dialog', {name: '收纳设置 穿越计_阿青_泳衣_复验.png', exact: true});
+    const range = panel.getByRole('group', {name: '收纳范围 x1', exact: true}), project = panel.getByLabel('目标项目 x1', {exact: true});
+    await page.getByRole('button', {name: '改去处 穿越计_阿青_泳衣_复验.png', exact: true}).click();
+    await range.getByRole('button', {name: '场景/道具', exact: true}).click();
+    await expect(panel.getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    // A → B: still 场景/道具, nothing chosen, a plain message, and 收纳 blocked.
+    await project.selectOption(P2);
+    await expect(range.getByRole('button', {name: '场景/道具', exact: true})).toHaveAttribute('aria-pressed', 'true');
+    await expect(range.getByRole('button', {name: '人物', exact: true})).toHaveAttribute('aria-pressed', 'false');
+    await expect(panel).toContainText('这个项目还没有场景或道具'); await expect(panel.getByRole('radio')).toHaveCount(0);
+    await expect(confirmButton()).toBeDisabled();
+    // B → A: back to the first scene.
+    await project.selectOption(P1);
+    await expect(panel.getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    // A → B → C, done, confirm: the request is C's prop; no person check ever ran for B.
+    await project.selectOption(P2); await expect(confirmButton()).toBeDisabled();
+    await panel.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(page.locator('.fi-single-dest')).toContainText('这个项目没有场景或道具'); await expect(confirmButton()).toBeDisabled();
+    await page.getByRole('button', {name: '改去处 穿越计_阿青_泳衣_复验.png', exact: true}).click();
+    await project.selectOption(P3);
+    await expect(panel.getByRole('radio', {name: '道具 · 灯笼', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await panel.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'x1').destination, {kind: 'photo', scope: 'project', projectId: P3, assetKind: 'prop', assetId: 'pp', assetRevision: 2});
+    assert.ok(!(fx.proposalProjects || []).includes(P2), 'no person/look check for the empty project');
+    assert.equal(fx.confirmBodies.length, 1);
+    // The explicit ways out still work.
+    await fresh(f => {f.handoff.files = [{id: 'x2', name: 'image_0931.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/image_0931.png'}];});
+    await page.getByRole('button', {name: '改去处 image_0931.png', exact: true}).click();
+    const panel2 = page.getByRole('dialog', {name: '收纳设置 image_0931.png', exact: true}), range2 = panel2.getByRole('group', {name: '收纳范围 x2', exact: true});
+    await range2.getByRole('button', {name: '场景/道具', exact: true}).click();
+    await panel2.getByLabel('目标项目 x2', {exact: true}).selectOption(P2);
+    await range2.getByRole('button', {name: '摄影照片', exact: true}).click();
+    await panel2.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled();
   });
 
   await check('footer stays clickable while an editable settings panel is open (FE5 R2)', async () => {
@@ -338,7 +487,7 @@ try {
 
   await check('older service without routing options falls back to per-kind presets and per-file editing quietly', async () => {
     await fresh(f => {f.routing404 = true; f.handoff.routingPreferences = undefined; f.handoff.files = f.handoff.files.filter(x => x.mediaKind === 'video'); f.preferences = {video: {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'}};});
-    await expect(page.locator('.fi-single-dest')).toContainText('收到 雨巷 › 项目根目录'); await expect(page.locator('.fi-single')).toContainText('穿越计视频16.mp4'); await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.locator('.fi-single-dest')).toContainText('雨巷 › 项目根目录'); await expect(page.locator('.fi-single')).toContainText('穿越计视频16.mp4'); await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByRole('checkbox', {name: '收纳时按规范改名'})).not.toBeChecked();
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(fx.confirmBodies[0].targets, [{fileId: 'v1', destination: {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'}}]);

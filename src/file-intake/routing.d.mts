@@ -1,5 +1,5 @@
 import type {RoutingOptions, RoutingPreferences, IntakeFile, IntakeDestination} from './types';
-export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'audio-kind'; hint?: string; alternative?: {directory: string; name: string}; follows?: string};
+export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'new-look' | 'audio-kind'; hint?: string; alternative?: {directory: string; name: string}; fallbackLook?: string | null; follows?: string};
 export const AUDIO_SFX_MAX: number;
 export const AUDIO_MUSIC_MIN: number;
 export function stem(name: string): string;
@@ -12,3 +12,4 @@ export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?:
 export function defaultProject(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): RoutingOptions['projects'][number] | null;
 export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>, forcedProjectId?: string): Record<string, RouteSuggestion>;
 export function barDefault(files: readonly IntakeFile[], options: RoutingOptions, suggestions: Record<string, RouteSuggestion>): {projectId: string | null; mixed: boolean};
+export function guessPersonLook(text: string): {name: string; lookName: string; structured: boolean; generated: boolean};

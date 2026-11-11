@@ -41,7 +41,7 @@ const confirm=p=>p.locator('.fi-confirm-button');
 // The per-file panel dims the window; close it (完成) before pressing the footer button, as a person would.
 async function closePanels(p){const open=p.locator('.fi-popover');if(await open.count())await open.getByRole('button',{name:'完成',exact:true}).click();}
 // 去处 is a two-way switch since the round-2 design; pick and read it by its pressed button.
-async function scope(p,id,which){const g=await field(p,'收纳范围',id);await g.getByRole('button',{name:which==='project'?'项目':/摄影照片|视频素材/}).click();}
+async function scope(p,id,which){const g=await field(p,'收纳范围',id);await g.getByRole('button',{name:which==='project'?/^(项目|人物)$/:/摄影照片|视频素材/}).click();}
 async function photoProject(p,id,project){await scope(p,id,'project');await (await field(p,'目标项目',id)).selectOption(project);await expect(confirm(p)).toBeEnabled();}
 async function done(id){for(let i=0;i<500;i++){const b=await api('/file-intake/batches/'+id);if(!['queued','running'].includes(b.status))return b;await pause(30);}throw Error('batch terminal timeout');}
 async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await closePanels(p);await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
