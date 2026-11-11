@@ -110,12 +110,13 @@ export function suggest(file, ctx) {
       group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
     if (found?.type === 'character') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
       group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」' + (found.look ? '' : '，将新建造型「' + found.lookName + '」')};
-    // An existing category is a certain match; a new character is only a guess.
+    // Agreed order: a possible new character is asked about before category matching.
+    // When the name also starts with an existing category, that category is offered as the other answer.
     const category = longestPrefix((options.photoCategories || []).filter(c => c.id), s);
-    if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
     const preset = imageNamePreset(text);
     if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
-      group: 'decide', decision: 'new-character', reason: '「' + project.name + '」里还没有人物「' + preset.name + '」'};
+      group: 'decide', decision: 'new-character', reason: '「' + project.name + '」里还没有人物「' + preset.name + '」', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
+    if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
     return {destination: {kind: 'photo', scope: 'library', directory: ''}, group: 'library:photo:', reason: '名字认不出', hint};
   }
   // Audio stays in the general music/sfx library; only the kind is preset.

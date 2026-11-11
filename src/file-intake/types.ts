@@ -19,7 +19,7 @@ export type Candidate = {id: string; name: string; reason: string; adoptedShots:
 export type IntakeItem = {
   id: string; name: string; bytes: number; copiedBytes: number;
   status: 'queued' | 'copying' | 'duplicate' | 'ready' | 'source_retained' | 'failed' | 'cancelled' | 'unknown' | 'managed';
-  destination?:IntakeDestination;destinationLabel?:string;mediaKind?:string;creativeAssetId?:string;lookId?:string;bindingId?:string;error?: string; code?: string; videoId?: string; managedProjectId?: string; managedProjectName?: string;
+  destination?:IntakeDestination;destinationLabel?:string;mediaKind?:string;creativeAssetId?:string;lookId?:string|null;bindingId?:string;error?: string; code?: string; videoId?: string; managedProjectId?: string; managedProjectName?: string;
   assetId?: string; adoptionStamp?: string; candidates?: Candidate[]; plannedFileName?: string; resultFileName?: string; nameMode?: NameMode;
 };
 export type IntakeBatch = {
@@ -57,7 +57,7 @@ export const encoded = (id: string) => encodeURIComponent(id);
 
 export function sameTarget(batch: IntakeBatch, input: ConfirmInput) {
   const requested = new Set(input.fileIds), received = new Set(batch.items.map(item => item.id));
-  return batch.id === input.requestId && (input.version===2 ? batch.version===2 && input.targets.every(t=>destinationKey(t.destination)===destinationKey(batch.items.find(i=>i.id===t.fileId)?.destination)) : batch.version!==2 && batch.projectId === input.projectId && batch.folderId === input.folderId) && batch.mode === input.mode
+  return batch.id === input.requestId && (input.version===2 ? batch.version===2 && input.targets.every(t=>{const item=batch.items.find(i=>i.id===t.fileId);return destinationKey(t.destination)===destinationKey(item?.destination)&&(t.nameMode||'keep')===(item?.nameMode||'keep');}) : batch.version!==2 && batch.projectId === input.projectId && batch.folderId === input.folderId) && batch.mode === input.mode
     && requested.size === input.fileIds.length && received.size === batch.items.length && requested.size === received.size
     && [...requested].every(id => received.has(id));
 }

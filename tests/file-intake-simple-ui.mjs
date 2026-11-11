@@ -66,11 +66,12 @@ async function routeApi(route) {
   if (ep === '/handoffs/' + H + '/confirm') {
     validateConfirm(body); fx.confirmBodies.push(body); await pause(80);
     if (fx.confirm === 'reject') return respond({error: '合成：目标需要重新选择', code: 'INVALID_TARGET', accepted: false, requestId: body.requestId}, 422);
-    const items = body.fileIds.map(id => ({...fx.handoff.files.find(f => f.id === id), destination: clone(body.targets.find(t => t.fileId === id).destination), copiedBytes: 0, status: 'queued'}));
+    const items = body.fileIds.map(id => {const t = body.targets.find(x => x.fileId === id); return {...fx.handoff.files.find(f => f.id === id), destination: clone(t.destination), ...(t.nameMode ? {nameMode: t.nameMode} : {}), copiedBytes: 0, status: 'queued'};});
     const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items};
     if (fx.receipt === 'wrong-destination') batch.items[0].destination = {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'};
     if (fx.receipt === 'wrong-mode') batch.mode = body.mode === 'copy' ? 'move' : 'copy';
     if (fx.receipt === 'reverse-items') batch.items.reverse();
+    if (fx.receipt === 'dropped-name-mode') delete batch.items.find(i => i.nameMode).nameMode;
     fx.handoff.batchId = batch.id; fx.batches.unshift(batch);
     if (fx.confirm === 'lost') return route.abort('failed');
     return respond(batch);
@@ -186,8 +187,8 @@ try {
     await page.reload(); await expect(page.getByText('这是此选择的既有回执，没有新建任务。', {exact: true})).toBeVisible(); assert.equal(fx.confirmBodies.length, 2);
   });
 
-  await check('confirm-binding rejects changed destination or mode; matching items accept regardless of order', async () => {
-    for (const variant of ['wrong-destination', 'wrong-mode', 'reverse-items']) {
+  await check('confirm-binding rejects changed destination, mode or name mode; matching items accept regardless of order', async () => {
+    for (const variant of ['wrong-destination', 'wrong-mode', 'dropped-name-mode', 'reverse-items']) {
       await fresh(f => {f.receipt = variant;}); await settle(); await confirmButton().click();
       if (variant === 'reverse-items') {await expect(accepted()).toBeVisible(); assert.deepEqual(await page.evaluate(() => window.nativeAccepted), ['accepted']);}
       else {await expect(page.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible(); assert.deepEqual(await page.evaluate(() => window.nativeAccepted), []);}

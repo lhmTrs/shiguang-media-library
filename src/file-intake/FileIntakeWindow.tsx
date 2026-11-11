@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import {AlertCircle, CheckCircle2, RefreshCw, ShieldCheck} from 'lucide-react';
 import {GlobalFeedback, notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {applyTheme, readTheme} from '../theme';
+import type {ThemeId} from '../theme-list';
 import {THEME_LIST} from '../theme-list';
 import '../themes.css';
 import {BatchDetails} from './BatchDetails';
@@ -22,6 +23,8 @@ const bridge = () => handlers()?.intake;
 // 'close' closes at once. Appearance goes on its own channel so receipts stay unambiguous.
 const post = (message: 'accepted' | 'close') => {try {bridge()?.postMessage(message);} catch { /* Ordinary browsers have no native shell. */ }};
 const CLOSE_AFTER_SECONDS = 3;
+// The intake window only reads the shared theme; it must never write its own default back.
+const applyLocal = (id: ThemeId) => (applyTheme as (id: ThemeId, options?: {syncIntake?: boolean}) => void)(id, {syncIntake: false});
 const FINDER_NAMES: Record<string, string> = {Downloads: '下载', Desktop: '桌面', Documents: '文稿', Pictures: '图片', Movies: '影片', Music: '音乐'};
 const folderLabel = (p: string) => {const name = p.split('/').slice(-2, -1)[0] || '访达'; return FINDER_NAMES[name] || name;};
 
@@ -56,7 +59,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing'), [closeIn, setCloseIn] = useState(0);
   const alive = useRef(true), sending = useRef(false), initialized = useRef(''), attempt = useRef<ConfirmInput | null>(null), accepted = useRef('');
   useFeedbackToast(error, {source: '素材收纳'});
-  useEffect(() => {applyTheme(readTheme()); syncAppearance(); alive.current = true; return () => {alive.current = false;};}, []);
+  useEffect(() => {applyLocal(readTheme()); syncAppearance(); alive.current = true; return () => {alive.current = false;};}, []);
   const native = !!bridge();
   const remember = (value: ConfirmInput | null) => {attempt.current = value; try {if (value) sessionStorage.setItem('shiguang.file-intake.' + handoffId, JSON.stringify(value)); else sessionStorage.removeItem('shiguang.file-intake.' + handoffId);} catch { /* Handoff binding remains authoritative if browser storage is unavailable. */ }};
   function accept(value: IntakeBatch) {
@@ -88,7 +91,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       if (!current) return;
       if (value.id !== handoffId) throw Error('收纳选择身份不符，请核对原窗口');
       setApi(() => request); setHandoff(value);
-      const theme = THEME_LIST.find(t => t.id === value.themeId); if (theme) {applyTheme(theme.id); syncAppearance();}
+      const theme = THEME_LIST.find(t => t.id === value.themeId); if (theme) {applyLocal(theme.id); syncAppearance();}
       const saved = readAttempt(handoffId); attempt.current = saved;
       // Freeze the original attempt before awaiting a possibly lost batch read.
       setUnknown(!!saved || !!value.batchId);
@@ -149,7 +152,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const ready = !!destination && !decision && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
     const reason = draft?.manual ? '你选的' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
-      reason, hint: s?.hint, decision, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
+      reason, hint: s?.hint, decision, alternative: decision ? s?.alternative : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
       problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: names[file.id]?.proposedFileName ?? null};
   });
   // Character targets are checked against the project before confirmation. Each key is
@@ -249,7 +252,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     <RemoveButton file={r.file} disabled={locked} onRemove={() => remove(r.file.id)}/>
   </span>;
   const decisionControls = (r: Row) => r.decision === 'new-character' ? <span className="fi-decide-actions">
-      <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>放进摄影照片</button>
+      {r.alternative ? <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: r.alternative!.directory})}>放进分类「{r.alternative.name}」</button>
+        : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>放进摄影照片</button>}
       <button className="fi-primary" disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建人物「{r.destination?.characterName}」</button>
     </span>
     : <span className="fi-seg" role="group" aria-label={'素材类型 ' + r.file.name}>{(['music', 'sfx'] as const).map(k => <button key={k} disabled={locked} onClick={() => setDestination([r.file.id], {kind: k, scope: 'library', directory: libraryDir(k)})}>{k === 'music' ? '音乐' : '音效'}</button>)}</span>;

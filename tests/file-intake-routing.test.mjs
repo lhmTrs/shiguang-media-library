@@ -81,7 +81,10 @@ test('photo: generic platform names never become new characters', () => {
 });
 
 test('photo priority 4 and 5: category prefix, then 待确认', () => {
-  assert.deepEqual(one(ph('场景_天台.png')).destination, {kind: 'photo', scope: 'library', directory: '场景'});
+  assert.deepEqual(one(ph('场景天台.png')).destination, {kind: 'photo', scope: 'library', directory: '场景'});
+  // Agreed order asks about a possible new character first and offers the category as the other answer.
+  const both = one(ph('场景_天台.png'));
+  assert.equal(both.decision, 'new-character'); assert.deepEqual(both.alternative, {directory: '场景', name: '场景'});
   assert.deepEqual(one(ph('image_0931.png')).destination, {kind: 'photo', scope: 'library', directory: ''});
 });
 

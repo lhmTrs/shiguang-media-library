@@ -1,5 +1,5 @@
 import type {RoutingOptions, RoutingPreferences, IntakeFile, IntakeDestination} from './types';
-export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'audio-kind'; hint?: string};
+export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'audio-kind'; hint?: string; alternative?: {directory: string; name: string}};
 export const AUDIO_SFX_MAX: number;
 export const AUDIO_MUSIC_MIN: number;
 export function stem(name: string): string;
