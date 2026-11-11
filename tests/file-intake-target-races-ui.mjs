@@ -61,7 +61,9 @@ try{
   // Four media destinations, actual folder creation, durable backend readback.
   const mixed=await receipts.handoff([png,video,music,sfx]),p=await pageFor(mixed);
   const ids=mixed.files.map(f=>f.id);
-  await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[2])).selectOption('music');await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[3])).selectOption('sfx');
+  // With durations (INTAKE-SIMPLE backend) audio arrives preselected by length; without them a choice is required.
+  const durationPreset=(await api('/file-intake/handoffs/'+mixed.id)).files.some(f=>typeof f.durationSec==='number');
+  if(!durationPreset)await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[2])).selectOption('music');if(!durationPreset)await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[3])).selectOption('sfx');
   for(const id of ids)await expect((await field(p,'目标分类',id))).toHaveValue('');
   const sfxSection=p.getByRole('region',{name:'收纳设置 独立音效.wav',exact:true});
   await sfxSection.getByText('新建分类文件夹',{exact:true}).click();await (await field(p,'新分类名称',ids[3])).fill('环境');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect((await field(p,'目标分类',ids[3]))).toHaveValue('环境');

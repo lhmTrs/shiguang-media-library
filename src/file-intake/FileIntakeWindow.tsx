@@ -244,7 +244,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // One floating editor for the whole window: a row that changes group must not remount it.
   const editor = (r: Row) => api && handoff && <Popover label={'收纳设置 ' + r.file.name} align="fixed" onClose={() => setPopover('')}>
     <TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} value={r.destination} locked={locked} previewReady={false}
-      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return; const first = !r.destination && (v.kind === 'music' || v.kind === 'sfx'); const next = first ? {...v, directory: libraryDir(v.kind)} : v; setDrafts(old => ({...old, [r.file.id]: {...old[r.file.id], destination: next, manual: true, fileName: v.fileName ?? old[r.file.id]?.fileName}}));}} onReady={() => undefined}/>
+      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return; // Picking music/sfx in the panel sends a bare {kind, scope, directory:''}: keep this file's category
+      // for the same kind, otherwise start from that kind's last category.
+      const pickedKind = (v.kind === 'music' || v.kind === 'sfx') && v.scope === 'library' && !v.directory && Object.keys(v).length === 3;
+      const next = pickedKind ? {...v, directory: r.destination?.kind === v.kind ? r.destination.directory || '' : libraryDir(v.kind)} : v; setDrafts(old => ({...old, [r.file.id]: {...old[r.file.id], destination: next, manual: true, fileName: v.fileName ?? old[r.file.id]?.fileName}}));}} onReady={() => undefined}/>
     <div className="fi-pop-actions"><button className="fi-primary" onClick={() => setPopover('')}>完成</button></div>
   </Popover>;
   const rowTools = (r: Row) => <span className="fi-row-tools">
