@@ -62,7 +62,7 @@ export class ProjectVideoDesktopActions {
       await this.validate(id,eligible);
       s.status='running';s.dispatched=true;this.journal.save(s);
       let result;
-      try{result=await this.native.copyFiles(eligible.map(v=>v.path),{expectedChangeCount});}
+      try{result=await this.native.copyFiles(eligible.map(v=>v.path),{expectedChangeCount,beforeDispatch:()=>this.validate(id,eligible)});}
       catch(e){if(e.effectUnknown===false||['CLIPBOARD_CHANGED','CLIPBOARD_UNAVAILABLE','DESKTOP_UNAVAILABLE'].includes(e.code)){s.dispatched=false;this.journal.save(s);}throw e;}
       if(result.ack!=='written'||result.count!==eligible.length)fail('CLIPBOARD_ACK_UNKNOWN','文件剪贴板写入结果未确认，请核对原请求',409);
       return {...base,status:skipped.length?'partial':'completed',count:eligible.length,copied:eligible.map(({id,name,managed,verification})=>({id,name,managed,verification}))};
@@ -90,7 +90,9 @@ export class ProjectVideoDesktopActions {
       try{await this.validate(id,preview.eligible);}catch(e){if(e.code==='VIDEO_CLOSING')throw e;fail('PREVIEW_STALE','视频、读取授权或目录在核对后变化，请重新核对',409);}
       if(!preview.eligible.length)return {requestId:s.requestId,projectId:id,action:'reveal',status:'failed',requested:[],count:0,folderCount:0,skipped:preview.skipped,code:'NO_VALID_FILES'};
       s.status='running';s.dispatched=true;this.journal.save(s);
-      const result=await this.native.revealFiles(preview.eligible.map(v=>v.path));
+      let result;
+      try{result=await this.native.revealFiles(preview.eligible.map(v=>v.path),{beforeDispatch:()=>this.validate(id,preview.eligible)});}
+      catch(e){if(e.effectUnknown===false){s.dispatched=false;this.journal.save(s);}throw e;}
       if(result.ack!=='dispatched')fail('REVEAL_ACK_UNKNOWN','访达请求结果尚未确认',409);
       return {requestId:s.requestId,projectId:id,action:'reveal',status:preview.skipped.length?'partial':'completed',requested:preview.eligible.map(({id,name})=>({id,name})),count:preview.eligible.length,folderCount:preview.folders.length,ack:'dispatched',skipped:preview.skipped};
     });

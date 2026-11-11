@@ -5,7 +5,10 @@ import {constants} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 
-const SOURCE = path.join(import.meta.dirname, 'desktop-native.swift');
+const sources = {
+  desktop:{source:path.join(import.meta.dirname,'desktop-native.swift'),cache:'video-desktop-native',frameworks:['AppKit','CoreGraphics','SystemConfiguration']},
+  vision:{source:path.join(import.meta.dirname,'../project-assets/head-vision.swift'),cache:'asset-head-vision',frameworks:['ImageIO','Vision']},
+};
 const PROTOCOL = 1;
 const MAX_INPUT = 1024 * 1024, MAX_OUTPUT = 64 * 1024;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -39,12 +42,15 @@ const unavailable = e => ({clipboard: {available: false, code: e.code, reason: e
  * Store/router owns path authorization, identity rechecks and durable actions.
  */
 export class ProjectVideoDesktopNative {
-  constructor({directory, runner = spawn, platform = process.platform} = {}) {
+  constructor({directory, runner = spawn, platform = process.platform, variant = 'desktop'} = {}) {
     this.directory = typeof directory === 'string' && path.isAbsolute(directory) ? directory : null;
+    this.component = sources[variant] ?? sources.desktop;
     this.runner = runner;
     this.platform = platform;
     this.children = new Map();
     this.pending = new Set();
+    this.clipboardTail = Promise.resolve();
+    this.clipboardUnsettled = false;
     this.preparing = null;
     this.closing = false;
   }
@@ -159,10 +165,10 @@ export class ProjectVideoDesktopNative {
 
   async sourceInfo() {
     if (!this.directory) throw fault('NATIVE_HELPER_UNAVAILABLE');
-    const source = await fs.readFile(SOURCE).catch(() => { throw fault('NATIVE_HELPER_UNAVAILABLE'); });
+    const source = await fs.readFile(this.component.source).catch(() => { throw fault('NATIVE_HELPER_UNAVAILABLE'); });
     const sourceHash = hash(source);
     const key = hash(`${PROTOCOL}:${process.arch}:${sourceHash}`);
-    return {source, sourceHash, key, cache: path.join(this.directory, 'video-desktop-native'),
+    return {source, sourceHash, key, cache: path.join(this.directory,this.component.cache),
       binaryName: `helper-${key}`, manifestName: `helper-${key}.json`};
   }
 
@@ -171,7 +177,7 @@ export class ProjectVideoDesktopNative {
     const st = await fs.lstat(info.cache);
     if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.geteuid?.() || (st.mode & 0o022)) throw fault('NATIVE_HELPER_UNAVAILABLE');
     // /var on macOS can itself be a system symlink; anchor to the caller's real directory.
-    if (await fs.realpath(info.cache) !== path.join(await fs.realpath(this.directory), 'video-desktop-native')) throw fault('NATIVE_HELPER_UNAVAILABLE');
+    if (await fs.realpath(info.cache) !== path.join(await fs.realpath(this.directory),this.component.cache)) throw fault('NATIVE_HELPER_UNAVAILABLE');
   }
 
   async readOwned(file, limit, executable = false) {
@@ -225,7 +231,7 @@ export class ProjectVideoDesktopNative {
       await fs.writeFile(source, info.source, {flag: 'wx', mode: 0o600});
       const moduleCache = path.join(build, 'modules');
       const result = await this.run(compiler, ['-sdk', sdk, '-module-cache-path', moduleCache, source, '-o', binary,
-        '-framework', 'AppKit', '-framework', 'CoreGraphics', '-framework', 'SystemConfiguration'], '', 45000,
+        ...this.component.frameworks.flatMap(name=>['-framework',name])], '', 45000,
       {cwd: build, env: {...process.env, TMPDIR: scratch + path.sep, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULECACHE_PATH: moduleCache}});
       if (result.code !== 0 || result.signal) throw fault('NATIVE_COMPILER_UNAVAILABLE');
       this.assertOpen();
@@ -268,7 +274,7 @@ export class ProjectVideoDesktopNative {
     const mutation = ['copy-files', 'reveal-files'].includes(request.operation);
     const input = JSON.stringify({protocol: PROTOCOL, ...request});
     if (Buffer.byteLength(input) > MAX_INPUT) throw fault('INVALID_FILES');
-    const result = await this.run(binary, [], input, 5000, {mutation});
+    const result = await this.run(binary, [], input, request.operation==='detect-face'?1500:5000, {mutation});
     let data;
     try { data = JSON.parse(result.stdout); } catch { throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: mutation}); }
     if (result.signal || data?.protocol !== PROTOCOL || typeof data.ok !== 'boolean') throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: mutation});
@@ -307,22 +313,56 @@ export class ProjectVideoDesktopNative {
     return [...paths];
   }
 
-  copyFiles(paths, {expectedChangeCount} = {}) {
-    return this.track(async () => {
+  async prepareDispatch(beforeDispatch) {
+    try {
+      const binary=await this.helper({prepare:true});
+      await beforeDispatch?.();
+      this.assertOpen();
+      return binary;
+    } catch(e) {
+      // No native clipboard/Finder operation has been invoked yet.
+      throw Object.assign(e,{effectUnknown:false});
+    }
+  }
+
+  copyFiles(paths, {expectedChangeCount,beforeDispatch} = {}) {
+    // Video and image actions share this native instance. AppKit has no
+    // compare-and-swap: two helpers must never overlap their check and write.
+    const previous=this.clipboardTail;
+    const work=this.track(async () => {
       const files = this.files(paths);
       if (!Number.isSafeInteger(expectedChangeCount) || expectedChangeCount < 0) throw fault('INVALID_CHANGE_COUNT');
-      const data = await this.invoke(await this.helper({prepare: true}), {operation: 'copy-files', paths: files, expectedChangeCount});
+      await previous;
+      this.assertOpen();
+      if(this.clipboardUnsettled)throw fault('NATIVE_EXIT_UNSETTLED',{effectUnknown:false});
+      const binary=await this.prepareDispatch(beforeDispatch);
+      let data;
+      try{data=await this.invoke(binary,{operation:'copy-files',paths:files,expectedChangeCount});}
+      catch(e){if(e.code==='NATIVE_EXIT_UNSETTLED')this.clipboardUnsettled=true;throw e;}
       if (data.ack !== 'written' || data.count !== files.length || !Number.isSafeInteger(data.changeCount) || data.changeCount < 0) throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: true});
       return {ack: 'written', count: data.count, changeCount: data.changeCount};
     });
+    this.clipboardTail=work.then(()=>{},()=>{});
+    return work;
   }
 
-  revealFiles(paths) {
+  revealFiles(paths,{beforeDispatch}={}) {
     return this.track(async () => {
       const files = this.files(paths);
-      const data = await this.invoke(await this.helper({prepare: true}), {operation: 'reveal-files', paths: files});
+      const data = await this.invoke(await this.prepareDispatch(beforeDispatch), {operation: 'reveal-files', paths: files});
       if (data.ack !== 'dispatched' || data.count !== files.length) throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: true});
       return {ack: 'dispatched', count: data.count};
+    });
+  }
+
+  detectFace(snapshot) {
+    return this.track(async () => {
+      if(this.component!==sources.vision)throw fault('NATIVE_PROTOCOL_ERROR');
+      const files=this.files([snapshot]);
+      // App startup may prepare the helper; do not compile on a crop request.
+      const data=await this.invoke(await this.helper(),{operation:'detect-face',paths:files});
+      if(!['unsupported','not_found','decoded'].includes(data.status))throw fault('NATIVE_PROTOCOL_ERROR');
+      return data;
     });
   }
 
