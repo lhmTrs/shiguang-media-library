@@ -32,8 +32,9 @@ const asset = id => api('/project-assets/assets/' + id);
 const shot = async name => { if (process.env.AUTOCROP_SHOTS) await page.screenshot({ path: path.join(process.env.AUTOCROP_SHOTS, name + '.png') }); };
 const SUGGEST = { x: 50, y: 12, zoom: 2.2 };
 // 模拟后端：每张绑定的裁切来源、每张的 head-box 结果、换默认图时是否自动框。
-const mock = { source: new Map(), head: new Map(), wasDefault: new Set(), delay: 0, calls: [], puts: [] };
-const inject = value => { if (Array.isArray(value)) value.forEach(inject); else if (value && typeof value === 'object') { if (Array.isArray(value.images)) value.images.forEach(b => { if (b && b.id) b.crop_source = mock.source.has(b.id) ? mock.source.get(b.id) : null; }); Object.values(value).forEach(inject); } };
+// edited：后端保留的人工历史（crop_manually_edited），提交 manual 后置上，测试按场景重置。
+const mock = { source: new Map(), edited: new Set(), head: new Map(), wasDefault: new Set(), delay: 0, calls: [], puts: [] };
+const inject = value => { if (Array.isArray(value)) value.forEach(inject); else if (value && typeof value === 'object') { if (Array.isArray(value.images)) value.images.forEach(b => { if (b && b.id) { b.crop_source = mock.source.has(b.id) ? mock.source.get(b.id) : null; b.crop_manually_edited = mock.edited.has(b.id); } }); Object.values(value).forEach(inject); } };
 async function installMocks() {
   await page.route('**/api/project-assets/bindings/*/head-box*', async route => {
     const id = decodeURIComponent(route.request().url().split('/').at(-2)); mock.calls.push(id);
@@ -51,7 +52,7 @@ async function installMocks() {
         const was = before.looks.find(x => x.id === l.id)?.default_image_id;
         if (l.default_image_id && l.default_image_id !== was && !mock.wasDefault.has(l.default_image_id) && mock.source.get(l.default_image_id) === 'untouched') { const b = body.asset.images.find(i => i.id === l.default_image_id); if (b) { b.crop = SUGGEST; b.crop_source = 'auto'; auto.push(b.id); } }
       }
-      for (const b of body.asset.images || []) if ('crop_source' in b) mock.source.set(b.id, b.crop_source);
+      for (const b of body.asset.images || []) { if ('crop_source' in b) mock.source.set(b.id, b.crop_source); if (b.crop_source === 'manual') mock.edited.add(b.id); }
       for (const l of body.asset.looks || []) if (l.default_image_id) mock.wasDefault.add(l.default_image_id);
       const response = await route.fetch({ postData: JSON.stringify(body) }), json = await response.json(); if (response.ok()) inject(json);
       return route.fulfill({ response, json });
@@ -64,7 +65,7 @@ const openCrop = async name => { await wrap(name).click({ button: 'right' }); aw
 const lastPut = () => mock.puts.at(-1).asset;
 // 点撤销并等到真正发出撤销保存、提示出现（避免把上一次的「已撤销」当成这一次）。
 const undoNow = async () => { const n = mock.puts.length; await undoToast().getByRole('button', { name: '撤销' }).click(); await expect.poll(() => mock.puts.length).toBe(n + 1); await expect(page.locator('.ca-workspace')).not.toHaveAttribute('aria-busy', 'true'); };
-const reset = async (a, id, source) => { const x = await asset(a.id); x.images.find(b => b.id === id).crop = { x: 50, y: 50, zoom: 1 }; await api('/project-assets/assets/' + a.id, { asset: x, expected_revision: x.revision }, 'PUT'); mock.source.set(id, source); };
+const reset = async (a, id, source) => { const x = await asset(a.id); x.images.find(b => b.id === id).crop = { x: 50, y: 50, zoom: 1 }; await api('/project-assets/assets/' + a.id, { asset: x, expected_revision: x.revision }, 'PUT'); mock.source.set(id, source); mock.edited.delete(id); };
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
