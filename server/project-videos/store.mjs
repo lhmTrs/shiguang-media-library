@@ -202,7 +202,7 @@ export class ProjectVideos{
   }catch(e){
    if(s.upgradePublication&&s.status!=='ready'){
     try{await this.discardUpgradePublication(s);}
-    catch{fail('VIDEO_COPY_UNSETTLED',e.message+'；新副本状态待核对，已保留现场',409);}
+    catch(rollback){fail('VIDEO_COPY_UNSETTLED',e.message+'；新副本状态待核对：'+rollback.message,409);}
    }
    throw e;
   }});}finally{await handle?.close();await this.media.release(opened.handle);}}

@@ -140,6 +140,39 @@ test('升级副本跨卷回退用独占文件并返回可核对的身份',async 
  assert.deepEqual(await fs.readdir(target),[]);
  assert.deepEqual(await fs.readFile(stage),bytes);
 });
+test('回退在检查后遇到同名换入，保留换入文件且不覆盖新占用',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'sg-upgrade-rollback-race-'));
+ t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const preload=path.join(dir,'replace-before-rename.mjs'),worker=path.resolve(import.meta.dirname,'../server/project-videos/publish-worker.mjs');
+ await fs.writeFile(preload,`import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+ const rename=fs.renameSync;
+ fs.renameSync=(from,to)=>{
+  if(from!=='candidate.mp4')return rename(from,to);
+  rename(from,'retained.mp4');fs.writeFileSync(from,'换入的文件');
+  rename(from,to);
+  if(process.cwd().endsWith('occupied'))fs.writeFileSync(from,'又出现的同名文件');
+ };
+ syncBuiltinESMExports();`);
+ for(const type of ['free','occupied']){
+  const target=path.join(dir,type),fileName='candidate.mp4',file=path.join(target,fileName);
+  await fs.mkdir(target);await fs.writeFile(file,'原副本');
+  const {dev,ino}=await fs.stat(target),st=await fs.stat(file),identity=[st.dev,st.ino,st.size,st.mtimeMs,st.ctimeMs].join(':');
+  const proc=spawnSync(process.execPath,['--import',preload,worker,JSON.stringify({directory:{dev,ino},discard:{fileName,identity}})],{cwd:target,encoding:'utf8',timeout:5000});
+  assert.equal(proc.status,1,proc.stderr||String(proc.error));
+  assert.equal(await fs.readFile(path.join(target,'retained.mp4'),'utf8'),'原副本');
+  const isolated=(await fs.readdir(target)).filter(name=>name.startsWith('.sg-upgrade-rollback-'));
+  if(type==='free'){
+   assert.match(proc.stderr,/已放回原位置/);
+   assert.equal(await fs.readFile(file,'utf8'),'换入的文件');
+   assert.deepEqual(isolated,[]);
+  }else{
+   assert.equal(isolated.length,1);
+   assert.ok(proc.stderr.includes(path.join(isolated[0],fileName)));
+   assert.equal(await fs.readFile(file,'utf8'),'又出现的同名文件');
+   assert.equal(await fs.readFile(path.join(target,isolated[0],fileName),'utf8'),'换入的文件');
+  }
+ }
+});
 test('无分镜项目可持久保存视频、none/new/existing参考提示词、项目归属与备份',async t=>{const f=await fixture(t),r=await imported(f,{mode:'new',title:'门口经验',text:'固定镜头，原参考经验正文'});assert.equal(r.status,'ready');const list=await f.catalog.list(f.a.id),v=list.videos[0];assert.equal(list.prompts.length,1);assert.equal(v.managed,true);assert.equal(v.status,'available');assert.deepEqual(v.adoptedShots,[]);assert.notEqual(v.path,f.file);assert.deepEqual(await fs.readFile(v.path),f.bytes);assert.deepEqual(await fs.readFile(f.file),f.bytes);await assert.rejects(f.catalog.start(f.b.id,{requestId:randomUUID(),fileName:'b.mp4',bytes:100,prompt:{mode:'existing',id:list.prompts[0].id}}),e=>e.code==='PROMPT_NOT_FOUND');const upd=await f.catalog.update(f.a.id,v.id,{expectedRevision:v.revision,title:'新标题',notes:'可读备注',prompt:{mode:'existing',id:list.prompts[0].id}});assert.equal(upd.name,'新标题');const backup=f.storyboards.backup();assert.equal(backup.video_preview.project_video_records.length,1);f.storyboards.validateBackup(backup);const bad=structuredClone(backup);bad.video_preview.project_video_records[0].project_id=f.b.id;bad.checksum=digest({tables:bad.tables,creative:bad.creative,video_preview:bad.video_preview});assert.throws(()=>f.storyboards.validateBackup(bad),/归属/);const restarted=new ProjectVideos(f.store,{directory:f.catalog.directory});assert.equal((await restarted.list(f.a.id)).videos[0].name,'新标题');assert.equal(restarted.receiptDTO(restarted.receipt(f.a.id,r.id)).status,'ready');});
 test('同内容不同名直接导入、同名可复用或_0副本；重复请求查询不重发',async t=>{const f=await fixture(t),one=await imported(f),two=await imported(f,{mode:'none'},'other.mp4');assert.equal(two.status,'ready');assert.notEqual(two.videoId,one.videoId);assert.equal((await f.catalog.list(f.a.id)).videos.length,2);const again=await imported(f);assert.equal(again.status,'duplicate');const copied=await f.catalog.resolve(f.a.id,again.id,{choice:'import'});assert.equal(copied.fileName,'candidate_0.mp4');assert.equal((await f.catalog.list(f.a.id)).videos.length,3);await assert.rejects(f.catalog.upload(f.a.id,again.id,Readable.from([f.bytes])),e=>e.code==='IMPORT_BUSY');assert.equal(f.catalog.receiptDTO(f.catalog.receipt(f.a.id,again.id)).status,'ready');});
 test('分镜仅绑定项目管理视频，覆盖与参考提示词无关，移除需精确采用确认',async t=>{const f=await fixture(t);init(f);const a=await imported(f),duplicate=await imported(f,{mode:'new',text:'另一份经验'}),b=await f.catalog.resolve(f.a.id,duplicate.id,{choice:'import'});await assert.rejects(f.store.inspect(f.a.id,[{path:f.file}]),e=>e.code==='PROJECT_VIDEO_REQUIRED');await assert.rejects(f.store.inspect(f.b.id,[{sourceId:a.videoId}]));await bind(f,a.videoId,[0,1]);const state=await f.store.state(f.a.id),oldFirst=state.plan.adopted[state.shots[0].id];await bind(f,b.videoId,[1,2]);let list=await f.catalog.list(f.a.id);assert.deepEqual(list.videos.find(v=>v.id===a.videoId).adoptedShots.map(s=>s.number),['01']);assert.equal((await f.store.state(f.a.id)).plan.adopted[state.shots[0].id],oldFirst);let video=list.videos.find(v=>v.id===b.videoId);await assert.rejects(Promise.resolve().then(()=>f.catalog.remove(f.a.id,video.id,{expectedRevision:video.revision,adoptionStamp:list.adoptionStamp})),e=>e.code==='UNBIND_CONFIRMATION_REQUIRED');await f.catalog.update(f.a.id,video.id,{expectedRevision:video.revision,title:video.name,notes:'经验只读',prompt:{mode:'none'}});list=await f.catalog.list(f.a.id);video=list.videos.find(v=>v.id===b.videoId);const beforeState=(await f.store.state(f.a.id)).plan;assert.equal(Object.keys(beforeState.adopted).length,3);f.catalog.remove(f.a.id,video.id,{expectedRevision:video.revision,adoptionStamp:list.adoptionStamp,confirmUnbind:true});assert.equal(Object.keys((await f.store.state(f.a.id)).plan.adopted).length,1);await fs.access(video.path);await assert.rejects(f.store.inspect(f.a.id,[{sourceId:video.id}]),e=>e.code==='PROJECT_VIDEO_REQUIRED');});

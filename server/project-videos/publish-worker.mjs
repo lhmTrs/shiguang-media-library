@@ -2,7 +2,7 @@
 // cannot follow a substituted ancestor/symlink in the parent's absolute path.
 // This helper accepts only metadata and creates no model, network or DB work.
 import fs from 'node:fs/promises';
-import {constants,lstatSync,unlinkSync} from 'node:fs';
+import {constants,linkSync,lstatSync,mkdtempSync,renameSync,rmdirSync,unlinkSync} from 'node:fs';
 import path from 'node:path';
 
 const identity=s=>[s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs].join(':');
@@ -12,7 +12,25 @@ function discardFile(name,proof){
   const current=lstatSync(name,{throwIfNoEntry:false});
   if(!current)return;
   if(!regular(current)||identity(current)!==proof)throw Error('副本身份变化，未移除');
-  unlinkSync(name);
+  // A public name can change after lstat. Atomically take what is there,
+  // then check the actual entry in a fresh private directory before unlinking.
+  const isolation=mkdtempSync('.sg-upgrade-rollback-'),taken=path.join(isolation,name);
+  try{
+    renameSync(name,taken);
+    const moved=lstatSync(taken);
+    // Rename changes ctime, so compare inode, size and mtime after the move.
+    if(!regular(moved)||moved.dev!==current.dev||moved.ino!==current.ino||moved.size!==current.size||moved.mtimeMs!==current.mtimeMs){
+      try{
+        if(!regular(moved))throw Error('无法安全放回');
+        linkSync(taken,name); // Exclusive: a newly occupied name wins.
+        unlinkSync(taken);
+      }catch{throw Error('同名文件已换入，未覆盖，已保留在 '+taken);}
+      throw Error('同名文件已换入，已放回原位置，未移除');
+    }
+    unlinkSync(taken);
+  }finally{
+    try{rmdirSync(isolation);}catch(e){if(e.code!=='ENOTEMPTY'&&e.code!=='ENOENT')throw e;}
+  }
 }
 async function copyWithProof(stage,stageIdentity,name){
   const source=await fs.open(stage,constants.O_RDONLY|constants.O_NOFOLLOW);
