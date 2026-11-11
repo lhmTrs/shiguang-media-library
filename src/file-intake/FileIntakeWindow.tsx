@@ -278,7 +278,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {!opened ? null : g.photos ? <div className="fi-grid">{g.rows.map(r => <figure key={r.file.id} className={'fi-tile' + (checked.includes(r.file.id) ? ' fi-tile-on' : '')}>
           <label className="fi-tile-check"><input type="checkbox" disabled={locked} aria-label={'选择 ' + r.file.name} checked={checked.includes(r.file.id)} onChange={e => setChecked(old => e.target.checked ? [...old, r.file.id] : old.filter(x => x !== r.file.id))}/></label>
           <Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
-          <figcaption><RowName row={r}/><small className={r.problem ? 'fi-error' : ''}>{r.problem || r.checking || (g.key.startsWith('character') ? r.destination?.characterName + ' · ' + r.destination?.lookName : r.reason)}</small>{r.hint && <small>{r.hint}</small>}{rowTools(r)}</figcaption>
+          <figcaption><RowName row={r} compact/><small className={r.problem ? 'fi-error' : ''}>{r.problem || r.checking || (g.key.startsWith('character') ? r.destination?.characterName + ' · ' + r.destination?.lookName : r.reason)}</small>{r.hint && <small>{r.hint}</small>}{rowTools(r)}</figcaption>
         </figure>)}</div>
         : <ul className="fi-rows">{g.rows.map(r => <li key={r.file.id} className="fi-row">
           <Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>

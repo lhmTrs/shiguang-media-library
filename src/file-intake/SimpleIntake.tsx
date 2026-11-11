@@ -89,7 +89,9 @@ export function FolderPopover({options, projectId, folderId, count, onApply, onC
   </Popover>;
 }
 
-export function RowName({row}: {row: Row}) {
+export function RowName({row, compact = false}: {row: Row; compact?: boolean}) {
+  // Narrow tiles show the new name first and keep the original as a quiet second line.
+  if (compact && row.newName && row.newName !== row.file.name) return <><strong className="fi-row-name" title={row.newName}>{row.newName}</strong><small title={row.file.name}>原名 {row.file.name}</small></>;
   return row.newName && row.newName !== row.file.name
     ? <span className="fi-rename"><span className="fi-rename-from" title={row.file.name}>{row.file.name}</span><ArrowRight size={13} aria-label="改名为"/><strong title={row.newName}>{row.newName}</strong></span>
     : <strong className="fi-row-name" title={row.name}>{row.name}</strong>;
