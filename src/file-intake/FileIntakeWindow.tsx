@@ -249,9 +249,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // It opens under the clicked file; the rest of the window dims; 完成 shows where the file went.
   const openPanel = (id: string, from: HTMLElement) => {
     if (popover === 'edit:' + id) {setPopover(''); return;}
-    // Prefer just below the file; never past the window edge (the panel scrolls inside when short of room).
-    const r = from.getBoundingClientRect(), width = 352, top = Math.max(60, Math.min(r.bottom + 8, window.innerHeight - 420));
-    setPanelAt({top, left: Math.max(12, Math.min(r.left + 16, window.innerWidth - width - 12)), maxHeight: window.innerHeight - top - 12});
+    // Prefer just below the file; stay clear of the footer so 收纳 / 核对 remain reachable
+    // (the panel scrolls inside when short of room).
+    const footer = document.querySelector('.fi-foot')?.getBoundingClientRect().top ?? window.innerHeight;
+    const r = from.getBoundingClientRect(), width = 352, top = Math.max(60, Math.min(r.bottom + 8, footer - 380));
+    setPanelAt({top, left: Math.max(12, Math.min(r.left + 16, window.innerWidth - width - 12)), maxHeight: Math.max(220, footer - top - 8)});
     setPopover('edit:' + id);
   };
   // 完成: open the group the file now lives in and bring it into view, so the highlight is seen.
