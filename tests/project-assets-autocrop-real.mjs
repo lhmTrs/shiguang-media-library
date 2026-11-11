@@ -157,6 +157,29 @@ try {
     await again.getByRole('button', { name: '取消' }).click();
   });
 
+  await check('打开请求归属：读取最新资料期间按 Esc 或换到别的卡片菜单，旧的打开作废，不再弹出面板', async () => {
+    await reopen(project);
+    // 每轮暂扣一次「阿青」的资料读取，控制它什么时候返回。
+    const path_ = '/api/project-assets/assets/' + hero.a.id, matcher = u => u.pathname === path_;
+    const dialogOf = name => page.getByRole('dialog', { name: '调整' + name + '的头像' });
+    for (const how of ['Esc', '换卡片']) {
+      let release, seen; const held = new Promise(r => release = r), started = new Promise(r => seen = r);
+      const route = async r => { if (r.request().method() !== 'GET') return r.continue(); seen(); await held; await r.continue(); };
+      await page.route(matcher, route);
+      await wrap('阿青').click({ button: 'right' }); await page.getByRole('menu', { name: '阿青的操作' }).getByRole('menuitem', { name: '调整头像…' }).click();
+      await started;
+      if (how === 'Esc') { await page.keyboard.press('Escape'); await expect(page.getByRole('menu')).toHaveCount(0); }
+      else { await wrap('小满').click({ button: 'right' }); await expect(page.getByRole('menu', { name: '小满的操作' })).toBeVisible(); }
+      const answered = page.waitForResponse(r => new URL(r.url()).pathname === path_);
+      release(); await answered; await page.waitForTimeout(500);
+      await expect(dialogOf('阿青')).toHaveCount(0);
+      if (how === '换卡片') { await expect(page.getByRole('menu', { name: '小满的操作' })).toBeVisible(); await page.keyboard.press('Escape'); }
+      await page.unroute(matcher, route);
+    }
+    // 正常打开不受影响。
+    const panel = await openCrop('阿青'); await expect(panel).toBeVisible(); await panel.getByRole('button', { name: '取消' }).click();
+  });
+
   await check('认不出头部：框保持原样并说明，「重新框到头部」停用', async () => {
     // 小满的唯一图片创建时认不出，仍是没调整过的默认图。
     assert.equal((await image(second.a, second.ids[0])).crop_source, 'untouched');

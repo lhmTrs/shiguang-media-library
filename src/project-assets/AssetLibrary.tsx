@@ -166,6 +166,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // base：打开「调整头像」时的默认图身份与裁切，点「完成」前用最新记录核对，变了就不覆盖。
   const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
   // 详情图片设置里的裁切：只有「重新框到头部」，不在打开时自动改草稿。
+  // 当前浮层（菜单 / 面板）的实例：异步打开「调整头像」只在发起它的那个菜单仍然开着时才生效。
+  const quickNow = useRef(quick); quickNow.current = quick;
   const [detailHead, setDetailHead] = useState<{ id: string; head: HeadState } | null>(null);
   const headSeq = useRef(0), detailSeq = useRef(0);
   const [undo, setUndo] = useState<{ id: string; text: string; changes: DisplayChangeEntry[] } | null>(null);
@@ -387,15 +389,17 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // 卡片「调整头像」：裁切从未调整过（untouched）才在打开时自动请求；人工调过或旧记录不动。
   // 打开前先读最新资料：列表可能是旧的（别处刚换了图或改了框），面板和保存前提都以最新记录为准；
   // 列表和最新记录不一致时顺带刷新列表，面板里显示的就是最新的默认图。
+  // 读取期间按 Esc、点外部、换卡片或改用别的菜单项，发起它的菜单实例就变了，这次打开作废。
   async function openCrop(a: Asset, at: { x: number; y: number }) {
-    const seq = ++headSeq.current;
+    const seq = ++headSeq.current, origin = quickNow.current;
+    const live = () => headSeq.current === seq && quickNow.current === origin;
     let fresh = a;
     try { fresh = await api<Asset>('/assets/' + a.id); } catch { /* 读不到就按列表打开；保存前仍会核对最新记录 */ }
-    if (headSeq.current !== seq) return;
+    if (!live()) return;
     const cover = coverOf(fresh), listed = coverOf(a);
-    if (!cover || fresh.archived_at) { setQuick(null); setError('「' + a.name + '」' + (fresh.archived_at ? '已归档，不能调整头像' : '现在没有默认图') + '，列表已刷新'); void loadList(); return; }
-    if (!listed || JSON.stringify(cropBase(listed)) !== JSON.stringify(cropBase(cover))) { await loadList(); if (headSeq.current !== seq) return; }
-    setQuick({ id: a.id, mode: 'crop', x: at.x, y: at.y, crop: cover.crop, head: 'idle', seq, base: cropBase(cover) });
+    if (!cover || fresh.archived_at) { setQuick(q => q === origin ? null : q); setError('「' + a.name + '」' + (fresh.archived_at ? '已归档，不能调整头像' : '现在没有默认图') + '，列表已刷新'); void loadList(); return; }
+    if (!listed || JSON.stringify(cropBase(listed)) !== JSON.stringify(cropBase(cover))) { await loadList(); if (!live()) return; }
+    setQuick(q => q !== origin ? q : { id: a.id, mode: 'crop', x: at.x, y: at.y, crop: cover.crop, head: 'idle', seq, base: cropBase(cover) });
     if (cover.crop_source === 'untouched' && !cover.crop_manually_edited) void reframeQuick(a.id, cover, seq);
   }
   async function reframeQuick(id: string, cover: Binding, seq = ++headSeq.current) {
