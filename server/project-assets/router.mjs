@@ -2,7 +2,7 @@ import express from 'express';
 import {ProjectScripts} from '../project-scripts/store.mjs';
 import {fault} from './model.mjs';
 import {streamImage} from './image-import.mjs';
-export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{},desktop}={}) {
+export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{},desktop,headBox}={}) {
   const router = express.Router(),scripts=new ProjectScripts(store).init();
   router.post('/assets/:id/voice',express.json({limit:'15mb'}),asyncRoute(async(req,res)=>{
     const id=req.params.id;
@@ -32,6 +32,10 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     action('post','/images/reveal',req=>desktop.reveal(req.params.id,req.body));
     action('get','/desktop-actions/:requestId',req=>desktop.status(req.params.id,req.params.requestId));
   }
+  if(headBox)router.get('/bindings/:id/head-box',asyncRoute(async(req,res)=>{
+    local(req);res.set('Cache-Control','no-store');
+    res.json(await headBox.get(req.params.id,req.query.bindingRevision));
+  }));
   route('get','/projects/:id/script',req=>scripts.get(req.params.id));
   route('put','/projects/:id/script',req=>scripts.put(req.params.id,req.body));
   route('get', '/scopes', () => store.scopes());

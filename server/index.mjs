@@ -57,6 +57,8 @@ import {createStoryboardVideo} from "./storyboard-video/index.mjs";
 import { createStoryboardModule } from "./storyboard/router.mjs";
 import { PromptTemplates } from "./prompt-templates/store.mjs";
 import { ProjectAssets } from "./project-assets/store.mjs";
+import { ProjectVideoDesktopNative } from "./project-videos/desktop-native.mjs";
+import { ProjectAssetHeadBox } from "./project-assets/head-box.mjs";
 import { ProjectAssetDesktopActions } from "./project-assets/desktop-actions.mjs";
 import { projectAssetRouter } from "./project-assets/router.mjs";
 import { promptRouter } from "./prompt-templates/router.mjs";
@@ -335,6 +337,12 @@ const projectAssetDesktop=new ProjectAssetDesktopActions(projectAssets,projectVi
   withActivity:fn=>uploadHost.track(fn),
   enabled:process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1'
 });
+const projectAssetHeadBox=new ProjectAssetHeadBox(projectAssets,new ProjectVideoDesktopNative({directory:lib.dataDir,variant:"vision"}),{
+  withActivity:fn=>uploadHost.track(fn),
+  enabled:process.platform==='darwin'&&process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1'
+});
+projectAssets.headBox=projectAssetHeadBox;
+projectAssetHeadBox.prepare();
 const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStorage.sourceId}).init();
 // Prepare the bundled desktop bridge without clipboard/Finder side effects.
 // Capability GETs never compile, install tools or scan media.
@@ -474,7 +482,7 @@ app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{sendMedia,w
 app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,rememberTarget:target=>intakePreferences.remember([target]),withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
-app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{desktop:projectAssetDesktop,rememberTarget:target=>intakePreferences.remember([target])}));
+app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{desktop:projectAssetDesktop,headBox:projectAssetHeadBox,rememberTarget:target=>intakePreferences.remember([target])}));
 app.use("/api/prompt-codex", codexRouter(codexStore, codexService, codexMedia, codexBackup, asyncRoute));
 app.use("/api/concierge", concierge.router);
 app.use(TASK_ENTRY_BASE, (req, res, next) => {
@@ -1461,13 +1469,14 @@ async function shutdownApplication() {
   fileIntake.beginClose();
   intakeNative.beginClose();
   projectAssetDesktop.beginClose();
+  projectAssetHeadBox.beginClose();
   storyboard.beginClose();
   concierge.beginClose();
   shutdownWork = (async () => {
     await fileIntake.close();
     await intakeNative.close();
     await concierge.close();
-    await Promise.all([projectAssetDesktop.close(),projectVideos.close()]);
+    await Promise.all([projectAssetDesktop.close(),projectAssetHeadBox.close(),projectVideos.close()]);
     await storyboardVideo.close();
     await projectVideos.changes.cleanup(true);
     await codexService.close();
