@@ -366,7 +366,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         </div> : groups.map(renderGroup)}
         {removed.length > 0 && <p className="fi-removed-line">已移除 {removed.length} 个{removed.map(f => <button key={f.id} className="fi-link" disabled={locked} aria-label={'恢复 ' + f.name} onClick={() => setSelected(old => [...old, f.id])}>恢复 {f.name}</button>)}</p>}
         {namesError && standardNames && <p className="fi-muted">暂时算不出新名字；确认后仍会按规范命名。</p>}
-        {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}><div className="fi-scrim" aria-hidden="true"/>{editor(r)}</div> : null;})()}
+        {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}>{!locked && <div className="fi-scrim" aria-hidden="true"/>}{editor(r)}</div> : null;})()}
       </>}
       {batch && receiptKind === 'submitted' && <div className="fi-done">
         <CheckCircle2 size={40}/>

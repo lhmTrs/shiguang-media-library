@@ -38,11 +38,13 @@ async function pageFor(h){const p=await ctx.newPage();p.on('pageerror',e=>errors
 // Per-file settings live in each file's 「改…」 panel since INTAKE-SIMPLE; open it on demand.
 async function field(p,label,id){const loc=p.getByLabel(label+' '+id,{exact:true});if(!await loc.count()){const other=p.locator('.fi-popover');if(await other.count())await other.getByRole('button',{name:'完成',exact:true}).click();await p.locator('[data-file-id="'+id+'"]').click();await expect(loc).toBeVisible();}return loc;}
 const confirm=p=>p.locator('.fi-confirm-button');
+// The per-file panel dims the window; close it (完成) before pressing the footer button, as a person would.
+async function closePanels(p){const open=p.locator('.fi-popover');if(await open.count())await open.getByRole('button',{name:'完成',exact:true}).click();}
 // 去处 is a two-way switch since the round-2 design; pick and read it by its pressed button.
 async function scope(p,id,which){const g=await field(p,'收纳范围',id);await g.getByRole('button',{name:which==='project'?'项目':/摄影照片|视频素材/}).click();}
 async function photoProject(p,id,project){await scope(p,id,'project');await (await field(p,'目标项目',id)).selectOption(project);await expect(confirm(p)).toBeEnabled();}
 async function done(id){for(let i=0;i<500;i++){const b=await api('/file-intake/batches/'+id);if(!['queued','running'].includes(b.status))return b;await pause(30);}throw Error('batch terminal timeout');}
-async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
+async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await closePanels(p);await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
 async function shot(p,name){await p.screenshot({path:path.join(evidence,name+'.png'),fullPage:true});}
 
 try{
@@ -71,7 +73,7 @@ try{
   await sfxSection.getByText('新建分类文件夹',{exact:true}).click();await (await field(p,'新分类名称',ids[3])).fill('环境');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect((await field(p,'目标分类',ids[3]))).toHaveValue('环境');
   await (await field(p,'新分类名称',ids[3])).fill('室内');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect((await field(p,'目标分类',ids[3]))).toHaveValue('环境/室内');
   await fs.access(path.join(personal,'system_sfx','环境','室内'));
-  await expect(confirm(p)).toBeEnabled();await shot(p,'four-media-before-confirm');await confirm(p).click();await expect(p.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。',{exact:true})).toBeVisible();
+  await expect(confirm(p)).toBeEnabled();await shot(p,'four-media-before-confirm');await closePanels(p);await confirm(p).click();await expect(p.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。',{exact:true})).toBeVisible();
   const accepted=JSON.parse(requests.find(r=>r.url.endsWith('/'+mixed.id+'/confirm')).body),batch=await done(accepted.requestId);
   assert.equal(batch.status,'completed');assert.deepEqual(batch.items.map(i=>i.destination.kind),['photo','video','music','sfx']);assert.ok(batch.items.every(i=>i.status==='ready'&&i.destinationLabel));
   for(const item of batch.items){const a=await api('/assets/'+item.assetId);assert.equal(a.kind,item.destination.kind);if(a.kind==='sfx'){assert.equal(a.category,'环境');assert.equal(a.sub,'室内');}}
@@ -140,7 +142,7 @@ try{
   // subsequent receipt read are lost. Recovery must remain read-only throughout.
   const acceptedUnknown=await receipts.handoff([png]),ap=await pageFor(acceptedUnknown),apid=acceptedUnknown.files[0].id;
   await photoProject(ap,apid,project.id);await (await field(ap,'人物名',apid)).fill('回执核对人物');await expect(confirm(ap)).toBeEnabled();
-  await ap.route('**/api/file-intake/handoffs/*/confirm',async route=>{await route.fetch();await route.abort('failed');});await confirm(ap).click();await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
+  await ap.route('**/api/file-intake/handoffs/*/confirm',async route=>{await route.fetch();await route.abort('failed');});await closePanels(ap);await confirm(ap).click();await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
   const fixed=await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id);
   await ap.route('**/api/file-intake/batches/*',route=>route.abort('failed'));await ap.reload();
   try{await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect((await field(ap,'人物名',apid))).toBeDisabled();await expect((await field(ap,'人物名',apid))).toHaveValue('回执核对人物');assert.equal(await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id),fixed);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+acceptedUnknown.id+'/confirm')).length,1);record('C7-accepted-receipt-loss-keeps-frozen-target','PASS',{});}catch(e){record('C7-accepted-receipt-loss-keeps-frozen-target','FAIL',{message:e.message});process.exitCode=1;}await ap.close();
