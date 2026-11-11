@@ -11,6 +11,8 @@ import {IntakeNames,checkChoice,wantsStandard} from './names.mjs';
 const stable = value => JSON.stringify(value);
 const pending = new Set(['queued','copying','duplicate','unknown']);
 const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
+const unavailableVideoFolder = new Set(['ENOENT','ENOTDIR','FOLDER_NOT_FOUND','TARGET_CHANGED']);
+const videoFolderChanged = () => error('TARGET_CHANGED','所选项目视频文件夹已移动、删除或变化，请重新选择');
 const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copiedBytes||0,status:i.status,
   error:i.error,code:i.code,videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
   managedProjectName:i.managedProjectName,destination:i.destination,nameMode:i.nameMode,plannedFileName:i.plannedFileName,resultFileName:i.resultFileName,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
@@ -94,19 +96,24 @@ export class FileIntake {
     const h=await this.receipts.read('handoffs',id);
     const b=[...this.batches.values()].find(b=>b.handoffId===id);
     const projects=this.projects.list();
-    const {targets,routingPreferences}=this.intakePreferences(projects);
+    const {targets,routingPreferences}=await this.intakePreferences(projects);
     return {id:h.id,files:h.files.map(({id,name,bytes,path,mediaKind,durationSec})=>({id,name,bytes,path,mediaKind:mediaKind||'video',
         ...(mediaKind==='audio'?{durationSec:durationSec??null}:{})})),
       projects:projects.filter(p=>!p.archived).map(({id,name})=>({id,name})),canTrash:this.canTrash,batchId:b?.id,
       preparation:h.preparation,preparationError:h.preparationError,preferences:targets,routingPreferences,themeId:this.preferences?.themeId??null};
   }
-  intakePreferences(projects=this.projects.list()) {
+  async intakePreferences(projects=this.projects.list()) {
     if(!this.preferences)return {targets:{},routingPreferences:defaultRoutingPreferences()};
-    const folders=new Map();
-    return this.preferences.snapshot(projects,(projectId,folderId)=>{
-      if(!folders.has(projectId))folders.set(projectId,this.catalog.folders.rows(projectId));
-      return folders.get(projectId).some(folder=>folder.id===folderId);
-    });
+    const snapshot=this.preferences.snapshot(projects);
+    const folders=snapshot.routingPreferences.lastVideoFolderByProject;
+    const target=snapshot.targets.video;
+    const sharedFolder=target?.scope==='project'&&folders[target.projectId]===target.folderId;
+    for(const [projectId,folderId] of Object.entries(folders))
+      if(folderId!=='root'&&!await this.availableVideoFolder(projectId,folderId))folders[projectId]='root';
+    if(sharedFolder)target.folderId=folders[target.projectId];
+    else if(target?.scope==='project' && target.folderId!=='root' &&
+        !await this.availableVideoFolder(target.projectId,target.folderId))target.folderId='root';
+    return snapshot;
   }
   async routingOptions(){
     const {folders:photoCategories}=await this.generic.choices('photo','',{readOnly:true});
@@ -135,10 +142,9 @@ export class FileIntake {
     if(destination.scope!=='project')return {};
     if(destination.kind==='video'){
       const project=this.catalog.project(destination.projectId);
-      const id=destination.folderId??'root', state=await this.catalog.folders.resolve(project.id,id);
-      if(id!=='root'&&(!state.exists||!state.row))throw error('TARGET_CHANGED','目标文件夹不存在');
+      const id=destination.folderId??'root', state=await this.resolveVideoFolder(project.id,id);
       return {project,folder:state.row,directory:state.target,verify:async()=>{
-        const again=await this.catalog.folders.resolve(project.id,id);
+        const again=await this.resolveVideoFolder(project.id,id);
         if(again.target!==state.target||again.exists!==state.exists||stable(again.targetIdentity)!==stable(state.targetIdentity))
           throw error('TARGET_CHANGED','核对名称期间目录已变化');
       }};
@@ -169,9 +175,37 @@ export class FileIntake {
   namePreviewError(e) {
     return e.status?{code:e.code||'TARGET_CHANGED',message:e.message}:{code:'TARGET_CHANGED',message:'未能读取目标目录，请刷新目标后重试'};
   }
+  async resolveVideoFolder(projectId,folderId) {
+    let state;
+    try {
+      state=await this.catalog.folders.resolve(projectId,folderId);
+    }catch(e){
+      if(unavailableVideoFolder.has(e.code))throw videoFolderChanged();
+      throw e;
+    }
+    if(folderId!=='root'&&(!state.exists||!state.row))throw videoFolderChanged();
+    return state;
+  }
+  async availableVideoFolder(projectId,folderId) {
+    try{return await this.resolveVideoFolder(projectId,folderId);}
+    catch(e){if(e.code==='TARGET_CHANGED')return null;throw e;}
+  }
+  async prepareVideoFolder(projectId,folderId) {
+    if(folderId!=='root')await this.resolveVideoFolder(projectId,folderId);
+    try{return await this.catalog.prepare(projectId,folderId);}
+    catch(e){if(unavailableVideoFolder.has(e.code))throw videoFolderChanged();throw e;}
+  }
   async folders(projectId) {
     this.catalog.project(projectId);
-    return {folders:[{id:'root',name:'项目根目录',relativePath:''},...this.catalog.folders.rows(projectId).map(({id,name,relativePath})=>({id,name,relativePath}))]};
+    const folders=[{id:'root',name:'项目根目录',relativePath:''}];
+    for(const {id} of this.catalog.folders.rows(projectId)){
+      const state=await this.availableVideoFolder(projectId,id);
+      if(state) {
+        const {name,relativePath}=state.row;
+        folders.push({id,name,relativePath});
+      }
+    }
+    return {folders};
   }
   async confirm(handoffId,input) {if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input));return this.serial(async()=>{
     this.assertOpen();
@@ -187,8 +221,9 @@ export class FileIntake {
     if(h.preparation==='checking')throw error('INTAKE_SELECTION_CHECKING','正在后台核验原文件，完成后即可确认收纳',422);
     if(h.preparation==='failed')throw error('INTAKE_SELECTION_FAILED',h.preparationError,422);
     if(h.preparation==='ready'&&h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_FAILED','本次选择的内容证明不完整，请从访达重新选择',422);
-    const project=this.catalog.project(input.projectId,true), target=await this.catalog.prepare(input.projectId,input.folderId||'root');
-    const folder=(await this.folders(project.id)).folders.find(f=>f.id===(input.folderId||'root'));
+    const project=this.catalog.project(input.projectId,true);
+    const target=await this.prepareVideoFolder(project.id,input.folderId==='all'?'root':input.folderId||'root');
+    const folder=target.row;
     const b={id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:project.id,projectName:project.name,folderId:input.folderId||'root',
       folderName:folder?.relativePath||'项目根目录',target,mode:input.mode,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',
       items:h.files.filter(f=>ids.includes(f.id)).map(f=>({...f,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0}))};
@@ -222,11 +257,10 @@ export class FileIntake {
       let target,label,ctx;
       if(destination.scope==='project'&&destination.kind==='video'){
         const project=this.catalog.project(destination.projectId,true),folderId=destination.folderId??'root';
-        const folder=(await this.folders(project.id)).folders.find(v=>v.id===folderId);
-        if(!folder)throw error('TARGET_CHANGED','目标文件夹不存在');
-        target=await this.catalog.prepare(project.id,folderId);
-        label=project.name+' / '+(folder.relativePath||'项目根目录');
-        ctx={project,folder:folderId==='root'?null:folder,verify:()=>this.catalog.current(project.id,target)};
+        target=await this.prepareVideoFolder(project.id,folderId);
+        const folder=target.row;
+        label=project.name+' / '+(folder?.relativePath||'项目根目录');
+        ctx={project,folder,verify:()=>this.catalog.current(project.id,target)};
       }else{
         target=await this.generic.prepare(destination,{sharedImages,requestGroupId:input.requestId});
         label=target.label||({photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'}[destination.kind]+' / '+(destination.directory||'待确认'));

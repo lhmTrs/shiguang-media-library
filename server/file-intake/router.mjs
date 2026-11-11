@@ -7,7 +7,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   const route=(method,url,fn)=>router[method](url,(req,res,next)=>
     Promise.resolve().then(()=>fn(req,res)).catch(next));
   router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
-  route('get','/preferences',(_req,res)=>res.json(store.intakePreferences()));
+  route('get','/preferences',async(_req,res)=>res.json(await withActivity(()=>store.intakePreferences())));
   route('get','/routing-options',async(_req,res)=>res.json(await withActivity(()=>store.routingOptions())));
   route('get','/theme',(_req,res)=>res.json({themeId:store.preferences?.themeId??null}));
   route('put','/theme',async(req,res)=>res.json(await withActivity(()=>{
@@ -20,7 +20,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   route('get','/image-proposal',async(req,res)=>res.json(await store.generic.imageProposal(req.query.projectId,req.query.name,req.query.lookName)));
   route('get','/status',async(_req,res)=>res.json({...await native.status(),...store.status()}));
   route('post','/install',async(_req,res)=>res.json(await withActivity(()=>native.install())));
-  route('get','/handoffs/:id',async(req,res)=>res.json(await store.handoff(req.params.id)));
+  route('get','/handoffs/:id',async(req,res)=>res.json(await withActivity(()=>store.handoff(req.params.id))));
   route('post','/handoffs/:id/name-preview',async(req,res)=>res.json(await withActivity(()=>store.namePreview(req.params.id,req.body))));
   route('get','/handoffs/:id/files/:fileId/preview',async(req,res)=>{
     const media=store.catalog.media;
@@ -34,7 +34,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
     }finally{media.responses.delete(res);}
     }));
   });
-  route('get','/projects/:id/folders',async(req,res)=>res.json(await store.folders(req.params.id)));
+  route('get','/projects/:id/folders',async(req,res)=>res.json(await withActivity(()=>store.folders(req.params.id))));
   route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body))));
     route('get','/media-imports/:requestId/candidates/:candidateId/media',async(req,res)=>{
     const opened=await store.generic.openCandidate(req.params.requestId,req.params.candidateId);let done=false;

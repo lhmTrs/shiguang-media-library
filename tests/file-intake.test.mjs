@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
+import express from 'express';
 import {Library} from '../server/library.mjs';
 import {Projects} from '../server/projects.mjs';
 import {ProjectAssets} from '../server/project-assets/store.mjs';
@@ -12,6 +13,7 @@ import {StoryboardDatabase} from '../server/storyboard/database.mjs';
 import {createStoryboardVideo} from '../server/storyboard-video/index.mjs';
 import {ProjectVideos} from '../server/project-videos/store.mjs';
 import {FileIntake} from '../server/file-intake/store.mjs';
+import {fileIntakeRouter} from '../server/file-intake/router.mjs';
 import {IntakePreferences} from '../server/file-intake/preferences.mjs';
 import {Receipts,inspectSelection,selectionHash} from '../server/file-intake/files.mjs';
 import {workflow,plist,shellQuote} from '../server/file-intake/native.mjs';
@@ -322,6 +324,8 @@ test('project-video preview is read-only; concurrent confirms reserve names and 
   const b=await make(folder.id,bFile),c=await make(folder.id,cFile);
   const folderPath=path.join(root,'外景'),prefix='右键项目_外景_';
   await fs.writeFile(path.join(folderPath,prefix+'008.mov'),bytes);
+  await fs.mkdir(path.join(folderPath,prefix+'900.mp4'));
+  await fs.symlink(path.join(folderPath,prefix+'008.mov'),path.join(folderPath,prefix+'901.mp4'));
   assert.equal((await f.intake.namePreview(b.h.id,b.args)).items[0].proposedNumber,9);
   await fs.writeFile(path.join(folderPath,prefix+'009.mp4'),bytes);
   const kick=f.intake.kick.bind(f.intake);
@@ -332,8 +336,9 @@ test('project-video preview is read-only; concurrent confirms reserve names and 
   assert.equal(replay.items[0].plannedFileName,prefix+'010.mp4');
   assert.deepEqual(replay.items[0].destination,b.args.targets[0].destination);
   assert.equal(replay.items[0].nameMode,'standard');
-  assert.equal(f.intake.intakePreferences().routingPreferences.lastVideoFolderByProject[f.project.id],folder.id);
-  assert.equal(f.intake.intakePreferences().routingPreferences.standardNames,true);
+  const preferences=await f.intake.intakePreferences();
+  assert.equal(preferences.routingPreferences.lastVideoFolderByProject[f.project.id],folder.id);
+  assert.equal(preferences.routingPreferences.standardNames,true);
   await assert.rejects(f.intake.confirm(b.h.id,{...b.args,standardNames:false}),{code:'INTAKE_ALREADY_ACCEPTED'});
   const manual=await make(folder.id,f.file,'手动.mp4');
   assert.equal((await f.intake.namePreview(manual.h.id,manual.args)).items[0].proposedFileName,'手动.mp4');
@@ -342,4 +347,55 @@ test('project-video preview is read-only; concurrent confirms reserve names and 
     const item=f.intake.dto(f.intake.batch(b.id)).items[0];
     assert.equal(item.status,'ready',item.error);assert.equal(item.resultFileName,item.plannedFileName);
   }
+});
+
+test('a removed video folder is omitted from suggestions and explicit confirmation does not redirect',async t=>{
+  const f=await fixture(t);
+  f.intake.preferences=await new IntakePreferences({dataDir:f.dataDir,libraryId:f.intake.libraryId}).init();
+  f.intake.generic={
+    db:f.lib.db,
+    async choices(){return {folders:[]};},
+  };
+  const folder=await f.catalog.folders.create(f.project.id,{name:'临时目录',parentId:'root',requestId:randomUUID()});
+  const destination={kind:'video',scope:'project',projectId:f.project.id,folderId:folder.id};
+  await f.intake.preferences.remember([destination]);
+  const handoff=await f.intake.receipts.handoff([f.file]);
+  const fileIds=handoff.files.map(i=>i.id),requestId=randomUUID();
+  const request={version:2,mode:'copy',requestId,fileIds,targets:[{fileId:fileIds[0],destination,nameMode:'standard'}]};
+  const app=express();
+  app.use(fileIntakeRouter(f.intake,{}));
+  const server=await new Promise(resolve=>{const listener=app.listen(0,'127.0.0.1',()=>resolve(listener));});
+  t.after(()=>new Promise((resolve,reject)=>server.close(e=>e?reject(e):resolve())));
+  const url='http://127.0.0.1:'+server.address().port;
+  const get=async pathname=>{
+    const response=await fetch(url+pathname);
+    assert.equal(response.status,200);
+    return response.json();
+  };
+  assert.equal((await get('/preferences')).targets.video.folderId,folder.id);
+  const root=await f.catalog.folders.rootPath(f.project.id);
+  await fs.rename(path.join(root,folder.name),path.join(f.dir,'removed-folder'));
+  const rejected=await fetch(url+'/handoffs/'+handoff.id+'/confirm',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request),
+  });
+  assert.equal(rejected.status,409);
+  const failure=await rejected.json();
+  assert.deepEqual([failure.code,failure.accepted,failure.requestId],['TARGET_CHANGED',false,requestId]);
+  const preferences=await get('/preferences');
+  assert.equal(preferences.targets.video.folderId,'root');
+  assert.equal(preferences.routingPreferences.lastVideoFolderByProject[f.project.id],'root');
+  assert.equal((await get('/handoffs/'+handoff.id)).preferences.video.folderId,'root');
+  const options=await get('/routing-options');
+  assert.deepEqual(options.projects.find(p=>p.id===f.project.id).videoFolders.map(p=>p.id),['root']);
+  assert.deepEqual((await get('/projects/'+f.project.id+'/folders')).folders.map(p=>p.id),['root']);
+  await fs.mkdir(path.join(root,folder.name));
+  assert.equal((await get('/preferences')).targets.video.folderId,'root');
+  const preview=await fetch(url+'/handoffs/'+handoff.id+'/name-preview',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request),
+  });
+  assert.equal(preview.status,200);
+  assert.equal((await preview.json()).items[0].error.code,'TARGET_CHANGED');
+  assert.equal(f.intake.batches.size,0);
+  assert.deepEqual(await fs.readdir(path.join(root,folder.name)),[]);
+  await fs.access(f.file);
 });

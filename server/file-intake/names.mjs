@@ -24,12 +24,12 @@ async function directoryNames(dir, verify) {
   if(!stat){await verify?.();return [];}
   if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(dir)!==dir)
     throw error('TARGET_CHANGED','不能从已移动或替换的目录分配名称');
-  const entries=await fs.readdir(dir);
+  const entries=await fs.readdir(dir,{withFileTypes:true});
   const after=await fs.lstat(dir);
   if(after.dev!==stat.dev||after.ino!==stat.ino||await fs.realpath(dir)!==dir)
     throw error('TARGET_CHANGED','核对名称期间目录已变化');
   await verify?.();
-  return entries;
+  return entries.filter(entry=>entry.isFile()).map(entry=>entry.name);
 }
 
 // One physical directory scan per request. Pending receipts cover the time

@@ -596,6 +596,10 @@ test('routing options do not create roots, and scene/prop intake binds ordered f
   const result=intake.dto(intake.batch(accepted.id));
   assert.equal(result.status,'completed');
   assert.deepEqual(result.items.map(i=>i.resultFileName),preview.items.map(i=>i.proposedFileName));
+  for(const item of intake.batch(accepted.id).items){
+    assert.equal(item.error,undefined);
+    assert.equal(f.managed.receipts.read(item.requestId).stageCleanup?.complete,true);
+  }
   const after=f.assets.get(scene.id);
   assert.equal(after.default_image_id,result.items[0].bindingId);
   assert.deepEqual(after.images.map(i=>i.look_id),[null,null]);
@@ -611,4 +615,51 @@ test('routing options do not create roots, and scene/prop intake binds ordered f
   const more=await intake.confirm(fresh.h.id,fresh.args);await settled(intake);
   assert.equal(intake.dto(intake.batch(more.id)).items[0].resultFileName,'场景甲_003.png');
   assert.equal(f.assets.get(scene.id).default_image_id,result.items[0].bindingId);
+});
+
+test('moving scene and prop photos verifies the exact active binding without a look',async t=>{
+  const f=await fixture(t),removals=[];
+  const intake=await new FileIntake({
+    dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,
+    async trash(file,expected){
+      const target=file+'.owned-trash';
+      removals.push({file,expected});
+      await fs.rename(file,target);
+      return target;
+    },
+  }).init();
+  t.after(()=>intake.close());
+  const assets=[];
+  for(const [kind,name] of [['scene','场景甲'],['prop','道具乙']]){
+    assets.push(await f.assets.create({project_id:f.project.id,kind,name}));
+  }
+  const files=assets.map(a=>path.join(f.dir,a.kind+'.png'));
+  const contents=assets.map(a=>Buffer.concat([png,Buffer.from(a.name)]));
+  await Promise.all(files.map((file,i)=>fs.writeFile(file,contents[i])));
+  const handoff=await intake.receipts.handoff(files);
+  const accepted=await intake.confirm(handoff.id,{
+    version:2,mode:'move',requestId:randomUUID(),fileIds:handoff.files.map(f=>f.id),
+    targets:handoff.files.map((file,i)=>({
+      fileId:file.id,destination:{kind:'photo',scope:'project',projectId:f.project.id,
+        assetKind:assets[i].kind,assetId:assets[i].id,assetRevision:assets[i].revision},
+    })),
+  });
+  await settled(intake);
+  const result=intake.batch(accepted.id);
+  assert.equal(result.status,'completed',JSON.stringify(result.items.map(i=>i.error)));
+  assert.deepEqual(removals.map(r=>r.file),files);
+  for(const [i,item] of result.items.entries()){
+    const receipt=f.managed.receipts.read(item.requestId);
+    assert.equal(item.status,'ready',item.error);
+    assert.equal(item.removal,'complete');
+    assert.equal(receipt.stageCleanup?.complete,true);
+    const [{look_id,media_asset_id}]=f.assets.get(assets[i].id).images;
+    assert.equal(look_id,null);
+    assert.equal(media_asset_id,item.assetId);
+    assert.deepEqual(await fs.readFile(receipt.resultPath),contents[i]);
+    assert.deepEqual(await fs.readFile(files[i]+'.owned-trash'),contents[i]);
+    await assert.rejects(fs.access(files[i]),{code:'ENOENT'});
+    f.lib.db.prepare('UPDATE creative_image_bindings SET archived_at=? WHERE id=?').run(Date.now(),item.bindingId);
+    await assert.rejects(f.managed.verifiedSource(item.target,item.assetId),{code:'SOURCE_UNTRUSTED'});
+  }
 });

@@ -566,9 +566,19 @@ export class ManagedIntakeCatalog {
     const a=this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId),d=await this.hash(s.resultPath,s.resultIdentity);
     if(!a || d.hash!==s.resultHash || a.sha256!==s.resultHash || assetProof(this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId))!==assetProof(a)) throw error('SOURCE_UNTRUSTED','正式文件或原登记未通过成功回执核验');
     this.assertAsset(a,s,s.resultPath,d);
-    if(s.bindingId) {
-      const b=this.db.prepare('SELECT * FROM creative_image_bindings WHERE id=?').get(s.bindingId),head=this.assets.head(s.creativeAssetId),look=this.db.prepare('SELECT * FROM creative_looks WHERE id=?').get(s.lookId);
-      if(head.project_id!==target.destination.projectId || head.archived_at || !look || look.archived_at!==null || look.asset_id!==head.id || !b || b.archived_at!==null || b.asset_id!==head.id || b.look_id!==s.lookId || b.media_asset_id!==assetId || b.expected_sha256!==d.hash) throw error('SOURCE_UNTRUSTED','原项目图片绑定已变化');
+    const destination=target.destination;
+    if(destination.scope==='project') {
+      const {assetId:projectAssetId,characterId,lookId}=target.imageIds;
+      const expectedAssetId=projectAssetId??characterId;
+      const binding=this.db.prepare('SELECT * FROM creative_image_bindings WHERE id=?').get(s.bindingId??'');
+      const asset=this.db.prepare('SELECT id,project_id,kind,archived_at FROM creative_assets WHERE id=?').get(expectedAssetId);
+      const look=lookId===null?null:this.db.prepare('SELECT * FROM creative_looks WHERE id=?').get(lookId);
+      if(s.bindingId!==s.ids?.bindingId || s.creativeAssetId!==expectedAssetId || s.lookId!==lookId ||
+          !asset || asset.project_id!==destination.projectId || asset.kind!==(destination.assetKind??'character') || asset.archived_at ||
+          (!destination.assetKind && (!look || look.archived_at!==null || look.asset_id!==asset.id)) ||
+          !binding || binding.archived_at!==null || binding.asset_id!==asset.id || binding.look_id!==lookId ||
+          binding.media_asset_id!==assetId || binding.expected_sha256!==d.hash)
+        throw error('SOURCE_UNTRUSTED','原项目图片绑定已变化');
     }
     await this.current(target,{image:false});return {path:s.resultPath,identity:d.identity,assetId};
   }
