@@ -16,7 +16,7 @@ import {CropBox,type Crop} from './CropBox';
 
 type Kind = 'character' | 'scene' | 'prop';
 type Look = { id: string; name: string; description: string; tags: string[]; default_image_id: string | null; archived_at: number | null; revision?: number };
-type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number };
+type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number; expected_sha256?: string | null };
 type Asset = { id: string; project_id: string; kind: Kind; name: string; base_info: string; performance_info: string; details: Record<string, string>; revision: number; default_look_id: string | null; default_image_id: string | null; archived_at: number; storyboard_protected?: boolean; looks: Look[]; images: Binding[]; updated_at: number; created_at: number; source: null | { project_name: string; asset_name: string; revision: number; copied_at: number }; cover?: Binding | null; look_count?: number };
 type Scope = { id: string; name: string; project_kind: string };
 type Health = { id: string; state: string; label: string };
@@ -69,6 +69,43 @@ function CroppedImage({ binding, alt = '' }: { binding: Binding; alt?: string })
     />
 }
 function coverOf(a: Asset) { const l = a.looks?.find(l => l.id === a.default_look_id); return a.images?.find(b => b.id === (a.kind === 'character' ? l?.default_image_id : a.default_image_id)) ?? null; }
+// Display fields a card quick action may change, recorded before/after so 撤销 can reverse exactly them.
+type DisplayChange = { field: 'default_look_id' | 'default_image_id' | 'look_default' | 'crop'; id?: string };
+// guards: the images this change is about, as they were right after the quick save. 撤销 only runs
+// while each is still live and still the same picture (same media, look and content digest).
+type DisplayChangeEntry = DisplayChange & { before: unknown; after: unknown; guards: { id: string; identity: string }[] };
+const imageIdentity = (b: Binding) => JSON.stringify([b.media_asset_id, b.look_id ?? null, b.expected_sha256 ?? null]);
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function readDisplay(a: Asset, c: DisplayChange): unknown {
+  if (c.field === 'default_look_id' || c.field === 'default_image_id') return a[c.field];
+  if (c.field === 'look_default') return a.looks.find(l => l.id === c.id)?.default_image_id;
+  return a.images.find(b => b.id === c.id)?.crop;
+}
+// Writes a value back; refuses when the look or image it points at is gone or archived.
+function guardsHold(a: Asset, c: DisplayChangeEntry): boolean {
+  return c.guards.every(g => { const b = a.images.find(i => i.id === g.id); return !!b && !b.archived_at && imageIdentity(b) === g.identity
+    && (!b.look_id || a.looks.some(l => l.id === b.look_id && !l.archived_at)); });
+}
+function writeDisplay(a: Asset, c: DisplayChange, value: unknown): boolean {
+  const liveImage = (id: unknown) => id === null || a.images.some(b => b.id === id && !b.archived_at);
+  if (c.field === 'default_look_id') { if (value !== null && !a.looks.some(l => l.id === value && !l.archived_at)) return false; a.default_look_id = value as string | null; return true; }
+  if (c.field === 'default_image_id') { if (!liveImage(value)) return false; a.default_image_id = value as string | null; return true; }
+  if (c.field === 'look_default') { const l = a.looks.find(l => l.id === c.id); if (!l || l.archived_at || !liveImage(value)) return false; l.default_image_id = value as string | null; return true; }
+  const b = a.images.find(b => b.id === c.id); if (!b || b.archived_at) return false; b.crop = value as Binding['crop']; return true;
+}
+function displayChanges(before: Asset, after: Asset): DisplayChangeEntry[] {
+  const out: DisplayChangeEntry[] = [];
+  const guard = (id: unknown) => { const b = typeof id === 'string' ? after.images.find(i => i.id === id) : undefined; return b ? [{ id: b.id, identity: imageIdentity(b) }] : []; };
+  const add = (c: DisplayChange) => {
+    const b = readDisplay(before, c), a = readDisplay(after, c); if (sameValue(b, a)) return;
+    const guards = c.field === 'crop' ? guard(c.id) : c.field === 'default_look_id' ? [] : [...guard(b), ...guard(a)];
+    out.push({ ...c, before: b, after: a, guards });
+  };
+  add({ field: 'default_look_id' }); add({ field: 'default_image_id' });
+  after.looks.forEach(l => add({ field: 'look_default', id: l.id }));
+  after.images.forEach(b => add({ field: 'crop', id: b.id }));
+  return out;
+}
 function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span className="ca-avatar">{b ? <CroppedImage binding={b}/> : a.name.slice(0, 1)}</span>; }
 function Cover({ a }: { a: Asset }) { const b = coverOf(a); return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
@@ -99,6 +136,20 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   useEffect(() => setImageId(null), [active, scope, draft?.id, lookId, kind, scriptView]);
   const [cropOpen, setCropOpen] = useState(false);
   useEffect(() => setCropOpen(false), [imageId]);
+  // Card quick actions (menu / pick default image / adjust avatar) and the 撤销 toast after a quick save.
+  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop } | null>(null);
+  const [undo, setUndo] = useState<{ id: string; text: string; changes: DisplayChangeEntry[] } | null>(null);
+  useEffect(() => setQuick(null), [active, scope, kind, scriptView]);
+  useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(t); }, [undo]);
+  const quickRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!quick) return;
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setQuick(null); };
+    const down = (e: MouseEvent) => { const t = e.target as HTMLElement; if (quickRef.current && !quickRef.current.contains(t) && !t.closest?.('[data-quick-trigger]')) setQuick(null); };
+    window.addEventListener('keydown', key); document.addEventListener('mousedown', down);
+    quickRef.current?.querySelector<HTMLElement>('button:not(:disabled)')?.focus();
+    return () => { window.removeEventListener('keydown', key); document.removeEventListener('mousedown', down); };
+  }, [quick?.id, quick?.mode]);
   const modalScroll = useRef<HTMLDivElement>(null);
   const revealingRef=useRef(new Set<string>()),[revealing,setRevealing]=useState<string[]>([]);
   async function revealImage(b:Binding){
@@ -235,6 +286,65 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   function closeDetail() { if (busy || !canLeave()) return; selectionGeneration.current++; setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   async function save() { if (!draft || draft.archived_at || importActivity.current.size) return; await run('正在保存资产…', async () => { try { const a = await api<Asset>('/assets/' + draft.id, { asset: draft, expected_revision: draft.revision }, 'PUT'); install(a); await loadList(); const adopted=a.images.some(b=>!b.archived_at&&importedBindings.current.has(b.id));a.images.forEach(b=>importedBindings.current.delete(b.id));setNotice((adopted?(a.kind==='character'?'已绑定到造型 · ':'已绑定参考图片 · '):'')+'已保存 · V'+a.revision); } catch (e: any) { if (e.message.includes('已经更新')) setConflict(await api<Asset>('/assets/' + draft.id)); throw e; } }); }
+  // ---- Card quick actions: copy the default image, change it, adjust the avatar crop. ----
+  // The default image and crop only change how a card shows, so they save at once (with 撤销);
+  // everything else keeps the draft + 「保存」 flow. Each save starts from the stored record, so
+  // nothing half-edited elsewhere rides along, and a newer revision is refused, not overwritten.
+  async function quickSave(id: string, label: string, mutate: (a: Asset) => void, message: (saved: Asset, before: Asset) => string, undoable = true) {
+    if (draftRef.current?.id === id && dirtyRef.current) { setError('这个' + labels[draftRef.current.kind] + '有未保存的修改，请先保存或放弃修改，再改默认图或头像'); return; }
+    await run(label, async () => {
+      const fresh = await api<Asset>('/assets/' + id);
+      if (fresh.archived_at) throw Error('已归档的资料是只读的，恢复后才能修改');
+      const next = structuredClone(fresh); mutate(next);
+      let saved: Asset;
+      try { saved = await api<Asset>('/assets/' + id, { asset: next, expected_revision: fresh.revision }, 'PUT'); }
+      catch (e: any) { throw Error(String(e.message || '').includes('已经更新') ? '这份资料刚在别处更新过，没有覆盖，请再试一次' : e.message || '保存失败'); }
+      if (draftRef.current?.id === id && !dirtyRef.current) install(saved);
+      await loadList();
+      const text = message(saved, fresh), changes = displayChanges(fresh, saved);
+      setUndo(undoable && changes.length ? { id, text, changes } : null);
+      if (!undoable || !changes.length) setNotice(text);
+    });
+  }
+  // 撤销 reverses exactly the fields this quick save changed, and only while each still holds the
+  // value it saved: a field changed elsewhere since then is a conflict (nothing is written), and any
+  // other field — including other display settings saved meanwhile — keeps its current value.
+  // Unsaved edits of the same asset in the open detail would be orphaned by the new revision.
+  const undoBlocked = (id: string) => draftRef.current?.id === id && dirtyRef.current;
+  async function undoQuick(u: { id: string; changes: DisplayChangeEntry[] }) {
+    await run('正在撤销…', async () => {
+      const current = await api<Asset>('/assets/' + u.id);
+      if (current.archived_at) throw Error('资料已归档，没有撤销');
+      const moved = u.changes.filter(c => !sameValue(readDisplay(current, c), c.after));
+      if (moved.length) throw Error('这些显示设置在别处又改过了，没有撤销，保留了现在的设置');
+      if (u.changes.some(c => !guardsHold(current, c))) throw Error('相关图片已经归档或换成了别的图，没有撤销');
+      const next = structuredClone(current);
+      for (const c of u.changes) if (!writeDisplay(next, c, c.before)) throw Error('原来的图片或造型已经不在了，没有撤销');
+      let saved: Asset;
+      try { saved = await api<Asset>('/assets/' + u.id, { asset: next, expected_revision: current.revision }, 'PUT'); }
+      catch (e: any) { throw Error(String(e.message || '').includes('已经更新') ? '这份资料刚在别处更新过，没有撤销' : e.message || '撤销失败'); }
+      if (draftRef.current?.id === u.id && !dirtyRef.current) install(saved);
+      await loadList(); setNotice('已撤销');
+    });
+  }
+  function setCover(a: Asset, image: Binding) {
+    if (a.kind === 'character') { const look = a.looks.find(l => l.id === image.look_id); if (!look) return; look.default_image_id = image.id; a.default_look_id = look.id; }
+    else a.default_image_id = image.id;
+  }
+  async function copyDefault(a: Asset) {
+    const cover = coverOf(a); setQuick(null);
+    if (!cover) return;
+    if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') { setError('这个浏览器不允许网页往剪贴板写图片。请在运行拾光的这台电脑上，用 Chrome 打开拾光再复制'); return; }
+    // The preview route streams the full original (HEIC as JPEG); the clipboard takes it as PNG.
+    const png = (async () => {
+      const r = await fetch(bindingSrc(cover)); if (!r.ok) throw Error('默认图读取失败（' + r.status + '）');
+      const bitmap = await createImageBitmap(await r.blob()), canvas = document.createElement('canvas');
+      canvas.width = bitmap.width; canvas.height = bitmap.height; canvas.getContext('2d')!.drawImage(bitmap, 0, 0); bitmap.close?.();
+      return await new Promise<Blob>((ok, fail) => canvas.toBlob(b => b ? ok(b) : fail(Error('图片转换失败')), 'image/png'));
+    })();
+    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]); setError(''); setNotice('已复制「' + a.name + '」的默认图（整张原图），到画布平台按 ⌘V 粘贴'); }
+    catch (e: any) { setError('没能复制默认图：' + (e?.message || '浏览器拒绝了剪贴板写入')); }
+  }
   async function toggleArchive() {
     if (!draft || dirty || busy) return;
     await run('正在更新归档状态并重新读取资料…', async () => {
@@ -448,6 +558,39 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     selectionGeneration.current++; setKind(k); setDraft(null); setPage(1); setMissingOnly(false);
   };
 
+  // Floating panel for one card: the action menu, the default-image picker, or the avatar crop.
+  // Rendered by a plain function (not a nested component) so the crop box keeps its state while dragging.
+  function quickPanel(a: Asset) {
+    const ref = quickRef, cover = coverOf(a), aspect = a.kind === 'character' ? 3 / 4 : 16 / 10;
+    const width = quick!.mode === 'menu' ? 196 : quick!.mode === 'pick' ? 560 : 540;
+    const left = Math.max(12, Math.min(quick!.x, window.innerWidth - width - 12)), top = Math.max(12, Math.min(quick!.y, window.innerHeight - (quick!.mode === 'menu' ? 200 : 520)));
+    const usable = (a.images ?? []).filter(b => !b.archived_at);
+    const groups = a.kind === 'character' ? a.looks.filter(l => !l.archived_at).map(l => ({ key: l.id, title: '造型 · ' + l.name, images: usable.filter(b => b.look_id === l.id) })).filter(g => g.images.length) : [{ key: 'all', title: '参考图', images: usable }];
+    const style = { left, top, width };
+    if (quick!.mode === 'menu') return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={a.name + '的操作'} style={style}>
+      <button role="menuitem" disabled={!cover} onClick={() => void copyDefault(a)}><Copy size={14}/>复制默认图</button>
+      <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
+      <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'crop', crop: cover!.crop })}><Maximize2 size={14}/>调整头像…</button>
+      <hr/>
+      <button role="menuitem" onClick={() => { setQuick(null); void openAsset(a.id); }}>打开详情</button>
+    </div>;
+    if (quick!.mode === 'pick') return <div ref={ref} className="ca-quick ca-quick-panel" role="dialog" aria-label={'换' + a.name + '的默认图'} style={style}>
+      <header><strong>换「{a.name}」的默认图</strong><small>点一张就换，马上生效</small></header>
+      <div className="ca-quick-body">{groups.map(g => <section key={g.key} aria-label={g.title}><h4>{g.title}</h4><div className="ca-quick-grid">{g.images.map(b => { const name = b.last_known_name || '参考图片', current = b.id === cover?.id; return <button key={b.id} type="button" className={'ca-quick-thumb' + (current ? ' is-current' : '')} aria-pressed={current} aria-label={(current ? '当前默认图：' : '设为默认：') + name} disabled={current || !!busy} onClick={() => { setQuick(null); void quickSave(a.id, '正在更换默认图…', x => { const img = x.images.find(i => i.id === b.id); if (img) setCover(x, img); }, (saved, before) => { const look = saved.looks.find(l => l.id === saved.default_look_id), was = before.looks.find(l => l.id === before.default_look_id); return '已把「' + a.name + '」的默认图换成「' + name + '」' + (a.kind === 'character' && look && was && look.id !== was.id ? '，默认造型也换成了「' + look.name + '」' : ''); }); }}>
+        <ReferencePreview src={bindingSrc(b)} alt={name}/>{current ? <span className="ca-quick-badge">默认</span> : <span className="ca-quick-set">设为默认</span>}</button>; })}</div></section>)}</div>
+      <footer><small>换好后可以接着「调整头像」</small><button type="button" onClick={() => setQuick(null)}>关闭</button></footer>
+    </div>;
+    const crop = quick!.crop || cover!.crop;
+    return <div ref={ref} className="ca-quick ca-quick-panel" role="dialog" aria-label={'调整' + a.name + '的头像'} style={style}>
+      <header><strong>调整「{a.name}」的头像</strong><small title={cover!.last_known_name || ''}>{cover!.last_known_name || '默认图'}</small></header>
+      <div className="ca-quick-crop">
+        <div className="ca-quick-cropbox"><CropBox src={bindingSrc(cover!)} alt={cover!.last_known_name || '默认图'} crop={crop} aspect={aspect} onChange={c => setQuick(q => q && { ...q, crop: c })}/></div>
+        <div className="ca-quick-preview"><small>列表里会这样显示</small><span className={'ca-quick-cover' + (a.kind === 'character' ? '' : ' is-landscape')}><CroppedImage binding={{ ...cover!, crop }}/></span><small>只改列表里怎么显示，原图不动；复制出去的仍是整张原图。</small></div>
+      </div>
+      <footer><span/><span className="ca-quick-actions"><button type="button" onClick={() => setQuick(null)}>取消</button><button type="button" className="ca-primary" disabled={!!busy} onClick={() => { const c = crop; setQuick(null); void quickSave(a.id, '正在保存头像…', x => { const img = x.images.find(i => i.id === cover!.id); if (img) img.crop = c; }, () => '已更新「' + a.name + '」的头像'); }}>完成</button></span></footer>
+    </div>;
+  }
+
   return <section className="ca-workspace ca-v2" aria-label="项目资产库" aria-busy={!!busy}>
     {active && projectSelectorHost && createPortal(<ProjectSelector projects={scopes} value={scope} disabled={!!busy||!!modal||!!dropJob} onChange={changeScope} label="资产所属项目" caption="资产所属" allowEmpty={false}/>, projectSelectorHost)}
     <header className="ca-head">
@@ -485,13 +628,19 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           {!scopesKnown&&!scopesError&&<div className="ca-progress" role="status">正在读取项目范围…</div>}
           {listLoading && <div className="ca-progress" role="status"><span className="spinner"/>正在加载当前项目的{labels[kind]}…</div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape')}>
-            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; return <button key={a.id} className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} onClick={() => void openAsset(a.id)} {...dragProps(a.id, e => void dropOnCard(e, a))}>
+            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '')}
+              onContextMenu={e => { e.preventDefault(); setQuick({ id: a.id, mode: 'menu', x: e.clientX, y: e.clientY }); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} onClick={() => void openAsset(a.id)} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
               </span>
               {dragTarget === a.id && <span className="ca-card-drop">添加为“{a.name}”的参考图</span>}
-            </button>; })}
+            </button>
+              <span className="ca-card-quick">
+                {cover && <button type="button" className="ca-card-copy" aria-label={'复制' + a.name + '的默认图'} title="复制默认图（整张原图），到画布平台按 ⌘V 粘贴" onClick={() => void copyDefault(a)}><Copy size={13}/>复制</button>}
+                <button type="button" className="ca-card-more" aria-label={a.name + '的更多操作'} aria-haspopup="menu" data-quick-trigger onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setQuick(q => q?.id === a.id && q.mode === 'menu' ? null : { id: a.id, mode: 'menu', x: r.right - 196, y: r.bottom + 6 }); }}><MoreHorizontal size={15}/></button>
+              </span>
+            </div>; })}
             {!archived && <button className="ca-card ca-card-add" disabled={!scope || !!busy || publicScope && kind !== 'character'} onClick={() => void create()}><Plus size={18}/><span>新建{labels[kind]}<small>或把图片拖到这里</small></span></button>}
           </div>
           {scopesKnown && !listLoading && !rows.length && !error && !scopesError && (archived || !scope) && empty(scope ? '暂无归档' + labels[kind] : '请先选择项目')}
@@ -545,6 +694,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                 <div className="ca-image-grid-v2" role="list" aria-label={'参考图片，共 ' + images.length + ' 张'}>{images.map(b => { const h = health.find(h => h.id === b.id), name = b.last_known_name || '参考图片', locked = imageLocked(b); return <div role="listitem" key={b.id} className={'ca-tile' + (b.archived_at ? ' archived' : '') + (b.id === representative ? ' is-cover' : '')} draggable={!locked} onDragStart={e => { if (locked) return; drag.current = b.id; e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => { drag.current = null; }} onDragOver={e => { if (drag.current) e.preventDefault(); }} onDrop={e => { if (!drag.current) return; e.preventDefault(); e.stopPropagation(); if (!locked) moveImage(drag.current, 0, b.id); drag.current = null; }}>
                   <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={() => setImageId(b.id)} onDoubleClick={() => setImageViewer({ src: bindingSrc(b), name })}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
                   <span className="ca-tile-badge">{b.id === representative ? '代表图' : b.archived_at ? '已归档' : (b.reference_type || '补充参考')}</span>
+                  {b.id !== representative && !b.archived_at && !locked && !draft.archived_at && (!h || h.state === 'available') && <button type="button" className="ca-tile-default" aria-label={'设为代表图：' + name}
+                    onClick={() => { if (dirty) { edit(x => setDefault(x, b.id)); setNotice('已设为代表图；还有其他未保存的修改，点下方「保存」后一起生效'); return; }
+                      void quickSave(draft.id, '正在设置代表图…', x => { if (x.kind === 'character') { const l = x.looks.find(l => l.id === b.look_id); if (l) l.default_image_id = b.id; } else x.default_image_id = b.id; }, () => '已把「' + name + '」设为代表图'); }}><Star size={12}/>设为代表图</button>}
                   {!b.confirmed && !b.archived_at && <span className="ca-tile-dot" title="参考职责未确认" aria-label="参考职责未确认"/>}
                   <span className="ca-tile-name" title={name}>{name}</span>
                 </div>; })}</div>
@@ -563,6 +715,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
         </aside>}
       </div>
     </fieldset></div>
+    {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
+    {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; if (undoBlocked(u.id)) { setError('这个' + labels[draftRef.current!.kind] + '有未保存的修改，请先保存或放弃修改，再撤销'); return; } setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
     {active && !scriptView && imageViewer && <ReferenceImageViewer src={imageViewer.src} name={imageViewer.name} onClose={() => setImageViewer(null)}/>}
     {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
