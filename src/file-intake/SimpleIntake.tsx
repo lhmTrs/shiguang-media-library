@@ -5,14 +5,14 @@ import type {DestinationDraft} from './TargetEditor';
 
 export type Row = {
   file: IntakeFile; name: string; destination: DestinationDraft | null; reason: string; hint?: string;
-  decision?: 'new-character' | 'audio-kind'; alternative?: {directory: string; name: string}; ready: boolean; checking?: string; problem?: string; newName?: string | null;
+  decision?: 'new-character' | 'audio-kind'; alternative?: {directory: string; name: string}; manual?: boolean; ready: boolean; checking?: string; problem?: string; newName?: string | null;
 };
 export type Group = {key: string; title: string; detail: string; tone: 'decide' | 'project' | 'video' | 'library' | 'audio'; rows: Row[]; photos: boolean};
 
 const toneDot: Record<Group['tone'], string> = {decide: 'fi-dot-decide', project: 'fi-dot-project', video: 'fi-dot-video', library: 'fi-dot-library', audio: 'fi-dot-audio'};
 
 /** Small anchored panel. Esc or a click outside closes it; focus moves inside. */
-export function Popover({label, onClose, children, align = 'right'}: {label: string; onClose: () => void; children: ReactNode; align?: 'left' | 'right' | 'fixed'}) {
+export function Popover({label, onClose, children, align = 'right', style}: {label: string; onClose: () => void; children: ReactNode; align?: 'left' | 'right' | 'fixed'; style?: {top: number; left: number; maxHeight?: number}}) {
   const ref = useRef<HTMLDivElement>(null), [up, setUp] = useState(false);
   // Open upward when the page below has no room (the footer stays fixed).
   useLayoutEffect(() => {if (align === 'fixed') return; const r = ref.current?.getBoundingClientRect(); if (r && r.bottom > window.innerHeight - 72 && r.top - r.height > 60) setUp(true);}, []);
@@ -21,7 +21,7 @@ export function Popover({label, onClose, children, align = 'right'}: {label: str
     const down = (e: MouseEvent) => {if (node && !node.contains(e.target as Node) && !(e.target as HTMLElement).closest?.('[data-popover-trigger]')) onClose();};
     document.addEventListener('mousedown', down); return () => document.removeEventListener('mousedown', down);
   }, []);
-  return <div ref={ref} role="dialog" aria-label={label} className={'fi-popover fi-popover-' + align + (up ? ' fi-popover-up' : '')} onKeyDown={e => {if (e.key === 'Escape') {e.stopPropagation(); onClose();}}}>{children}</div>;
+  return <div ref={ref} role="dialog" aria-label={label} className={'fi-popover fi-popover-' + align + (up ? ' fi-popover-up' : '')} style={style} onKeyDown={e => {if (e.key === 'Escape') {e.stopPropagation(); onClose();}}}>{children}</div>;
 }
 
 export function Thumb({file, handoffId, ready, size}: {file: IntakeFile; handoffId: string; ready: boolean; size: 'small' | 'large'}) {

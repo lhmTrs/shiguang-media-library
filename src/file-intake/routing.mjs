@@ -73,7 +73,7 @@ export function batchProject(files, options) {
  * @returns {{destination: object|null, group: string, reason: string, decision?: string, hint?: string}}
  */
 export function suggest(file, ctx) {
-  const {options, prefs = {}, batch} = ctx, name = file.name, s = stem(name);
+  const {options, prefs = {}, batch, forced} = ctx, name = file.name, s = stem(name);
   const lastProject = kind => validProject(options, prefs.lastProjectId?.[kind]);
   const libDir = kind => prefs.lastLibraryDirectory?.[kind] ?? '';
   if (file.mediaKind === 'video') {
@@ -86,11 +86,12 @@ export function suggest(file, ctx) {
       return {destination: {kind: 'video', scope: 'project', projectId: p.id, folderId}, group: 'video:' + p.id + ':' + folderId,
         reason: named ? '按文件名认出项目和文件夹' : folderId === 'root' ? '按文件名开头认出项目' : '按文件名开头认出项目，文件夹沿用上次'};
     }
-    const last = lastProject('video');
+    // The window's project bar wins over history for videos whose name names no project.
+    const last = forced || lastProject('video');
     if (last) {
       const remembered = prefs.lastVideoFolderByProject?.[last.id];
       const folderId = remembered && (last.videoFolders || []).some(f => f.id === remembered) ? remembered : 'root';
-      return {destination: {kind: 'video', scope: 'project', projectId: last.id, folderId}, group: 'video:' + last.id + ':' + folderId, reason: '沿用上次的项目和文件夹'};
+      return {destination: {kind: 'video', scope: 'project', projectId: last.id, folderId}, group: 'video:' + last.id + ':' + folderId, reason: forced ? '跟随整批项目' : '沿用上次的项目和文件夹'};
     }
     const dir = libDir('video');
     return {destination: {kind: 'video', scope: 'library', directory: dir}, group: 'library:video:' + dir, reason: '没有可用的项目'};
@@ -106,7 +107,7 @@ export function suggest(file, ctx) {
     }
     // A project name whose remainder matches nothing stays a general photo with a hint:
     // it must not fall through to another project or become a new character named after the project.
-    if (!project && !own) project = batch || lastProject('photo');
+    if (!project && !own) project = forced || batch || lastProject('photo');
     const found = project && matchInProject(project, text);
     if (found?.type === 'asset') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, assetKind: found.asset.kind, assetId: found.asset.id, assetRevision: found.asset.revision},
       group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
@@ -117,7 +118,7 @@ export function suggest(file, ctx) {
     const category = longestPrefix((options.photoCategories || []).filter(c => c.id), s);
     const preset = imageNamePreset(text);
     if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
-      group: 'decide', decision: 'new-character', reason: '「' + project.name + '」里还没有人物「' + preset.name + '」', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
+      group: 'decide', decision: 'new-character', reason: category ? '像人物，也像分类' : '项目里还没有这个人物', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
     // Library photos still carry the name-based person/look guess, so switching one to a project
     // in its 「改…」 panel starts prefilled. These fields are dropped when a library target is submitted.
     const guess = {characterName: preset.name, lookName: preset.lookName};
@@ -126,12 +127,17 @@ export function suggest(file, ctx) {
   }
   // Audio stays in the general music/sfx library; only the kind is preset.
   const preset = audioKindFor(file.durationSec, prefs.lastAudioKind);
-  if (!preset) return {destination: null, group: 'decide', decision: 'audio-kind', reason: file.durationSec === undefined ? '正在读取时长' : '没读到时长，请选类型'};
+  if (!preset) return {destination: null, group: 'decide', decision: 'audio-kind', reason: file.durationSec === undefined ? '正在读取时长' : '没读到音频时长'};
   const dir = libDir(preset.kind);
   return {destination: {kind: preset.kind, scope: 'library', directory: dir}, group: 'library:' + preset.kind + ':' + dir, reason: formatDuration(file.durationSec) + ' · ' + preset.reason};
 }
 
-export function suggestAll(files, options, prefs) {
-  const batch = batchProject(files, options);
-  return Object.fromEntries(files.map(f => [f.id, suggest(f, {options, prefs, batch})]));
+/** Project the window's project bar starts on: the batch's own, else the last photo/video project. */
+export function defaultProject(files, options, prefs = {}) {
+  return batchProject(files, options) || validProject(options, prefs.lastProjectId?.photo) || validProject(options, prefs.lastProjectId?.video);
+}
+
+export function suggestAll(files, options, prefs, forcedProjectId) {
+  const batch = batchProject(files, options), forced = validProject(options, forcedProjectId);
+  return Object.fromEntries(files.map(f => [f.id, suggest(f, {options, prefs, batch, forced})]));
 }

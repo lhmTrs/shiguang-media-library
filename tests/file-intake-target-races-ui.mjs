@@ -38,7 +38,9 @@ async function pageFor(h){const p=await ctx.newPage();p.on('pageerror',e=>errors
 // Per-file settings live in each file's 「改…」 panel since INTAKE-SIMPLE; open it on demand.
 async function field(p,label,id){const loc=p.getByLabel(label+' '+id,{exact:true});if(!await loc.count()){const other=p.locator('.fi-popover');if(await other.count())await other.getByRole('button',{name:'完成',exact:true}).click();await p.locator('[data-file-id="'+id+'"]').click();await expect(loc).toBeVisible();}return loc;}
 const confirm=p=>p.locator('.fi-confirm-button');
-async function photoProject(p,id,project){await (await field(p,'收纳范围',id)).selectOption('project');await (await field(p,'目标项目',id)).selectOption(project);await expect(confirm(p)).toBeEnabled();}
+// 去处 is a two-way switch since the round-2 design; pick and read it by its pressed button.
+async function scope(p,id,which){const g=await field(p,'收纳范围',id);await g.getByRole('button',{name:which==='project'?'项目':/摄影照片|视频素材/}).click();}
+async function photoProject(p,id,project){await scope(p,id,'project');await (await field(p,'目标项目',id)).selectOption(project);await expect(confirm(p)).toBeEnabled();}
 async function done(id){for(let i=0;i<500;i++){const b=await api('/file-intake/batches/'+id);if(!['queued','running'].includes(b.status))return b;await pause(30);}throw Error('batch terminal timeout');}
 async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
 async function shot(p,name){await p.screenshot({path:path.join(evidence,name+'.png'),fullPage:true});}
@@ -80,7 +82,7 @@ try{
   // Unknown submission: a stale category must stay visibly fixed, not root.
   await api('/file-intake/categories/video',{directory:'',name:'原定分类'});
   const unknown=await receipts.handoff([video]),u=await pageFor(unknown),uid=unknown.files[0].id;
-  await (await field(u,'收纳范围',uid)).selectOption('library');await expect((await field(u,'目标分类',uid))).toBeEnabled();await (await field(u,'目标分类',uid)).selectOption('原定分类');await expect(confirm(u)).toBeEnabled();await blockConfirm(u);
+  await scope(u,uid,'library');await expect((await field(u,'目标分类',uid))).toBeEnabled();await (await field(u,'目标分类',uid)).selectOption('原定分类');await expect(confirm(u)).toBeEnabled();await blockConfirm(u);
   const journal=await u.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),unknown.id);
   await fs.rmdir(path.join(personal,'system_video','原定分类'));await u.reload();await expect(u.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect((await field(u,'目标分类',uid))).toBeDisabled();
   await expect((await field(u,'目标分类',uid))).toHaveValue('原定分类');
@@ -93,7 +95,7 @@ try{
   // Explicit names survive a matching intermediate filename and subsequent renames.
   const manual=await receipts.handoff([png]),m=await pageFor(manual),mid=manual.files[0].id;await photoProject(m,mid,project.id);
   await (await field(m,'人物名',mid)).fill('林舟');
-  await m.getByText('修改导入后的文件名',{exact:true}).click();await (await field(m,'副本名称',mid)).fill('林舟_夜行.png');await expect((await field(m,'人物名',mid))).toHaveValue('林舟');
+  await (await field(m,'副本名称',mid)).fill('林舟_夜行.png');await expect((await field(m,'人物名',mid))).toHaveValue('林舟');
   await (await field(m,'副本名称',mid)).fill('周扬_便装.png');await expect((await field(m,'人物名',mid))).toHaveValue('林舟');await expect(confirm(m)).toBeEnabled();
   await shot(m,'manual-character-overwritten');record('C2-manual-name-survives-renames','PASS',{steps:['source 苏禾_日常.png','explicit character 林舟','rename 林舟_夜行.png','rename 周扬_便装.png'],expected:'林舟',actual:await (await field(m,'人物名',mid)).inputValue()});
 
@@ -130,7 +132,7 @@ try{
   let readFolder,releaseFolder,finishedFolder;const folderRead=new Promise(r=>readFolder=r),folderGate=new Promise(r=>releaseFolder=r),folderFinished=new Promise(r=>finishedFolder=r);releases.push(releaseFolder);
   await rp.route('**/api/file-intake/categories/music',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();readFolder();await folderGate;await route.fulfill({response});finishedFolder();});
   await rs.getByRole('button',{name:'创建分类',exact:true}).click();await folderRead;
-  await rp.getByRole('button',{name:'移除 独立音乐.wav',exact:true}).click();await rp.getByRole('button',{name:'恢复 独立音乐.wav',exact:true}).click();await (await field(rp,'素材类型',rpid)).selectOption('sfx');
+  await (await field(rp,'素材类型',rpid));await rp.getByRole('button',{name:'移除 独立音乐.wav',exact:true}).click();await rp.getByRole('button',{name:'恢复 独立音乐.wav',exact:true}).click();await (await field(rp,'素材类型',rpid)).selectOption('sfx');
   releaseFolder();await folderFinished;await pause(150);
   try{await expect((await field(rp,'素材类型',rpid))).toHaveValue('sfx');record('C6-unmounted-category-response-ignored','PASS',{});}catch(e){record('C6-unmounted-category-response-ignored','FAIL',{message:e.message});process.exitCode=1;}await rp.close();
 
@@ -150,7 +152,7 @@ try{
   const legacyInput={requestId:crypto.randomUUID(),projectId:project.id,folderId:legacyFolderId,mode:'copy',fileIds:[lid]};
   await lp.evaluate(({id,input})=>sessionStorage.setItem('shiguang.file-intake.'+id,JSON.stringify(input)),{id:old.id,input:legacyInput});await lp.reload();
   await expect(lp.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
-  for(let i=0;i<2;i++){await expect((await field(lp,'收纳范围',lid))).toHaveValue('project');await expect((await field(lp,'目标项目',lid))).toHaveValue(project.id);await expect((await field(lp,'目标分类',lid))).toHaveValue(legacyFolderId);await expect((await field(lp,'目标分类',lid))).toBeDisabled();if(i===0){await lp.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(lp.locator('.fi-body > .fi-error')).toContainText('尚未取得权威批次回执');}}
+  for(let i=0;i<2;i++){await expect((await field(lp,'收纳范围',lid)).getByRole('button',{name:'项目',exact:true})).toHaveAttribute('aria-pressed','true');await expect((await field(lp,'目标项目',lid))).toHaveValue(project.id);await expect((await field(lp,'目标分类',lid))).toHaveValue(legacyFolderId);await expect((await field(lp,'目标分类',lid))).toBeDisabled();if(i===0){await lp.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(lp.locator('.fi-body > .fi-error')).toContainText('尚未取得权威批次回执');}}
   assert.deepEqual(await lp.evaluate(id=>JSON.parse(sessionStorage.getItem('shiguang.file-intake.'+id)),old.id),legacyInput);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+old.id+'/confirm')).length,0);record('C8-legacy-journal-keeps-original-project-folder','PASS',{});await lp.close();
 }catch(e){harnessError=e.stack||String(e);console.error(harnessError);process.exitCode=1;}
 finally{

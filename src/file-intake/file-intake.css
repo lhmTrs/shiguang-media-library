@@ -113,3 +113,48 @@
 .fi-simple .fi-group-head .fi-group-actions{margin-left:auto}
 .fi-simple .fi-popover-fixed{position:fixed;top:62px;right:20px;width:340px;max-height:calc(100% - 150px);overflow:auto}
 .fi-simple .fi-single-dest .fi-single-hint{color:var(--fi-warn)}
+
+/* ── Design round 2: project bar, equal two-way choices, whole-row settings, anchored panel ── */
+.fi-simple .fi-projectbar{flex:none;display:flex;align-items:center;gap:10px;height:40px;padding:0 20px;border-bottom:1px solid var(--fi-line);background:var(--fi-bg)}
+.fi-root.fi-simple .fi-projectbar label{flex-direction:row;align-items:center;gap:10px;font-size:12px;color:var(--fi-strong)}
+.fi-root.fi-simple .fi-projectbar select{width:auto;min-width:140px;min-height:28px;padding:3px 8px;font-weight:600;color:var(--fi-text)}
+/* Two equal answers on a white plate: readable on the warm group and on a highlighted row. */
+.fi-root.fi-simple .fi-choice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:200px;flex:none;padding:3px;border:1px solid var(--fi-warn-line);border-radius:8px;background:var(--fi-bg)}
+.fi-root.fi-simple .fi-choice>button{min-height:26px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:var(--fi-text);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fi-root.fi-simple .fi-choice>button:hover:not(:disabled){background:var(--fi-warn-soft)}
+.fi-root.fi-simple .fi-choice>button[aria-pressed=true]{background:var(--fi-soft);color:var(--fi-accent);font-weight:600}
+/* The whole row is the file: hover tints the full band, the main area is a real button. */
+.fi-simple .fi-row{cursor:pointer;transition:background .12s}
+.fi-simple .fi-row:hover,.fi-simple .fi-row.fi-active{background:color-mix(in srgb,var(--c-f59e0b) 6%,var(--fi-bg))}
+.fi-simple .fi-group-decide .fi-row:hover,.fi-simple .fi-group-decide .fi-row.fi-active{background:color-mix(in srgb,var(--c-f59e0b) 14%,var(--fi-bg))}
+.fi-simple .fi-row.fi-active{box-shadow:inset 0 0 0 2px var(--fi-warn-line)}
+.fi-root.fi-simple .fi-row-open,.fi-root.fi-simple .fi-tile-open{flex:1;min-width:0;display:flex;align-items:center;gap:10px;min-height:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;justify-content:flex-start}
+.fi-root.fi-simple .fi-row-open:hover,.fi-root.fi-simple .fi-tile-open:hover{background:transparent}
+.fi-root.fi-simple .fi-tile-open{flex-direction:column;align-items:stretch;gap:4px}
+.fi-simple .fi-tile.fi-active .fi-thumb{outline:2px solid var(--fi-warn-line);outline-offset:1px}
+/* A file that just moved lights up briefly so you can see where it went. */
+@keyframes fi-flash{0%{box-shadow:0 0 0 2px var(--fi-accent);background:var(--fi-soft)}100%{box-shadow:0 0 0 2px transparent}}
+.fi-simple .fi-flash{animation:fi-flash 1.2s ease-out;border-radius:8px}
+@media (prefers-reduced-motion:reduce){.fi-simple .fi-flash{animation:none;box-shadow:0 0 0 2px var(--fi-accent)}}
+.fi-simple .fi-tag{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--fi-line);border-radius:999px;font-size:10px;color:var(--fi-accent);background:var(--fi-bg)}
+/* Per-file panel: anchored under the file, the rest dimmed. */
+.fi-simple .fi-scrim{position:fixed;inset:52px 0 0 0;z-index:25;background:color-mix(in srgb,var(--c-24292c) 18%,transparent)}
+.fi-simple .fi-popover-fixed{position:fixed;width:352px;padding:0;gap:0;max-height:calc(100% - 80px);overflow:auto}
+.fi-simple .fi-panel-head{display:flex;align-items:center;gap:10px;padding:14px 12px 12px 14px}
+.fi-simple .fi-panel-head>div{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.fi-simple .fi-panel-head strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fi-simple .fi-panel-head .fi-thumb{width:44px;height:34px}
+.fi-simple .fi-panel-body{padding:12px 14px 14px;border-top:1px solid var(--fi-line)}
+.fi-simple .fi-panel-body .fi-item{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:10px}
+.fi-simple .fi-panel-body .fi-item>strong{display:none}
+.fi-root.fi-simple .fi-panel-body .fi-item label,.fi-simple .fi-panel-body .fi-field{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:12px;font-size:12px;color:var(--fi-strong)}
+.fi-simple .fi-panel-body .fi-target-fields{display:flex;flex-direction:column;gap:10px;margin:0}
+.fi-simple .fi-panel-body .fi-item>p,.fi-simple .fi-panel-body .fi-field-hint{margin:0 0 0 64px;font-size:11px}
+.fi-simple .fi-panel-body details{margin-left:64px;font-size:12px}
+.fi-simple .fi-panel-body .fi-pop-result{margin:10px 0 0 64px}
+.fi-simple .fi-panel-foot{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--fi-line);background:var(--fi-page)}
+.fi-root.fi-simple .fi-link-muted{min-height:24px;padding:2px 2px;border:0;background:transparent;color:var(--fi-strong);font-size:12px}
+.fi-root.fi-simple .fi-link-muted:hover:not(:disabled){color:var(--fi-text);background:transparent}
+.fi-simple .fi-grow{flex:1}
+.fi-simple .fi-panel-body .fi-keep-note{display:none}
+.fi-simple .fi-panel-body .fi-item>p[role=status]{color:var(--fi-accent)}

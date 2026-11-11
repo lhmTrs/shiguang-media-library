@@ -81,11 +81,11 @@ try {
   await expect(page.getByRole('region', {name: '项目「穿越计」 · 场景和道具', exact: true})).toContainText('雨夜街口_02.png');
   await expect(page.getByRole('region', {name: '摄影照片 › 待确认', exact: true})).toContainText('image_0931.png');
   await expect(page.getByRole('region', {name: '音效 › 待确认', exact: true})).toContainText('0:42 · 按时长预选为音效');
-  await expect(page.getByRole('region', {name: '需要你决定', exact: true})).toContainText('「穿越计」里还没有人物「阿青」');
+  await expect(page.getByRole('region', {name: '需要你决定', exact: true})).toContainText('项目里还没有这个人物');
   await expect(page.getByRole('radio', {name: '复制', exact: true})).toBeChecked();
   const standard = page.getByRole('checkbox', {name: '收纳时按规范改名'}); await expect(standard).not.toBeChecked(); await standard.check();
   await expect(page.getByRole('region', {name: '项目「穿越计」 › 外景', exact: true})).toContainText(/穿越计_外景_\d{3}\.mp4/);
-  await page.getByRole('button', {name: '新建人物「阿青」', exact: true}).click();
+  await page.getByRole('group', {name: '去向 阿青_泳衣.png', exact: true}).getByRole('button', {name: '新建人物', exact: true}).click();
   await expect(page.locator('.fi-confirm-button')).toBeEnabled(); await page.screenshot({path: path.join(evidence, 'round1-ready.png')});
   assert.equal(one.posts.length, 0, 'previews never confirm');
   await page.locator('.fi-confirm-button').click(); await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible();

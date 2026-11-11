@@ -65,10 +65,10 @@ try {
   const posts=[];page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/confirm'))posts.push(r.postDataJSON());});
   await page.goto(origin+'/#/file-intake/'+handoff.id);await expect(page.getByRole('heading',{name:'收纳素材到拾光'})).toBeVisible();
   // Per-file settings live in each file's 「改…」 panel since INTAKE-SIMPLE.
-  const edit=async(p,file)=>{await p.getByRole('button',{name:'改 '+file.name,exact:true}).click();return p.getByRole('dialog',{name:'收纳设置 '+file.name,exact:true});};
+  const edit=async(p,file)=>{await p.getByRole('button',{name:'单独设置 '+file.name,exact:true}).click();return p.getByRole('dialog',{name:'收纳设置 '+file.name,exact:true});};
   const confirmButton=p=>p.locator('.fi-confirm-button');
   let panel=await edit(page,handoff.files[0]);
-  await panel.getByLabel('收纳范围 '+handoff.files[0].id).selectOption('project');
+  await panel.getByRole('group',{name:'收纳范围 '+handoff.files[0].id}).getByRole('button',{name:'项目',exact:true}).click();
   await panel.getByLabel('目标项目 '+handoff.files[0].id).selectOption(project.id);
   await expect(panel.getByLabel('人物名 '+handoff.files[0].id)).toHaveValue('苏禾');await expect(panel.getByLabel('造型名 '+handoff.files[0].id)).toHaveValue('日常');
   await expect(panel.getByText('将新建人物：苏禾 · 将新建造型：日常')).toBeVisible();

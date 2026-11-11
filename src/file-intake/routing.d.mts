@@ -8,5 +8,6 @@ export function isGenericName(name: string): boolean;
 export function audioKindFor(durationSec: number | null | undefined, lastAudioKind?: 'music' | 'sfx' | null): {kind: 'music' | 'sfx'; reason: string} | null;
 export function formatDuration(sec: number | null | undefined): string;
 export function batchProject(files: readonly IntakeFile[], options: RoutingOptions): RoutingOptions['projects'][number] | null;
-export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?: Partial<RoutingPreferences>; batch?: RoutingOptions['projects'][number] | null}): RouteSuggestion;
-export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): Record<string, RouteSuggestion>;
+export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?: Partial<RoutingPreferences>; batch?: RoutingOptions['projects'][number] | null; forced?: RoutingOptions['projects'][number] | null}): RouteSuggestion;
+export function defaultProject(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): RoutingOptions['projects'][number] | null;
+export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>, forcedProjectId?: string): Record<string, RouteSuggestion>;

@@ -97,7 +97,7 @@ const accepted = () => page.getByText('任务已接收，请在网页顶栏“�
 const group = title => page.getByRole('region', {name: title, exact: true});
 const target = (b, id) => b.targets.find(t => t.fileId === id);
 async function settle() {
-  await page.getByRole('button', {name: '新建人物「小雨」', exact: true}).click();
+  await page.getByRole('group', {name: '去向 小雨_校服.png', exact: true}).getByRole('button', {name: '新建人物', exact: true}).click();
   await page.getByRole('group', {name: '素材类型 片尾.m4a', exact: true}).getByRole('button', {name: '音乐', exact: true}).click();
   await expect(confirmButton()).toBeEnabled();
 }
@@ -113,8 +113,8 @@ try {
   await check('routing groups by destination; decisions block confirm; one exact submission with standard names', async () => {
     await fresh();
     const decide = group('需要你决定');
-    await expect(decide).toContainText('小雨_校服.png'); await expect(decide).toContainText('「穿越计」里还没有人物「小雨」');
-    await expect(decide).toContainText('片尾.m4a'); await expect(decide).toContainText('没读到时长，请选类型');
+    await expect(decide).toContainText('小雨_校服.png'); await expect(decide).toContainText('项目里还没有这个人物');
+    await expect(decide).toContainText('片尾.m4a'); await expect(decide).toContainText('没读到音频时长');
     await expect(group('项目「穿越计」 › 外景')).toContainText('穿越计_外景_017.mp4');
     await expect(group('摄影照片 › 待确认')).toContainText('image_0931.png');
     await expect(group('音效 › 待确认')).toContainText('0:42 · 按时长预选为音效');
@@ -148,9 +148,9 @@ try {
     await pop.getByRole('button', {name: '场景', exact: true}).click(); await pop.getByRole('radio', {name: '雨夜街口', exact: true}).click();
     await expect(pop).toContainText('放到场景「雨夜街口」'); await pop.getByRole('button', {name: '放进去', exact: true}).click();
     await expect(group('项目「穿越计」 · 场景和道具')).toContainText('雨夜街口_');
-    await page.getByRole('button', {name: '改 穿越计视频16.mp4', exact: true}).click();
+    await page.getByRole('button', {name: '单独设置 穿越计视频16.mp4', exact: true}).click();
     const editor = page.getByRole('dialog', {name: '收纳设置 穿越计视频16.mp4', exact: true});
-    await editor.getByText('修改导入后的文件名', {exact: true}).click(); await editor.getByLabel('副本名称 v1', {exact: true}).fill('我的成片.mp4');
+    await editor.getByLabel('副本名称 v1', {exact: true}).fill('我的成片.mp4');
     await editor.getByRole('button', {name: '完成', exact: true}).click();
     await settle(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     const b = fx.confirmBodies[0];
@@ -168,9 +168,37 @@ try {
     assert.deepEqual(fx.confirmBodies[0].targets, [{fileId: 'x1', destination: {kind: 'photo', scope: 'library', directory: ''}}]);
   });
 
+  await check('round-2 design: project bar, whole-row settings, move highlight, manual tag and reset', async () => {
+    await fresh(f => {f.handoff.files.push({id: 'v2', name: 'canvas_77.mp4', mediaKind: 'video', bytes: 4096, path: '/synthetic/Downloads/canvas_77.mp4'});});
+    // Equal two-way choices, no primary colour inside the decision rows.
+    await expect(page.getByRole('region', {name: '需要你决定', exact: true}).locator('.fi-primary')).toHaveCount(0);
+    // Project bar: an unrecognised video follows the batch project; a project named in the file name does not.
+    const bar = page.getByLabel('整批项目', {exact: true}); await expect(bar).toHaveValue(P1);
+    await bar.selectOption(P2);
+    await expect(page.getByRole('region', {name: '项目「雨巷」 › 项目根目录', exact: true})).toContainText('canvas_77.mp4');
+    await expect(page.getByRole('region', {name: '项目「穿越计」 › 外景', exact: true})).toContainText('穿越计视频16.mp4');
+    await bar.selectOption(P1);
+    // Clicking the row (not its buttons) opens the anchored panel over a dimmed window.
+    await page.locator('.fi-row', {hasText: '小雨_校服.png'}).click({position: {x: 300, y: 12}});
+    const panel = page.getByRole('dialog', {name: '收纳设置 小雨_校服.png', exact: true}); await expect(panel).toBeVisible();
+    await expect(page.locator('.fi-scrim')).toBeVisible(); await expect(page.locator('.fi-row.fi-active')).toContainText('小雨_校服.png');
+    await panel.getByLabel('人物名 p3', {exact: true}).fill('阿青'); await panel.getByLabel('造型名 p3', {exact: true}).fill('泳衣');
+    await panel.getByRole('button', {name: '完成', exact: true}).click(); await expect(panel).toHaveCount(0);
+    // It moved into the (opened) character group, lit up, and carries the manual tag.
+    const moved = page.getByRole('region', {name: '项目「穿越计」 · 人物照片', exact: true}).locator('.fi-tile', {hasText: '手动设置'});
+    await expect(moved).toHaveCount(1); await expect(moved).toHaveClass(/fi-flash/);
+    await expect(page.getByRole('region', {name: '需要你决定', exact: true})).not.toContainText('小雨_校服.png');
+    // 恢复自动分 returns it to the question.
+    await page.getByRole('button', {name: '单独设置 小雨_校服.png', exact: true}).click();
+    await page.getByRole('dialog', {name: '收纳设置 小雨_校服.png', exact: true}).getByRole('button', {name: '恢复自动分', exact: true}).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('region', {name: '需要你决定', exact: true})).toContainText('小雨_校服.png');
+    assert.equal(fx.confirmBodies.length, 0);
+  });
+
   await check('removed files leave the submission and can be restored; audio kind can be switched', async () => {
     await fresh();
-    await page.getByRole('button', {name: '移除 小雨_校服.png', exact: true}).click(); await page.getByRole('button', {name: '移除 片尾.m4a', exact: true}).click();
+    for (const name of ['小雨_校服.png', '片尾.m4a']) {await page.getByRole('button', {name: '单独设置 ' + name, exact: true}).click(); await page.getByRole('button', {name: '移除 ' + name, exact: true}).click();}
     await expect(page.getByRole('button', {name: '恢复 小雨_校服.png', exact: true})).toBeVisible();
     await page.getByRole('group', {name: '素材类型 雨声.wav', exact: true}).getByRole('button', {name: '音乐', exact: true}).click();
     await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
@@ -192,7 +220,7 @@ try {
     await expect(page.locator('.fi-body > .fi-error')).toContainText('目标需要重新选择'); await expect(confirmButton()).toBeEnabled();
     fx.handoff.batchId = undefined; fx.batches = []; fx.confirm = 'lost'; await confirmButton().click();
     const check = page.getByRole('button', {name: '核对原提交结果', exact: true}); await expect(check).toBeVisible();
-    await expect(page.getByRole('button', {name: '移除 雨声.wav', exact: true})).toBeDisabled();
+    await expect(page.getByRole('group', {name: '素材类型 雨声.wav', exact: true}).getByRole('button', {name: '音乐', exact: true})).toBeDisabled();
     await pause(1200); assert.equal(fx.confirmBodies.length, 2); await check.click(); await expect(accepted()).toBeVisible();
     await page.reload(); await expect(page.getByText('这是此选择的既有回执，没有新建任务。', {exact: true})).toBeVisible(); assert.equal(fx.confirmBodies.length, 2);
   });

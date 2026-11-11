@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {AlertCircle, CheckCircle2, RefreshCw, ShieldCheck} from 'lucide-react';
 import {GlobalFeedback, notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {applyTheme, readTheme} from '../theme';
@@ -8,8 +8,8 @@ import '../themes.css';
 import {BatchDetails} from './BatchDetails';
 import {intakeSession} from './session';
 import {TargetEditor, initialDestination, submittedDestination, type DestinationDraft} from './TargetEditor';
-import {stem, suggestAll} from './routing.mjs';
-import {CategoryPopover, FolderPopover, GroupHeader, Popover, PutPopover, RemoveButton, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
+import {defaultProject, stem, suggestAll} from './routing.mjs';
+import {CategoryPopover, FolderPopover, GroupHeader, Popover, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type ImageProposal, type IntakeBatch, type IntakeRequest, type MediaKind, type NamePreviewItem, type RoutingOptions} from './types';
 import './file-intake.css';
 
@@ -55,6 +55,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [proposals, setProposals] = useState<Record<string, ProposalState>>({});
   const [names, setNames] = useState<Record<string, NamePreviewItem>>({}), [namesError, setNamesError] = useState('');
   const [checked, setChecked] = useState<string[]>([]), [open, setOpen] = useState<Record<string, boolean>>({}), [popover, setPopover] = useState('');
+  // Project bar (whole batch), the per-file panel's position and the just-moved file's short highlight.
+  const [projectOverride, setProjectOverride] = useState(''), [panelAt, setPanelAt] = useState<{top: number; left: number; maxHeight: number} | null>(null), [flash, setFlash] = useState('');
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [unknown, setUnknown] = useState(false), [batch, setBatch] = useState<IntakeBatch | null>(null), [reload, setReload] = useState(0);
   const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing'), [closeIn, setCloseIn] = useState(0);
   const alive = useRef(true), sending = useRef(false), initialized = useRef(''), attempt = useRef<ConfirmInput | null>(null), accepted = useRef('');
@@ -77,6 +79,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       if (bridge()) {post('accepted'); setCloseIn(CLOSE_AFTER_SECONDS);}
     }
   }
+  useEffect(() => {if (!flash) return; const t = setTimeout(() => setFlash(''), 1200); return () => clearTimeout(t);}, [flash]);
   // Countdown only mirrors the shell's own close timer so the summary stays readable.
   useEffect(() => {
     if (!closeIn) return;
@@ -141,7 +144,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // Last general category per kind: new routing preferences first, older per-kind presets as fallback.
   const libraryDir = (kind: MediaKind) => prefs?.lastLibraryDirectory?.[kind] ?? (handoff?.preferences?.[kind]?.scope === 'library' ? handoff.preferences[kind]!.directory || '' : '');
   const named = useMemo(() => files.map(f => drafts[f.id]?.fileName ? {...f, name: drafts[f.id].fileName!} : f), [files.map(f => f.id + (drafts[f.id]?.fileName || '') + (f.durationSec ?? '')).join('|')]);
-  const suggestions = useMemo(() => options ? suggestAll(named, options, prefs) : {}, [named, options, prefs]);
+  const suggestions = useMemo(() => options ? suggestAll(named, options, prefs, projectOverride || undefined) : {}, [named, options, prefs, projectOverride]);
+  const barProject = options ? projectOverride || defaultProject(named, options, prefs)?.id || '' : '';
   const rows: Row[] = files.map((file, i) => {
     const draft = drafts[file.id], s = suggestions[file.id];
     const fallback = !options ? initialDestination(file, handoff?.preferences || {}) : null;
@@ -150,9 +154,9 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const p = isCharacter(destination) && destination.projectId && destination.characterName && destination.lookName ? proposals[proposalKey(destination)] : undefined;
     const needsProposal = isCharacter(destination) && !decision;
     const ready = !!destination && !decision && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
-    const reason = draft?.manual ? '你选的' : s?.reason || (fallback ? '沿用上次的选择' : '');
+    const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
-      reason, hint: s?.hint, decision, alternative: decision ? s?.alternative : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
+      reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
       problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: names[file.id]?.proposedFileName ?? null};
   });
   // Character targets are checked against the project before confirmation. Each key is
@@ -241,26 +245,56 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const willRename = rows.some(r => r.destination?.scope === 'project' && !(isCharacter(r.destination) && stem(r.name) === r.destination.characterName + '_' + r.destination.lookName));
   const decided = rows.length - pending;
 
-  // One floating editor for the whole window: a row that changes group must not remount it.
-  const editor = (r: Row) => api && handoff && <Popover label={'收纳设置 ' + r.file.name} align="fixed" onClose={() => setPopover('')}>
-    <TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} value={r.destination} locked={locked} previewReady={false}
+  // One floating panel for the whole window: a row that changes group must not remount it.
+  // It opens under the clicked file; the rest of the window dims; 完成 shows where the file went.
+  const openPanel = (id: string, from: HTMLElement) => {
+    if (popover === 'edit:' + id) {setPopover(''); return;}
+    // Prefer just below the file; never past the window edge (the panel scrolls inside when short of room).
+    const r = from.getBoundingClientRect(), width = 352, top = Math.max(60, Math.min(r.bottom + 8, window.innerHeight - 420));
+    setPanelAt({top, left: Math.max(12, Math.min(r.left + 16, window.innerWidth - width - 12)), maxHeight: window.innerHeight - top - 12});
+    setPopover('edit:' + id);
+  };
+  // 完成: open the group the file now lives in and bring it into view, so the highlight is seen.
+  const closePanel = (moved?: string) => {
+    setPopover('');
+    if (!moved) return;
+    const r = rows.find(x => x.file.id === moved); if (r) setOpen(o => ({...o, [groupKey(r.destination, !!r.decision)]: true}));
+    setFlash(moved);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-file-id="' + CSS.escape(moved) + '"]')?.scrollIntoView({block: 'nearest', behavior: 'smooth'}));
+  };
+  const resultLine = (r: Row) => !r.destination ? '' : r.decision ? r.reason
+    : isCharacter(r.destination) && r.destination.imageProposal ? (r.destination.imageProposal.newCharacter ? '将在「' + projectName(r.destination.projectId) + '」新建人物「' + r.destination.characterName + '」' : '放到「' + r.destination.characterName + '」') + (r.destination.imageProposal.newLook ? '，新建造型「' + r.destination.lookName + '」' : ' · ' + r.destination.lookName)
+    : '收到「' + destLabel(r.destination) + '」';
+  const editor = (r: Row) => api && handoff && <Popover label={'收纳设置 ' + r.file.name} align="fixed" style={panelAt || undefined} onClose={() => closePanel()}>
+    <div className="fi-panel-head"><Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
+      <div><strong title={r.name}>{r.name}</strong><small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
+      <button className="fi-icon-button" aria-label="关闭" onClick={() => closePanel()}>×</button></div>
+    <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
       onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return; // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
       // kind's last category (as before); later switches start at 待确认, and the same kind keeps its category.
       const pickedKind = (v.kind === 'music' || v.kind === 'sfx') && v.scope === 'library' && !v.directory && Object.keys(v).length === 3;
       const next = !pickedKind ? v : {...v, directory: r.destination?.kind === v.kind ? r.destination.directory || '' : drafts[r.file.id]?.manual ? '' : libraryDir(v.kind)}; setDrafts(old => ({...old, [r.file.id]: {...old[r.file.id], destination: next, manual: true, fileName: v.fileName ?? old[r.file.id]?.fileName}}));}} onReady={() => undefined}/>
-    <div className="fi-pop-actions"><button className="fi-primary" onClick={() => setPopover('')}>完成</button></div>
+      {!r.decision && !isCharacter(r.destination) && resultLine(r) && <p className="fi-pop-result" role="status">{resultLine(r)}</p>}</div>
+    <div className="fi-panel-foot">
+      <button className="fi-link-muted" disabled={locked || !drafts[r.file.id]?.manual} onClick={() => setDrafts(old => {const next = {...old}; delete next[r.file.id]; return next;})}>恢复自动分</button>
+      <button className="fi-link-muted" disabled={locked} aria-label={'移除 ' + r.file.name} onClick={() => {remove(r.file.id); closePanel();}}>从这次移除</button>
+      <span className="fi-grow"/>
+      <button className="fi-primary" onClick={() => closePanel(r.file.id)}>完成</button>
+    </div>
   </Popover>;
-  const rowTools = (r: Row) => <span className="fi-row-tools">
-    <span className="fi-anchor"><button className="fi-link" data-popover-trigger data-file-id={r.file.id} aria-label={(locked ? '查看 ' : '改 ') + r.file.name} onClick={() => setPopover(p => p === 'edit:' + r.file.id ? '' : 'edit:' + r.file.id)}>{locked ? '查看…' : '改…'}</button></span>
-    <RemoveButton file={r.file} disabled={locked} onRemove={() => remove(r.file.id)}/>
-  </span>;
-  const decisionControls = (r: Row) => r.decision === 'new-character' ? <span className="fi-decide-actions">
-      {r.alternative ? <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: r.alternative!.directory})}>放进分类「{r.alternative.name}」</button>
-        : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>放进摄影照片</button>}
-      <button className="fi-primary" disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建人物「{r.destination?.characterName}」</button>
-    </span>
-    : <span className="fi-seg" role="group" aria-label={'素材类型 ' + r.file.name}>{(['music', 'sfx'] as const).map(k => <button key={k} disabled={locked} onClick={() => setDestination([r.file.id], {kind: k, scope: 'library', directory: libraryDir(k)})}>{k === 'music' ? '音乐' : '音效'}</button>)}</span>;
-  const audioSwitch = (r: Row) => <span className="fi-seg" role="group" aria-label={'素材类型 ' + r.file.name}>{(['music', 'sfx'] as const).map(k => <button key={k} disabled={locked} aria-pressed={r.destination?.kind === k} onClick={() => setDestination([r.file.id], {kind: k, scope: 'library', directory: libraryDir(k)})}>{k === 'music' ? '音乐' : '音效'}</button>)}</span>;
+  // The file itself opens its settings: the row/tile main area is a real button.
+  const openButton = (r: Row, children: ReactNode, className: string) => <button className={className} data-popover-trigger data-file-id={r.file.id}
+    aria-label={(locked ? '查看 ' : '单独设置 ') + r.file.name} title="单独设置这个文件" onClick={e => openPanel(r.file.id, (e.currentTarget.closest('.fi-row, .fi-tile') as HTMLElement) || e.currentTarget)}>{children}</button>;
+  const rowClass = (r: Row, base: string) => base + (popover === 'edit:' + r.file.id ? ' fi-active' : '') + (flash === r.file.id ? ' fi-flash' : '');
+  const decisionControls = (r: Row) => r.decision === 'new-character'
+    ? <span className="fi-choice" role="group" aria-label={'去向 ' + r.file.name}>
+        <button disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建人物</button>
+        {r.alternative ? <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: r.alternative!.directory})}>分类·{r.alternative.name}</button>
+          : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>摄影照片</button>}
+      </span>
+    : audioSwitch(r);
+  const audioSwitch = (r: Row) => <span className="fi-choice" role="group" aria-label={'素材类型 ' + r.file.name}>{(['music', 'sfx'] as const).map(k => <button key={k} disabled={locked} aria-pressed={!r.decision && r.destination?.kind === k} onClick={() => setDestination([r.file.id], {kind: k, scope: 'library', directory: libraryDir(k)})}>{k === 'music' ? '音乐' : '音效'}</button>)}</span>;
+  const subLine = (r: Row, text: string) => <small className={r.problem ? 'fi-error' : ''}>{r.problem || r.checking || text}{r.manual && !r.problem && !r.checking && text !== '手动设置' && <span className="fi-tag">手动设置</span>}</small>;
 
   function renderGroup(g: Group) {
     const opened = isOpen(g), ids = g.rows.map(r => r.file.id), sel = ids.filter(id => checked.includes(id)), targets = sel.length ? sel : ids;
@@ -268,7 +302,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const actions = <>
       {g.photos && sel.length > 0 && <span className="fi-selected">已选 {sel.length} 张</span>}
       {g.photos && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'put:' + g.key ? '' : 'put:' + g.key)}>放进项目…</button>
-        {popover === 'put:' + g.key && <PutPopover options={options} count={targets.length} defaultProject={first?.projectId || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination(targets, d); setChecked([]); setPopover('');}}/>}</span>}
+        {popover === 'put:' + g.key && <PutPopover options={options} count={targets.length} defaultProject={first?.projectId || barProject || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination(targets, d); setChecked([]); setPopover('');}}/>}</span>}
       {g.photos && g.key.startsWith('library:') && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'cat:' + g.key ? '' : 'cat:' + g.key)}>改分类…</button>
         {popover === 'cat:' + g.key && <CategoryPopover categories={options.photoCategories} count={targets.length} onClose={() => setPopover('')} onApply={dir => {setDestination(targets, {kind: 'photo', scope: 'library', directory: dir}); setChecked([]); setPopover('');}}/>}</span>}
       {g.tone === 'video' && options && first && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'folder:' + g.key ? '' : 'folder:' + g.key)}>改文件夹…</button>
@@ -278,16 +312,16 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <GroupHeader group={g} open={opened} toggle={() => setOpen(o => ({...o, [g.key]: !opened}))}
         strip={g.photos ? <span className="fi-strip" aria-hidden="true">{g.rows.slice(0, 6).map(r => <Thumb key={r.file.id} file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>)}</span>
           : <span className="fi-strip-text">{g.rows.length === 1 ? (g.rows[0].newName || g.rows[0].name) : g.rows.map(r => r.newName || r.name).join('、')}</span>}>{actions}</GroupHeader>
-      {!opened ? null : g.photos ? <div className="fi-grid">{g.rows.map(r => <figure key={r.file.id} className={'fi-tile' + (checked.includes(r.file.id) ? ' fi-tile-on' : '')}>
+      {!opened ? null : g.photos ? <div className="fi-grid">{g.rows.map(r => <figure key={r.file.id} className={rowClass(r, 'fi-tile' + (checked.includes(r.file.id) ? ' fi-tile-on' : ''))}>
           <label className="fi-tile-check"><input type="checkbox" disabled={locked} aria-label={'选择 ' + r.file.name} checked={checked.includes(r.file.id)} onChange={e => setChecked(old => e.target.checked ? [...old, r.file.id] : old.filter(x => x !== r.file.id))}/></label>
-          <Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
-          <figcaption><RowName row={r} compact/><small className={r.problem ? 'fi-error' : ''}>{r.problem || r.checking || (g.key.startsWith('character') ? r.destination?.characterName + ' · ' + r.destination?.lookName : r.reason)}</small>{r.hint && <small>{r.hint}</small>}{rowTools(r)}</figcaption>
+          {openButton(r, <><Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
+            <figcaption><RowName row={r} compact/>{subLine(r, g.key.startsWith('character') ? r.destination?.characterName + ' · ' + r.destination?.lookName : r.reason)}{r.hint && <small>{r.hint}</small>}</figcaption></>, 'fi-tile-open')}
         </figure>)}</div>
-        : <ul className="fi-rows">{g.rows.map(r => <li key={r.file.id} className="fi-row">
-          <Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
-          <span className="fi-row-main"><RowName row={r}/><small className={r.problem ? 'fi-error' : ''}>{r.problem || r.checking || (g.key === 'decide' ? r.reason : fileMeta(r) + (g.tone === 'audio' ? ' · ' + r.reason : ''))}</small></span>
+        : <ul className="fi-rows">{g.rows.map(r => <li key={r.file.id} className={rowClass(r, 'fi-row')}
+            onClick={e => {if (!(e.target as HTMLElement).closest('button, input, select, label, a')) openPanel(r.file.id, e.currentTarget);}}>
+          {openButton(r, <><Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
+            <span className="fi-row-main"><RowName row={r}/>{subLine(r, g.key === 'decide' ? r.reason : fileMeta(r) + (g.tone === 'audio' ? ' · ' + r.reason : ''))}</span></>, 'fi-row-open')}
           {g.key === 'decide' ? decisionControls(r) : g.tone === 'audio' ? audioSwitch(r) : null}
-          {rowTools(r)}
         </li>)}</ul>}
     </section>;
   }
@@ -305,6 +339,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {status}
     </header>
 
+    {options && !batch && !locked && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
+      <label><span>项目</span><select aria-label="整批项目" title="整批默认用这个项目；单个文件点它这一行另选；名字里写了项目的不受影响" value={barProject} onChange={e => setProjectOverride(e.target.value)}>
+        {!barProject && <option value="">选择项目</option>}{options.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    </div>}
     <div className="fi-body">
       {loading && <p role="status" className="fi-muted">正在读取本次访达选择…</p>}
       {!loading && !handoff && <div className="fi-empty"><AlertCircle size={24}/><p>尚未读取到本次收纳选择。请先启动拾光，再重试读取。</p><button onClick={() => setReload(n => n + 1)}><RefreshCw size={14}/>启动拾光后重新读取</button></div>}
@@ -321,14 +359,14 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
             {single.decision ? <><span>{single.reason}</span>{decisionControls(single)}</>
               : single.destination ? <><span>收到 <strong>{destLabel(single.destination)}</strong></span><small>{single.problem || single.checking || single.reason}</small>{single.hint && <small className="fi-single-hint">{single.hint}</small>}{single.file.mediaKind === 'audio' && audioSwitch(single)}</>
               : <span>{single.problem}</span>}
-            {rowTools(single)}
+            <button className="fi-link" data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '单独设置 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '单独设置…'}</button>
           </div>
           {single.file.mediaKind === 'photo' && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'put:single' ? '' : 'put:single')}>放进项目…</button>
-            {popover === 'put:single' && <PutPopover options={options} count={1} defaultProject={single.destination?.projectId || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination([single.file.id], d); setPopover('');}}/>}</span>}
+            {popover === 'put:single' && <PutPopover options={options} count={1} defaultProject={single.destination?.projectId || barProject || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination([single.file.id], d); setPopover('');}}/>}</span>}
         </div> : groups.map(renderGroup)}
         {removed.length > 0 && <p className="fi-removed-line">已移除 {removed.length} 个{removed.map(f => <button key={f.id} className="fi-link" disabled={locked} aria-label={'恢复 ' + f.name} onClick={() => setSelected(old => [...old, f.id])}>恢复 {f.name}</button>)}</p>}
         {namesError && standardNames && <p className="fi-muted">暂时算不出新名字；确认后仍会按规范命名。</p>}
-        {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}>{editor(r)}</div> : null;})()}
+        {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}><div className="fi-scrim" aria-hidden="true"/>{editor(r)}</div> : null;})()}
       </>}
       {batch && receiptKind === 'submitted' && <div className="fi-done">
         <CheckCircle2 size={40}/>

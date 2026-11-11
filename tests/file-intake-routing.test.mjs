@@ -71,7 +71,7 @@ test('photo priority 2: existing character with existing or new look', () => {
 
 test('photo priority 3: new character is a decision, never automatic', () => {
   const s = one(ph('小雨_校服.png'));
-  assert.equal(s.group, 'decide'); assert.equal(s.decision, 'new-character');
+  assert.equal(s.group, 'decide'); assert.equal(s.decision, 'new-character'); assert.equal(s.reason, '项目里还没有这个人物');
   assert.equal(s.destination.characterName, '小雨');
 });
 
@@ -106,6 +106,15 @@ test('photo follows the project this batch points at', () => {
   const all = suggestAll(files, options, prefs);
   assert.equal(all['小满.png'].destination.projectId, P3);
   assert.equal(all['小满.png'].destination.characterName, '小满');
+});
+
+test('project bar forces the project for files whose name names none', () => {
+  const files = [v('canvas_1.mp4'), ph('阿青_泳衣.png'), v('雨巷视频1.mp4'), ph('小满.png')];
+  const all = suggestAll(files, options, prefs, P1);
+  assert.deepEqual(all['canvas_1.mp4'].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-out'}); assert.match(all['canvas_1.mp4'].reason, /跟随整批项目/);
+  assert.equal(all['雨巷视频1.mp4'].destination.projectId, P3, 'a project named in the file name still wins');
+  assert.equal(all['阿青_泳衣.png'].destination.projectId, P1);
+  assert.equal(all['小满.png'].decision, undefined); assert.equal(all['小满.png'].destination.scope, 'library', '小满 is no character of 穿越计 and the name is not 人物_造型');
 });
 
 test('audio presets by duration with inclusive 60–120 middle band', () => {
