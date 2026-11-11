@@ -119,7 +119,7 @@ export type BatchReceipt = Omit<OperationReceipt, 'status'> & {
 
 export interface UpgradePreview {
   previewHash: string;
-  items: { id: string; name: string; path: string; bytes: number; adoptedShots: AdoptedShot[]; status: string }[];
+  items: { id: string; name: string; path: string; bytes: number; adoptedShots: AdoptedShot[]; status: string; requiresRelink?: boolean }[];
   bytes: number;
   freeBytes: number | null;
 }

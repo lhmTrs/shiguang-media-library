@@ -613,6 +613,10 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const menuItem = (label: string, onClick: () => void, options: {disabled?: boolean; danger?: boolean; hint?: string} = {}) =>
     <button type="button" role="menuitem" className={options.danger ? 'pv-danger' : undefined} disabled={options.disabled} onClick={() => { setOpenMenu(''); onClick(); }}><span>{label}</span>{options.hint && <small>{options.hint}</small>}</button>;
   const legacyCount = collection?.legacyUpgrade?.count;
+  // Upgrade entries follow how many videos still aren't managed copies, not a one-time "done" mark:
+  // a project marked done earlier can gain non-managed videos again. An older service without a
+  // count keeps its own completed flag.
+  const needsUpgrade = legacyCount !== undefined ? legacyCount > 0 : !!collection && !collection.legacyUpgrade?.completed;
   const upgradeBlocked = locked || !collection || unresolved && task?.kind !== 'upgrade';
   const dirBlocked = !['all', 'root'].includes(folderId) && folderBlocked(folderId);
   const dirDisabled = locked || operationPending || dirBlocked;
@@ -729,7 +733,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {menuWrap('more', <Ellipsis size={18}/>, {label: '更多视频操作', className: 'pv-icon-button'}, <>
               <button type="button" role="menuitemcheckbox" aria-checked={view === 'prompts'} onClick={() => { setOpenMenu(''); setView(old => old === 'prompts' ? 'videos' : 'prompts'); }}><span>按参考提示词分组</span>{view === 'prompts' && <Check size={14}/>}</button>
               {menuItem(loading ? '正在刷新…' : '刷新视频资料', () => void refresh(), {disabled: loading})}
-              {!collection?.legacyUpgrade?.completed && <><hr/>{menuItem('升级旧视频…', () => void previewUpgrade(), {disabled: upgradeBlocked, hint: legacyCount !== undefined ? `${legacyCount} 个待升级` : undefined})}</>}
+              {needsUpgrade && <><hr/>{menuItem('升级旧视频…', () => void previewUpgrade(), {disabled: upgradeBlocked, hint: legacyCount !== undefined ? `${legacyCount} 个待升级` : undefined})}</>}
             </>)}
           </div>
         </div>
@@ -792,7 +796,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             : rejectCheck ? `收纳目录需核对：原收纳处找不到或不可用，没有用同名目录顶替。可以重新设置收纳处。`
             : `废片收纳处：${rejectName}（含子文件夹）· ${roles.rejectVideoCount} 个视频。“全部视频”默认不显示废片；移回后不会自动恢复原来的采用。`}</span>
           <button type="button" disabled={rejectBlocked || readOnly} onClick={openRejectRole}>{roles?.rejectFolderId ? '更改或取消收纳处…' : '设置收纳处…'}</button></div>}
-        {!!collection && !collection.legacyUpgrade?.completed && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
+        {!!collection && needsUpgrade && (legacyCount ?? 0) > 0 && !(task?.kind === 'upgrade' && unresolved) && <div className="pv-banner" data-tone="warn"><AlertTriangle size={15}/><span className="pv-banner-text">{legacyCount} 个旧视频还不是项目托管副本。升级前保留既有采用，但不能在分镜中新增绑定。</span><button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button></div>}
       </div>
       <div className={`pv-main${selected && draft || multi ? ' pv-has-detail' : ''}`}>
         {/* 外部视频文件拖到列表区任意位置即可导入（先核对再复制）；提示只在拖动时出现，平时不占一行。 */}
@@ -870,7 +874,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : selected.verification?.state === 'content_changed' ? '视频内容已发生变化' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : selected.verification?.state === 'content_changed' ? '位置和名称没变，但画面或声音与登记时不同。可以预览当前内容，再决定继续使用还是不再使用；在你决定前，原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。可以先核对并预览当前内容。'}</span>
               <span className="pv-callout-actions">{selected.status !== 'missing' && <button type="button" disabled={locked || unresolved} onClick={() => openContentChange(selected)}>处理内容变化…</button>}<button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></span></div>}
             {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，可在访达中打开。采用不受影响。</span></div>}
-            {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</span>{!collection?.legacyUpgrade?.completed && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
+            {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</span>{needsUpgrade && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
             <form id={formId} className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
               <fieldset disabled={locked}><legend className="pv-sr-only">编辑视频资料</legend>
                 <PromptFields value={draft.prompt} prompts={prompts} disabled={locked} onChange={prompt => setEdits(old => ({ ...old, [selected.id]: { ...draft, prompt } }))}/>
@@ -945,12 +949,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {!upgrade ? <p>{sending ? '正在读取预览…' : '未取得升级预览。'}{!sending && <button type="button" onClick={() => void previewUpgrade()}>重新读取预览</button>}</p> : <>
           <dl className="pv-metadata"><div><dt>需复制</dt><dd>{bytes(upgrade.bytes)}</dd></div><div><dt>可用空间</dt><dd>{upgrade.freeBytes === null ? '暂时无法读取，提交时由后台检查' : bytes(upgrade.freeBytes)}</dd></div></dl>
           {upgrade.freeBytes !== null && upgrade.freeBytes < upgrade.bytes && <p className="pv-error">可用空间不足，无法开始升级。</p>}
-          <ul className="pv-upgrade-items">{upgrade.items.map(item => <li key={item.id}><strong>{item.name}</strong><p className="pv-path">{item.path}</p><p>{bytes(item.bytes)} · {item.status}</p><p>采用镜号：{shotsLabel(item.adoptedShots)}</p></li>)}</ul>
+          <ul className="pv-upgrade-items">{upgrade.items.map(item => <li key={item.id}><strong>{item.name}</strong><p className="pv-path">{item.path}</p><p>{bytes(item.bytes)} · {statusLabel[item.status as ProjectVideo['status']] || item.status}</p>{item.requiresRelink && <p className="pv-error">缺少读取授权：请先在这个视频的详情里「重新定位」。升级不会自动取得授权，其余视频照常升级。</p>}<p>采用镜号：{shotsLabel(item.adoptedShots)}</p></li>)}</ul>
           {!upgrade.items.length && <p className="pv-muted">本项目无需复制旧视频。确认完成后，将停用升级入口。</p>}
           <ModalActions><button type="button" onClick={() => setUpgradeOpen(false)}>取消</button><button type="button" className="pv-primary" disabled={locked || upgrade.freeBytes !== null && upgrade.freeBytes < upgrade.bytes || !!task && !terminal(task.receipt)} onClick={() => void startUpgrade()}>{upgrade.items.length ? '确认一次，后台复制升级' : '确认完成并停用升级入口'}</button></ModalActions>
         </>}
       </>}
-      {task?.kind === 'upgrade' && terminal(task.receipt) && <ModalActions><button type="button" onClick={() => setUpgradeOpen(false)}>返回视频列表</button>{!collection?.legacyUpgrade?.completed && <button type="button" className="pv-primary" onClick={() => { putTask(null); void previewUpgrade(); }}>重新核对剩余旧视频</button>}</ModalActions>}
+      {task?.kind === 'upgrade' && terminal(task.receipt) && <ModalActions><button type="button" onClick={() => setUpgradeOpen(false)}>返回视频列表</button>{needsUpgrade && <button type="button" className="pv-primary" onClick={() => { putTask(null); void previewUpgrade(); }}>重新核对剩余旧视频</button>}</ModalActions>}
     </Modal>}
     {active && revealConfirm && <Modal title="在访达中显示所选视频" locked={false} onClose={() => { const a = desktopAction; if (a?.kind === 'reveal-preview' && !actionPending(a) && !a.unknown) desktop.clear(); setRevealConfirm(false); }}>
       {(() => {
