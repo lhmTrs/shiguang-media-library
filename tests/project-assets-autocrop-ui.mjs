@@ -35,7 +35,7 @@ const SUGGEST = { x: 50, y: 12, zoom: 2.2 };
 const mock = { source: new Map(), head: new Map(), wasDefault: new Set(), delay: 0, calls: [], puts: [] };
 const inject = value => { if (Array.isArray(value)) value.forEach(inject); else if (value && typeof value === 'object') { if (Array.isArray(value.images)) value.images.forEach(b => { if (b && b.id) b.crop_source = mock.source.has(b.id) ? mock.source.get(b.id) : null; }); Object.values(value).forEach(inject); } };
 async function installMocks() {
-  await page.route('**/api/project-assets/bindings/*/head-box', async route => {
+  await page.route('**/api/project-assets/bindings/*/head-box*', async route => {
     const id = decodeURIComponent(route.request().url().split('/').at(-2)); mock.calls.push(id);
     const kind = mock.head.get(id) ?? 'found'; if (mock.delay) await new Promise(r => setTimeout(r, mock.delay));
     if (kind === 'stale') return route.fulfill({ status: 409, json: { error: '图片绑定已变化，请重新读取', code: 'IMAGE_BINDING_STALE' } });

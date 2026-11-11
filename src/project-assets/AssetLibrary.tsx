@@ -368,7 +368,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // ---- 自动框到头部（只做写实）。识别结果只是建议：只改面板或草稿里的框，点「完成」/「保存」才写入。----
   async function headBox(b: Binding): Promise<{ head: HeadState; crop?: Crop }> {
     try {
-      const r = await api<{ status: string; bindingId?: string; bindingRevision?: number; crop?: Crop }>('/bindings/' + encodeURIComponent(b.id) + '/head-box');
+      const r = await api<{ status: string; bindingId?: string; bindingRevision?: number; crop?: Crop }>('/bindings/' + encodeURIComponent(b.id) + '/head-box' + (b.revision ? '?bindingRevision=' + b.revision : ''));
       if (r.bindingId && r.bindingId !== b.id || b.revision && r.bindingRevision && r.bindingRevision !== b.revision) return { head: 'stale' };
       if (r.status === 'found' && r.crop && ['x', 'y', 'zoom'].every(k => Number.isFinite((r.crop as any)[k]))) return { head: 'found', crop: r.crop };
       return { head: (['not_found', 'unsupported', 'busy'] as string[]).includes(r.status) ? r.status as HeadState : 'error' };
