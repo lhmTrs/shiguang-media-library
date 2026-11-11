@@ -353,7 +353,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     const cover = coverOf(a); setQuick(null);
     if (!cover) return;
     // The file itself when this Mac allows it (keeps name and format, like 生成视频); otherwise a PNG copy.
-    if (clipCap.available && cover.revision) { await copyFiles('defaults', [{ bindingId: cover.id, bindingRevision: cover.revision }]); return; }
+    if (clipCap.available && a.kind === 'character' && cover.revision) { await copyFiles('defaults', [{ bindingId: cover.id, bindingRevision: cover.revision }]); return; }
     if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') { setError('这个浏览器不允许网页往剪贴板写图片。请在运行拾光的这台电脑上，用 Chrome 打开拾光再复制'); return; }
     // The preview route streams the full original (HEIC as JPEG); the clipboard takes it as PNG.
     const png = (async () => {
@@ -376,13 +376,14 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     }
     return list.includes(id) ? list.filter(x => x !== id) : list.length >= maxPick ? list : [...list, id];
   }
-  const pickableAsset = (a: Asset) => !!coverOf(a)?.revision;
+  // File copy covers characters (the backend's scope); scenes and props keep the single PNG copy.
+  const pickableAsset = (a: Asset) => a.kind === 'character' && !!coverOf(a)?.revision;
   function pickAsset(a: Asset, shift: boolean) {
     if (!pickableAsset(a)) { setNotice('「' + a.name + '」还没有默认图，不能选'); return; }
     const order = visibleRows.filter(pickableAsset).map(r => r.id);
     setPickedAssets(list => pickRange(list, order, a.id, shift, lastPick.current.assets)); lastPick.current.assets = a.id;
   }
-  const pickableImage = (b: Binding) => !b.archived_at && !!b.revision;
+  const pickableImage = (b: Binding) => draft?.kind === 'character' && !b.archived_at && !!b.revision;
   function pickImage(b: Binding, shift: boolean) {
     if (!pickableImage(b)) { setNotice(b.archived_at ? '已归档的图片不能选' : '这张图片还没保存，保存后才能复制'); return; }
     const order = images.filter(pickableImage).map(i => i.id);
@@ -721,14 +722,14 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
             {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = pickedAssets.includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')}
-              onContextMenu={e => { e.preventDefault(); setQuick({ id: a.id, mode: 'menu', x: e.clientX, y: e.clientY }); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} onClick={e => { if (pickedAssets.length || e.metaKey || e.ctrlKey || e.shiftKey) { e.preventDefault(); pickAsset(a, e.shiftKey); return; } void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
+              onContextMenu={e => { e.preventDefault(); setQuick({ id: a.id, mode: 'menu', x: e.clientX, y: e.clientY }); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} onClick={e => { if (kind === 'character' && (pickedAssets.length || e.metaKey || e.ctrlKey || e.shiftKey)) { e.preventDefault(); pickAsset(a, e.shiftKey); return; } void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
               </span>
               {dragTarget === a.id && <span className="ca-card-drop">添加为“{a.name}”的参考图</span>}
             </button>
-              <button type="button" role="checkbox" className="ca-card-pick" aria-checked={picked} aria-label={'选择' + a.name} disabled={!pickableAsset(a)} title={pickableAsset(a) ? '选择（按住 ⌘ 或 Shift 点卡片也可以）' : '还没有默认图，不能选'} onClick={e => pickAsset(a, e.shiftKey)}>{picked ? '✓' : ''}</button>
+              {a.kind === 'character' && <button type="button" role="checkbox" className="ca-card-pick" aria-checked={picked} aria-label={'选择' + a.name} disabled={!pickableAsset(a)} title={pickableAsset(a) ? '选择（按住 ⌘ 或 Shift 点卡片也可以）' : '还没有默认图，不能选'} onClick={e => pickAsset(a, e.shiftKey)}>{picked ? '✓' : ''}</button>}
               <span className="ca-card-quick">
                 {cover && <button type="button" className="ca-card-copy" aria-label={'复制' + a.name + '的默认图'} title="复制默认图（整张原图），到画布平台按 ⌘V 粘贴" onClick={() => void copyDefault(a)}><Copy size={13}/>复制</button>}
                 <button type="button" className="ca-card-more" aria-label={a.name + '的更多操作'} aria-haspopup="menu" data-quick-trigger onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setQuick(q => q?.id === a.id && q.mode === 'menu' ? null : { id: a.id, mode: 'menu', x: r.right - 196, y: r.bottom + 6 }); }}><MoreHorizontal size={15}/></button>
@@ -792,8 +793,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                   {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
                 </div>}
                 <div className={'ca-image-grid-v2' + (pickedImages.length ? ' is-picking' : '')} role="list" aria-label={'参考图片，共 ' + images.length + ' 张'}>{images.map(b => { const h = health.find(h => h.id === b.id), name = b.last_known_name || '参考图片', locked = imageLocked(b); const tilePicked = pickedImages.includes(b.id); return <div role="listitem" key={b.id} className={'ca-tile' + (b.archived_at ? ' archived' : '') + (b.id === representative ? ' is-cover' : '') + (tilePicked ? ' is-picked' : '')} draggable={!locked} onDragStart={e => { if (locked) return; drag.current = b.id; e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => { drag.current = null; }} onDragOver={e => { if (drag.current) e.preventDefault(); }} onDrop={e => { if (!drag.current) return; e.preventDefault(); e.stopPropagation(); if (!locked) moveImage(drag.current, 0, b.id); drag.current = null; }}>
-                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey) { pickImage(b, e.shiftKey); return; } setImageId(b.id); }} onDoubleClick={() => setImageViewer({ src: bindingSrc(b), name })}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
-                  <button type="button" role="checkbox" className="ca-tile-pick" aria-checked={tilePicked} aria-label={'选择 ' + name} disabled={!pickableImage(b)} title={pickableImage(b) ? '选择（按住 ⌘ 或 Shift 点图片也可以）' : b.archived_at ? '已归档的图片不能选' : '保存后才能选'} onClick={e => pickImage(b, e.shiftKey)}>{tilePicked ? '✓' : ''}</button>
+                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (draft.kind === 'character' && (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey)) { pickImage(b, e.shiftKey); return; } setImageId(b.id); }} onDoubleClick={() => setImageViewer({ src: bindingSrc(b), name })}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
+                  {draft.kind === 'character' && <button type="button" role="checkbox" className="ca-tile-pick" aria-checked={tilePicked} aria-label={'选择 ' + name} disabled={!pickableImage(b)} title={pickableImage(b) ? '选择（按住 ⌘ 或 Shift 点图片也可以）' : b.archived_at ? '已归档的图片不能选' : '保存后才能选'} onClick={e => pickImage(b, e.shiftKey)}>{tilePicked ? '✓' : ''}</button>}
                   <span className="ca-tile-badge">{b.id === representative ? '代表图' : b.archived_at ? '已归档' : (b.reference_type || '补充参考')}</span>
                   {b.id !== representative && !b.archived_at && !locked && !draft.archived_at && (!h || h.state === 'available') && <button type="button" className="ca-tile-default" aria-label={'设为代表图：' + name}
                     onClick={() => { if (dirty) { edit(x => setDefault(x, b.id)); setNotice('已设为代表图；还有其他未保存的修改，点下方「保存」后一起生效'); return; }
