@@ -160,3 +160,38 @@
 .fi-simple .fi-panel-body .fi-item>p[role=status]{color:var(--fi-accent)}
 /* The footer stays usable while the per-file panel is open (it sits above the scrim). */
 .fi-simple .fi-foot{position:relative;z-index:32}
+/* Native popup menus can't resolve -apple-system and fall back to a serif face in the
+   intake window; a concrete family keeps every remaining <select> menu in PingFang. */
+.fi-root select{font-family:"PingFang SC","Helvetica Neue",Helvetica,sans-serif}
+.fi-simple .fi-bar-summary{display:inline;overflow:hidden;text-overflow:ellipsis}
+/* Project picker (drawn by the page). */
+.fi-simple .fi-projectbar-label{font-size:12px;color:var(--fi-strong)}
+.fi-root.fi-simple .fi-picker{justify-content:space-between;gap:10px;min-width:150px;min-height:28px;padding:0 9px 0 10px;font-weight:600;color:var(--fi-text)}
+.fi-root.fi-simple .fi-picker svg{color:var(--fi-muted)}
+.fi-root.fi-simple .fi-picker-open{border-color:var(--fi-accent)}
+.fi-simple .fi-anchor>.fi-popover:has(>.fi-picker-pop){width:260px;padding:8px;gap:0}
+.fi-simple .fi-picker-pop{display:flex;flex-direction:column;gap:6px}
+.fi-root.fi-simple .fi-picker-search{min-height:30px;padding:4px 9px;border:1px solid var(--fi-line);border-radius:7px;font:inherit;font-size:12px;color:var(--fi-text);background:var(--fi-bg)}
+.fi-simple .fi-picker-list{display:flex;flex-direction:column;max-height:300px;overflow:auto;outline:none}
+.fi-simple .fi-picker-option{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:30px;padding:0 8px;border-radius:6px;cursor:pointer}
+.fi-simple .fi-picker-option[data-active=true]{background:var(--fi-soft)}
+.fi-simple .fi-picker-option[aria-selected=true]{color:var(--fi-accent);font-weight:600}
+.fi-simple .fi-picker-option small{font-size:11px;font-weight:400;color:var(--fi-muted)}
+.fi-simple .fi-picker-label{padding:4px 8px 2px;font-size:11px;color:var(--fi-muted)}
+.fi-simple .fi-picker-sep{height:1px;margin:6px 4px;background:var(--fi-line)}
+.fi-simple .fi-picker-empty{padding:6px 8px;margin:0}
+/* One file: picture left, everything else left-aligned on one line to its right. */
+.fi-simple .fi-single-side{flex-direction:row;align-items:center;justify-content:center;gap:28px;padding:20px 12px}
+.fi-simple .fi-single-side .fi-thumb-large{width:min(380px,48%);aspect-ratio:1;flex:none}
+.fi-simple .fi-single-info{flex:1;min-width:0;max-width:300px;display:flex;flex-direction:column;align-items:flex-start;gap:18px}
+.fi-simple .fi-single-side .fi-single-name{align-items:flex-start;text-align:left;width:100%;padding-bottom:18px;border-bottom:1px solid var(--fi-line)}
+.fi-simple .fi-single-side .fi-single-name strong{font-size:15px;overflow-wrap:anywhere}
+.fi-simple .fi-single-side .fi-single-dest{flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:4px;padding:0;border-radius:0;background:transparent;border:0}
+.fi-simple .fi-single-side .fi-single-dest strong{font-size:14px}
+.fi-simple .fi-single-side .fi-single-dest small{color:var(--fi-muted)}
+.fi-simple .fi-single-side .fi-single-dest .fi-single-hint{color:var(--fi-warn)}
+.fi-simple .fi-single-side .fi-single-warn small:first-child{color:var(--fi-warn)}
+.fi-simple .fi-single-side .fi-choice{margin-top:6px}
+.fi-simple .fi-single-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px}
+.fi-root.fi-simple .fi-single-actions>button{min-height:30px;padding:0 14px;font-size:12px}
+@media(max-width:520px){.fi-simple .fi-single-side{flex-direction:column;align-items:center}.fi-simple .fi-single-side .fi-thumb-large{width:min(300px,100%)}.fi-simple .fi-single-info{max-width:100%}}

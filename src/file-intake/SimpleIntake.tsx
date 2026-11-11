@@ -1,11 +1,11 @@
-import {useEffect, useLayoutEffect, useRef, useState, type ReactNode} from 'react';
+import {useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode} from 'react';
 import {ArrowRight, ChevronDown, ChevronRight, Film, Image as ImageIcon, Music, RefreshCw, X} from 'lucide-react';
 import {INTAKE_API, bytes, encoded, kindLabel, type IntakeFile, type RoutingOptions, type RoutingProject} from './types';
 import type {DestinationDraft} from './TargetEditor';
 
 export type Row = {
   file: IntakeFile; name: string; destination: DestinationDraft | null; reason: string; hint?: string;
-  decision?: 'new-character' | 'audio-kind'; alternative?: {directory: string; name: string}; manual?: boolean; ready: boolean; checking?: string; problem?: string; newName?: string | null;
+  decision?: 'new-character' | 'new-look' | 'audio-kind'; alternative?: {directory: string; name: string}; fallbackLook?: string; manual?: boolean; ready: boolean; checking?: string; problem?: string; newName?: string | null;
 };
 export type Group = {key: string; title: string; detail: string; tone: 'decide' | 'project' | 'video' | 'library' | 'audio'; rows: Row[]; photos: boolean};
 
@@ -112,3 +112,55 @@ export function RemoveButton({file, disabled, onRemove}: {file: IntakeFile; disa
 export const fileMeta = (row: Row) => [row.file.mediaKind === 'photo' ? '照片' : row.file.mediaKind === 'audio' ? '音频' : '视频', bytes(row.file.bytes)].join(' · ');
 export const libraryTitle = (kind: keyof typeof kindLabel, directory: string) => kindLabel[kind] + ' › ' + (directory || '待确认');
 export {ImageIcon};
+
+/**
+ * Project picker drawn by the page (not a native <select>): the macOS menu a native select opens
+ * in the intake window can't take the page's font and falls back to a serif face. Recently used
+ * projects come first with the reason; a search box appears once there are more than eight.
+ */
+export function ProjectPicker({projects, value, placeholder, recent, disabled, onChange}: {
+  projects: RoutingProject[]; value: string; placeholder: string; recent: {id: string; why: string}[];
+  disabled?: boolean; onChange: (projectId: string) => void;
+}) {
+  const [open, setOpen] = useState(false), [query, setQuery] = useState(''), [active, setActive] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const q = query.trim().toLowerCase(), match = (p: RoutingProject) => !q || p.name.toLowerCase().includes(q);
+  const recentRows = recent.map(r => ({project: projects.find(p => p.id === r.id), why: r.why})).filter((r): r is {project: RoutingProject; why: string} => !!r.project && match(r.project));
+  const rest = projects.filter(p => match(p) && !recentRows.some(r => r.project.id === p.id));
+  const flat = [...recentRows.map(r => r.project), ...rest];
+  const current = projects.find(p => p.id === value);
+  const close = () => {setOpen(false); setQuery(''); setActive(0);};
+  const pick = (p: RoutingProject | undefined) => {if (p) onChange(p.id); close();};
+  useEffect(() => {if (!open) return; setActive(Math.max(0, flat.findIndex(p => p.id === value))); if (projects.length <= 8) listRef.current?.focus();}, [open]);
+  useEffect(() => {listRef.current?.querySelector<HTMLElement>('[data-active="true"]')?.scrollIntoView({block: 'nearest'});}, [active, open]);
+  const keys = (e: ReactKeyboardEvent) => {
+    if (e.key === 'ArrowDown') {e.preventDefault(); setActive(i => Math.min(flat.length - 1, i + 1));}
+    else if (e.key === 'ArrowUp') {e.preventDefault(); setActive(i => Math.max(0, i - 1));}
+    else if (e.key === 'Enter') {e.preventDefault(); pick(flat[active]);}
+  };
+  const option = (p: RoutingProject, i: number, why?: string) => <div key={p.id} id={'fi-project-' + p.id} role="option" aria-selected={p.id === value} data-active={i === active}
+    className="fi-picker-option" onMouseEnter={() => setActive(i)} onMouseDown={e => e.preventDefault()} onClick={() => pick(p)}>
+    <span>{p.name}</span>{why && <small>{why}</small>}</div>;
+  return <span className="fi-anchor">
+    <button type="button" className={'fi-picker' + (open ? ' fi-picker-open' : '')} data-popover-trigger aria-label="整批项目" aria-haspopup="listbox" aria-expanded={open}
+      data-value={value} disabled={disabled} title="选一个项目，名字里没写项目的文件都去这里；名字里写了项目的、单独设置过的不受影响"
+      onClick={() => open ? close() : setOpen(true)} onKeyDown={e => {if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {e.preventDefault(); setOpen(true);}}}>
+      <span className={current ? '' : 'fi-picker-placeholder'}>{current ? current.name : placeholder}</span><ChevronDown size={14} aria-hidden="true"/>
+    </button>
+    {open && <Popover label="选择项目" align="left" onClose={close}>
+      <div className="fi-picker-pop" onKeyDown={keys}>
+        {projects.length > 8 && <input className="fi-picker-search" aria-label="搜索项目" placeholder="搜索项目" value={query} autoFocus
+          onChange={e => {setQuery(e.target.value); setActive(0);}} aria-controls="fi-project-list" aria-activedescendant={flat[active] ? 'fi-project-' + flat[active].id : undefined}/>}
+        <div ref={listRef} id="fi-project-list" className="fi-picker-list" role="listbox" aria-label="项目" tabIndex={projects.length > 8 ? -1 : 0}
+          aria-activedescendant={flat[active] ? 'fi-project-' + flat[active].id : undefined}>
+          {recentRows.length > 0 && <div className="fi-picker-label" role="presentation">最近用过</div>}
+          {recentRows.map((r, i) => option(r.project, i, r.why))}
+          {recentRows.length > 0 && rest.length > 0 && <div className="fi-picker-sep" role="presentation"/>}
+          {rest.length > 0 && recentRows.length > 0 && <div className="fi-picker-label" role="presentation">全部项目</div>}
+          {rest.map((p, i) => option(p, recentRows.length + i))}
+          {!flat.length && <p className="fi-muted fi-picker-empty">没有名字含「{query.trim()}」的项目</p>}
+        </div>
+      </div>
+    </Popover>}
+  </span>;
+}

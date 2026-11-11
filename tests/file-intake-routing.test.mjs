@@ -62,11 +62,30 @@ test('photo priority 1: scene and prop before characters', () => {
   assert.equal(one(ph('怀表 特写.png')).destination.assetKind, 'prop');
 });
 
-test('photo priority 2: existing character with existing or new look', () => {
+test('photo priority 2: existing character, existing look only; a new look is asked about', () => {
   assert.deepEqual(one(ph('阿青_泳衣.png')).destination, {kind: 'photo', scope: 'project', projectId: P1, characterName: '阿青', lookName: '泳衣'});
-  const fresh = one(ph('阿青_雨夜风衣.png'));
-  assert.equal(fresh.destination.lookName, '雨夜风衣'); assert.match(fresh.reason, /将新建造型/);
   assert.equal(one(ph('阿青.png')).destination.lookName, '日常');
+  // Other separators and extra parts: any part starting with an existing look wins.
+  assert.equal(one(ph('阿青-泳衣.png')).destination.lookName, '泳衣');
+  assert.equal(one(ph('阿青 泳衣.png')).destination.lookName, '泳衣');
+  const parts = one(ph('阿青_视频3_泳衣正脸_05.png'));
+  assert.equal(parts.group, 'character:' + P1); assert.equal(parts.destination.lookName, '泳衣'); assert.equal(parts.decision, undefined);
+  // No existing look anywhere in the name: a decision, never a silently created look.
+  const fresh = one(ph('阿青_雨夜风衣.png'));
+  assert.equal(fresh.group, 'decide'); assert.equal(fresh.decision, 'new-look');
+  assert.equal(fresh.destination.lookName, '雨夜风衣'); assert.equal(fresh.fallbackLook, '日常'); assert.equal(fresh.reason, '「阿青」还没有造型「雨夜风衣」');
+  const extra = one(ph('阿青_视频3_05.png'));
+  assert.equal(extra.decision, 'new-look'); assert.equal(extra.destination.lookName, '视频3', 'only the part right after the person is offered as a look');
+  // A character with no looks at all offers 默认 as the fallback.
+  assert.equal(suggest(ph('小满_校服.png'), {options, prefs: {...prefs, lastProjectId: {photo: P3, video: P3}}}).fallbackLook, '默认');
+});
+
+test('photo: new-character guess accepts common separators and only the next part as look', () => {
+  for (const name of ['小雨-校服.png', '小雨 校服.png', '小雨·校服.png', '小雨_校服.png', '小雨_校服_03.png']) {
+    const s = one(ph(name));
+    assert.equal(s.decision, 'new-character', name); assert.deepEqual([s.destination.characterName, s.destination.lookName], ['小雨', '校服'], name);
+  }
+  assert.equal(one(ph('IMG-0844.png')).decision, undefined, 'generic names stay generic with any separator');
 });
 
 test('photo priority 3: new character is a decision, never automatic', () => {

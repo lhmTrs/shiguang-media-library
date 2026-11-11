@@ -65,7 +65,7 @@ try {
   const posts=[];page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/confirm'))posts.push(r.postDataJSON());});
   await page.goto(origin+'/#/file-intake/'+handoff.id);await expect(page.getByRole('heading',{name:'收纳素材到拾光'})).toBeVisible();
   // Per-file settings live in each file's 「改…」 panel since INTAKE-SIMPLE.
-  const edit=async(p,file)=>{await p.getByRole('button',{name:'单独设置 '+file.name,exact:true}).click();return p.getByRole('dialog',{name:'收纳设置 '+file.name,exact:true});};
+  const edit=async(p,file)=>{await p.locator('[data-file-id="'+file.id+'"]').click();return p.getByRole('dialog',{name:'收纳设置 '+file.name,exact:true});};
   const confirmButton=p=>p.locator('.fi-confirm-button');
   let panel=await edit(page,handoff.files[0]);
   await panel.getByRole('group',{name:'收纳范围 '+handoff.files[0].id}).getByRole('button',{name:'项目',exact:true}).click();

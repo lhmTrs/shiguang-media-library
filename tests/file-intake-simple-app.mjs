@@ -115,6 +115,9 @@ try {
   const two = await open([v2, p4]), page2 = two.page;
   await expect(page2.getByRole('region', {name: '项目「穿越计」 › 外景', exact: true})).toContainText('穿越计视频17.mp4');
   await expect(page2.getByRole('checkbox', {name: '收纳时按规范改名'})).toBeChecked();
+  // 日常 is not a look of 阿青 yet: asked about, never created silently; the user picks 新建造型.
+  await expect(page2.getByRole('region', {name: '需要你决定', exact: true})).toContainText('「阿青」还没有造型「日常」');
+  await page2.getByRole('group', {name: '去向 阿青_日常.png', exact: true}).getByRole('button', {name: '新建造型', exact: true}).click();
   await expect(page2.getByRole('region', {name: '项目「穿越计」 · 人物照片', exact: true})).toContainText('阿青_日常.png');
   await expect(page2.locator('.fi-confirm-button')).toBeEnabled(); await page2.locator('.fi-confirm-button').click();
   await expect(page2.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible();
@@ -123,7 +126,7 @@ try {
   const second = batch2.items.find(i => i.name === '穿越计视频17.mp4'), n2 = Number((second.resultFileName || second.plannedFileName).match(/_(\d{3})\.mp4$/)[1]);
   assert.equal(n2, n1 + 1, 'standard numbering continues in the same folder');
   const aq = await api('/project-assets/assets/' + character.id); assert.ok(aq.looks.some(l => l.name === '日常'));
-  checks.push('round 2: remembered project folder, existing character new look, numbering continues');
+  checks.push('round 2: remembered project folder, new look only after an explicit choice, numbering continues');
   assert.deepEqual(failures, []);
   await context.close(); context = null; await browser.close(); browser = null; await stop(); passed = true;
 } finally {
