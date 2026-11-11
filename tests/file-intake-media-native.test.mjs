@@ -83,14 +83,14 @@ test('mixed handoffs persist kinds and hash proofs; legacy kindless video receip
   const h=await f.receipts.handoff(files,{deferFingerprint:true});
   assert.equal(h.preparation,'checking');assert.ok(h.files.every(v=>!v.selectionSha256));
   const ready=await f.receipts.prepareHandoff(h.id);
-  assert.equal(ready.preparation,'ready');assert.deepEqual(ready.files.map(v=>v.mediaKind),['photo','video','audio']);
+  assert.equal(ready.preparation,'ready');assert.deepEqual(ready.files.map(v=>v.mediaKind),['photo','video','audio']);assert.equal(ready.files[2].durationSec,null);
   for(const entry of ready.files){
     assert.equal(entry.selectionSha256,createHash('sha256').update(await fs.readFile(entry.path)).digest('hex'));
     assert.deepEqual(await revalidateSelection(entry),entry.identity);
   }
   const old=await f.receipts.handoff([files[1]]);delete old.files[0].mediaKind;
   await f.receipts.write('handoffs',old.id,old);
-  const context={receipts:f.receipts,batches:new Map(),projects:{list:()=>[]},canTrash:false};
+  const context=Object.assign(Object.create(FileIntake.prototype),{receipts:f.receipts,batches:new Map(),projects:{list:()=>[]},canTrash:false});
   const dto=await FileIntake.prototype.handoff.call(context,old.id);
   assert.equal(dto.files[0].mediaKind,'video');
   const raw=await f.receipts.read('handoffs',old.id);assert.equal(raw.files[0].mediaKind,undefined);
@@ -170,7 +170,7 @@ test('owned movie-only predecessor is installed but needs an explicit upgrade',a
   assert.match(info,/<key>NSSendFileTypes<\/key><array><string>public.image<\/string><string>public.movie<\/string><string>public.audio<\/string><\/array>/);
   assert.match(info,/<key>NSMenuItem<\/key><dict><key>default<\/key><string>收纳素材到拾光<\/string>/);
   const marker=JSON.parse(await fs.readFile(path.join(f.native.target,'Contents/shiguang-install.json'),'utf8'));
-  assert.equal(marker.version,2);assert.deepEqual(marker.mediaKinds,['photo','video','audio']);
+  assert.equal(marker.version,2);assert.deepEqual(marker.mediaKinds,['photo','video','audio']);assert.match(marker.windowVersion,/^[a-f0-9]{16}$/);
   const document=await fs.readFile(path.join(f.native.target,'Contents/Resources/document.wflow'),'utf8');
   assert.match(document,/finder-intake.mjs/);assert.doesNotMatch(document,/fileSystemObject.movie/);
 });
@@ -322,4 +322,32 @@ test('CLI and native shell keep exact consent and URL guards with generic media 
   assert.match(swift,/UUID\(uuidString:args\[2\]\) != nil/);
   assert.match(swift,/message.frameInfo.isMainFrame/);
   assert.match(swift,/url.host == "127.0.0.1"/);
+});
+
+test('a Finder-style PATH still reads a verified WAV once, and handoff polling uses the saved duration',async t=>{
+  const f=await fixture(t);
+  // 1.25 seconds of PCM silence, generated in memory so no original is opened.
+  const sampleRate=8000, dataSize=20000, wav=Buffer.alloc(44+dataSize);
+  wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);
+  wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);
+  wav.writeUInt32LE(sampleRate,24);wav.writeUInt32LE(sampleRate*2,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);
+  wav.write('data',36);wav.writeUInt32LE(dataSize,40);
+  const original=await f.file('silence.wav',wav),oldPath=process.env.PATH;
+  if(process.platform==='darwin')process.env.PATH='/usr/bin:/bin:/usr/sbin:/sbin';
+  let h;
+  try{h=await f.receipts.handoff([original]);}
+  finally{if(oldPath===undefined)delete process.env.PATH;else process.env.PATH=oldPath;}
+  assert.equal(h.preparation,'ready');assert.equal(h.files[0].durationSec,1.25);
+  assert.deepEqual(await fs.readFile(original),wav);
+  await fs.rename(original,original+'.kept');
+  const context=Object.assign(Object.create(FileIntake.prototype),{receipts:f.receipts,batches:new Map(),projects:{list:()=>[]},canTrash:false});
+  assert.equal((await context.handoff(h.id)).files[0].durationSec,1.25);
+  assert.equal((await context.handoff(h.id)).files[0].durationSec,1.25);
+});
+
+test('a previously installed all-media workflow with no Swift source marker requests an explicit upgrade',async t=>{
+  const f=await fixture(t);
+  await f.installOwned({target:f.native.target,movie:false,marker:{version:2,mediaKinds:['photo','video','audio']}});
+  assert.deepEqual(await f.native.status(),{supported:true,installed:true,upgradeNeeded:true});
+  assert.deepEqual(f.calls,[],'checking status must not compile or install');
 });

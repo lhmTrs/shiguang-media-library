@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
+import {spawn} from 'node:child_process';
 import {PHOTO,VIDEO,AUDIO} from '../fs-identity.mjs';
 
 export const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
@@ -66,6 +67,46 @@ export async function selectionHash(file,{signal}={}) {
   } finally {await handle.close();}
 }
 
+// Probe only the verified file descriptor. Restrict both protocols and
+// demuxers: selecting a media file must not open paths or network playlists.
+async function audioDuration(file,{signal}={}) {
+  signal?.throwIfAborted();
+  await parentUnchanged(file);await unchanged(file.path,file.identity);
+  const handle=await fs.open(file.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  const verify=async()=>{
+    if(!same(stamp(await handle.stat()),file.identity))throw error('INTAKE_SOURCE_CHANGED','读取时长期间原文件已变化');
+    await parentUnchanged(file);await unchanged(file.path,file.identity);
+  };
+  try {
+    await verify();
+    const seconds=await new Promise(resolve=>{
+      const env=process.platform==='darwin'?{...process.env,PATH:[process.env.PATH,'/opt/homebrew/bin','/usr/local/bin'].filter(Boolean).join(path.delimiter)}:process.env;
+      const child=spawn('ffprobe',['-v','error','-max_alloc','67108864','-protocol_whitelist','file,pipe',
+        '-format_whitelist','mp3,wav,mov,mp4,m4a,3gp,3g2,mj2,aac,aiff,flac,ogg',
+        '-probesize','5000000','-analyzeduration','5000000','-select_streams','a',
+        '-show_entries','format=duration:stream=codec_type','-of','json','-i',
+        process.platform==='win32'?'pipe:3':'/dev/fd/3'],{stdio:['ignore','pipe','ignore',handle.fd],windowsHide:true,env});
+      let output='',stopped=false;
+      const stop=()=>{stopped=true;child.kill('SIGKILL');};
+      const timer=setTimeout(stop,2000);
+      signal?.addEventListener('abort',stop,{once:true});if(signal?.aborted)stop();
+      child.stdout.on('data',chunk=>{if(output.length+chunk.length>4096)stop();else output+=chunk.toString();});
+      child.once('error',()=>{stopped=true;});
+      child.once('close',code=>{
+        clearTimeout(timer);signal?.removeEventListener('abort',stop);
+        let duration=null;
+        if(!stopped&&code===0)try {
+          const data=JSON.parse(output),value=Number(data.format?.duration);
+          if(data.streams?.some(stream=>stream.codec_type==='audio')&&Number.isFinite(value)&&value>0)duration=value;
+        }catch{}
+        resolve(duration);
+      });
+    });
+    signal?.throwIfAborted();await verify();
+    return seconds;
+  } finally {await handle.close();}
+}
+
 export async function revalidateSelection(file) {
   await parentUnchanged(file);
   try {await unchanged(file.path,file.identity);return file.identity;}
@@ -126,7 +167,10 @@ export class Receipts {
     const value=await this.read('handoffs',id);
     if(value.preparation!=='checking')return value;
     try {
-      for(const file of value.files)file.selectionSha256=await selectionHash(file,{signal});
+      for(const file of value.files){
+        file.selectionSha256=await selectionHash(file,{signal});
+        if(file.mediaKind==='audio')file.durationSec=await audioDuration(file,{signal});
+      }
       value.preparation='ready';await this.write('handoffs',id,value);return value;
     } catch(e) {
       value.preparation='failed';value.preparationError='原文件核验未完成，未开始收纳；请从访达重新选择。';

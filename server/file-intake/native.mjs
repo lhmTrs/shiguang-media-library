@@ -10,7 +10,9 @@ const run=promisify(execFile);
 const serviceTitle='收纳素材到拾光', legacyTitle='收纳视频到拾光';
 const mediaKinds=['photo','video','audio'], fileTypes=['public.image','public.movie','public.audio'];
 const owner='shiguang-file-intake-v1';
-const currentMarker=marker=>marker.version===2&&Array.isArray(marker.mediaKinds)&&mediaKinds.every(kind=>marker.mediaKinds.includes(kind));
+const windowSource=path.join(import.meta.dirname,'window.swift');
+const windowVersion=async()=>createHash('sha256').update(await fs.readFile(windowSource)).digest('hex').slice(0,16);
+const currentMarker=(marker,version)=>marker.version===2&&marker.windowVersion===version&&Array.isArray(marker.mediaKinds)&&mediaKinds.every(kind=>marker.mediaKinds.includes(kind));
 const identity=st=>({dev:String(st.dev),ino:String(st.ino)});
 const sameEntry=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
 const xml = value => String(value).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
@@ -75,7 +77,7 @@ export class IntakeNative {
       installed=await this.ownedWorkflow(this.target);
     }catch{}
     const legacy=await this.legacyWorkflow().catch(()=>null);
-    return {supported:true,installed:!!(installed||legacy),upgradeNeeded:!!legacy||!!installed&&!currentMarker(installed.marker)};
+    return {supported:true,installed:!!(installed||legacy),upgradeNeeded:!!legacy||!!installed&&!currentMarker(installed.marker,await windowVersion())};
   }
   install(){if(!this.installing)this.installing=this.performInstall().finally(()=>{this.installing=null;});return this.installing;}
   async performInstall(){
@@ -85,14 +87,14 @@ export class IntakeNative {
     // Check ownership before preparing anything. A missing/linked marker is a
     // conflict, never permission to replace an existing directory.
     const previous=[await this.ownedWorkflow(this.target),await this.legacyWorkflow()].filter(Boolean);
-    const source=path.join(import.meta.dirname,'window.swift'),version=createHash('sha256').update(await fs.readFile(source)).digest('hex').slice(0,16);
+    const version=await windowVersion();
     const bundle=path.join(native,'ShiguangIntake-'+version+'-v1.app');
     const helper=path.join(bundle,'Contents/MacOS/ShiguangIntake');
     try {await fs.access(helper);}catch {
       const temporary=path.join(native,'.intake-window-'+randomUUID()+'.app'),binary=path.join(temporary,'Contents/MacOS/ShiguangIntake');
       try {
         await fs.mkdir(path.dirname(binary),{recursive:true,mode:0o700});
-        await this.run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),source,'-o',binary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536});
+        await this.run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),windowSource,'-o',binary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536});
         await fs.chmod(binary,0o700);
         await fs.writeFile(path.join(temporary,'Contents/Info.plist'),plist({CFBundleIdentifier:'com.shiguang.intake.'+createHash('sha256').update(native).digest('hex').slice(0,12),
           CFBundleName:'拾光素材收纳',CFBundleDisplayName:'拾光素材收纳',CFBundleExecutable:'ShiguangIntake',CFBundlePackageType:'APPL',CFBundleVersion:'2',
@@ -117,7 +119,7 @@ export class IntakeNative {
           NSRequiredContext:{NSApplicationIdentifier:'com.apple.finder'},NSSendFileTypes:fileTypes}]};
       await fs.writeFile(path.join(staged,'Contents/Info.plist'),plist(info));
       await fs.writeFile(path.join(staged,'Contents/Resources/document.wflow'),plist(workflow(process.execPath,path.join(this.project,'scripts/finder-intake.mjs'),config)));
-      await fs.writeFile(path.join(staged,'Contents/shiguang-install.json'),JSON.stringify({owner,project:this.project,dataDir:this.dataDir,version:2,mediaKinds}));
+      await fs.writeFile(path.join(staged,'Contents/shiguang-install.json'),JSON.stringify({owner,project:this.project,dataDir:this.dataDir,version:2,mediaKinds,windowVersion:version}));
       if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，未安装右键入口',503);
       // Keep backups on the Services filesystem so both replacement and rollback
       // use atomic renames, even when dataDir lives on another volume. They have

@@ -45,7 +45,18 @@ export function imageAllocation(proposal,group) {
 // A full post-write snapshot proves revisions advanced by our own group; no name
 // lookup ever claims an asset created by another request or an UNKNOWN attempt.
 export function imageGuard(owner,target,{lock=false}={}) {
-  const p=target.destination.imageProposal, ids=target.imageIds;
+  const d=target.destination;
+  if(d.assetKind) {
+    owner.project(d.projectId,true);
+    const row=owner.db.prepare('SELECT id,project_id,kind,archived_at FROM creative_assets WHERE id=?'+(lock?owner.assets.lock():'')).get(d.assetId);
+    if(!row||row.project_id!==d.projectId||row.kind!==d.assetKind||row.archived_at)
+      throw error('IMAGE_TARGET_CONFLICT','场景或道具已归档、不存在或不属于该项目，请重新选择');
+    const a=owner.assets.get(d.assetId);
+    if(a.revision!==d.assetRevision&&!owner.groupOwns(target.requestGroupId,a))
+      throw error('IMAGE_TARGET_CONFLICT','场景或道具已更新，请核对最新版本');
+    return a;
+  }
+  const p=d.imageProposal, ids=target.imageIds;
   owner.project(p.projectId,true);
   const row=owner.db.prepare('SELECT * FROM creative_assets WHERE id=?'+(lock?owner.assets.lock():'' )).get(ids.characterId);
   const a=row && owner.assets.get(ids.characterId);
@@ -67,13 +78,20 @@ export function imageGuard(owner,target,{lock=false}={}) {
 }
 
 export function bindingInput(target,previous,mediaId,bindingId) {
-  const p=target.destination.imageProposal, ids=target.imageIds;
+  const d=target.destination;
+  const image=lookId=>({id:bindingId,look_id:lookId,media_asset_id:mediaId,reference_type:'',purpose:'',locks:'',ignores:'',confirmed:false,
+    crop:{x:50,y:50,zoom:1},archived_at:null});
+  if(d.assetKind) {
+    const a=structuredClone(previous);
+    a.images.push(image(null));a.default_image_id??=bindingId;
+    return a;
+  }
+  const p=d.imageProposal, ids=target.imageIds;
   const a=previous?structuredClone(previous):{...blankAsset(p.projectId,'character',p.characterName),id:ids.characterId};
   let look=a.looks.find(l=>l.id===ids.lookId);
   if(!look) {look={id:ids.lookId,name:p.lookName,tags:[],description:'',default_image_id:null,archived_at:null};a.looks.push(look);}
   a.default_look_id ??= ids.lookId;
-  a.images.push({id:bindingId,look_id:ids.lookId,media_asset_id:mediaId,reference_type:'',purpose:'',locks:'',ignores:'',confirmed:false,
-    crop:{x:50,y:50,zoom:1},archived_at:null});
+  a.images.push(image(ids.lookId));
   look.default_image_id ??= bindingId;
   return a;
 }

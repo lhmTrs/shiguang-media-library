@@ -558,3 +558,155 @@ test('parent move with raw.reused retains its disposable original and never invo
   assert.equal(f.managed.read(null,item.requestId).reused,true);assert.equal(trashed,0);assert.deepEqual(await fs.readFile(file),png);
   assert.deepEqual(await fs.readFile(f.lib.asset(existing.assetId).path),png);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM assets').get().n,1);
 });
+
+test('routing options do not create roots, and scene/prop intake binds ordered files to the exact active asset revision',async t=>{
+  const f=await fixture(t);
+  f.catalog.project=id=>f.projects.get(id);
+  f.catalog.folders={rows:()=>[]};
+  const intake=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed}).init();
+  t.after(()=>intake.close());
+  const scene=await f.assets.create({project_id:f.project.id,kind:'scene',name:'场景甲'});
+  const prop=await f.assets.create({project_id:f.project.id,kind:'prop',name:'道具乙'});
+  const old=await f.assets.create({project_id:f.project.id,kind:'scene',name:'归档资产'});
+  f.assets.archive(old.id,true,old.revision);
+  const opts=await intake.routingOptions(),project=opts.projects.find(p=>p.id===f.project.id);
+  assert.deepEqual(opts.photoCategories,[{id:'',name:'待确认',relativePath:''}]);
+  assert.equal(f.lib.allRoots().length,0);
+  await assert.rejects(fs.access(f.options.directory),{code:'ENOENT'});
+  assert.deepEqual(new Set(project.assets.map(a=>a.id)),new Set([scene.id,prop.id]));
+  assert.deepEqual(project.assets.find(a=>a.id===scene.id),{id:scene.id,name:scene.name,revision:scene.revision,kind:'scene',looks:[],defaultLookId:null});
+
+  const input=async (assets,postfix='')=>{
+    const files=await Promise.all(assets.map(async(_,i)=>{
+      const file=path.join(f.dir,'image-'+i+postfix+'.png');await fs.writeFile(file,Buffer.concat([png,Buffer.from(file)]));return file;
+    }));
+    const h=await intake.receipts.handoff(files);
+    return {h,files,args:{version:2,mode:'copy',requestId:randomUUID(),fileIds:h.files.map(f=>f.id),targets:h.files.map((f,i)=>({
+      fileId:f.id,nameMode:'standard',destination:{kind:'photo',scope:'project',projectId:assets[i].project_id,assetKind:assets[i].kind,assetId:assets[i].id,assetRevision:assets[i].revision},
+    }))}};
+  };
+  const batch=await input([scene,scene,prop]);
+  const preview=await intake.namePreview(batch.h.id,batch.args);
+  assert.deepEqual(preview.items.map(i=>i.proposedFileName),['场景甲_001.png','场景甲_002.png','道具乙_001.png']);
+  await assert.rejects(fs.access(f.options.directory),{code:'ENOENT'});
+  assert.equal(f.assets.get(scene.id).images.length,0);
+  const accepted=await intake.confirm(batch.h.id,batch.args);
+  assert.deepEqual(accepted.items.map(i=>i.plannedFileName),preview.items.map(i=>i.proposedFileName));
+  await settled(intake);
+  const result=intake.dto(intake.batch(accepted.id));
+  assert.equal(result.status,'completed');
+  assert.deepEqual(result.items.map(i=>i.resultFileName),preview.items.map(i=>i.proposedFileName));
+  for(const item of intake.batch(accepted.id).items){
+    assert.equal(item.error,undefined);
+    assert.equal(f.managed.receipts.read(item.requestId).stageCleanup?.complete,true);
+  }
+  const after=f.assets.get(scene.id);
+  assert.equal(after.default_image_id,result.items[0].bindingId);
+  assert.deepEqual(after.images.map(i=>i.look_id),[null,null]);
+  assert.equal(f.assets.get(prop.id).default_image_id,result.items[2].bindingId);
+  assert.equal(f.assets.get(prop.id).images.length,1);
+  for(const file of batch.files)await fs.access(file);
+
+  const stale=await input([after],'stale');
+  await f.assets.save(scene.id,{...after,base_info:'其他会话的最新编辑'},after.revision);
+  await assert.rejects(intake.confirm(stale.h.id,stale.args),{code:'IMAGE_TARGET_CONFLICT',accepted:false});
+  assert.equal(f.assets.get(scene.id).images.length,2);
+  const fresh=await input([f.assets.get(scene.id)],'fresh');
+  const more=await intake.confirm(fresh.h.id,fresh.args);await settled(intake);
+  assert.equal(intake.dto(intake.batch(more.id)).items[0].resultFileName,'场景甲_003.png');
+  assert.equal(f.assets.get(scene.id).default_image_id,result.items[0].bindingId);
+});
+
+test('moving scene and prop photos verifies the exact active binding without a look',async t=>{
+  const f=await fixture(t),removals=[];
+  const intake=await new FileIntake({
+    dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,
+    async trash(file,expected){
+      const target=file+'.owned-trash';
+      removals.push({file,expected});
+      await fs.rename(file,target);
+      return target;
+    },
+  }).init();
+  t.after(()=>intake.close());
+  const assets=[];
+  for(const [kind,name] of [['scene','场景甲'],['prop','道具乙']]){
+    assets.push(await f.assets.create({project_id:f.project.id,kind,name}));
+  }
+  const files=assets.map(a=>path.join(f.dir,a.kind+'.png'));
+  const contents=assets.map(a=>Buffer.concat([png,Buffer.from(a.name)]));
+  await Promise.all(files.map((file,i)=>fs.writeFile(file,contents[i])));
+  const handoff=await intake.receipts.handoff(files);
+  const accepted=await intake.confirm(handoff.id,{
+    version:2,mode:'move',requestId:randomUUID(),fileIds:handoff.files.map(f=>f.id),
+    targets:handoff.files.map((file,i)=>({
+      fileId:file.id,destination:{kind:'photo',scope:'project',projectId:f.project.id,
+        assetKind:assets[i].kind,assetId:assets[i].id,assetRevision:assets[i].revision},
+    })),
+  });
+  await settled(intake);
+  const result=intake.batch(accepted.id);
+  assert.equal(result.status,'completed',JSON.stringify(result.items.map(i=>i.error)));
+  assert.deepEqual(removals.map(r=>r.file),files);
+  for(const [i,item] of result.items.entries()){
+    const receipt=f.managed.receipts.read(item.requestId);
+    assert.equal(item.status,'ready',item.error);
+    assert.equal(item.removal,'complete');
+    assert.equal(receipt.stageCleanup?.complete,true);
+    const [{look_id,media_asset_id}]=f.assets.get(assets[i].id).images;
+    assert.equal(look_id,null);
+    assert.equal(media_asset_id,item.assetId);
+    assert.deepEqual(await fs.readFile(receipt.resultPath),contents[i]);
+    assert.deepEqual(await fs.readFile(files[i]+'.owned-trash'),contents[i]);
+    await assert.rejects(fs.access(files[i]),{code:'ENOENT'});
+    f.lib.db.prepare('UPDATE creative_image_bindings SET archived_at=? WHERE id=?').run(Date.now(),item.bindingId);
+    await assert.rejects(f.managed.verifiedSource(item.target,item.assetId),{code:'SOURCE_UNTRUSTED'});
+  }
+});
+
+test('archiving a project image binding after the removal plan retains the original',async t=>{
+  const f=await fixture(t);
+  let trashCalls=0,archived=false;
+  const intake=await new FileIntake({
+    dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,
+    async trash(file){
+      trashCalls++;
+      const target=file+'.owned-trash';
+      await fs.rename(file,target);
+      return target;
+    },
+  }).init();
+  t.after(()=>intake.close());
+  const scene=await f.assets.create({project_id:f.project.id,kind:'scene',name:'场景甲'});
+  const file=path.join(f.dir,'scene.png');
+  await fs.writeFile(file,png);
+  const save=intake.save.bind(intake);
+  intake.save=async (batch,options)=>{
+    await save(batch,options);
+    const [item]=batch.items;
+    if(archived||item.removal!=='planned')return;
+    assert.equal((await intake.receipts.read('batches',batch.id)).items[0].removal,'planned');
+    const asset=f.assets.get(scene.id);
+    asset.default_image_id=null;
+    asset.images.find(b=>b.id===item.bindingId).archived_at=Date.now();
+    await f.assets.save(asset.id,asset,asset.revision);
+    archived=true;
+  };
+  const handoff=await intake.receipts.handoff([file]),fileId=handoff.files[0].id;
+  const accepted=await intake.confirm(handoff.id,{
+    version:2,mode:'move',requestId:randomUUID(),fileIds:[fileId],
+    targets:[{fileId,destination:{kind:'photo',scope:'project',projectId:f.project.id,
+      assetKind:'scene',assetId:scene.id,assetRevision:scene.revision}}],
+  });
+  await settled(intake);
+  const stored=await intake.receipts.read('batches',accepted.id);
+  const [item]=stored.items;
+  assert.equal(archived,true);
+  assert.equal(trashCalls,0);
+  assert.equal(item.status,'source_retained');
+  assert.equal(item.code,'SOURCE_UNTRUSTED');
+  assert.equal(item.removal,undefined);
+  assert.equal(intake.dto(intake.batch(accepted.id)).canAcknowledge,true);
+  assert.deepEqual(await fs.readFile(file),png);
+  assert.deepEqual(await fs.readFile(f.managed.receipts.read(item.requestId).resultPath),png);
+});
