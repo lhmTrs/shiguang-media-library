@@ -352,8 +352,14 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   async function copyDefault(a: Asset) {
     const cover = coverOf(a); setQuick(null);
     if (!cover) return;
-    // The file itself when this Mac allows it (keeps name and format, like 生成视频); otherwise a PNG copy.
-    if (clipCap.available && a.kind === 'character' && cover.revision) { await copyFiles('defaults', [{ bindingId: cover.id, bindingRevision: cover.revision }]); return; }
+    // 人物：只复制原图文件（保留文件名和格式，和生成视频一样）。本机能力不可用、还没读到或没有当前版本时
+    // 说明原因，不退回浏览器 PNG——那会悄悄换格式（HEIC 变 PNG），不是同一个操作。
+    if (a.kind === 'character') {
+      if (!clipCap.available) { setError('没有复制「' + a.name + '」的默认图：' + clipCap.reason); return; }
+      if (!cover.revision) { setError('没有复制「' + a.name + '」的默认图：这张图还没有当前版本，请刷新页面后再试'); return; }
+      await copyFiles('defaults', [{ bindingId: cover.id, bindingRevision: cover.revision }]); return;
+    }
+    // 场景、道具不在原图文件接口范围内，仍按原来的方式复制整张图（PNG）。
     if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') { setError('这个浏览器不允许网页往剪贴板写图片。请在运行拾光的这台电脑上，用 Chrome 打开拾光再复制'); return; }
     // The preview route streams the full original (HEIC as JPEG); the clipboard takes it as PNG.
     const png = (async () => {

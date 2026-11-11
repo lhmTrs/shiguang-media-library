@@ -54,7 +54,7 @@ try {
   const second = await make('小满', ['泳衣侧面.png', '日常.png']);
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); /* 同一地址只改 hash 不会重载，桌面能力也不会重新读取 */ await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible(); };
   await open();
@@ -108,7 +108,7 @@ try {
     await page.keyboard.press('Escape');
   });
 
-  await check('关闭本机桌面能力后：多选按钮停用并显示后端给的原因，单张复制退回 PNG', async () => {
+  await check('关闭本机桌面能力后：多选按钮停用并显示后端给的原因；人物单张两个入口都说明原因，不调用原生、不写浏览器剪贴板、不显示成功', async () => {
     child.kill('SIGTERM'); await exited; start({ MEDIA_DISABLE_DESKTOP_NATIVE: '1' }); await session();
     await context.clearCookies(); await open();
     await wrap('阿青').hover(); await wrap('阿青').getByRole('checkbox', { name: '选择阿青' }).click();
@@ -117,8 +117,11 @@ try {
     await page.keyboard.press('Escape');
     const n = (await native('copy')).length;
     await wrap('阿青').hover(); await wrap('阿青').getByRole('button', { name: '复制阿青的默认图' }).click();
-    await expect(page.getByText(/已复制「阿青」的默认图（整张原图，PNG）|复制失败|没有复制/).first()).toBeVisible();
-    assert.equal((await native('copy')).length, n, 'disabled native never copies files');
+    await expect(page.getByText('没有复制「阿青」的默认图：本机桌面连接不可用').first()).toBeVisible();
+    await wrap('阿青').click({ button: 'right' }); await page.getByRole('menu', { name: '阿青的操作' }).getByRole('menuitem', { name: '复制默认图' }).click();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.getByText(/已复制「阿青」|已复制 \d+ 张/)).toHaveCount(0);
+    assert.equal((await native('copy')).length, n, 'disabled native never copies files'); assert.equal(await page.evaluate(() => window.__clipWrites), 0, 'no browser clipboard.write');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

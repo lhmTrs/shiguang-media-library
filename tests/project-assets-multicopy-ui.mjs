@@ -77,7 +77,7 @@ try {
   const rev = (who, i) => who.a.images.find(b => b.id === who.ids[i]).revision;
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await installMocks();
   await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
@@ -131,7 +131,7 @@ try {
     mock.folders = 1;
   });
 
-  await check('回应丢失：只能查询原请求，不会重发；本机能力不可用时多选按钮说明原因、单张退回 PNG', async () => {
+  await check('回应丢失：只能查询原请求，不会重发；本机能力不可用或还没读到时，多选按钮和人物单张两个入口都说明原因，不写 PNG、不显示成功', async () => {
     const bar = work().getByRole('toolbar', { name: '已选参考图操作' });
     mock.dropNextClipboard = true; const before = posts('clipboard').length;
     await bar.getByRole('button', { name: '复制' }).click();
@@ -146,9 +146,20 @@ try {
     await expect(gbar.getByRole('button', { name: '复制' })).toBeDisabled(); await expect(gbar).toContainText('只能在运行拾光的这台 Mac 上使用');
     await page.keyboard.press('Escape');
     const n = posts('clipboard').length;
-    await wrap('阿青').hover(); await wrap('阿青').getByRole('button', { name: '复制阿青的默认图' }).click();
-    await expect(page.getByText('已复制「阿青」的默认图（整张原图，PNG），到画布平台按 ⌘V 粘贴').first()).toBeVisible();
-    assert.equal(posts('clipboard').length, n, 'fallback does not call the file clipboard');
+    const singleRefused = async reason => {
+      await wrap('阿青').hover(); await wrap('阿青').getByRole('button', { name: '复制阿青的默认图' }).click();
+      await expect(page.getByText('没有复制「阿青」的默认图：' + reason).first()).toBeVisible();
+      await wrap('阿青').click({ button: 'right' }); await page.getByRole('menu', { name: '阿青的操作' }).getByRole('menuitem', { name: '复制默认图' }).click();
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(page.getByText(/已复制「阿青」|已复制 \d+ 张/)).toHaveCount(0);
+      assert.equal(posts('clipboard').length, n, 'no file clipboard request'); assert.equal(await page.evaluate(() => window.__clipWrites), 0, 'no browser clipboard.write');
+    };
+    await singleRefused('只能在运行拾光的这台 Mac 上使用。');
+    // 能力还没读到（读取失败）：同样说明原因，不退回 PNG。
+    mock.caps = null; await page.unroute('**/api/project-assets/projects/*/desktop-capabilities');
+    await page.route('**/api/project-assets/projects/*/desktop-capabilities', route => mock.caps ? route.fulfill({ json: mock.caps }) : route.fulfill({ status: 500, json: { error: '读取失败' } }));
+    await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+    await singleRefused('后台尚未提供图片文件复制，或正在检查本机桌面能力。');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
