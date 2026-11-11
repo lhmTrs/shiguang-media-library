@@ -52,7 +52,7 @@ try {
 
   await check('悬停卡片出现「复制」，复制的是整张原图（PNG，原尺寸）；没有默认图的不显示复制', async () => {
     await wrap('阿青').hover(); await shot('1-hover'); await wrap('阿青').getByRole('button', { name: '复制阿青的默认图' }).click();
-    await expect(page.getByText('已复制「阿青」的默认图（整张原图），到画布平台按 ⌘V 粘贴').first()).toBeVisible();
+    await expect(page.getByText('已复制「阿青」的默认图（整张原图，PNG），到画布平台按 ⌘V 粘贴').first()).toBeVisible();
     const copied = await page.evaluate(async () => { const [item] = await navigator.clipboard.read(); const blob = await item.getType('image/png'); const bmp = await createImageBitmap(blob); return { types: item.types, w: bmp.width, h: bmp.height }; });
     assert.deepEqual(copied, { types: ['image/png'], w: 300, h: 400 });
     await expect(wrap('苏禾').getByRole('button', { name: /复制/ })).toHaveCount(0);
