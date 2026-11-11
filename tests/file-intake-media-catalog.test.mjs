@@ -663,3 +663,50 @@ test('moving scene and prop photos verifies the exact active binding without a l
     await assert.rejects(f.managed.verifiedSource(item.target,item.assetId),{code:'SOURCE_UNTRUSTED'});
   }
 });
+
+test('archiving a project image binding after the removal plan retains the original',async t=>{
+  const f=await fixture(t);
+  let trashCalls=0,archived=false;
+  const intake=await new FileIntake({
+    dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed,
+    async trash(file){
+      trashCalls++;
+      const target=file+'.owned-trash';
+      await fs.rename(file,target);
+      return target;
+    },
+  }).init();
+  t.after(()=>intake.close());
+  const scene=await f.assets.create({project_id:f.project.id,kind:'scene',name:'场景甲'});
+  const file=path.join(f.dir,'scene.png');
+  await fs.writeFile(file,png);
+  const save=intake.save.bind(intake);
+  intake.save=async (batch,options)=>{
+    await save(batch,options);
+    const [item]=batch.items;
+    if(archived||item.removal!=='planned')return;
+    assert.equal((await intake.receipts.read('batches',batch.id)).items[0].removal,'planned');
+    const asset=f.assets.get(scene.id);
+    asset.default_image_id=null;
+    asset.images.find(b=>b.id===item.bindingId).archived_at=Date.now();
+    await f.assets.save(asset.id,asset,asset.revision);
+    archived=true;
+  };
+  const handoff=await intake.receipts.handoff([file]),fileId=handoff.files[0].id;
+  const accepted=await intake.confirm(handoff.id,{
+    version:2,mode:'move',requestId:randomUUID(),fileIds:[fileId],
+    targets:[{fileId,destination:{kind:'photo',scope:'project',projectId:f.project.id,
+      assetKind:'scene',assetId:scene.id,assetRevision:scene.revision}}],
+  });
+  await settled(intake);
+  const stored=await intake.receipts.read('batches',accepted.id);
+  const [item]=stored.items;
+  assert.equal(archived,true);
+  assert.equal(trashCalls,0);
+  assert.equal(item.status,'source_retained');
+  assert.equal(item.code,'SOURCE_UNTRUSTED');
+  assert.equal(item.removal,undefined);
+  assert.equal(intake.dto(intake.batch(accepted.id)).canAcknowledge,true);
+  assert.deepEqual(await fs.readFile(file),png);
+  assert.deepEqual(await fs.readFile(f.managed.receipts.read(item.requestId).resultPath),png);
+});

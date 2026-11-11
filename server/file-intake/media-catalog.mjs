@@ -328,6 +328,13 @@ export class ManagedIntakeCatalog {
       receiptDTO(s){if(canonical(s.target)!==canonical(bound)) throw error('REQUEST_ID_CONFLICT','回执固定目标不同');return owner.receiptDTO(s);},
       resolve(id,requestId,input){placeholder(id);return owner.resolve(bound,requestId,input);},
       verifiedSource(id,assetId){placeholder(id);return owner.verifiedSource(bound,assetId);},
+      assertIntakeBinding(id,requestId){
+        if(bound.destination.scope!=='project')return;
+        placeholder(id);
+        const receipt=owner.read(bound,requestId);
+        owner.currentSync(bound,{image:false});
+        owner.assertResultBinding(receipt);
+      },
       hash(file,expected){owner.assertTargetLibrary(bound);return owner.hash(file,expected);},
       cleanupIntakeStage(id,requestId){placeholder(id);return owner.cleanup(bound,requestId);}
     };
@@ -566,21 +573,25 @@ export class ManagedIntakeCatalog {
     const a=this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId),d=await this.hash(s.resultPath,s.resultIdentity);
     if(!a || d.hash!==s.resultHash || a.sha256!==s.resultHash || assetProof(this.db.prepare('SELECT * FROM assets WHERE id=?').get(assetId))!==assetProof(a)) throw error('SOURCE_UNTRUSTED','正式文件或原登记未通过成功回执核验');
     this.assertAsset(a,s,s.resultPath,d);
-    const destination=target.destination;
-    if(destination.scope==='project') {
-      const {assetId:projectAssetId,characterId,lookId}=target.imageIds;
-      const expectedAssetId=projectAssetId??characterId;
-      const binding=this.db.prepare('SELECT * FROM creative_image_bindings WHERE id=?').get(s.bindingId??'');
-      const asset=this.db.prepare('SELECT id,project_id,kind,archived_at FROM creative_assets WHERE id=?').get(expectedAssetId);
-      const look=lookId===null?null:this.db.prepare('SELECT * FROM creative_looks WHERE id=?').get(lookId);
-      if(s.bindingId!==s.ids?.bindingId || s.creativeAssetId!==expectedAssetId || s.lookId!==lookId ||
-          !asset || asset.project_id!==destination.projectId || asset.kind!==(destination.assetKind??'character') || asset.archived_at ||
-          (!destination.assetKind && (!look || look.archived_at!==null || look.asset_id!==asset.id)) ||
-          !binding || binding.archived_at!==null || binding.asset_id!==asset.id || binding.look_id!==lookId ||
-          binding.media_asset_id!==assetId || binding.expected_sha256!==d.hash)
-        throw error('SOURCE_UNTRUSTED','原项目图片绑定已变化');
-    }
-    await this.current(target,{image:false});return {path:s.resultPath,identity:d.identity,assetId};
+    await this.current(target,{image:false});
+    this.assertResultBinding(s);
+    return {path:s.resultPath,identity:d.identity,assetId};
+  }
+  assertResultBinding(receipt) {
+    const {destination,imageIds}=receipt.target;
+    if(destination.scope!=='project')return;
+    const {assetId:projectAssetId,characterId,lookId}=imageIds;
+    const expectedAssetId=projectAssetId??characterId;
+    const binding=this.db.prepare('SELECT * FROM creative_image_bindings WHERE id=?').get(receipt.bindingId??'');
+    const asset=this.db.prepare('SELECT id,project_id,kind,archived_at FROM creative_assets WHERE id=?').get(expectedAssetId);
+    const look=lookId===null?null:this.db.prepare('SELECT * FROM creative_looks WHERE id=?').get(lookId);
+    if(receipt.status!=='ready' || receipt.bindingId!==receipt.ids?.bindingId ||
+        receipt.creativeAssetId!==expectedAssetId || receipt.lookId!==lookId ||
+        !asset || asset.project_id!==destination.projectId || asset.kind!==(destination.assetKind??'character') || asset.archived_at ||
+        (!destination.assetKind && (!look || look.archived_at!==null || look.asset_id!==asset.id)) ||
+        !binding || binding.archived_at!==null || binding.asset_id!==asset.id || binding.look_id!==lookId ||
+        binding.media_asset_id!==receipt.assetId || binding.expected_sha256!==receipt.resultHash)
+      throw error('SOURCE_UNTRUSTED','原项目图片绑定已变化');
   }
   async openCandidate(requestId,candidateId) {
     const s=this.read(null,requestId), c=s.candidates?.find(c=>c.id===candidateId);

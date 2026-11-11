@@ -395,8 +395,9 @@ export class FileIntake {
     }finally{this.catalog.media.children.delete(child);this.catalog.media.exits.delete(child);}
   }
   async finishMove(b,i) {
-    const {catalog,projectId,target,folderId}=this.context(b,i);
+    const {catalog,projectId}=this.context(b,i);
     if(b.mode!=='move'||i.status!=='ready')return;
+    let removalStarted=false;
     // A durable successful registration is required before even considering the
     // source. Reuse/managed files and files indexed during copying are retained.
     try {
@@ -412,6 +413,12 @@ export class FileIntake {
       i.removal='planned';await this.save(b);await catalog.media.verify(source);
       await unchanged(i.path,i.identity);
       if(!i.parentIdentity)throw error('INTAKE_SOURCE_UNBOUND','原文件夹身份未固定，原件保留');
+      this.assertOpen();
+      if(catalog.db.prepare('SELECT id FROM assets WHERE path=? AND trashed=0').get(i.path))throw error('SOURCE_MANAGED','原文件已被素材库管理，请使用素材库移动入口');
+      // The plan write and file checks yield to project edits. Check the exact
+      // binding again in the same turn that dispatches the native move.
+      catalog.assertIntakeBinding?.(projectId,i.requestId);
+      removalStarted=true;
       const target=await this.trash(i.path,{identity:i.identity,parent:i.parentIdentity,sha256:i.sha256});i.trashPath=target;await this.save(b);
       const st=await fs.lstat(target);
       if(st.isSymbolicLink()||String(st.dev)!==i.identity.dev||String(st.ino)!==i.identity.ino||st.size!==i.bytes||st.mtimeMs!==i.identity.mtimeMs)
@@ -422,6 +429,7 @@ export class FileIntake {
     } catch(e) {
       let sourceStillThere=false;
       try{await unchanged(i.path,i.identity);sourceStillThere=true;}catch{}
+      if(!removalStarted&&sourceStillThere&&i.removal==='planned')delete i.removal;
       i.status=i.removal==='planned'&&!sourceStillThere?'unknown':'source_retained';i.code=e.code;
       i.error='已收纳，原文件未移除或结果待核对：'+e.message;
     }
