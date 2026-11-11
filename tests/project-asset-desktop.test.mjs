@@ -15,8 +15,8 @@ async function setup(t){
   const native={
     capabilities:async()=>cap,
     clipboardVersion:async()=>19,
-    copyFiles:async(paths,options)=>{calls.push(['copy',paths,options]);return {ack:'written',count:paths.length};},
-    revealFiles:async paths=>{calls.push(['reveal',paths]);return {ack:'dispatched',count:paths.length};},
+    copyFiles:async(paths,{beforeDispatch,...options})=>{await beforeDispatch?.();calls.push(['copy',paths,options]);return {ack:'written',count:paths.length};},
+    revealFiles:async (paths,{beforeDispatch}={})=>{await beforeDispatch?.();calls.push(['reveal',paths]);return {ack:'dispatched',count:paths.length};},
   };
   const actions=new ProjectAssetDesktopActions(f.store,native);
   t.after(async()=>{await actions.close();await f.close();});
@@ -91,4 +91,23 @@ test('known clipboard conflict and lost acknowledgement are different terminal r
   assert.equal(unknown.status,'unknown');assert.equal(unknown.code,'NATIVE_TIMEOUT');
   assert.deepEqual(f.actions.clipboard(f.a.id,two),unknown);
   assert.equal(attempts,2);
+});
+
+test('a registration change during the final Finder check cannot dispatch the old still-present file',async t=>{
+  const f=await setup(t),a=await f.person(f.a.id,'旧路径');
+  const input=request('defaults',a.images[0]);
+  f.actions.revealPreview(f.a.id,input);
+  const preview=await f.finish(input),other=path.join(f.dir,'new-file.png');
+  await fs.copyFile(f.image,other);
+  const checked=f.lib.checked;
+  f.lib.checked=async(p,id)=>{
+    const file=await checked(p,id);
+    f.db.prepare('UPDATE assets SET path=? WHERE id=?').run(other,f.media);
+    return file;
+  };
+  const confirm={...input,requestId:randomUUID(),previewToken:preview.previewToken};
+  f.actions.reveal(f.a.id,confirm);
+  const result=await f.finish(confirm);
+  assert.equal(result.status,'failed');assert.equal(result.code,'PREVIEW_STALE');
+  assert.deepEqual(f.calls,[]);
 });

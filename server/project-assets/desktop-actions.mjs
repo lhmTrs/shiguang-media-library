@@ -39,7 +39,7 @@ export function registeredPhoto(store,binding){
   const media=store.lib.asset(binding.media_asset_id),root=store.db.prepare('SELECT * FROM roots WHERE id=?').get(media.root_id);
   if(media.kind!=='photo'||media.trashed||!root||root.retired||root.online===0||!/^[0-9a-f]{64}$/.test(binding.expected_sha256))
     reject('IMAGE_UNAVAILABLE','原图不可用，请核对素材目录和图片绑定');
-  return media;
+  return {...media,registeredRootPath:root.path};
 }
 
 export class ProjectAssetDesktopActions {
@@ -79,7 +79,7 @@ export class ProjectAssetDesktopActions {
         const physical=stat.dev+':'+stat.ino;
         if(seen.has(physical))reject('DUPLICATE_FILE_IN_SELECTION','与本次另一张图片是同一文件，只处理一次');
         seen.add(physical);
-        eligible.push({...item,name,file,identity:signature(stat),sha256:hash,mediaId:media.id,rootId:media.root_id});
+        eligible.push({...item,name,file,identity:signature(stat),sha256:hash,mediaId:media.id,rootId:media.root_id,registeredPath:media.path,registeredRootPath:media.registeredRootPath});
       }catch(e){
         skipped.push({bindingId:item.bindingId,...(name?{name}:{}),code:e.status&&e.code||'IMAGE_UNAVAILABLE',reason:e.status?e.message:'原图无法读取'});
       }
@@ -90,7 +90,7 @@ export class ProjectAssetDesktopActions {
   }
   checkAuthority(id,input,item){
     const {binding}=currentImageBinding(this.store,item.bindingId,item.bindingRevision,{projectId:id,mode:input.mode}),media=registeredPhoto(this.store,binding);
-    if(media.id!==item.mediaId||media.root_id!==item.rootId||binding.expected_sha256!==item.sha256)
+    if(media.id!==item.mediaId||media.root_id!==item.rootId||media.path!==item.registeredPath||media.registeredRootPath!==item.registeredRootPath||binding.expected_sha256!==item.sha256)
       reject('PREVIEW_STALE','图片或素材目录已变化，请重新核对');
     return media;
   }
@@ -130,7 +130,7 @@ export class ProjectAssetDesktopActions {
       const base=this.base(s,skipped);
       if(!eligible.length)return {...base,status:'failed',copied:[],count:0,code:'NO_VALID_FILES'};
       await this.recheck(id,input,eligible);
-      const ack=await this.dispatch(s,eligible,'copyFiles',{expectedChangeCount});
+      const ack=await this.dispatch(s,eligible,'copyFiles',{expectedChangeCount,beforeDispatch:()=>this.recheck(id,input,eligible)});
       return {...base,status:terminal(eligible,skipped),copied:eligible.map(dto),count:eligible.length,ack};
     },()=>this.native?.clipboardVersion());
   }
@@ -164,7 +164,7 @@ export class ProjectAssetDesktopActions {
         if(e.code==='ASSET_DESKTOP_CLOSING')throw e;
         reject('PREVIEW_STALE','图片或绑定在核对后变化，请重新核对');
       }
-      const ack=await this.dispatch(s,preview.eligible,'revealFiles');
+      const ack=await this.dispatch(s,preview.eligible,'revealFiles',{beforeDispatch:()=>this.recheck(id,input,preview.eligible)});
       return {...this.base(s,preview.skipped),status:terminal(preview.eligible,preview.skipped),requested:preview.eligible.map(dto),count:preview.eligible.length,folderCount:preview.folders.length,ack};
     });
   }

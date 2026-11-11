@@ -45,6 +45,8 @@ export class ProjectVideoDesktopNative {
     this.platform = platform;
     this.children = new Map();
     this.pending = new Set();
+    this.clipboardTail = Promise.resolve();
+    this.clipboardUnsettled = false;
     this.preparing = null;
     this.closing = false;
   }
@@ -307,20 +309,43 @@ export class ProjectVideoDesktopNative {
     return [...paths];
   }
 
-  copyFiles(paths, {expectedChangeCount} = {}) {
-    return this.track(async () => {
+  async prepareDispatch(beforeDispatch) {
+    try {
+      const binary=await this.helper({prepare:true});
+      await beforeDispatch?.();
+      this.assertOpen();
+      return binary;
+    } catch(e) {
+      // No native clipboard/Finder operation has been invoked yet.
+      throw Object.assign(e,{effectUnknown:false});
+    }
+  }
+
+  copyFiles(paths, {expectedChangeCount,beforeDispatch} = {}) {
+    // Video and image actions share this native instance. AppKit has no
+    // compare-and-swap: two helpers must never overlap their check and write.
+    const previous=this.clipboardTail;
+    const work=this.track(async () => {
       const files = this.files(paths);
       if (!Number.isSafeInteger(expectedChangeCount) || expectedChangeCount < 0) throw fault('INVALID_CHANGE_COUNT');
-      const data = await this.invoke(await this.helper({prepare: true}), {operation: 'copy-files', paths: files, expectedChangeCount});
+      await previous;
+      this.assertOpen();
+      if(this.clipboardUnsettled)throw fault('NATIVE_EXIT_UNSETTLED',{effectUnknown:false});
+      const binary=await this.prepareDispatch(beforeDispatch);
+      let data;
+      try{data=await this.invoke(binary,{operation:'copy-files',paths:files,expectedChangeCount});}
+      catch(e){if(e.code==='NATIVE_EXIT_UNSETTLED')this.clipboardUnsettled=true;throw e;}
       if (data.ack !== 'written' || data.count !== files.length || !Number.isSafeInteger(data.changeCount) || data.changeCount < 0) throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: true});
       return {ack: 'written', count: data.count, changeCount: data.changeCount};
     });
+    this.clipboardTail=work.then(()=>{},()=>{});
+    return work;
   }
 
-  revealFiles(paths) {
+  revealFiles(paths,{beforeDispatch}={}) {
     return this.track(async () => {
       const files = this.files(paths);
-      const data = await this.invoke(await this.helper({prepare: true}), {operation: 'reveal-files', paths: files});
+      const data = await this.invoke(await this.prepareDispatch(beforeDispatch), {operation: 'reveal-files', paths: files});
       if (data.ack !== 'dispatched' || data.count !== files.length) throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: true});
       return {ack: 'dispatched', count: data.count};
     });
