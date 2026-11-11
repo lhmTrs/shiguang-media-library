@@ -16,13 +16,36 @@ export function readTheme(): ThemeId {
   return DEFAULT_THEME;
 }
 
+let browserTheme: ThemeId | undefined;
+let themeWrites = Promise.resolve();
+
+async function saveIntakeTheme(themeId: ThemeId, onlyIfUnset: boolean): Promise<void> {
+  const signal = AbortSignal.timeout(4000);
+  const session = await fetch('/api/session', { cache: 'no-store', signal });
+  if (!session.ok) return;
+  const value = await session.json() as { app?: string; token?: string };
+  if (value.app !== 'shiguang-local-media' || !value.token) return;
+  await fetch('/api/file-intake/theme', {
+    method: 'PUT', signal,
+    headers: { 'content-type': 'application/json', 'x-local-token': value.token },
+    body: JSON.stringify({ themeId, onlyIfUnset }),
+  });
+}
+
 /**
- * 应用并持久化风格：只改 <html data-theme>，配色全部由 CSS 侧 `html[data-theme=...]` 的 token 覆盖完成。
- * 因此切换是纯 CSS 行为，不触发任何数据请求。
+ * 应用并持久化风格：通过 <html data-theme> 切换配色，配色全部由 CSS 侧 `html[data-theme=...]` 的 token 覆盖完成。
+ * 网页实际切换时也同步给访达收纳窗口；失败不阻塞浏览器的主题切换。
  */
-export function applyTheme(id: ThemeId): void {
+export function applyTheme(id: ThemeId, { syncIntake = true } = {}): void {
+  let saved: string | null = null;
   try {
+    saved = localStorage.getItem(STORAGE_KEY);
     document.documentElement.dataset.theme = id;
-    localStorage.setItem(STORAGE_KEY, id);
+    if (saved !== null || id !== DEFAULT_THEME || browserTheme !== undefined) localStorage.setItem(STORAGE_KEY, id);
   } catch {}
+  if (!syncIntake || /^#\/?file-intake(?:\/|$)/.test(location.hash) || browserTheme === id) return;
+  const first = browserTheme === undefined;
+  browserTheme = id;
+  if (first && (saved === null || !VALID.has(saved))) return;
+  themeWrites = themeWrites.then(() => saveIntakeTheme(id, first)).catch(() => {});
 }

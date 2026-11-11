@@ -17,7 +17,7 @@ const rootNames={photo:'system_picture',video:'system_video',music:'system_music
 const labels={photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'};
 const proposalKeys=['characterName','lookName','characterId','characterRevision','lookId','lookRevision','newCharacter','newLook'];
 const nameKey = name => name.normalize('NFC').toLowerCase();
-function validName(value) {
+export function validName(value) {
   if(typeof value!=='string' || !value || value.length>240 || Buffer.byteLength(value)>240 ||
       /^[. ]|[<>:"/\\|?*\x00-\x1f\x7f]|[. ]$/.test(value) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value))
     throw error('INVALID_DESTINATION','副本或文件夹名称无效',400);
@@ -36,19 +36,27 @@ function destination(value) {
   const d={kind:value.kind,scope:value.scope};
   if(value.fileName!==undefined) d.fileName=validName(value.fileName);
   if(d.scope==='library') {
-    if(value.projectId || value.characterId || value.characterName || value.lookId || value.lookName || value.imageProposal || value.folderId && value.folderId!=='root')
+    if(value.projectId || value.assetKind!==undefined || value.assetId!==undefined || value.assetRevision!==undefined || value.characterId || value.characterName || value.lookId || value.lookName || value.imageProposal || value.folderId && value.folderId!=='root')
       throw error('INVALID_DESTINATION','通用素材库目标不能携带项目绑定',400);
     d.directory=relativeDirectory(value.directory??'');
   } else {
     if(d.kind!=='photo') throw error('INVALID_DESTINATION','通用入口的项目目标仅支持图片；项目视频使用原入口',400);
     if(!uuid(value.projectId) || value.directory || value.folderId && value.folderId!=='root') throw error('INVALID_DESTINATION','项目图片目标无效',400);
     d.projectId=value.projectId;
-    const p=normalizeProposal(d.projectId,value.imageProposal??{projectId:d.projectId,...Object.fromEntries(proposalKeys.map(k=>[k,value[k]]))});
-    for(const key of proposalKeys) d[key]=p[key];
+    if(value.assetKind!==undefined || value.assetId!==undefined || value.assetRevision!==undefined) {
+      if(!['scene','prop'].includes(value.assetKind)||!uuid(value.assetId)||!Number.isSafeInteger(value.assetRevision)||value.assetRevision<1||
+          value.imageProposal!==undefined||proposalKeys.some(k=>value[k]!==undefined))
+        throw error('INVALID_IMAGE_TARGET','请明确选择现有场景或道具及其版本',400);
+      Object.assign(d,{assetKind:value.assetKind,assetId:value.assetId,assetRevision:value.assetRevision});
+    } else {
+      const p=normalizeProposal(d.projectId,value.imageProposal??{projectId:d.projectId,...Object.fromEntries(proposalKeys.map(k=>[k,value[k]]))});
+      for(const key of proposalKeys) d[key]=p[key];
+    }
   }
   return d;
 }
 const proposalOf = d => ({projectId:d.projectId,...Object.fromEntries(proposalKeys.map(k=>[k,d[k]]))});
+const imageIds=(d,group)=>d.assetKind?{assetId:d.assetId,lookId:null}:imageAllocation(proposalOf(d),group);
 const assetProof = a => a && canonical(Object.fromEntries(['id','root_id','path','kind','trashed','dev','ino','size','mtime','sha256','category','sub','review','confirmed'].map(k=>[k,a[k]])));
 const rootProof = r => r && canonical({id:r.id,path:r.path,kind:r.kind,retired:r.retired||0});
 const contentOf = a => ({id:a.id,project_id:a.project_id,kind:a.kind,name:a.name,base_info:a.base_info,performance_info:a.performance_info,details:a.details,
@@ -138,7 +146,7 @@ export class ManagedIntakeCatalog {
     return {destination:{kind:'photo',scope:'project',...p},message:(p.newCharacter?'新建人物':'使用已有的人物')+'「'+p.characterName+'」，'+(p.newLook?'新建造型':'使用已有造型')+'「'+p.lookName+'」'};
   }
   imageTarget(target) {
-    return {...target,destination:{...target.destination,imageProposal:proposalOf(target.destination)}};
+    return target.destination.assetKind?target:{...target,destination:{...target.destination,imageProposal:proposalOf(target.destination)}};
   }
   async ensureDirectory(directory,{privateOnly=false,create=true}={}) {
     assertDirectories([this.anchor]);
@@ -153,12 +161,41 @@ export class ManagedIntakeCatalog {
       throw error('TARGET_CHANGED','系统收纳目录不可用或不是私有目录');
     return {path:directory,identity:directoryIdentity(st),privateOnly};
   }
-  async base(kind,scope='library') {
-    this.writable();
+  basePath(kind,scope='library') {
+    this.assertAvailable();
+    if(!kinds.includes(kind))throw error('INVALID_DESTINATION','素材类型无效',400);
     const base=path.join(this.directory,scope==='project'?'picture':rootNames[kind]);
     const roots=this.lib.allRoots(), overlapping=roots.filter(r=>within(r.path,base)||within(base,r.path));
     if(overlapping.some(r=>r.retired)) throw error('TARGET_RETIRED','目标所属目录已注销，请先明确恢复管理');
     if(overlapping.some(r=>r.path!==base || r.kind!==kind)) throw error('TARGET_CHANGED','系统目标必须以原路径和准确类型独立登记');
+    return base;
+  }
+  async readBase(kind,scope='library') {
+    const base=this.basePath(kind,scope),proofs=[this.anchor];assertDirectories(proofs);
+    for(const dir of [this.directory,base]) {
+      const present=await fs.lstat(dir).catch(e=>e.code==='ENOENT'?null:Promise.reject(e));
+      if(!present){assertDirectories(proofs);return{base,proofs,exists:false};}
+      proofs.push(await this.ensureDirectory(dir,{privateOnly:dir===base&&scope==='library',create:false}));assertDirectories(proofs);
+    }
+    return {base,proofs,exists:true};
+  }
+  async projectImageDirectory(base,project,exists=true) {
+    const entries=exists?(await fs.readdir(base)).filter(n=>n.endsWith('--'+project.id.toLowerCase())):[];
+    if(entries.length>1)throw error('TARGET_CHANGED','同一项目存在多个图片目录，请先核对');
+    return path.join(base,entries[0]??projectFolderName(project));
+  }
+  async previewImageTarget(value) {
+    const d=destination(value),project=this.project(d.projectId,true);
+    const ids=imageIds(d,'preview');
+    const asset=imageGuard(this,this.imageTarget({destination:d,imageIds:ids,requestGroupId:'preview'}));
+    const state=await this.readBase('photo','project');
+    const target=await this.projectImageDirectory(state.base,project,state.exists);
+    assertDirectories(state.proofs);
+    return {target,destination:d,assetName:asset?.name,verify:()=>assertDirectories(state.proofs)};
+  }
+  async base(kind,scope='library') {
+    this.writable();
+    const base=this.basePath(kind,scope);
     const parent=await this.ensureDirectory(this.directory), directory=await this.ensureDirectory(base,{privateOnly:scope==='library'});
     // addRoot intentionally restores retired roots; generic intake must never
     // do so. Register synchronously with the final overlap check in one tx.
@@ -193,27 +230,26 @@ export class ManagedIntakeCatalog {
     let project;
     if(d.scope==='project') {
       project=this.project(d.projectId,true);
-      target.imageIds=imageAllocation(proposalOf(d),group);
-      imageGuard(this,this.imageTarget(target));
+      target.imageIds=imageIds(d,group);
+      const asset=imageGuard(this,this.imageTarget(target));
+      if(d.assetKind)target.assetName=asset.name;
     }
     Object.assign(target,await this.base(d.kind,d.scope));
     let directory=target.base;
     if(project) {
-      const entries=(await fs.readdir(directory)).filter(n=>n.endsWith('--'+project.id.toLowerCase()));
-      if(entries.length>1) throw error('TARGET_CHANGED','同一项目存在多个图片目录，请先核对');
-      directory=path.join(directory,entries[0]??projectFolderName(project));
+      directory=await this.projectImageDirectory(directory,project);
       target.proofs.push(await this.ensureDirectory(directory));
     } else for(const name of d.directory.split('/').filter(Boolean)) {
       directory=path.join(directory,name);target.proofs.push(await this.ensureDirectory(directory,{create:false}));
     }
     target.target=directory;target.targetIdentity=target.proofs.at(-1).identity;
-    target.label=project ? project.name+' / '+d.characterName+' / '+d.lookName : labels[d.kind]+' / '+(d.directory||'待确认');
+    target.label=project ? project.name+' / '+(d.assetKind?target.assetName:d.characterName+' / '+d.lookName) : labels[d.kind]+' / '+(d.directory||'待确认');
     await this.current(target);return structuredClone(target);
   });}
-  async choices(kind,directory='') {return this.serial(async()=>{
+  async choices(kind,directory='',{readOnly=false}={}) {return this.serial(async()=>{
     if(!kinds.includes(kind)) throw error('INVALID_DESTINATION','素材类型无效',400);
     relativeDirectory(directory);
-    const state=await this.base(kind), folders=[{id:'',name:'待确认',relativePath:''}];
+    const state=await (readOnly?this.readBase(kind):this.base(kind)), folders=[{id:'',name:'待确认',relativePath:''}];
     const walk=async(base,prefix,depth)=>{
       for(const e of await fs.readdir(base,{withFileTypes:true})) {
         if(!e.isDirectory() || e.isSymbolicLink() || e.name.startsWith('.')) continue;
@@ -224,7 +260,7 @@ export class ManagedIntakeCatalog {
         if(depth<2) await walk(file,relative,depth+1);
       }
     };
-    await walk(state.base,'',1);assertDirectories(state.proofs);
+    if(state.exists!==false)await walk(state.base,'',1);assertDirectories(state.proofs);
     if(directory && !folders.some(f=>f.id===directory)) throw error('TARGET_CHANGED','目标分类已不存在');
     return {folders:folders.sort((a,b)=>a.relativePath.localeCompare(b.relativePath,'zh-CN'))};
   });}
@@ -256,7 +292,7 @@ export class ManagedIntakeCatalog {
     if(d.scope==='library' && path.join(expectedBase,d.directory)!==target.target) throw error('TARGET_CHANGED','目标分类与固定目录不一致');
     if(d.scope==='project') {
       this.project(d.projectId,true);
-      if(path.dirname(target.target)!==expectedBase || !path.basename(target.target).endsWith('--'+d.projectId.toLowerCase()) || canonical(target.imageIds)!==canonical(imageAllocation(proposalOf(d),target.requestGroupId))) throw error('TARGET_CHANGED','项目图片固定目录或分配编号不同');
+      if(path.dirname(target.target)!==expectedBase || !path.basename(target.target).endsWith('--'+d.projectId.toLowerCase()) || canonical(target.imageIds)!==canonical(imageIds(d,target.requestGroupId))) throw error('TARGET_CHANGED','项目图片固定目录或分配编号不同');
       if(image) imageGuard(this,this.imageTarget(target));
     }
     return target;

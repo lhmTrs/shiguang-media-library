@@ -19,6 +19,7 @@ function start() {
   child=spawn(process.execPath,['server/index.mjs'],{cwd:root,env:{...process.env,
     NODE_ENV:'production',PORT:String(port),MEDIA_DATA_DIR:dataDir,MEDIA_PERSONAL_ITEM_DIR:path.join(dir,'personal_item'),
     MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_CODEX_AUTOCONNECT:'0',
+    MEDIA_CLOUD_AUDIO_ENABLED:'0',MEDIA_DISABLE_DESKTOP_NATIVE:'1',
     CODEX_HOME:path.join(dir,'codex'),CODEX_BIN:path.join(dir,'no-codex')},stdio:['ignore','pipe','pipe']});
   output='';exit=null;child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   exited=new Promise(resolve=>child.once('exit',(code,signal)=>{exit={code,signal};resolve(exit);}));
@@ -57,6 +58,21 @@ try {
   const receipts=await new Receipts(dataDir).init(),handoff=await receipts.handoff([file]);
   const h=await api('/file-intake/handoffs/'+handoff.id);assert.equal(h.files[0].id,handoff.files[0].id);assert.ok(h.projects.some(p=>p.id===project.id));
   const folders=await api('/file-intake/projects/'+project.id+'/folders');assert.equal(folders.folders[0].id,'root');
+  const options=await api('/file-intake/routing-options');
+  assert.deepEqual(options.projects.find(p=>p.id===project.id).videoFolders,folders.folders);
+  assert.deepEqual(options.photoCategories,[{id:'',name:'待确认',relativePath:''}]);
+  const choice={fileId:h.files[0].id,nameMode:'standard',destination:{kind:'video',scope:'project',projectId:project.id,folderId:'root'}};
+  assert.deepEqual((await api('/file-intake/handoffs/'+handoff.id+'/name-preview',{targets:[choice]})).items,
+    [{fileId:choice.fileId,proposedFileName:project.name+'_001.mp4',proposedNumber:1}]);
+  await assert.rejects(fs.access(path.join(dir,'personal_item','video')),{code:'ENOENT'});
+  assert.deepEqual(await api('/file-intake/theme'),{themeId:null});
+  const themeUrl=origin+'/api/file-intake/theme';
+  const unsigned=await fetch(themeUrl,{method:'PUT',headers:{cookie,'Content-Type':'application/json'},body:'{"themeId":"midnight"}'});
+  assert.equal(unsigned.status,403);
+  assert.deepEqual(await api('/file-intake/theme',{themeId:'midnight'},'PUT'),{themeId:'midnight'});
+  assert.deepEqual(await api('/file-intake/theme',{themeId:'forest',onlyIfUnset:true},'PUT'),{themeId:'midnight'});
+  assert.equal((await api('/file-intake/handoffs/'+handoff.id)).themeId,'midnight');
+  checks.push('Authenticated routing options, read-only filename planning, and guarded shared theme through the App HTTP routes');
   const input={requestId:randomUUID(),projectId:project.id,folderId:'root',fileIds:handoff.files.map(i=>i.id),mode:'copy'};
   const accepted=await api('/file-intake/handoffs/'+handoff.id+'/confirm',input),again=await api('/file-intake/handoffs/'+handoff.id+'/confirm',input);assert.equal(accepted.id,again.id);
   const batch=await finishBatch(accepted.id);assert.equal(batch.status,'completed');assert.equal(batch.items[0].status,'ready');
@@ -72,6 +88,7 @@ try {
   checks.push('no unauthenticated/cross-origin write or arbitrary HTTP path intake');
   await stop();await fs.writeFile(path.join(evidence,'first-app.log'),output);
   start();const restarted=await ready();assert.equal(restarted.instanceId,session.instanceId);
+  assert.deepEqual(await api('/file-intake/theme'),{themeId:'midnight'});
   assert.ok((await api('/file-intake/batches')).batches.some(b=>b.id===batch.id&&b.items[0].status==='ready'));
   assert.equal((await api('/project-videos/projects/'+project.id)).videos.length,1);checks.push('normal owned restart retains exact receipts without recopy');
   passed=true;

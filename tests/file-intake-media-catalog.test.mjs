@@ -558,3 +558,57 @@ test('parent move with raw.reused retains its disposable original and never invo
   assert.equal(f.managed.read(null,item.requestId).reused,true);assert.equal(trashed,0);assert.deepEqual(await fs.readFile(file),png);
   assert.deepEqual(await fs.readFile(f.lib.asset(existing.assetId).path),png);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM assets').get().n,1);
 });
+
+test('routing options do not create roots, and scene/prop intake binds ordered files to the exact active asset revision',async t=>{
+  const f=await fixture(t);
+  f.catalog.project=id=>f.projects.get(id);
+  f.catalog.folders={rows:()=>[]};
+  const intake=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed}).init();
+  t.after(()=>intake.close());
+  const scene=await f.assets.create({project_id:f.project.id,kind:'scene',name:'场景甲'});
+  const prop=await f.assets.create({project_id:f.project.id,kind:'prop',name:'道具乙'});
+  const old=await f.assets.create({project_id:f.project.id,kind:'scene',name:'归档资产'});
+  f.assets.archive(old.id,true,old.revision);
+  const opts=await intake.routingOptions(),project=opts.projects.find(p=>p.id===f.project.id);
+  assert.deepEqual(opts.photoCategories,[{id:'',name:'待确认',relativePath:''}]);
+  assert.equal(f.lib.allRoots().length,0);
+  await assert.rejects(fs.access(f.options.directory),{code:'ENOENT'});
+  assert.deepEqual(new Set(project.assets.map(a=>a.id)),new Set([scene.id,prop.id]));
+  assert.deepEqual(project.assets.find(a=>a.id===scene.id),{id:scene.id,name:scene.name,revision:scene.revision,kind:'scene',looks:[],defaultLookId:null});
+
+  const input=async (assets,postfix='')=>{
+    const files=await Promise.all(assets.map(async(_,i)=>{
+      const file=path.join(f.dir,'image-'+i+postfix+'.png');await fs.writeFile(file,Buffer.concat([png,Buffer.from(file)]));return file;
+    }));
+    const h=await intake.receipts.handoff(files);
+    return {h,files,args:{version:2,mode:'copy',requestId:randomUUID(),fileIds:h.files.map(f=>f.id),targets:h.files.map((f,i)=>({
+      fileId:f.id,nameMode:'standard',destination:{kind:'photo',scope:'project',projectId:assets[i].project_id,assetKind:assets[i].kind,assetId:assets[i].id,assetRevision:assets[i].revision},
+    }))}};
+  };
+  const batch=await input([scene,scene,prop]);
+  const preview=await intake.namePreview(batch.h.id,batch.args);
+  assert.deepEqual(preview.items.map(i=>i.proposedFileName),['场景甲_001.png','场景甲_002.png','道具乙_001.png']);
+  await assert.rejects(fs.access(f.options.directory),{code:'ENOENT'});
+  assert.equal(f.assets.get(scene.id).images.length,0);
+  const accepted=await intake.confirm(batch.h.id,batch.args);
+  assert.deepEqual(accepted.items.map(i=>i.plannedFileName),preview.items.map(i=>i.proposedFileName));
+  await settled(intake);
+  const result=intake.dto(intake.batch(accepted.id));
+  assert.equal(result.status,'completed');
+  assert.deepEqual(result.items.map(i=>i.resultFileName),preview.items.map(i=>i.proposedFileName));
+  const after=f.assets.get(scene.id);
+  assert.equal(after.default_image_id,result.items[0].bindingId);
+  assert.deepEqual(after.images.map(i=>i.look_id),[null,null]);
+  assert.equal(f.assets.get(prop.id).default_image_id,result.items[2].bindingId);
+  assert.equal(f.assets.get(prop.id).images.length,1);
+  for(const file of batch.files)await fs.access(file);
+
+  const stale=await input([after],'stale');
+  await f.assets.save(scene.id,{...after,base_info:'其他会话的最新编辑'},after.revision);
+  await assert.rejects(intake.confirm(stale.h.id,stale.args),{code:'IMAGE_TARGET_CONFLICT',accepted:false});
+  assert.equal(f.assets.get(scene.id).images.length,2);
+  const fresh=await input([f.assets.get(scene.id)],'fresh');
+  const more=await intake.confirm(fresh.h.id,fresh.args);await settled(intake);
+  assert.equal(intake.dto(intake.batch(more.id)).items[0].resultFileName,'场景甲_003.png');
+  assert.equal(f.assets.get(scene.id).default_image_id,result.items[0].bindingId);
+});

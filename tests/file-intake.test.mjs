@@ -12,6 +12,7 @@ import {StoryboardDatabase} from '../server/storyboard/database.mjs';
 import {createStoryboardVideo} from '../server/storyboard-video/index.mjs';
 import {ProjectVideos} from '../server/project-videos/store.mjs';
 import {FileIntake} from '../server/file-intake/store.mjs';
+import {IntakePreferences} from '../server/file-intake/preferences.mjs';
 import {Receipts,inspectSelection,selectionHash} from '../server/file-intake/files.mjs';
 import {workflow,plist,shellQuote} from '../server/file-intake/native.mjs';
 
@@ -296,4 +297,49 @@ test('相同回执目录切到另一素材库不改写旧批次或统计旧任�
   await f.intake.receipts.write('batches',id,row);const file=path.join(f.intake.receipts.base,'batches',id+'.json'),before=await fs.readFile(file);
   const foreign=await new FileIntake({dataDir:f.dataDir,libraryId:'different-library',catalog:f.catalog,projects:f.projects}).init();
   try{assert.equal(foreign.list().batches.length,0);assert.equal(foreign.status().activeCount,0);assert.equal(foreign.status().needsAttention,0);assert.deepEqual(await fs.readFile(file),before);}finally{await foreign.close();}
+});
+
+test('project-video preview is read-only; concurrent confirms reserve names and replay keeps the original choice',async t=>{
+  const f=await fixture(t);
+  f.intake.preferences=await new IntakePreferences({dataDir:f.dataDir,libraryId:f.intake.libraryId}).init();
+  f.intake.generic={}; // all writes go through the real project-video catalog
+  const root=await f.catalog.folders.rootPath(f.project.id),make=async(name,file,manual)=>{
+    const h=await f.intake.receipts.handoff([file]),destination={kind:'video',scope:'project',projectId:f.project.id,folderId:name};
+    if(manual)destination.fileName=manual;
+    const args={version:2,requestId:randomUUID(),mode:'copy',standardNames:true,fileIds:h.files.map(i=>i.id),
+      targets:h.files.map(i=>({fileId:i.id,nameMode:'standard',destination}))};
+    return {h,args};
+  };
+  const a=await make('root',f.file);
+  assert.deepEqual((await f.intake.namePreview(a.h.id,a.args)).items.map(i=>i.proposedFileName),['右键项目_001.mp4']);
+  await assert.rejects(fs.access(root),{code:'ENOENT'});
+  await assert.rejects(fs.access(f.intake.preferences.file),{code:'ENOENT'});
+  const folder=await f.catalog.folders.create(f.project.id,{name:'外景',parentId:'root',requestId:randomUUID()});
+  const bFile=path.join(f.dir,'clip2.mp4'),cFile=path.join(f.dir,'clip3.mp4');
+  const bytes=await fs.readFile(f.file);
+  await fs.writeFile(bFile,Buffer.concat([bytes,Buffer.from('two')]));
+  await fs.writeFile(cFile,Buffer.concat([bytes,Buffer.from('three')]));
+  const b=await make(folder.id,bFile),c=await make(folder.id,cFile);
+  const folderPath=path.join(root,'外景'),prefix='右键项目_外景_';
+  await fs.writeFile(path.join(folderPath,prefix+'008.mov'),bytes);
+  assert.equal((await f.intake.namePreview(b.h.id,b.args)).items[0].proposedNumber,9);
+  await fs.writeFile(path.join(folderPath,prefix+'009.mp4'),bytes);
+  const kick=f.intake.kick.bind(f.intake);
+  f.intake.kick=()=>{};
+  const [acceptedB,acceptedC]=await Promise.all([f.intake.confirm(b.h.id,b.args),f.intake.confirm(c.h.id,c.args)]);
+  assert.deepEqual([acceptedB,acceptedC].map(b=>b.items[0].plannedFileName),[prefix+'010.mp4',prefix+'011.mp4']);
+  const replay=await f.intake.confirm(b.h.id,b.args);
+  assert.equal(replay.items[0].plannedFileName,prefix+'010.mp4');
+  assert.deepEqual(replay.items[0].destination,b.args.targets[0].destination);
+  assert.equal(replay.items[0].nameMode,'standard');
+  assert.equal(f.intake.intakePreferences().routingPreferences.lastVideoFolderByProject[f.project.id],folder.id);
+  assert.equal(f.intake.intakePreferences().routingPreferences.standardNames,true);
+  await assert.rejects(f.intake.confirm(b.h.id,{...b.args,standardNames:false}),{code:'INTAKE_ALREADY_ACCEPTED'});
+  const manual=await make(folder.id,f.file,'手动.mp4');
+  assert.equal((await f.intake.namePreview(manual.h.id,manual.args)).items[0].proposedFileName,'手动.mp4');
+  f.intake.kick=kick;kick();await settled(f.intake);
+  for(const b of [acceptedB,acceptedC]){
+    const item=f.intake.dto(f.intake.batch(b.id)).items[0];
+    assert.equal(item.status,'ready',item.error);assert.equal(item.resultFileName,item.plannedFileName);
+  }
 });
