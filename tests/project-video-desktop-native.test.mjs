@@ -325,3 +325,28 @@ test('SIGTERM escalates to SIGKILL; unconfirmed exit makes close fail visibly', 
   // close preserves its truthful original unsettled result.
   await assert.rejects(native.close(), failure('NATIVE_EXIT_UNSETTLED'));
 });
+
+test('image and video clipboard mutations through the shared helper cannot overlap check/write', async t=>{
+  const native=new ProjectVideoDesktopNative({directory:'/tmp/unused-fixture'});
+  t.after(()=>native.close());
+  native.helper=async()=>'/tmp/owned-stub';
+  let version=11, writes=[], called=[], admit, entered;
+  const hold=new Promise(r=>{admit=r;}), firstRead=new Promise(r=>{entered=r;});
+  native.invoke=async(_binary,args)=>{
+    if(args.operation==='clipboard-version')return {changeCount:version};
+    called.push(args.paths[0]);
+    if(args.expectedChangeCount!==version)throw Object.assign(Error('changed'),{code:'CLIPBOARD_CHANGED',effectUnknown:false});
+    if(args.paths[0].endsWith('.png')){entered();await hold;}
+    writes.push(args.paths[0]);version++;
+    return {ack:'written',count:1,changeCount:version};
+  };
+  const expected=await native.clipboardVersion();
+  const a=native.copyFiles(['/tmp/owned.png'],{expectedChangeCount:expected});
+  await firstRead;
+  const b=native.copyFiles(['/tmp/owned.mp4'],{expectedChangeCount:await native.clipboardVersion()});
+  const failed=assert.rejects(b,{code:'CLIPBOARD_CHANGED'});
+  await new Promise(r=>setImmediate(r));
+  assert.deepEqual(called,['/tmp/owned.png']);
+  admit();await a;await failed;
+  assert.deepEqual(writes,['/tmp/owned.png']);
+});
