@@ -104,7 +104,9 @@ export function suggest(file, ctx) {
       if (tail && matchInProject(own, tail)) { project = own; text = tail; }
       else hint = '名字里有项目「' + own.name + '」，但没对上人物、场景或道具';
     }
-    if (!project) project = batch || lastProject('photo');
+    // A project name whose remainder matches nothing stays a general photo with a hint:
+    // it must not fall through to another project or become a new character named after the project.
+    if (!project && !own) project = batch || lastProject('photo');
     const found = project && matchInProject(project, text);
     if (found?.type === 'asset') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, assetKind: found.asset.kind, assetId: found.asset.id, assetRevision: found.asset.revision},
       group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};

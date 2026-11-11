@@ -94,6 +94,10 @@ test('photo: project prefix switches project only when the rest matches', () => 
   assert.equal(one(ph('雨巷小满_校服.png'), {lastProjectId: {photo: P1, video: P3}}).destination.projectId, P3);
   const s = one(ph('穿越计图片3.png'));
   assert.equal(s.destination.scope, 'library'); assert.match(s.hint, /穿越计/);
+  // Review counterexample: project prefix + separator + unmatched rest must not become new character 「穿越计」.
+  const t = one(ph('穿越计_天台.png'));
+  assert.equal(t.destination.scope, 'library'); assert.equal(t.decision, undefined); assert.match(t.hint, /穿越计/);
+  assert.equal(suggestAll([ph('穿越计_天台.png')], options, prefs)['穿越计_天台.png'].destination.scope, 'library');
 });
 
 test('photo follows the project this batch points at', () => {
