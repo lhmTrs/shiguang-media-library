@@ -18,6 +18,7 @@ import {useImageDesktopAction, capability, actionPending, skippedText, revealDis
 type Kind = 'character' | 'scene' | 'prop';
 type Look = { id: string; name: string; description: string; tags: string[]; default_image_id: string | null; archived_at: number | null; revision?: number };
 // 裁切来源（后端记录）：null 旧记录未知；untouched 从未调整；manual 用户拖过；auto 采用了自动框到头部。
+// crop_manually_edited 是后端保留的人工历史：拖过一次以后，即使框又回到默认值、来源回到 untouched，也不再自动框。
 type CropSource = 'untouched' | 'manual' | 'auto';
 type HeadState = 'idle' | 'loading' | 'found' | 'not_found' | 'unsupported' | 'busy' | 'error' | 'stale';
 const headText: Record<HeadState, string> = {
@@ -27,7 +28,7 @@ const headText: Record<HeadState, string> = {
 };
 // 「重新框到头部」：认不出、不支持、图已变化时再点也没用，先停用；正忙或出错可以再试。
 const headRetry = (h: HeadState) => !['loading', 'not_found', 'unsupported', 'stale'].includes(h);
-type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number; expected_sha256?: string | null; crop_source?: CropSource | null; was_card_default?: boolean };
+type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number; expected_sha256?: string | null; crop_source?: CropSource | null; crop_manually_edited?: boolean; was_card_default?: boolean };
 type Asset = { id: string; project_id: string; kind: Kind; name: string; base_info: string; performance_info: string; details: Record<string, string>; revision: number; default_look_id: string | null; default_image_id: string | null; archived_at: number; storyboard_protected?: boolean; looks: Look[]; images: Binding[]; updated_at: number; created_at: number; source: null | { project_name: string; asset_name: string; revision: number; copied_at: number }; cover?: Binding | null; look_count?: number };
 type Scope = { id: string; name: string; project_kind: string };
 type Health = { id: string; state: string; label: string };
@@ -78,6 +79,13 @@ function CroppedImage({ binding, alt = '' }: { binding: Binding; alt?: string })
     style={{ position: 'absolute', width: `${zoom * 100}%`, height: `${zoom * 100}%`, maxWidth: 'none',
       left: `${(1 - zoom) * x}%`, top: `${(1 - zoom) * y}%`, objectFit: 'cover', objectPosition: `${x}% ${y}%` }}
     />
+}
+type CropBase = { id: string; identity: string; crop: Binding['crop']; source: CropSource | null };
+const cropBase = (b: Binding): CropBase => ({ id: b.id, identity: imageIdentity(b), crop: { ...b.crop }, source: b.crop_source ?? null });
+// 保存头像前的前提：仍是同一张默认图（同一绑定、同一图片内容），裁切和来源都没被别处改过。
+function cropBaseHolds(a: Asset, base: CropBase) {
+  const b = a.images.find(i => i.id === base.id);
+  return !!b && !b.archived_at && coverOf(a)?.id === base.id && imageIdentity(b) === base.identity && sameValue(b.crop, base.crop) && (b.crop_source ?? null) === base.source;
 }
 function coverOf(a: Asset) { const l = a.looks?.find(l => l.id === a.default_look_id); return a.images?.find(b => b.id === (a.kind === 'character' ? l?.default_image_id : a.default_image_id)) ?? null; }
 // Display fields a card quick action may change, recorded before/after so 撤销 can reverse exactly them.
@@ -154,7 +162,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // Card quick actions (menu / pick default image / adjust avatar) and the 撤销 toast after a quick save.
   // crop 面板：source 是这次要提交的裁切来源（拖过 manual，采用建议 auto）；head 是自动框状态；
   // seq 每次请求或拖动都加一，晚于用户操作返回的识别结果按 seq 丢弃。
-  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number } | null>(null);
+  // base：打开「调整头像」时的默认图身份与裁切，点「完成」前用最新记录核对，变了就不覆盖。
+  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
   // 详情图片设置里的裁切：只有「重新框到头部」，不在打开时自动改草稿。
   const [detailHead, setDetailHead] = useState<{ id: string; head: HeadState } | null>(null);
   const headSeq = useRef(0), detailSeq = useRef(0);
@@ -378,8 +387,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   function openCrop(a: Asset, at: { x: number; y: number }) {
     const cover = coverOf(a); if (!cover) return;
     const seq = ++headSeq.current;
-    setQuick({ id: a.id, mode: 'crop', x: at.x, y: at.y, crop: cover.crop, head: 'idle', seq });
-    if (cover.crop_source === 'untouched') void reframeQuick(a.id, cover, seq);
+    setQuick({ id: a.id, mode: 'crop', x: at.x, y: at.y, crop: cover.crop, head: 'idle', seq, base: cropBase(cover) });
+    if (cover.crop_source === 'untouched' && !cover.crop_manually_edited) void reframeQuick(a.id, cover, seq);
   }
   async function reframeQuick(id: string, cover: Binding, seq = ++headSeq.current) {
     setQuick(q => q && q.id === id && q.mode === 'crop' ? { ...q, head: 'loading', seq } : q);
@@ -739,7 +748,10 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
         <div className="ca-quick-cropbox"><CropBox src={bindingSrc(cover!)} alt={cover!.last_known_name || '默认图'} crop={crop} aspect={aspect} onChange={dragQuick}/>{head !== 'idle' && <span className={'ca-head-hint' + (head === 'found' ? ' is-found' : head === 'loading' ? '' : ' is-miss')} role="status">{headText[head]}</span>}</div>
         <div className="ca-quick-preview"><small>列表里会这样显示</small><span className={'ca-quick-cover' + (a.kind === 'character' ? '' : ' is-landscape')}><CroppedImage binding={{ ...cover!, crop }}/></span><button type="button" className="ca-head-reframe" disabled={!headRetry(head) || !!busy} onClick={() => void reframeQuick(a.id, cover!)}><ScanFace size={14}/>重新框到头部</button><small>只改列表里怎么显示，原图不动；复制出去的仍是整张原图。</small></div>
       </div>
-      <footer><span/><span className="ca-quick-actions"><button type="button" onClick={() => setQuick(null)}>取消</button><button type="button" className="ca-primary" disabled={!!busy} onClick={() => { const c = crop; setQuick(null); void quickSave(a.id, '正在保存头像…', x => { const img = x.images.find(i => i.id === cover!.id); if (img) { img.crop = c; if (source) img.crop_source = source; } }, () => '已更新「' + a.name + '」的头像'); }}>完成</button></span></footer>
+      <footer><span/><span className="ca-quick-actions"><button type="button" onClick={() => setQuick(null)}>取消</button><button type="button" className="ca-primary" disabled={!!busy} onClick={() => { const c = crop, base = quick!.base ?? cropBase(cover!); setQuick(null); void quickSave(a.id, '正在保存头像…', x => {
+        // 以打开面板时的默认图为前提：别处换了图、换了默认图或改了裁切，就不覆盖，请用户重新打开。
+        if (!cropBaseHolds(x, base)) throw Error('「' + a.name + '」的默认图或头像刚在别处改过，没有覆盖。请重新打开「调整头像」');
+        const img = x.images.find(i => i.id === base.id)!; img.crop = c; if (source) img.crop_source = source; }, () => '已更新「' + a.name + '」的头像'); }}>完成</button></span></footer>
     </div>;
   }
 

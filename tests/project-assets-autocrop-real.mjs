@@ -13,14 +13,17 @@ import { chromium, expect } from '@playwright/test';
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-autocrop-real-'))), images = path.join(temp, '合成照片'); await fs.mkdir(images);
 const ffmpeg = process.env.FFMPEG_PATH || '/opt/homebrew/bin/ffmpeg';
-for (const [name, color, w] of [['无脸.png', 'gray', 601], ['正脸.png', 'red', 600], ['侧身.png', 'blue', 602], ['背影.png', 'green', 603]]) {
-  const run = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=${w}x800`, '-frames:v', '1', path.join(images, name)]);
+// 替身按宽度奇偶决定有没有脸，所以固定 RGB（不做色度抽样，否则奇数宽会被补成偶数），并直接校验生成宽度。
+for (const [name, color, w] of [['无脸.png', 'gray', 601], ['正脸.png', 'red', 600], ['侧身.png', 'blue', 602], ['背影.png', 'green', 603], ['近景.png', 'yellow', 604]]) {
+  const file = path.join(images, name);
+  const run = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=${w}x800,format=rgb24`, '-frames:v', '1', file]);
   assert.equal(run.status, 0, run.stderr?.toString());
+  assert.equal((await fs.readFile(file)).readUInt32BE(16), w, name + ' keeps its width');
 }
 const nativeLog = path.join(temp, 'native.jsonl'); await fs.writeFile(nativeLog, '');
 const stub = path.join(root, 'tests/helpers/asset-desktop-native-stub.mjs');
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
-let logs = '', browser, page, cookie, token, passed = false; const checks = [], errors = [], headRequests = [];
+let logs = '', browser, page, cookie, token, passed = false; const checks = [], errors = [], headRequests = [], assetPuts = [];
 const child = spawn(process.execPath, ['--import', stub, 'server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal_item'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', ASSET_NATIVE_LOG: nativeLog }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
@@ -57,7 +60,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  page.on('request', r => { if (r.url().includes('/head-box')) headRequests.push(r.url()); });
+  page.on('request', r => { if (r.url().includes('/head-box')) headRequests.push(r.url()); if (r.method() === 'PUT' && /\/api\/project-assets\/assets\/[^/]+$/.test(new URL(r.url()).pathname)) assetPuts.push(r.url()); });
   await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
 
   await check('换默认图：首次成为默认、没调整过的正脸图在同一次保存里自动框头部；提示说明；撤销恢复默认图、裁切和来源', async () => {
@@ -91,6 +94,40 @@ try {
     await panel.getByRole('button', { name: '重新框到头部' }).click(); await expect(panel.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
     await panel.getByRole('button', { name: '取消' }).click();
     b = await image(hero.a, hero.ids[1]); assert.equal(b.crop_source, 'manual', 'cancel saves nothing');
+  });
+
+  await check('R1 人工历史：调过的图被还原成默认框和 untouched 后，打开不自动请求；显式「重新框到头部」仍可用，保存后人工历史保留', async () => {
+    const a = await asset(hero.a.id), b = a.images.find(i => i.id === hero.ids[1]); assert.equal(b.crop_source, 'manual');
+    b.crop = { ...DEFAULT }; b.crop_source = 'untouched'; await api('/project-assets/assets/' + a.id, { asset: a, expected_revision: a.revision }, 'PUT');
+    let back = await image(hero.a, hero.ids[1]); assert.equal(back.crop_source, 'untouched'); assert.equal(back.crop_manually_edited, true); assert.deepEqual(back.crop, DEFAULT);
+    await reopen(project); headRequests.length = 0;
+    const panel = await openCrop('阿青'); await page.waitForTimeout(400);
+    assert.equal(headRequests.length, 0, 'manual history never auto-requests'); await expect(panel.getByRole('status')).toHaveCount(0);
+    await panel.getByRole('button', { name: '重新框到头部' }).click(); await expect(panel.getByRole('status')).toHaveText('已自动框到头部，可以再拖'); assert.equal(headRequests.length, 1);
+    await panel.getByRole('button', { name: '完成' }).click(); await expect(undoToast()).toContainText('已更新「阿青」的头像'); await idle();
+    back = await image(hero.a, hero.ids[1]); assert.equal(back.crop_source, 'auto'); assert.deepEqual(back.crop, suggested.crop); assert.equal(back.crop_manually_edited, true, 'manual history kept');
+  });
+
+  await check('R2 保存前核对：面板打开期间别处换了图或改了裁切，点「完成」不写入、说明要重新打开，对方的裁切保持', async () => {
+    const third = await make('阿禾', ['近景.png']); await reopen(project); await expect(wrap('阿禾')).toBeVisible();
+    const MANUAL = { x: 27, y: 34, zoom: 1.6 };
+    const elsewhere = {
+      换图: x => { const b = x.images.find(i => i.id === third.ids[0]); b.media_asset_id = media['侧身.png'].id; b.last_known_name = '侧身.png'; delete b.expected_sha256; b.crop = { ...MANUAL }; b.crop_source = 'manual'; },
+      改裁切: x => { const b = x.images.find(i => i.id === third.ids[0]); b.crop = { x: 10, y: 20, zoom: 1.2 }; b.crop_source = 'manual'; },
+    };
+    for (const [label, change] of Object.entries(elsewhere)) {
+      const panel = await openCrop('阿禾');
+      await panel.getByRole('button', { name: '重新框到头部' }).click(); await expect(panel.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
+      const a = await asset(third.a.id); change(a); await api('/project-assets/assets/' + a.id, { asset: a, expected_revision: a.revision }, 'PUT');
+      const theirs = await image(third.a, third.ids[0]); assert.equal(theirs.crop_source, 'manual', label);
+      const puts = assetPuts.length;
+      await panel.getByRole('button', { name: '完成' }).click();
+      await expect(page.getByText('「阿禾」的默认图或头像刚在别处改过，没有覆盖。请重新打开「调整头像」').first()).toBeVisible(); await idle();
+      assert.equal(assetPuts.length, puts, label + ': nothing written');
+      const after = await image(third.a, third.ids[0]); assert.deepEqual(after.crop, theirs.crop, label); assert.equal(after.crop_source, 'manual', label); assert.equal(after.media_asset_id, theirs.media_asset_id, label);
+      await expect(undoToast()).toHaveCount(0);
+      await reopen(project);
+    }
   });
 
   await check('认不出头部：框保持原样并说明，「重新框到头部」停用', async () => {
