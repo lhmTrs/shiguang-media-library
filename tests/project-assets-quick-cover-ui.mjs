@@ -26,13 +26,13 @@ const work = () => page.getByRole('region', { name: '项目资产库' });
 const wrap = name => work().locator('.ca-card-wrap').filter({ has: page.locator('strong', { hasText: new RegExp('^' + name + '$') }) });
 const undoToast = () => page.locator('.ca-undo-toast');
 const asset = id => api('/project-assets/assets/' + id);
-let puts = 0;
+let puts = 0, project;
 const shot = async name => { if (process.env.QUICK_COVER_SHOTS) await page.screenshot({ path: path.join(process.env.QUICK_COVER_SHOTS, name + '.png') }); };
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
   const sessionResponse = await fetch(origin + '/api/session'), session = await sessionResponse.json(); cookie = sessionResponse.headers.get('set-cookie').split(';')[0]; token = session.token;
-  const project = await api('/projects', { name: '快捷封面短片' });
+  project = await api('/projects', { name: '快捷封面短片' });
   await api('/roots', { path: images, kind: 'photo' }); await expect.poll(async () => (await api('/jobs')).jobs.every(j => j.status !== 'running'), { timeout: 20000 }).toBe(true);
   const listed = await api('/assets?kind=photo'), media = Object.fromEntries((listed.assets ?? listed.items).map(m => [m.name, m]));
   let hero = await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '阿青' });
@@ -126,6 +126,46 @@ try {
     await page.getByRole('dialog', { name: '换阿青的默认图' }).getByRole('button', { name: '设为默认：日常.png' }).click();
     await expect(page.getByText('这个人物有未保存的修改，请先保存或放弃修改，再改默认图或头像').first()).toBeVisible();
     assert.equal(puts, before, 'nothing saved'); assert.equal((await asset(hero.id)).default_look_id, swim);
+  });
+
+  await check('撤销遇到本窗口未保存草稿先拦下且保留撤销；图片已归档或换图时不写入（ASSETS-QUICK-COVER-2 反例）', async () => {
+    const other = async fn => { const a = await asset(hero.id); fn(a); return api('/project-assets/assets/' + hero.id, { asset: a, expected_revision: a.revision }, 'PUT'); };
+    const fresh = async () => { await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible(); };
+    const cropOnCard = async () => {
+      await wrap('阿青').click({ button: 'right' }); await page.getByRole('menuitem', { name: '调整头像…' }).click();
+      const panel = page.getByRole('dialog', { name: '调整阿青的头像' }); await panel.locator('.ca-quick-cropbox [tabindex]').first().focus();
+      for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+      await panel.getByRole('button', { name: '完成' }).click(); await expect(undoToast()).toContainText('已更新「阿青」的头像');
+    };
+    const cover = async () => { const a = await asset(hero.id); return a.looks.find(l => l.id === a.default_look_id).default_image_id; };
+    // R2: detail open (clean) → quick crop → type an unsaved note → 撤销 is refused, nothing written, 撤销 stays.
+    await fresh(); await work().locator('.ca-card').filter({ hasText: '阿青' }).first().click();
+    const target = await cover(); await cropOnCard(); const croppedRevision = (await asset(hero.id)).revision;
+    await work().getByLabel('基础信息', { exact: true }).fill('撤销前写的草稿');
+    let before = puts;
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect(page.getByText('这个人物有未保存的修改，请先保存或放弃修改，再撤销').first()).toBeVisible();
+    assert.equal(puts, before); assert.equal((await asset(hero.id)).revision, croppedRevision); await expect(undoToast()).toBeVisible();
+    await work().getByRole('button', { name: '保存资料' }).click();
+    await expect.poll(async () => (await asset(hero.id)).base_info).toBe('撤销前写的草稿');
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect.poll(async () => (await asset(hero.id)).images.find(b => b.id === target).crop).toEqual({ x: 50, y: 50, zoom: 1 });
+    assert.equal((await asset(hero.id)).base_info, '撤销前写的草稿', 'the saved note survives the undo');
+    // R3a: the cropped image is archived elsewhere (default moved to another image) → no write.
+    await fresh(); const first = await cover(); await cropOnCard();
+    const other2 = (await asset(hero.id)).images.find(b => b.look_id === swim && b.id !== first).id;
+    await other(a => { a.looks.find(l => l.id === swim).default_image_id = other2; a.images.find(b => b.id === first).archived_at = Date.now(); });
+    let a = await asset(hero.id), crop = a.images.find(b => b.id === first).crop; before = puts;
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect(page.getByText('相关图片已经归档或换成了别的图，没有撤销').first()).toBeVisible();
+    assert.equal(puts, before); assert.deepEqual((await asset(hero.id)).images.find(b => b.id === first).crop, crop);
+    // R3b: the same binding gets a different picture elsewhere (id and crop kept) → no write.
+    await fresh(); const second = await cover(); await cropOnCard();
+    await other(a => { a.images.find(b => b.id === second).media_asset_id = media['日常.png'].id; });
+    a = await asset(hero.id); crop = a.images.find(b => b.id === second).crop; before = puts;
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect(page.getByText('相关图片已经归档或换成了别的图，没有撤销').first()).toBeVisible();
+    assert.equal(puts, before); assert.deepEqual((await asset(hero.id)).images.find(b => b.id === second).crop, crop);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

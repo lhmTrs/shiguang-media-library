@@ -16,7 +16,7 @@ import {CropBox,type Crop} from './CropBox';
 
 type Kind = 'character' | 'scene' | 'prop';
 type Look = { id: string; name: string; description: string; tags: string[]; default_image_id: string | null; archived_at: number | null; revision?: number };
-type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number };
+type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number; expected_sha256?: string | null };
 type Asset = { id: string; project_id: string; kind: Kind; name: string; base_info: string; performance_info: string; details: Record<string, string>; revision: number; default_look_id: string | null; default_image_id: string | null; archived_at: number; storyboard_protected?: boolean; looks: Look[]; images: Binding[]; updated_at: number; created_at: number; source: null | { project_name: string; asset_name: string; revision: number; copied_at: number }; cover?: Binding | null; look_count?: number };
 type Scope = { id: string; name: string; project_kind: string };
 type Health = { id: string; state: string; label: string };
@@ -71,7 +71,10 @@ function CroppedImage({ binding, alt = '' }: { binding: Binding; alt?: string })
 function coverOf(a: Asset) { const l = a.looks?.find(l => l.id === a.default_look_id); return a.images?.find(b => b.id === (a.kind === 'character' ? l?.default_image_id : a.default_image_id)) ?? null; }
 // Display fields a card quick action may change, recorded before/after so 撤销 can reverse exactly them.
 type DisplayChange = { field: 'default_look_id' | 'default_image_id' | 'look_default' | 'crop'; id?: string };
-type DisplayChangeEntry = DisplayChange & { before: unknown; after: unknown };
+// guards: the images this change is about, as they were right after the quick save. 撤销 only runs
+// while each is still live and still the same picture (same media, look and content digest).
+type DisplayChangeEntry = DisplayChange & { before: unknown; after: unknown; guards: { id: string; identity: string }[] };
+const imageIdentity = (b: Binding) => JSON.stringify([b.media_asset_id, b.look_id ?? null, b.expected_sha256 ?? null]);
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 function readDisplay(a: Asset, c: DisplayChange): unknown {
   if (c.field === 'default_look_id' || c.field === 'default_image_id') return a[c.field];
@@ -79,16 +82,25 @@ function readDisplay(a: Asset, c: DisplayChange): unknown {
   return a.images.find(b => b.id === c.id)?.crop;
 }
 // Writes a value back; refuses when the look or image it points at is gone or archived.
+function guardsHold(a: Asset, c: DisplayChangeEntry): boolean {
+  return c.guards.every(g => { const b = a.images.find(i => i.id === g.id); return !!b && !b.archived_at && imageIdentity(b) === g.identity
+    && (!b.look_id || a.looks.some(l => l.id === b.look_id && !l.archived_at)); });
+}
 function writeDisplay(a: Asset, c: DisplayChange, value: unknown): boolean {
   const liveImage = (id: unknown) => id === null || a.images.some(b => b.id === id && !b.archived_at);
   if (c.field === 'default_look_id') { if (value !== null && !a.looks.some(l => l.id === value && !l.archived_at)) return false; a.default_look_id = value as string | null; return true; }
   if (c.field === 'default_image_id') { if (!liveImage(value)) return false; a.default_image_id = value as string | null; return true; }
   if (c.field === 'look_default') { const l = a.looks.find(l => l.id === c.id); if (!l || l.archived_at || !liveImage(value)) return false; l.default_image_id = value as string | null; return true; }
-  const b = a.images.find(b => b.id === c.id); if (!b) return false; b.crop = value as Binding['crop']; return true;
+  const b = a.images.find(b => b.id === c.id); if (!b || b.archived_at) return false; b.crop = value as Binding['crop']; return true;
 }
 function displayChanges(before: Asset, after: Asset): DisplayChangeEntry[] {
   const out: DisplayChangeEntry[] = [];
-  const add = (c: DisplayChange) => { const b = readDisplay(before, c), a = readDisplay(after, c); if (!sameValue(b, a)) out.push({ ...c, before: b, after: a }); };
+  const guard = (id: unknown) => { const b = typeof id === 'string' ? after.images.find(i => i.id === id) : undefined; return b ? [{ id: b.id, identity: imageIdentity(b) }] : []; };
+  const add = (c: DisplayChange) => {
+    const b = readDisplay(before, c), a = readDisplay(after, c); if (sameValue(b, a)) return;
+    const guards = c.field === 'crop' ? guard(c.id) : c.field === 'default_look_id' ? [] : [...guard(b), ...guard(a)];
+    out.push({ ...c, before: b, after: a, guards });
+  };
   add({ field: 'default_look_id' }); add({ field: 'default_image_id' });
   after.looks.forEach(l => add({ field: 'look_default', id: l.id }));
   after.images.forEach(b => add({ field: 'crop', id: b.id }));
@@ -297,12 +309,15 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // 撤销 reverses exactly the fields this quick save changed, and only while each still holds the
   // value it saved: a field changed elsewhere since then is a conflict (nothing is written), and any
   // other field — including other display settings saved meanwhile — keeps its current value.
+  // Unsaved edits of the same asset in the open detail would be orphaned by the new revision.
+  const undoBlocked = (id: string) => draftRef.current?.id === id && dirtyRef.current;
   async function undoQuick(u: { id: string; changes: DisplayChangeEntry[] }) {
     await run('正在撤销…', async () => {
       const current = await api<Asset>('/assets/' + u.id);
       if (current.archived_at) throw Error('资料已归档，没有撤销');
       const moved = u.changes.filter(c => !sameValue(readDisplay(current, c), c.after));
       if (moved.length) throw Error('这些显示设置在别处又改过了，没有撤销，保留了现在的设置');
+      if (u.changes.some(c => !guardsHold(current, c))) throw Error('相关图片已经归档或换成了别的图，没有撤销');
       const next = structuredClone(current);
       for (const c of u.changes) if (!writeDisplay(next, c, c.before)) throw Error('原来的图片或造型已经不在了，没有撤销');
       let saved: Asset;
@@ -701,7 +716,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
     </fieldset></div>
     {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
-    {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
+    {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; if (undoBlocked(u.id)) { setError('这个' + labels[draftRef.current!.kind] + '有未保存的修改，请先保存或放弃修改，再撤销'); return; } setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
     {active && !scriptView && imageViewer && <ReferenceImageViewer src={imageViewer.src} name={imageViewer.name} onClose={() => setImageViewer(null)}/>}
     {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
