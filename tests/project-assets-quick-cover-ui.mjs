@@ -85,6 +85,34 @@ try {
     await expect.poll(async () => (await asset(hero.id)).images.find(b => b.id === A).crop).toEqual({ x: 50, y: 50, zoom: 1 });
   });
 
+  await check('撤销只还原本次改过的字段：别处随后改的其他设置保留；同一字段被别处改过则不写入（POLISH 独验反例）', async () => {
+    const other = async fn => { const a = await asset(hero.id); fn(a); return api('/project-assets/assets/' + hero.id, { asset: a, expected_revision: a.revision }, 'PUT'); };
+    const cropOnCard = async () => {
+      await wrap('阿青').click({ button: 'right' }); await page.getByRole('menuitem', { name: '调整头像…' }).click();
+      const panel = page.getByRole('dialog', { name: '调整阿青的头像' }); await panel.locator('.ca-quick-cropbox [tabindex]').first().focus();
+      for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+      await panel.getByRole('button', { name: '完成' }).click(); await expect(undoToast()).toContainText('已更新「阿青」的头像');
+    };
+    // 1. Another window then changes different display fields: undo reverts A's crop only.
+    await cropOnCard(); const mine = (await asset(hero.id)).images.find(b => b.id === A).crop;
+    await other(a => { a.default_look_id = daily; a.images.find(b => b.id === C).crop = { x: 31, y: 73, zoom: 1.8 }; });
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect.poll(async () => (await asset(hero.id)).images.find(b => b.id === A).crop).toEqual({ x: 50, y: 50, zoom: 1 });
+    let a = await asset(hero.id);
+    assert.equal(a.default_look_id, daily, 'the other window\'s default look stays'); assert.deepEqual(a.images.find(b => b.id === C).crop, { x: 31, y: 73, zoom: 1.8 }, 'the other crop stays');
+    assert.notDeepEqual(mine, { x: 50, y: 50, zoom: 1 });
+    // 2. Another window changes the same field: undo writes nothing and says so.
+    // (The card now shows 日常's image C — the default look the other window chose.)
+    await cropOnCard(); assert.notDeepEqual((await asset(hero.id)).images.find(b => b.id === C).crop, { x: 31, y: 73, zoom: 1.8 });
+    await other(a => { a.images.find(b => b.id === C).crop = { x: 20, y: 20, zoom: 1.5 }; });
+    const before = puts, revision = (await asset(hero.id)).revision;
+    await undoToast().getByRole('button', { name: '撤销' }).click();
+    await expect(page.getByText('这些显示设置在别处又改过了，没有撤销，保留了现在的设置').first()).toBeVisible();
+    a = await asset(hero.id); assert.deepEqual(a.images.find(b => b.id === C).crop, { x: 20, y: 20, zoom: 1.5 }); assert.equal(a.revision, revision); assert.equal(puts, before, 'no write from the page');
+    // Reset for the next check.
+    await other(a => { a.default_look_id = swim; a.images.find(b => b.id === A).crop = { x: 50, y: 50, zoom: 1 }; a.images.find(b => b.id === C).crop = { x: 50, y: 50, zoom: 1 }; });
+  });
+
   await check('详情里参考图悬停「设为代表图」马上生效；有未保存修改时卡片快捷操作不保存', async () => {
     await work().locator('.ca-card').filter({ hasText: '阿青' }).first().click();
     const tile = work().locator('.ca-tile').filter({ hasText: '泳衣侧面.png' }); await tile.hover();

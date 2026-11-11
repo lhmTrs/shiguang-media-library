@@ -69,6 +69,31 @@ function CroppedImage({ binding, alt = '' }: { binding: Binding; alt?: string })
     />
 }
 function coverOf(a: Asset) { const l = a.looks?.find(l => l.id === a.default_look_id); return a.images?.find(b => b.id === (a.kind === 'character' ? l?.default_image_id : a.default_image_id)) ?? null; }
+// Display fields a card quick action may change, recorded before/after so 撤销 can reverse exactly them.
+type DisplayChange = { field: 'default_look_id' | 'default_image_id' | 'look_default' | 'crop'; id?: string };
+type DisplayChangeEntry = DisplayChange & { before: unknown; after: unknown };
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function readDisplay(a: Asset, c: DisplayChange): unknown {
+  if (c.field === 'default_look_id' || c.field === 'default_image_id') return a[c.field];
+  if (c.field === 'look_default') return a.looks.find(l => l.id === c.id)?.default_image_id;
+  return a.images.find(b => b.id === c.id)?.crop;
+}
+// Writes a value back; refuses when the look or image it points at is gone or archived.
+function writeDisplay(a: Asset, c: DisplayChange, value: unknown): boolean {
+  const liveImage = (id: unknown) => id === null || a.images.some(b => b.id === id && !b.archived_at);
+  if (c.field === 'default_look_id') { if (value !== null && !a.looks.some(l => l.id === value && !l.archived_at)) return false; a.default_look_id = value as string | null; return true; }
+  if (c.field === 'default_image_id') { if (!liveImage(value)) return false; a.default_image_id = value as string | null; return true; }
+  if (c.field === 'look_default') { const l = a.looks.find(l => l.id === c.id); if (!l || l.archived_at || !liveImage(value)) return false; l.default_image_id = value as string | null; return true; }
+  const b = a.images.find(b => b.id === c.id); if (!b) return false; b.crop = value as Binding['crop']; return true;
+}
+function displayChanges(before: Asset, after: Asset): DisplayChangeEntry[] {
+  const out: DisplayChangeEntry[] = [];
+  const add = (c: DisplayChange) => { const b = readDisplay(before, c), a = readDisplay(after, c); if (!sameValue(b, a)) out.push({ ...c, before: b, after: a }); };
+  add({ field: 'default_look_id' }); add({ field: 'default_image_id' });
+  after.looks.forEach(l => add({ field: 'look_default', id: l.id }));
+  after.images.forEach(b => add({ field: 'crop', id: b.id }));
+  return out;
+}
 function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span className="ca-avatar">{b ? <CroppedImage binding={b}/> : a.name.slice(0, 1)}</span>; }
 function Cover({ a }: { a: Asset }) { const b = coverOf(a); return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
@@ -101,7 +126,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   useEffect(() => setCropOpen(false), [imageId]);
   // Card quick actions (menu / pick default image / adjust avatar) and the 撤销 toast after a quick save.
   const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop } | null>(null);
-  const [undo, setUndo] = useState<{ id: string; text: string; before: Asset } | null>(null);
+  const [undo, setUndo] = useState<{ id: string; text: string; changes: DisplayChangeEntry[] } | null>(null);
   useEffect(() => setQuick(null), [active, scope, kind, scriptView]);
   useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(t); }, [undo]);
   const quickRef = useRef<HTMLDivElement>(null);
@@ -264,17 +289,29 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       catch (e: any) { throw Error(String(e.message || '').includes('已经更新') ? '这份资料刚在别处更新过，没有覆盖，请再试一次' : e.message || '保存失败'); }
       if (draftRef.current?.id === id && !dirtyRef.current) install(saved);
       await loadList();
-      const text = message(saved, fresh);
-      setUndo(undoable ? { id, text, before: fresh } : null);
-      if (!undoable) setNotice(text);
+      const text = message(saved, fresh), changes = displayChanges(fresh, saved);
+      setUndo(undoable && changes.length ? { id, text, changes } : null);
+      if (!undoable || !changes.length) setNotice(text);
     });
   }
-  // 撤销 puts back only what a quick action changes (default look, default images, crops).
-  const restoreDisplay = (before: Asset) => (a: Asset) => {
-    a.default_look_id = before.default_look_id; a.default_image_id = before.default_image_id;
-    a.looks.forEach(l => { const o = before.looks.find(x => x.id === l.id); if (o) l.default_image_id = o.default_image_id; });
-    a.images.forEach(b => { const o = before.images.find(x => x.id === b.id); if (o) b.crop = o.crop; });
-  };
+  // 撤销 reverses exactly the fields this quick save changed, and only while each still holds the
+  // value it saved: a field changed elsewhere since then is a conflict (nothing is written), and any
+  // other field — including other display settings saved meanwhile — keeps its current value.
+  async function undoQuick(u: { id: string; changes: DisplayChangeEntry[] }) {
+    await run('正在撤销…', async () => {
+      const current = await api<Asset>('/assets/' + u.id);
+      if (current.archived_at) throw Error('资料已归档，没有撤销');
+      const moved = u.changes.filter(c => !sameValue(readDisplay(current, c), c.after));
+      if (moved.length) throw Error('这些显示设置在别处又改过了，没有撤销，保留了现在的设置');
+      const next = structuredClone(current);
+      for (const c of u.changes) if (!writeDisplay(next, c, c.before)) throw Error('原来的图片或造型已经不在了，没有撤销');
+      let saved: Asset;
+      try { saved = await api<Asset>('/assets/' + u.id, { asset: next, expected_revision: current.revision }, 'PUT'); }
+      catch (e: any) { throw Error(String(e.message || '').includes('已经更新') ? '这份资料刚在别处更新过，没有撤销' : e.message || '撤销失败'); }
+      if (draftRef.current?.id === u.id && !dirtyRef.current) install(saved);
+      await loadList(); setNotice('已撤销');
+    });
+  }
   function setCover(a: Asset, image: Binding) {
     if (a.kind === 'character') { const look = a.looks.find(l => l.id === image.look_id); if (!look) return; look.default_image_id = image.id; a.default_look_id = look.id; }
     else a.default_image_id = image.id;
@@ -664,7 +701,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
     </fieldset></div>
     {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
-    {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; setUndo(null); void quickSave(u.id, '正在撤销…', restoreDisplay(u.before), () => '已撤销', false); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
+    {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
     {active && !scriptView && imageViewer && <ReferenceImageViewer src={imageViewer.src} name={imageViewer.name} onClose={() => setImageViewer(null)}/>}
     {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
