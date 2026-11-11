@@ -126,8 +126,35 @@ try {
       assert.equal(assetPuts.length, puts, label + ': nothing written');
       const after = await image(third.a, third.ids[0]); assert.deepEqual(after.crop, theirs.crop, label); assert.equal(after.crop_source, 'manual', label); assert.equal(after.media_asset_id, theirs.media_asset_id, label);
       await expect(undoToast()).toHaveCount(0);
-      await reopen(project);
+      // 按提示直接重新打开（不整页刷新）：面板是最新的图和框，「重新框到头部」不会拿到过期版本。
+      const again = await openCrop('阿禾'); await expect(again.locator('header small')).toHaveText(after.last_known_name);
+      await again.getByRole('button', { name: '重新框到头部' }).click(); await expect(again.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
+      await again.getByRole('button', { name: '取消' }).click();
     }
+  });
+
+  await check('R3 面板打开期间别处拖过又撤销：框和来源回到原值但留下人工历史，点「完成」也不写入', async () => {
+    const fourth = await make('阿芷', ['无脸.png', '近景.png']);
+    const put = async fn => { const x = await asset(fourth.a.id); fn(x); return api('/project-assets/assets/' + x.id, { asset: x, expected_revision: x.revision }, 'PUT'); };
+    const img = x => x.images.find(i => i.id === fourth.ids[1]);
+    // 近景首次成为默认被自动框，再还原成默认框和 untouched：没有人工历史。
+    await put(x => { x.looks[0].default_image_id = fourth.ids[1]; });
+    await put(x => { img(x).crop = { ...DEFAULT }; img(x).crop_source = 'untouched'; });
+    let b = await image(fourth.a, fourth.ids[1]); assert.equal(b.crop_source, 'untouched'); assert.equal(b.crop_manually_edited, false); assert.deepEqual(b.crop, DEFAULT);
+    await reopen(project); await expect(wrap('阿芷')).toBeVisible();
+    const panel = await openCrop('阿芷'); await expect(panel.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
+    await put(x => { img(x).crop = { x: 20, y: 20, zoom: 1.5 }; });
+    await put(x => { img(x).crop = { ...DEFAULT }; img(x).crop_source = 'untouched'; });
+    b = await image(fourth.a, fourth.ids[1]); assert.equal(b.crop_source, 'untouched'); assert.deepEqual(b.crop, DEFAULT); assert.equal(b.crop_manually_edited, true);
+    const puts = assetPuts.length;
+    await panel.getByRole('button', { name: '完成' }).click();
+    await expect(page.getByText('「阿芷」的默认图或头像刚在别处改过，没有覆盖。请重新打开「调整头像」').first()).toBeVisible(); await idle();
+    assert.equal(assetPuts.length, puts, 'nothing written');
+    b = await image(fourth.a, fourth.ids[1]); assert.deepEqual(b.crop, DEFAULT); assert.equal(b.crop_source, 'untouched');
+    // 重新打开：有人工历史，不自动请求；显式重新框仍可用。
+    headRequests.length = 0; const again = await openCrop('阿芷'); await page.waitForTimeout(400);
+    assert.equal(headRequests.length, 0); await again.getByRole('button', { name: '重新框到头部' }).click(); await expect(again.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
+    await again.getByRole('button', { name: '取消' }).click();
   });
 
   await check('认不出头部：框保持原样并说明，「重新框到头部」停用', async () => {

@@ -80,12 +80,13 @@ function CroppedImage({ binding, alt = '' }: { binding: Binding; alt?: string })
       left: `${(1 - zoom) * x}%`, top: `${(1 - zoom) * y}%`, objectFit: 'cover', objectPosition: `${x}% ${y}%` }}
     />
 }
-type CropBase = { id: string; identity: string; crop: Binding['crop']; source: CropSource | null };
-const cropBase = (b: Binding): CropBase => ({ id: b.id, identity: imageIdentity(b), crop: { ...b.crop }, source: b.crop_source ?? null });
-// 保存头像前的前提：仍是同一张默认图（同一绑定、同一图片内容），裁切和来源都没被别处改过。
+type CropBase = { id: string; identity: string; crop: Binding['crop']; source: CropSource | null; edited: boolean };
+const cropBase = (b: Binding): CropBase => ({ id: b.id, identity: imageIdentity(b), crop: { ...b.crop }, source: b.crop_source ?? null, edited: !!b.crop_manually_edited });
+// 保存头像前的前提：仍是同一张默认图（同一绑定、同一图片内容），裁切、来源和人工历史都没被别处改过
+// （别处拖过再撤销，框和来源回到原值，但人工历史已经留下，也算改过）。
 function cropBaseHolds(a: Asset, base: CropBase) {
   const b = a.images.find(i => i.id === base.id);
-  return !!b && !b.archived_at && coverOf(a)?.id === base.id && imageIdentity(b) === base.identity && sameValue(b.crop, base.crop) && (b.crop_source ?? null) === base.source;
+  return !!b && !b.archived_at && coverOf(a)?.id === base.id && imageIdentity(b) === base.identity && sameValue(b.crop, base.crop) && (b.crop_source ?? null) === base.source && !!b.crop_manually_edited === base.edited;
 }
 function coverOf(a: Asset) { const l = a.looks?.find(l => l.id === a.default_look_id); return a.images?.find(b => b.id === (a.kind === 'character' ? l?.default_image_id : a.default_image_id)) ?? null; }
 // Display fields a card quick action may change, recorded before/after so 撤销 can reverse exactly them.
@@ -384,9 +385,16 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     } catch (e: any) { return { head: e?.status === 409 || e?.code === 'IMAGE_BINDING_STALE' ? 'stale' : 'error' }; }
   }
   // 卡片「调整头像」：裁切从未调整过（untouched）才在打开时自动请求；人工调过或旧记录不动。
-  function openCrop(a: Asset, at: { x: number; y: number }) {
-    const cover = coverOf(a); if (!cover) return;
+  // 打开前先读最新资料：列表可能是旧的（别处刚换了图或改了框），面板和保存前提都以最新记录为准；
+  // 列表和最新记录不一致时顺带刷新列表，面板里显示的就是最新的默认图。
+  async function openCrop(a: Asset, at: { x: number; y: number }) {
     const seq = ++headSeq.current;
+    let fresh = a;
+    try { fresh = await api<Asset>('/assets/' + a.id); } catch { /* 读不到就按列表打开；保存前仍会核对最新记录 */ }
+    if (headSeq.current !== seq) return;
+    const cover = coverOf(fresh), listed = coverOf(a);
+    if (!cover || fresh.archived_at) { setQuick(null); setError('「' + a.name + '」' + (fresh.archived_at ? '已归档，不能调整头像' : '现在没有默认图') + '，列表已刷新'); void loadList(); return; }
+    if (!listed || JSON.stringify(cropBase(listed)) !== JSON.stringify(cropBase(cover))) { await loadList(); if (headSeq.current !== seq) return; }
     setQuick({ id: a.id, mode: 'crop', x: at.x, y: at.y, crop: cover.crop, head: 'idle', seq, base: cropBase(cover) });
     if (cover.crop_source === 'untouched' && !cover.crop_manually_edited) void reframeQuick(a.id, cover, seq);
   }
@@ -731,7 +739,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     if (quick!.mode === 'menu') return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={a.name + '的操作'} style={style}>
       <button role="menuitem" disabled={!cover} onClick={() => void copyDefault(a)}><Copy size={14}/>复制默认图</button>
       <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
-      <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => openCrop(a, quick!)}><Maximize2 size={14}/>调整头像…</button>
+      <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => void openCrop(a, quick!)}><Maximize2 size={14}/>调整头像…</button>
       <hr/>
       <button role="menuitem" onClick={() => { setQuick(null); void openAsset(a.id); }}>打开详情</button>
     </div>;
@@ -750,7 +758,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
       <footer><span/><span className="ca-quick-actions"><button type="button" onClick={() => setQuick(null)}>取消</button><button type="button" className="ca-primary" disabled={!!busy} onClick={() => { const c = crop, base = quick!.base ?? cropBase(cover!); setQuick(null); void quickSave(a.id, '正在保存头像…', x => {
         // 以打开面板时的默认图为前提：别处换了图、换了默认图或改了裁切，就不覆盖，请用户重新打开。
-        if (!cropBaseHolds(x, base)) throw Error('「' + a.name + '」的默认图或头像刚在别处改过，没有覆盖。请重新打开「调整头像」');
+        // 拒绝时顺带刷新列表，按提示重新打开就是最新的图和框。
+        if (!cropBaseHolds(x, base)) { void loadList(); throw Error('「' + a.name + '」的默认图或头像刚在别处改过，没有覆盖。请重新打开「调整头像」'); }
         const img = x.images.find(i => i.id === base.id)!; img.crop = c; if (source) img.crop_source = source; }, () => '已更新「' + a.name + '」的头像'); }}>完成</button></span></footer>
     </div>;
   }
