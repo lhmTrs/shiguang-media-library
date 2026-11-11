@@ -1,0 +1,14 @@
+import type {RoutingOptions, RoutingPreferences, IntakeFile, IntakeDestination} from './types';
+export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'audio-kind'; hint?: string; alternative?: {directory: string; name: string}; follows?: string};
+export const AUDIO_SFX_MAX: number;
+export const AUDIO_MUSIC_MIN: number;
+export function stem(name: string): string;
+export function longestPrefix<T>(items: readonly T[] | undefined, text: string, nameOf?: (item: T) => string): T | null;
+export function isGenericName(name: string): boolean;
+export function audioKindFor(durationSec: number | null | undefined, lastAudioKind?: 'music' | 'sfx' | null): {kind: 'music' | 'sfx'; reason: string} | null;
+export function formatDuration(sec: number | null | undefined): string;
+export function batchProject(files: readonly IntakeFile[], options: RoutingOptions): RoutingOptions['projects'][number] | null;
+export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?: Partial<RoutingPreferences>; batch?: RoutingOptions['projects'][number] | null; forced?: RoutingOptions['projects'][number] | null}): RouteSuggestion;
+export function defaultProject(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): RoutingOptions['projects'][number] | null;
+export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>, forcedProjectId?: string): Record<string, RouteSuggestion>;
+export function barDefault(files: readonly IntakeFile[], options: RoutingOptions, suggestions: Record<string, RouteSuggestion>): {projectId: string | null; mixed: boolean};

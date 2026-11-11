@@ -1,4 +1,6 @@
 // Isolated component checks. No product server, account, library, source media or native registration.
+// The confirmation window itself is covered by tests/file-intake-simple-ui.mjs since INTAKE-SIMPLE;
+// this runner keeps the file-task drawer, receipts, retries and completion notices.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,7 +11,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'confirm-binding', 'drawer-layout', 'selection-proof', 'retry-guidance', 'acknowledgement', 'presets', 'unified-targets', 'legacy'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'drawer-layout', 'retry-guidance', 'acknowledgement'].includes(selectedCase));
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(temp, 'evidence'));
 await fs.mkdir(evidence, {recursive: true});
@@ -170,130 +172,6 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
-  await check('presets only accepted confirmation updates backend preferences; drafts, removed files and refusals do not', async () => {
-    await fresh(true); await choose(); await targetField('目标分类', 'f1').selectOption(folderA);
-    await page.getByRole('button', {name: '移除 合成视频乙.mov', exact: true}).click();
-    await page.reload(); await expect(targetField('收纳范围', 'f1')).toHaveValue('library');
-    assert.deepEqual(fixture.preferences, {}); assert.equal(fixture.confirmBodies.length, 0);
-    await choose(['f1', 'f2'], projectA, folderA);
-    fixture.confirm = 'reject'; await page.getByRole('button', {name: '确认收纳', exact: true}).click();
-    await expect(page.locator('.fi-confirm > .fi-error')).toContainText('目标需要重新选择');
-    assert.deepEqual(fixture.preferences, {});
-    fixture.confirm = 'accept'; await page.getByRole('radio', {name: /移动到素材库/}).check();
-    await page.getByRole('button', {name: '确认收纳', exact: true}).click();
-    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。')).toBeVisible();
-    assert.deepEqual(fixture.preferences, {video: projectTarget(projectA, folderA)});
-    fixture.handoff.batchId = undefined;
-    // A new browser window has no per-window journal; its defaults come from the handoff response.
-    const next = await context.newPage(); page = next; await next.goto(origin + '/#intake');
-    for (const id of ['f1', 'f2']) {
-      await expect(targetField('目标项目', id)).toHaveValue(projectA);
-      await expect(targetField('目标分类', id)).toHaveValue(folderA);
-    }
-    await expect(page.getByRole('radio', {name: /复制并保留原文件/})).toBeChecked();
-    assert.equal(fixture.confirmBodies.length, 2, 'restored defaults never submit');
-    await targetField('目标项目', 'f1').selectOption(projectB);
-    await expect(targetField('目标分类', 'f1')).toHaveValue('root');
-    await expect(targetField('目标分类', 'f2')).toHaveValue(folderA);
-    assert.deepEqual(fixture.preferences, {video: projectTarget(projectA, folderA)});
-  });
-  await check('presets backend per-kind targets override browser caches and do not choose music or sfx for ambiguous audio', async () => {
-    await fresh(true, null, false, false, f => {
-      f.preferences = {video: projectTarget(projectB, folderB), music: {kind: 'music', scope: 'library', directory: '合成分类'}, sfx: {kind: 'sfx', scope: 'library', directory: ''}};
-      f.handoff.files[1] = {id: 'f2', mediaKind: 'audio', name: '合成音频.wav', bytes: 8192, path: '/synthetic/合成音频.wav'};
-    });
-    await page.evaluate(() => {
-      localStorage.setItem('shiguang.importTarget.v1:synthetic-instance:video', JSON.stringify({projectId: 'missing-project', folderId: 'deleted-folder'}));
-      localStorage.setItem('shiguang.importTarget.v1:another-library:video', JSON.stringify({projectId: 'foreign-project', folderId: 'foreign-folder'}));
-    });
-    await page.reload(); await expect(targetField('目标项目', 'f1')).toHaveValue(projectB);
-    await expect(targetField('目标分类', 'f1')).toHaveValue(folderB);
-    await expect(targetField('素材类型', 'f2')).toHaveValue('');
-    await expect(page.getByRole('button', {name: '确认收纳', exact: true})).toBeDisabled();
-    await targetField('素材类型', 'f2').selectOption('music');
-    await expect(targetField('目标分类', 'f2')).toHaveValue('合成分类');
-    await expect(page.getByRole('button', {name: '确认收纳', exact: true})).toBeEnabled();
-    assert.equal(fixture.confirmBodies.length, 0);
-    assert.equal(requests.filter(r => r.method === 'POST' && r.path.endsWith('/preferences')).length, 0);
-  });
-  await check('presets unknown version2 submission keeps each fixed destination despite different backend defaults', async () => {
-    await fresh(true);
-    const journal = {version: 2, requestId: '22222222-2222-4222-8222-222222222222', mode: 'move', fileIds: ['f1', 'f2'], targets: [{fileId: 'f1', destination: projectTarget(projectA, folderA)}, {fileId: 'f2', destination: {kind: 'video', scope: 'library', directory: '合成分类'}}]};
-    fixture.preferences = {video: projectTarget(projectB, folderB)};
-    await page.evaluate(({id, journal}) => sessionStorage.setItem('shiguang.file-intake.' + id, JSON.stringify(journal)), {id: handoffId, journal});
-    await page.reload(); await expect(targetField('目标项目', 'f1')).toHaveValue(projectA);
-    await expect(targetField('目标分类', 'f1')).toHaveValue(folderA);
-    await expect(targetField('目标分类', 'f2')).toHaveValue('合成分类');
-    for (const id of ['f1', 'f2']) await expect(targetField('收纳范围', id)).toBeDisabled();
-    await expect(page.getByRole('radio', {name: /移动到素材库/})).toBeChecked();
-    await page.getByRole('button', {name: '核对原提交结果', exact: true}).click();
-    await expect(page.locator('.fi-confirm > .fi-error')).toContainText('尚未取得权威批次回执');
-    assert.equal(fixture.confirmBodies.length, 0);
-    assert.deepEqual(await page.evaluate(id => JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id)), handoffId), journal);
-  });
-  await check('presets backend filters removed projects; missing folders and categories fall back without submitting or trusting another library cache', async () => {
-    await fresh(true, null, false, false, f => {f.preferences = {video: projectTarget(projectA, folderA)}; f.handoff.projects = f.handoff.projects.filter(p => p.id !== projectA);});
-    await expect(targetField('收纳范围', 'f1')).toHaveValue('library');
-    fixture.preferences = {video: projectTarget(projectB, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc')};
-    await page.reload(); await expect(targetField('目标项目', 'f1')).toHaveValue(projectB);
-    await expect(targetField('目标分类', 'f1')).toHaveValue('root');
-    await expect(page.getByRole('button', {name: '确认收纳', exact: true})).toBeEnabled();
-    fixture.preferences = {video: {kind: 'video', scope: 'library', directory: '已删除分类'}};
-    await page.reload(); await expect(targetField('目标分类', 'f1')).toHaveValue('');
-    fixture.preferences = {}; fixture.libraryId = 'another-library';
-    await page.evaluate(({projectId, folderId}) => localStorage.setItem('shiguang.importTarget.v1:synthetic-instance:video', JSON.stringify({projectId, folderId})), {projectId: projectB, folderId: folderB});
-    await page.reload(); await expect(targetField('收纳范围', 'f1')).toHaveValue('library');
-    await expect(targetField('目标分类', 'f1')).toHaveValue('');
-    assert.equal(fixture.confirmBodies.length, 0);
-  });
-  await check('unified-targets batch project preserves manual destinations unless explicitly overwritten', async () => {
-    await fresh(true); await choose(['f1'], projectA, folderA);
-    await page.getByText('批量设置项目（默认保留逐项修改）', {exact: true}).click();
-    await page.getByLabel('批量目标项目', {exact: true}).selectOption(projectB);
-    const apply = page.getByRole('button', {name: '应用到未单独修改项', exact: true});
-    await apply.click(); await expect(targetField('目标分类', 'f2')).toBeEnabled();
-    await expect(targetField('目标项目', 'f1')).toHaveValue(projectA); await expect(targetField('目标分类', 'f1')).toHaveValue(folderA);
-    await expect(targetField('目标项目', 'f2')).toHaveValue(projectB); await expect(targetField('目标分类', 'f2')).toHaveValue('root');
-    assert.equal(fixture.confirmBodies.length, 0);
-    await page.getByRole('checkbox', {name: '同时覆盖已单独修改的目标', exact: true}).check(); await apply.click();
-    for (const id of ['f1', 'f2']) {await expect(targetField('目标项目', id)).toHaveValue(projectB); await expect(targetField('目标分类', id)).toHaveValue('root');}
-    await page.getByRole('button', {name: '确认收纳', exact: true}).click();
-    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。')).toBeVisible();
-    assert.deepEqual(fixture.confirmBodies[0].targets, ['f1', 'f2'].map(fileId => ({fileId, destination: projectTarget(projectB)})));
-  });
-  await check('unified-targets each audio file requires an explicit music or sfx choice and retains its own category', async () => {
-    await fresh(true, null, false, false, f => {f.handoff.files = f.handoff.files.map((file, i) => ({...file, mediaKind: 'audio', name: '合成音频' + i + '.wav', path: '/synthetic/audio-' + i + '.wav'}));});
-    await expect(page.getByRole('button', {name: '确认收纳', exact: true})).toBeDisabled();
-    await targetField('素材类型', 'f1').selectOption('music');
-    await expect(targetField('目标分类', 'f1')).toBeEnabled(); await targetField('目标分类', 'f1').selectOption('合成分类');
-    await expect(page.getByRole('button', {name: '确认收纳', exact: true})).toBeDisabled();
-    await targetField('素材类型', 'f2').selectOption('sfx');
-    await expect(page.getByLabel('批量目标项目', {exact: true})).toHaveCount(0);
-    await page.getByRole('button', {name: '确认收纳', exact: true}).click();
-    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。')).toBeVisible();
-    assert.equal(fixture.confirmBodies.length, 1);
-    assert.deepEqual(fixture.confirmBodies[0].targets, [{fileId: 'f1', destination: {kind: 'music', scope: 'library', directory: '合成分类'}}, {fileId: 'f2', destination: {kind: 'sfx', scope: 'library', directory: ''}}]);
-    await expect(page.locator('.fi-items')).toContainText('固定目标：音乐 / 合成分类');
-    await expect(page.locator('.fi-items')).toContainText('固定目标：音效 / 待确认');
-    assert.deepEqual(fixture.preferences, {music: {kind: 'music', scope: 'library', directory: '合成分类'}, sfx: {kind: 'sfx', scope: 'library', directory: ''}});
-  });
-  await check('legacy saved submission reconciles the original shared-target receipt without upgrading or reposting it', async () => {
-    const start = requests.length; await fresh(true);
-    const journal = {requestId: '33333333-3333-4333-8333-333333333333', projectId: projectA, folderId: folderA, mode: 'move', fileIds: ['f1']};
-    await page.evaluate(({id, journal}) => sessionStorage.setItem('shiguang.file-intake.' + id, JSON.stringify(journal)), {id: handoffId, journal});
-    await page.reload(); await expect(page.getByRole('button', {name: '核对原提交结果', exact: true})).toBeVisible();
-    const legacy = {...clone(fixture.batches[0]), id: journal.requestId, items: [{...fixture.handoff.files[0], copiedBytes: 0, status: 'queued'}]};
-    fixture.batches.unshift(legacy); fixture.handoff.batchId = legacy.id;
-    await page.getByRole('button', {name: '核对原提交结果', exact: true}).click();
-    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。')).toBeVisible();
-    await expect(page.locator('.fi-items')).toContainText('合成视频甲.mp4');
-    await expect(page.locator('.fi-items')).not.toContainText('合成视频乙.mov');
-    await expect(page.getByText('成片/第一段 · 校验并登记成功后移入废纸篓', {exact: true})).toBeVisible();
-    assert.equal(legacy.version, undefined); assert.equal(fixture.confirmBodies.length, 0);
-    assert.equal(requests.slice(start).filter(r => r.method === 'POST').length, 0);
-    await page.reload(); await expect(page.getByText('这是此选择的既有回执，没有新建任务。')).toBeVisible();
-    assert.deepEqual(await page.evaluate(() => window.nativeAccepted), []);
-  });
   await check('acknowledgement clears old failure badge, preserves history and can restore without retry',async()=>{
     const start = requests.length; await fresh();const batch=fixture.batches[0];batch.status='partial';batch.canAcknowledge=true;batch.resultKey='current-result';
     batch.items=[1,2,3,4].map(n=>({id:'old-'+n,name:'old-'+n+'.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'INTAKE_SOURCE_CHANGED',error:'合成旧选择失败'}));fixture.batches=[batch];fixture.status.needsAttention=4;fixture.status.activeCount=0;await page.reload();
@@ -317,15 +195,6 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     await item('recoverable').getByRole('button',{name:'重试此失败项',exact:true}).click();
     await expect(item('recoverable')).toContainText('正在复制');assert.equal(fixture.retryCount,1);
     assert.equal(fixture.batches[0].items.find(i=>i.id==='failed').status,'failed');
-  });
-  await check('selection-proof background check preserves target inputs, never submits early, and enables only when ready',async()=>{
-    await fresh(true);fixture.handoff.preparation='checking';await page.reload();await choose();
-    await expect(page.getByText('正在后台核验原文件，可先选择项目和文件夹；完成后即可确认收纳。',{exact:true})).toBeVisible();
-    await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeDisabled();assert.equal(fixture.confirmBodies.length,0);
-    fixture.handoff.preparation='ready';await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeEnabled();
-    await expect(targetField('目标项目', 'f1')).toHaveValue(projectA);await expect(targetField('目标分类', 'f1')).toHaveValue('root');
-    fixture.handoff.preparation='failed';fixture.handoff.preparationError='合成核验失败';await page.reload();await choose();
-    await expect(page.getByRole('button',{name:'确认收纳',exact:true})).toBeDisabled();await expect(page.getByText('合成核验失败',{exact:true})).toBeVisible();assert.equal(fixture.confirmBodies.length,0);
   });
   await check('drawer-layout actual topbar backdrop and app styles keep viewport drawer, scroll and install reachable', async () => {
     const start = requests.length; await fresh(false, null, false, true); await page.setViewportSize({width: 1440, height: 900}); await open();
@@ -356,30 +225,6 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);
     assert.equal(fixture.installCount,0); assert.equal(requests.slice(start).filter(r=>r.method==='POST').length,0);
   });
-  await check('window selection, default copy, folder race, fixed submitted target, single confirm and native accepted receipt', async () => {
-    await fresh(true); await expect(page.getByText('2 个文件', {exact: true})).toBeVisible(); await expect(page.getByRole('radio', {name: /复制并保留/})).toBeChecked();
-    await page.getByRole('button', {name: '移除 合成视频甲.mp4', exact: true}).click(); await expect(page.getByText('1 个文件', {exact: true})).toBeVisible(); await page.getByRole('button', {name: '恢复 合成视频甲.mp4', exact: true}).click();
-    await choose(['f2'], projectA, folderA);
-    await targetField('收纳范围', 'f1').selectOption('project');
-    const slow = page.waitForRequest(r => r.url().endsWith('/projects/' + projectA + '/folders'));
-    await targetField('目标项目', 'f1').selectOption(projectA); await slow;
-    await targetField('目标项目', 'f1').selectOption(projectB);
-    await expect(targetField('目标分类', 'f1')).toBeEnabled(); await expect(targetField('目标分类', 'f1')).toHaveValue('root');
-    await targetField('目标分类', 'f1').selectOption(folderB); await pause(450);
-    await expect(targetField('目标分类', 'f1')).toHaveValue(folderB); await expect(targetField('目标分类', 'f2')).toHaveValue(folderA);
-    await page.getByRole('radio', {name: /移动到素材库/}).check(); await page.screenshot({path: path.join(evidence, 'confirmation.png')});
-    const confirm = page.locator('.fi-footer .fi-primary'); await confirm.click(); await confirm.dispatchEvent('click');
-    await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible();
-    assert.equal(fixture.confirmBodies.length, 1); const submitted = fixture.confirmBodies[0];
-    assert.deepEqual(submitted.targets, [{fileId: 'f2', destination: projectTarget(projectA, folderA)}, {fileId: 'f1', destination: projectTarget(projectB, folderB)}]);
-    assert.equal(submitted.mode, 'move'); assert.match(submitted.requestId, /^[a-f0-9-]{36}$/); assert.deepEqual(submitted.fileIds, ['f2', 'f1']);
-    for (const label of ['合成甲项目 / 合成甲/成片', '合成乙项目 / 合成乙/成片']) await expect(page.locator('.fi-items')).toContainText('固定目标：' + label);
-    assert.deepEqual(await page.evaluate(() => window.nativeAccepted), ['accepted']); await expect(page.getByText('原件已入废纸篓', {exact: true})).toHaveCount(0);
-  });
-  await check('known refusal preserves inputs; lost confirm locks original request and recovers via handoff batchId without repost', async () => {
-    await fresh(true); await choose(); fixture.confirm = 'reject'; await page.getByRole('button', {name: '确认收纳', exact: true}).click(); await expect(page.locator('.fi-confirm > .fi-error')).toContainText('目标需要重新选择'); await expect(targetField('目标项目', 'f1')).toHaveValue(projectA);
-    fixture.confirm = 'lost'; await page.getByRole('button', {name: '确认收纳', exact: true}).click(); await expect(page.getByRole('button', {name: '核对原提交结果', exact: true})).toBeVisible(); await expect(targetField('目标项目', 'f1')).toBeDisabled(); await pause(1200); assert.equal(fixture.confirmBodies.length, 2); await page.getByRole('button', {name: '核对原提交结果', exact: true}).click(); await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible(); await page.reload(); await expect(page.getByText('这是此选择的既有回执，没有新建任务。', {exact: true})).toBeVisible(); assert.equal(fixture.confirmBodies.length, 2);
-  });
   await check('drawer real copy bytes, fixed targets, retry gates and managed project/global routing', async () => {
     await fresh(); await open(); await expect(drawer().getByText('成片/第一段 · 校验并登记成功后移入废纸篓', {exact: true})).toBeVisible(); await expect(drawer().getByRole('progressbar', {name: '复制进度 copying.mp4'})).toHaveAttribute('value', '2048'); await expect(drawer().getByRole('button', {name: '重试此失败项', exact: true})).toHaveCount(1); await expect(item('retained')).toContainText('原文件未移除');
     await item('global-managed').getByRole('button', {name: '查看已有素材', exact: true}).click(); assert.deepEqual(await page.evaluate(() => window.views), [['', 'asset-global']]); await open(); await item('project-managed').getByRole('button', {name: '查看 / 移动已有文件', exact: true}).click(); assert.deepEqual(await page.evaluate(() => window.views), [['', 'asset-global'], ['original-project', 'original-video']]);
@@ -403,38 +248,6 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     fixture.status.supported = true; await page.reload(); await open(); await drawer().getByRole('button', {name: '安装访达入口', exact: true}).click(); await expect(drawer().getByText('已安装合成入口，首次请到系统设置启用。', {exact: true})).toBeVisible(); assert.equal(fixture.installCount, 1);
     await page.evaluate(() => {Object.defineProperty(document, 'hidden', {configurable: true, get: () => true}); document.dispatchEvent(new Event('visibilitychange'));}); await pause(100); const hidden = requests.length; await pause(1300); assert.equal(requests.length, hidden); await page.evaluate(() => {Object.defineProperty(document, 'hidden', {configurable: true, get: () => false}); document.dispatchEvent(new Event('visibilitychange'));}); await expect.poll(() => requests.length).toBeGreaterThan(hidden);
     await page.setViewportSize({width: 420, height: 780}); await page.screenshot({path: path.join(evidence, 'drawer-narrow.png')}); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.evaluate(() => document.documentElement.dataset.theme = 'midnight'); await page.screenshot({path: path.join(evidence, 'drawer-theme.png')});
-  });
-  await check('confirm-binding two windows with different files and identical target never accept the other request; fresh no-attempt window shows existing receipt', async () => {
-    await fresh(true); const first = page; await choose(); await first.getByRole('button', {name: '移除 合成视频乙.mov', exact: true}).click();
-    const second = await context.newPage(); second.on('pageerror', error => errors.push(error.message)); await second.goto(origin + '/#intake'); page = second; await choose(); await second.getByRole('button', {name: '移除 合成视频甲.mp4', exact: true}).click();
-    await first.getByRole('button', {name: '确认收纳', exact: true}).click(); await expect(first.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible(); assert.deepEqual(await first.evaluate(() => window.nativeAccepted), ['accepted']);
-    await second.getByRole('button', {name: '确认收纳', exact: true}).click(); await expect(second.getByRole('button', {name: '核对原提交结果', exact: true})).toBeVisible(); await second.getByRole('button', {name: '核对原提交结果', exact: true}).click();
-    await expect(second.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible(); await expect(second.locator('.fi-items')).toContainText('合成视频甲.mp4'); await expect(second.locator('.fi-items')).not.toContainText('合成视频乙.mov'); await expect(second.locator('.global-feedback-card[data-feedback-kind="success"]')).toHaveCount(0); assert.deepEqual(await second.evaluate(() => window.nativeAccepted), []);
-    assert.equal(fixture.confirmBodies.length, 2); const [a, b] = fixture.confirmBodies; assert.notEqual(a.requestId, b.requestId); assert.deepEqual(targetFor(a, 'f1'), projectTarget()); assert.deepEqual(targetFor(b, 'f2'), projectTarget()); assert.equal(a.mode, b.mode); assert.deepEqual(a.fileIds, ['f1']); assert.deepEqual(b.fileIds, ['f2']);
-    assert.equal(await second.evaluate(id => JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id)).requestId, handoffId), b.requestId);
-    await second.reload(); await expect(second.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible(); assert.deepEqual(await second.evaluate(() => window.nativeAccepted), []); assert.equal(fixture.confirmBodies.length, 2);
-    const existing = await context.newPage(); existing.on('pageerror', error => errors.push(error.message)); page = existing; await existing.goto(origin + '/#intake'); await expect(existing.getByText('这是此选择的既有回执，没有新建任务。', {exact: true})).toBeVisible(); await expect(existing.locator('.global-feedback-card[data-feedback-kind="success"]')).toHaveCount(0); assert.deepEqual(await existing.evaluate(() => window.nativeAccepted), []); assert.equal(fixture.confirmBodies.length, 2);
-  });
-  await check('confirm-binding rejects changed ID, files, per-file destinations, mode and version; matching items accept regardless of order', async () => {
-    for (const variant of ['wrong-id', 'wrong-items', 'wrong-destination', 'swapped-destinations', 'wrong-mode', 'legacy-version', 'duplicate-items', 'reverse-items']) {
-      await fresh(true); fixture.confirmReceipt = variant; await choose(); if (variant === 'swapped-destinations') await targetField('目标分类', 'f2').selectOption(folderA); await page.getByRole('button', {name: '确认收纳', exact: true}).click();
-      if (variant === 'reverse-items') {
-        await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible(); assert.deepEqual(await page.evaluate(() => window.nativeAccepted), ['accepted']);
-      } else {
-        await expect(page.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible(); await expect(page.locator('.global-feedback-card[data-feedback-kind="success"]')).toHaveCount(0); assert.deepEqual(await page.evaluate(() => window.nativeAccepted), []);
-        const receipt = fixture.batches[0], submitted = fixture.confirmBodies[0];
-        if (variant === 'wrong-id') {assert.notEqual(receipt.id, submitted.requestId); assert.deepEqual(receipt.items.map(item => item.id), submitted.fileIds);}
-        else {
-          assert.equal(receipt.id, submitted.requestId);
-          if (['wrong-items', 'duplicate-items'].includes(variant)) assert.notDeepEqual(receipt.items.map(item => item.id), submitted.fileIds);
-          else if (['wrong-destination', 'swapped-destinations'].includes(variant)) assert.notDeepEqual(receipt.items[0].destination, targetFor(submitted, receipt.items[0].id));
-          else if (variant === 'wrong-mode') assert.notEqual(receipt.mode, submitted.mode);
-          else assert.notEqual(receipt.version, submitted.version);
-        }
-        assert.equal(await page.evaluate(id => JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id)).requestId, handoffId), submitted.requestId);
-      }
-      assert.equal(fixture.confirmBodies.length, 1);
-    }
   });
   await check('completion status notifies closed drawer only for changed post-mount keys; initial/history/same-key suppressed and partial counts warn', async () => {
     const start = requests.length;

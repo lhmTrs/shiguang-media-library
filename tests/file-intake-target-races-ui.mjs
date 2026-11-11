@@ -35,11 +35,16 @@ async function api(url,body,method){
 async function ready(){for(let i=0;i<600;i++){if(exit)throw Error('Owned App exited before ready');try{const r=await fetch(origin+'/api/session');if(r.ok){const s=await r.json();cookie=r.headers.get('set-cookie')?.split(';')[0]||'';token=s.token;const rec=JSON.parse(await fs.readFile(path.join(dataDir,'server.json'),'utf8'));assert.equal(rec.pid,child.pid);assert.equal(rec.instanceId,s.instanceId);return;}}catch{}await pause(50);}throw Error('App ready timeout');}
 async function stop(){if(!child||exit)return;child.kill('SIGTERM');let timer;try{await Promise.race([exited,new Promise((_,rej)=>{timer=setTimeout(()=>rej(Error('OWNED_APP_CLOSE_UNKNOWN')),20000);})]);}finally{clearTimeout(timer);}assert.deepEqual(exit,{code:0,signal:null});assert.match(output,/APPLICATION_CLOSED_KNOWN/);}
 async function pageFor(h){const p=await ctx.newPage();p.on('pageerror',e=>errors.push(e.message));await p.goto(origin+'/#/file-intake/'+h.id);await expect(p.getByRole('heading',{name:'收纳素材到拾光',exact:true})).toBeVisible();return p;}
-const field=(p,label,id)=>p.getByLabel(label+' '+id,{exact:true});
-const confirm=p=>p.getByRole('button',{name:'确认收纳',exact:true});
-async function photoProject(p,id,project){await field(p,'收纳范围',id).selectOption('project');await field(p,'目标项目',id).selectOption(project);await expect(confirm(p)).toBeEnabled();}
+// Per-file settings live in each file's 「改…」 panel since INTAKE-SIMPLE; open it on demand.
+async function field(p,label,id){const loc=p.getByLabel(label+' '+id,{exact:true});if(!await loc.count()){const other=p.locator('.fi-popover');if(await other.count())await other.getByRole('button',{name:'完成',exact:true}).click();await p.locator('[data-file-id="'+id+'"]').click();await expect(loc).toBeVisible();}return loc;}
+const confirm=p=>p.locator('.fi-confirm-button');
+// The per-file panel dims the window; close it (完成) before pressing the footer button, as a person would.
+async function closePanels(p){const open=p.locator('.fi-popover');if(await open.count())await open.getByRole('button',{name:'完成',exact:true}).click();}
+// 去处 is a two-way switch since the round-2 design; pick and read it by its pressed button.
+async function scope(p,id,which){const g=await field(p,'收纳范围',id);await g.getByRole('button',{name:which==='project'?'项目':/摄影照片|视频素材/}).click();}
+async function photoProject(p,id,project){await scope(p,id,'project');await (await field(p,'目标项目',id)).selectOption(project);await expect(confirm(p)).toBeEnabled();}
 async function done(id){for(let i=0;i<500;i++){const b=await api('/file-intake/batches/'+id);if(!['queued','running'].includes(b.status))return b;await pause(30);}throw Error('batch terminal timeout');}
-async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
+async function blockConfirm(p){await p.route('**/api/file-intake/handoffs/*/confirm',route=>route.abort('failed'));await closePanels(p);await confirm(p).click();await expect(p.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();}
 async function shot(p,name){await p.screenshot({path:path.join(evidence,name+'.png'),fullPage:true});}
 
 try{
@@ -60,54 +65,56 @@ try{
   // Four media destinations, actual folder creation, durable backend readback.
   const mixed=await receipts.handoff([png,video,music,sfx]),p=await pageFor(mixed);
   const ids=mixed.files.map(f=>f.id);
-  await expect(confirm(p)).toBeDisabled();await field(p,'素材类型',ids[2]).selectOption('music');await expect(confirm(p)).toBeDisabled();await field(p,'素材类型',ids[3]).selectOption('sfx');
-  for(const id of ids)await expect(field(p,'目标分类',id)).toHaveValue('');
+  // With durations (INTAKE-SIMPLE backend) audio arrives preselected by length; without them a choice is required.
+  const durationPreset=(await api('/file-intake/handoffs/'+mixed.id)).files.some(f=>typeof f.durationSec==='number');
+  if(!durationPreset)await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[2])).selectOption('music');if(!durationPreset)await expect(confirm(p)).toBeDisabled();await (await field(p,'素材类型',ids[3])).selectOption('sfx');
+  for(const id of ids)await expect((await field(p,'目标分类',id))).toHaveValue('');
   const sfxSection=p.getByRole('region',{name:'收纳设置 独立音效.wav',exact:true});
-  await sfxSection.getByText('新建分类文件夹',{exact:true}).click();await field(p,'新分类名称',ids[3]).fill('环境');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect(field(p,'目标分类',ids[3])).toHaveValue('环境');
-  await field(p,'新分类名称',ids[3]).fill('室内');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect(field(p,'目标分类',ids[3])).toHaveValue('环境/室内');
+  await sfxSection.getByText('新建分类文件夹',{exact:true}).click();await (await field(p,'新分类名称',ids[3])).fill('环境');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect((await field(p,'目标分类',ids[3]))).toHaveValue('环境');
+  await (await field(p,'新分类名称',ids[3])).fill('室内');await sfxSection.getByRole('button',{name:'创建分类',exact:true}).click();await expect((await field(p,'目标分类',ids[3]))).toHaveValue('环境/室内');
   await fs.access(path.join(personal,'system_sfx','环境','室内'));
-  await expect(confirm(p)).toBeEnabled();await shot(p,'four-media-before-confirm');await confirm(p).click();await expect(p.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。',{exact:true})).toBeVisible();
+  await expect(confirm(p)).toBeEnabled();await shot(p,'four-media-before-confirm');await closePanels(p);await confirm(p).click();await expect(p.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。',{exact:true})).toBeVisible();
   const accepted=JSON.parse(requests.find(r=>r.url.endsWith('/'+mixed.id+'/confirm')).body),batch=await done(accepted.requestId);
   assert.equal(batch.status,'completed');assert.deepEqual(batch.items.map(i=>i.destination.kind),['photo','video','music','sfx']);assert.ok(batch.items.every(i=>i.status==='ready'&&i.destinationLabel));
   for(const item of batch.items){const a=await api('/assets/'+item.assetId);assert.equal(a.kind,item.destination.kind);if(a.kind==='sfx'){assert.equal(a.category,'环境');assert.equal(a.sub,'室内');}}
   for(const src of [png,video,music,sfx])await fs.access(src);
-  const next=await receipts.handoff([sfx]),other=await browser.newContext(),np=await other.newPage();await np.goto(origin+'/#/file-intake/'+next.id);await field(np,'素材类型',next.files[0].id).selectOption('sfx');await expect(field(np,'目标分类',next.files[0].id)).toHaveValue('环境/室内');await expect(np.getByRole('radio',{name:/复制并保留原文件/})).toBeChecked();await other.close();
+  const next=await receipts.handoff([sfx]),other=await browser.newContext(),np=await other.newPage();await np.goto(origin+'/#/file-intake/'+next.id);await (await field(np,'素材类型',next.files[0].id)).selectOption('sfx');await expect((await field(np,'目标分类',next.files[0].id))).toHaveValue('环境/室内');await expect(np.getByRole('radio',{name:'复制',exact:true})).toBeChecked();await other.close();
   record('C0-four-media-actual-app','PASS',{requestId:batch.id,kinds:batch.items.map(i=>i.destination.kind),destinations:batch.items.map(i=>i.destination),anotherBrowserContextPreset:true});await p.close();
 
   // Unknown submission: a stale category must stay visibly fixed, not root.
   await api('/file-intake/categories/video',{directory:'',name:'原定分类'});
   const unknown=await receipts.handoff([video]),u=await pageFor(unknown),uid=unknown.files[0].id;
-  await field(u,'收纳范围',uid).selectOption('library');await expect(field(u,'目标分类',uid)).toBeEnabled();await field(u,'目标分类',uid).selectOption('原定分类');await expect(confirm(u)).toBeEnabled();await blockConfirm(u);
+  await scope(u,uid,'library');await expect((await field(u,'目标分类',uid))).toBeEnabled();await (await field(u,'目标分类',uid)).selectOption('原定分类');await expect(confirm(u)).toBeEnabled();await blockConfirm(u);
   const journal=await u.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),unknown.id);
-  await fs.rmdir(path.join(personal,'system_video','原定分类'));await u.reload();await expect(u.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(u,'目标分类',uid)).toBeDisabled();
-  await expect(field(u,'目标分类',uid)).toHaveValue('原定分类');
+  await fs.rmdir(path.join(personal,'system_video','原定分类'));await u.reload();await expect(u.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect((await field(u,'目标分类',uid))).toBeDisabled();
+  await expect((await field(u,'目标分类',uid))).toHaveValue('原定分类');
   assert.equal(await u.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),unknown.id),journal);
-  await u.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(u.locator('.fi-confirm > .fi-error')).toContainText('尚未取得权威批次回执');
+  await u.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(u.locator('.fi-body > .fi-error')).toContainText('尚未取得权威批次回执');
   const unknownPosts=requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+unknown.id+'/confirm')).length;assert.equal(unknownPosts,1);
-  await shot(u,'unknown-category-changed-to-root');record('C1-frozen-missing-category-preserved','PASS',{expected:'原定分类 stays fixed even if unavailable',actual:await field(u,'目标分类',uid).inputValue(),original:JSON.parse(journal),journalUnchanged:true,confirmPosts:unknownPosts});await u.close();
+  await shot(u,'unknown-category-changed-to-root');record('C1-frozen-missing-category-preserved','PASS',{expected:'原定分类 stays fixed even if unavailable',actual:await (await field(u,'目标分类',uid)).inputValue(),original:JSON.parse(journal),journalUnchanged:true,confirmPosts:unknownPosts});await u.close();
 
   const project=await api('/projects',{name:'独立人物项目',software:'',note:''});
   // Explicit names survive a matching intermediate filename and subsequent renames.
   const manual=await receipts.handoff([png]),m=await pageFor(manual),mid=manual.files[0].id;await photoProject(m,mid,project.id);
-  await field(m,'人物名',mid).fill('林舟');
-  await m.getByText('修改导入后的文件名',{exact:true}).click();await field(m,'副本名称',mid).fill('林舟_夜行.png');await expect(field(m,'人物名',mid)).toHaveValue('林舟');
-  await field(m,'副本名称',mid).fill('周扬_便装.png');await expect(field(m,'人物名',mid)).toHaveValue('林舟');await expect(confirm(m)).toBeEnabled();
-  await shot(m,'manual-character-overwritten');record('C2-manual-name-survives-renames','PASS',{steps:['source 苏禾_日常.png','explicit character 林舟','rename 林舟_夜行.png','rename 周扬_便装.png'],expected:'林舟',actual:await field(m,'人物名',mid).inputValue()});
+  await (await field(m,'人物名',mid)).fill('林舟');
+  await (await field(m,'副本名称',mid)).fill('林舟_夜行.png');await expect((await field(m,'人物名',mid))).toHaveValue('林舟');
+  await (await field(m,'副本名称',mid)).fill('周扬_便装.png');await expect((await field(m,'人物名',mid))).toHaveValue('林舟');await expect(confirm(m)).toBeEnabled();
+  await shot(m,'manual-character-overwritten');record('C2-manual-name-survives-renames','PASS',{steps:['source 苏禾_日常.png','explicit character 林舟','rename 林舟_夜行.png','rename 周扬_便装.png'],expected:'林舟',actual:await (await field(m,'人物名',mid)).inputValue()});
 
   // The serialized submit intentionally lacks draft names; reload must still show the proposal.
-  await blockConfirm(m);const imageJournal=await m.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),manual.id);await m.reload();await expect(m.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(m,'人物名',mid)).toBeDisabled();await expect(field(m,'人物名',mid)).toHaveValue('林舟');await expect(field(m,'造型名',mid)).toHaveValue('便装');
-  await shot(m,'unknown-image-target-blank');record('C3-frozen-image-target-restored','PASS',{expected:'Show immutable imageProposal character/look',actual:{character:await field(m,'人物名',mid).inputValue(),look:await field(m,'造型名',mid).inputValue()},original:JSON.parse(imageJournal)});await m.close();
+  await blockConfirm(m);const imageJournal=await m.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),manual.id);await m.reload();await expect(m.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect((await field(m,'人物名',mid))).toBeDisabled();await expect((await field(m,'人物名',mid))).toHaveValue('林舟');await expect((await field(m,'造型名',mid))).toHaveValue('便装');
+  await shot(m,'unknown-image-target-blank');record('C3-frozen-image-target-restored','PASS',{expected:'Show immutable imageProposal character/look',actual:{character:await (await field(m,'人物名',mid)).inputValue(),look:await (await field(m,'造型名',mid)).inputValue()},original:JSON.parse(imageJournal)});await m.close();
 
   // Async create returns after an explicit new media-kind choice; it must not undo it.
   const race=await receipts.handoff([music]),r=await pageFor(race),rid=race.files[0].id;
-  await field(r,'素材类型',rid).selectOption('music');await expect(confirm(r)).toBeEnabled();
-  const section=r.getByRole('region',{name:'收纳设置 独立音乐.wav',exact:true});await section.getByText('新建分类文件夹',{exact:true}).click();await field(r,'新分类名称',rid).fill('慢回应分类');
+  await (await field(r,'素材类型',rid)).selectOption('music');await expect(confirm(r)).toBeEnabled();
+  const section=r.getByRole('region',{name:'收纳设置 独立音乐.wav',exact:true});await section.getByText('新建分类文件夹',{exact:true}).click();await (await field(r,'新分类名称',rid)).fill('慢回应分类');
   let fetchedResolve;const fetched=new Promise(resolve=>fetchedResolve=resolve);let release;const gate=new Promise(resolve=>release=resolve);releases.push(release);
   await r.route('**/api/file-intake/categories/music',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();fetchedResolve();await gate;await route.fulfill({response});});
   await section.getByRole('button',{name:'创建分类',exact:true}).click();await fetched;
-  await field(r,'素材类型',rid).selectOption('sfx');await expect(field(r,'素材类型',rid)).toHaveValue('sfx');release();
-  await expect(section.getByRole('button',{name:'创建分类',exact:true})).toBeVisible();await expect(field(r,'新分类名称',rid)).toHaveValue('');await expect(field(r,'素材类型',rid)).toHaveValue('sfx');await expect(field(r,'目标分类',rid)).toHaveValue('');
-  await shot(r,'late-folder-response-reverts-audio-kind');record('C4-late-category-response-ignored','PASS',{explicitLatestChoice:'sfx',actual:await field(r,'素材类型',rid).inputValue(),actualDirectory:await field(r,'目标分类',rid).inputValue(),fault:'Delay only the real POST response after folder is created'});await r.close();
+  await (await field(r,'素材类型',rid)).selectOption('sfx');await expect((await field(r,'素材类型',rid))).toHaveValue('sfx');release();
+  await expect(section.getByRole('button',{name:'创建分类',exact:true})).toBeVisible();await expect((await field(r,'新分类名称',rid))).toHaveValue('');await expect((await field(r,'素材类型',rid))).toHaveValue('sfx');await expect((await field(r,'目标分类',rid))).toHaveValue('');
+  await shot(r,'late-folder-response-reverts-audio-kind');record('C4-late-category-response-ignored','PASS',{explicitLatestChoice:'sfx',actual:await (await field(r,'素材类型',rid)).inputValue(),actualDirectory:await (await field(r,'目标分类',rid)).inputValue(),fault:'Delay only the real POST response after folder is created'});await r.close();
 
   // Deferred source verification waits before loading the real preview.
   const delayed=await receipts.handoff([png],{deferFingerprint:true}),d=await pageFor(delayed),did=delayed.files[0].id;
@@ -122,23 +129,23 @@ try{
   // Removing and restoring a row creates a new editor instance. Its predecessor
   // must never be allowed to apply the delayed category response.
   const remount=await receipts.handoff([music]),rp=await pageFor(remount),rpid=remount.files[0].id;
-  await field(rp,'素材类型',rpid).selectOption('music');await expect(confirm(rp)).toBeEnabled();
-  const rs=rp.getByRole('region',{name:'收纳设置 独立音乐.wav',exact:true});await rs.getByText('新建分类文件夹',{exact:true}).click();await field(rp,'新分类名称',rpid).fill('移除前分类');
+  await (await field(rp,'素材类型',rpid)).selectOption('music');await expect(confirm(rp)).toBeEnabled();
+  const rs=rp.getByRole('region',{name:'收纳设置 独立音乐.wav',exact:true});await rs.getByText('新建分类文件夹',{exact:true}).click();await (await field(rp,'新分类名称',rpid)).fill('移除前分类');
   let readFolder,releaseFolder,finishedFolder;const folderRead=new Promise(r=>readFolder=r),folderGate=new Promise(r=>releaseFolder=r),folderFinished=new Promise(r=>finishedFolder=r);releases.push(releaseFolder);
   await rp.route('**/api/file-intake/categories/music',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();readFolder();await folderGate;await route.fulfill({response});finishedFolder();});
   await rs.getByRole('button',{name:'创建分类',exact:true}).click();await folderRead;
-  await rp.getByRole('button',{name:'移除 独立音乐.wav',exact:true}).click();await rp.getByRole('button',{name:'恢复 独立音乐.wav',exact:true}).click();await field(rp,'素材类型',rpid).selectOption('sfx');
+  await (await field(rp,'素材类型',rpid));await rp.getByRole('button',{name:'移除 独立音乐.wav',exact:true}).click();await rp.getByRole('button',{name:'恢复 独立音乐.wav',exact:true}).click();await (await field(rp,'素材类型',rpid)).selectOption('sfx');
   releaseFolder();await folderFinished;await pause(150);
-  try{await expect(field(rp,'素材类型',rpid)).toHaveValue('sfx');record('C6-unmounted-category-response-ignored','PASS',{});}catch(e){record('C6-unmounted-category-response-ignored','FAIL',{message:e.message});process.exitCode=1;}await rp.close();
+  try{await expect((await field(rp,'素材类型',rpid))).toHaveValue('sfx');record('C6-unmounted-category-response-ignored','PASS',{});}catch(e){record('C6-unmounted-category-response-ignored','FAIL',{message:e.message});process.exitCode=1;}await rp.close();
 
   // The server accepted the original request, but both the confirm response and
   // subsequent receipt read are lost. Recovery must remain read-only throughout.
   const acceptedUnknown=await receipts.handoff([png]),ap=await pageFor(acceptedUnknown),apid=acceptedUnknown.files[0].id;
-  await photoProject(ap,apid,project.id);await field(ap,'人物名',apid).fill('回执核对人物');await expect(confirm(ap)).toBeEnabled();
-  await ap.route('**/api/file-intake/handoffs/*/confirm',async route=>{await route.fetch();await route.abort('failed');});await confirm(ap).click();await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
+  await photoProject(ap,apid,project.id);await (await field(ap,'人物名',apid)).fill('回执核对人物');await expect(confirm(ap)).toBeEnabled();
+  await ap.route('**/api/file-intake/handoffs/*/confirm',async route=>{await route.fetch();await route.abort('failed');});await closePanels(ap);await confirm(ap).click();await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
   const fixed=await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id);
   await ap.route('**/api/file-intake/batches/*',route=>route.abort('failed'));await ap.reload();
-  try{await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect(field(ap,'人物名',apid)).toBeDisabled();await expect(field(ap,'人物名',apid)).toHaveValue('回执核对人物');assert.equal(await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id),fixed);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+acceptedUnknown.id+'/confirm')).length,1);record('C7-accepted-receipt-loss-keeps-frozen-target','PASS',{});}catch(e){record('C7-accepted-receipt-loss-keeps-frozen-target','FAIL',{message:e.message});process.exitCode=1;}await ap.close();
+  try{await expect(ap.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();await expect((await field(ap,'人物名',apid))).toBeDisabled();await expect((await field(ap,'人物名',apid))).toHaveValue('回执核对人物');assert.equal(await ap.evaluate(id=>sessionStorage.getItem('shiguang.file-intake.'+id),acceptedUnknown.id),fixed);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+acceptedUnknown.id+'/confirm')).length,1);record('C7-accepted-receipt-loss-keeps-frozen-target','PASS',{});}catch(e){record('C7-accepted-receipt-loss-keeps-frozen-target','FAIL',{message:e.message});process.exitCode=1;}await ap.close();
 
   // A pre-v2 request keeps its original project/folder instead of current prefs.
   const legacyFolder=await api('/project-videos/projects/'+project.id+'/folders',{requestId:crypto.randomUUID(),parentId:'root',name:'旧版固定文件夹'});
@@ -147,7 +154,7 @@ try{
   const legacyInput={requestId:crypto.randomUUID(),projectId:project.id,folderId:legacyFolderId,mode:'copy',fileIds:[lid]};
   await lp.evaluate(({id,input})=>sessionStorage.setItem('shiguang.file-intake.'+id,JSON.stringify(input)),{id:old.id,input:legacyInput});await lp.reload();
   await expect(lp.getByRole('button',{name:'核对原提交结果',exact:true})).toBeVisible();
-  for(let i=0;i<2;i++){await expect(field(lp,'收纳范围',lid)).toHaveValue('project');await expect(field(lp,'目标项目',lid)).toHaveValue(project.id);await expect(field(lp,'目标分类',lid)).toHaveValue(legacyFolderId);await expect(field(lp,'目标分类',lid)).toBeDisabled();if(i===0){await lp.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(lp.locator('.fi-confirm > .fi-error')).toContainText('尚未取得权威批次回执');}}
+  for(let i=0;i<2;i++){await expect((await field(lp,'收纳范围',lid)).getByRole('button',{name:'项目',exact:true})).toHaveAttribute('aria-pressed','true');await expect((await field(lp,'目标项目',lid))).toHaveValue(project.id);await expect((await field(lp,'目标分类',lid))).toHaveValue(legacyFolderId);await expect((await field(lp,'目标分类',lid))).toBeDisabled();if(i===0){await lp.getByRole('button',{name:'核对原提交结果',exact:true}).click();await expect(lp.locator('.fi-body > .fi-error')).toContainText('尚未取得权威批次回执');}}
   assert.deepEqual(await lp.evaluate(id=>JSON.parse(sessionStorage.getItem('shiguang.file-intake.'+id)),old.id),legacyInput);assert.equal(requests.filter(r=>r.method==='POST'&&r.url.endsWith('/'+old.id+'/confirm')).length,0);record('C8-legacy-journal-keeps-original-project-folder','PASS',{});await lp.close();
 }catch(e){harnessError=e.stack||String(e);console.error(harnessError);process.exitCode=1;}
 finally{
