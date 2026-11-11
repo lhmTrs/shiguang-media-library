@@ -7,7 +7,7 @@ export function projectVideoRouter(store,{sendMedia,rememberTarget=async()=>{},w
  const router=express.Router(),route=(method,url,fn)=>router[method]('/projects/:projectId'+url,(req,res,next)=>{try{Promise.resolve(withActivity(()=>store.media.track(()=>fn(req,res)))).catch(next);}catch(e){next(e);}});
  const isRejectOperation=(id,requestId)=>{store.project(id);if(!idOK(requestId))fail('INVALID_REQUEST_ID','请求编号无效');const row=store.db.prepare('SELECT * FROM project_video_operations WHERE id=? AND project_id=?').get(requestId,id);return !!row&&JSON.parse(row.data_json).kind==='set-reject-area';};
  router.use(express.json({limit:'2mb'}));router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
- route('get','',(req,res)=>store.list(req.params.projectId,{folderId:req.query.folderId||'all',includeRejected:req.query.includeRejected==='true',checkLegacyVideos:req.query.checkLegacyVideos==='true'}).then(v=>res.json(v)));
+ route('get','',(req,res)=>store.list(req.params.projectId,{folderId:req.query.folderId||'all',includeRejected:req.query.includeRejected==='true'}).then(v=>res.json(v)));
  route('post','/folders/reject/preview',async(req,res)=>res.json(await store.rejectArea.preview(req.params.projectId,req.body)));
  route('post','/folders/reject',async(req,res)=>res.json(await store.rejectArea.execute(req.params.projectId,req.body)));
  route('post','/folders',async(req,res)=>res.json(await store.folders.create(req.params.projectId,req.body)));

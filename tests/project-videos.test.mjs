@@ -5,6 +5,64 @@ async function imported(f,prompt={mode:'none'},name='candidate.mp4',extra={}){co
 function init(f){const p=syntheticSource(),shot=p.scenes[0].shots[0];p.scenes[0].shots=Array.from({length:3},(_,i)=>({...structuredClone(shot),id:'shot_'+randomUUID(),duration_ms:1000,dialogue:[]}));return f.storyboards.initialize(f.a.id,{source:p,request_id:randomUUID(),expected_revision:null});}
 const guards=s=>({documentId:s.documentId,initializedAt:s.initializedAt,expectedStoryboardRevision:s.storyboardRevision,expectedPlanRevision:s.plan.revision,timingHash:s.timingHash});
 async function bind(f,sourceId,indices){const state=await f.store.state(f.a.id),inspection=await f.store.inspect(f.a.id,[{sourceId}]);return f.store.import(f.a.id,{requestId:randomUUID(),guards:guards(state),shotIds:indices.map(i=>state.shots[i].id),videos:[{token:inspection.items[0].token,inMs:0,outMs:4000}]});}
+test('旧视频升级入口按全项目托管现状重新开启，缺读取授权仍须重新定位',async t=>{
+ const f=await fixture(t),id=f.a.id;
+ init(f);
+ const managed=await imported(f,{mode:'none'},'managed.mp4');
+ const relink=await imported(f,{mode:'none'},'relink.mp4');
+ const stableSource=f.store.source(id,managed.videoId);
+ const relinkSource=f.store.source(id,relink.videoId);
+ await bind(f,managed.videoId,[0]);
+ await bind(f,relink.videoId,[1]);
+ const before=await f.store.state(id);
+ f.store.tx(()=>f.catalog.folders.completeUpgrade(id));
+ assert.deepEqual((await f.catalog.list(id,{folderId:'all'})).legacyUpgrade,{count:0,completed:true});
+
+ const probe=await f.entry.media.probe(f.file),now=Date.now(),legacyId=randomUUID(),removedId=randomUUID();
+ f.lib.db.prepare('INSERT INTO storyboard_video_sources VALUES(?,?,?,?,?)').run(legacyId,id,canonical(probe),now,now);
+ f.store.approve({id:legacyId,project_id:id,...probe});
+ f.lib.db.prepare('INSERT INTO storyboard_video_sources VALUES(?,?,?,?,?)').run(removedId,id,canonical(probe),now,now);
+ f.catalog.remove(id,removedId,{expectedRevision:0,adoptionStamp:f.catalog.adoption(id).stamp});
+ f.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(relink.videoId);
+
+ const emptyFolder=await f.catalog.folders.create(id,{requestId:randomUUID(),name:'空目录',parentId:'root'});
+ const status=t.mock.method(f.store,'status');
+ const filtered=await f.catalog.list(id,{folderId:emptyFolder.id});
+ const all=await f.catalog.list(id,{folderId:'all'});
+ assert.equal(status.mock.callCount(),0,'全项目计数不检查其他目录的文件');
+ assert.equal(filtered.videos.length,0);
+ assert.deepEqual(filtered.legacyUpgrade,{count:2,completed:false});
+ assert.deepEqual(all.legacyUpgrade,filtered.legacyUpgrade);
+ assert.equal(f.catalog.folders.settings(id).upgradeCompleted,true);
+
+ const plan=await f.catalog.upgradePlan(id);
+ assert.equal(plan.completed,false);
+ assert.deepEqual(new Map(plan.items.map(item=>[item.id,[item.status,item.requiresRelink]])),new Map([
+  [legacyId,['available',false]],[relink.videoId,['untrusted',true]],
+ ]));
+ const requestId=randomUUID();
+ await f.catalog.upgrade(id,{requestId,previewHash:plan.previewHash});
+ const deadline=Date.now()+5000;
+ while(f.catalog.receipt(id,requestId).status==='running'&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ const receipt=f.catalog.receipt(id,requestId);
+ assert.equal(receipt.status,'failed');
+ assert.deepEqual(new Map(receipt.results.map(item=>[item.sourceId,item.status])),new Map([[legacyId,'ready'],[relink.videoId,'failed']]));
+ assert.equal(f.store.authorized(relinkSource),false);
+ assert.deepEqual(f.store.source(id,managed.videoId),stableSource);
+ assert.deepEqual(await fs.readFile(f.file),f.bytes);
+ assert.deepEqual((await f.catalog.list(id,{folderId:'all'})).legacyUpgrade,{count:1,completed:false});
+
+ const expectedRevision=f.catalog.metadata(id,relinkSource).row.revision;
+ const resolved=await f.catalog.relink(id,relink.videoId,{requestId:randomUUID(),expectedRevision,path:relinkSource.path});
+ assert.equal(resolved.status,'ready');
+ assert.deepEqual((await f.catalog.list(id,{folderId:'all'})).legacyUpgrade,{count:0,completed:true});
+ const emptyPlan=await f.catalog.upgradePlan(id);
+ assert.equal(emptyPlan.completed,true);
+ assert.deepEqual(emptyPlan.items,[]);
+ const after=await f.store.state(id);
+ assert.deepEqual(after.plan,before.plan);
+ assert.deepEqual(after.takes,before.takes);
+});
 test('无分镜项目可持久保存视频、none/new/existing参考提示词、项目归属与备份',async t=>{const f=await fixture(t),r=await imported(f,{mode:'new',title:'门口经验',text:'固定镜头，原参考经验正文'});assert.equal(r.status,'ready');const list=await f.catalog.list(f.a.id),v=list.videos[0];assert.equal(list.prompts.length,1);assert.equal(v.managed,true);assert.equal(v.status,'available');assert.deepEqual(v.adoptedShots,[]);assert.notEqual(v.path,f.file);assert.deepEqual(await fs.readFile(v.path),f.bytes);assert.deepEqual(await fs.readFile(f.file),f.bytes);await assert.rejects(f.catalog.start(f.b.id,{requestId:randomUUID(),fileName:'b.mp4',bytes:100,prompt:{mode:'existing',id:list.prompts[0].id}}),e=>e.code==='PROMPT_NOT_FOUND');const upd=await f.catalog.update(f.a.id,v.id,{expectedRevision:v.revision,title:'新标题',notes:'可读备注',prompt:{mode:'existing',id:list.prompts[0].id}});assert.equal(upd.name,'新标题');const backup=f.storyboards.backup();assert.equal(backup.video_preview.project_video_records.length,1);f.storyboards.validateBackup(backup);const bad=structuredClone(backup);bad.video_preview.project_video_records[0].project_id=f.b.id;bad.checksum=digest({tables:bad.tables,creative:bad.creative,video_preview:bad.video_preview});assert.throws(()=>f.storyboards.validateBackup(bad),/归属/);const restarted=new ProjectVideos(f.store,{directory:f.catalog.directory});assert.equal((await restarted.list(f.a.id)).videos[0].name,'新标题');assert.equal(restarted.receiptDTO(restarted.receipt(f.a.id,r.id)).status,'ready');});
 test('同内容不同名直接导入、同名可复用或_0副本；重复请求查询不重发',async t=>{const f=await fixture(t),one=await imported(f),two=await imported(f,{mode:'none'},'other.mp4');assert.equal(two.status,'ready');assert.notEqual(two.videoId,one.videoId);assert.equal((await f.catalog.list(f.a.id)).videos.length,2);const again=await imported(f);assert.equal(again.status,'duplicate');const copied=await f.catalog.resolve(f.a.id,again.id,{choice:'import'});assert.equal(copied.fileName,'candidate_0.mp4');assert.equal((await f.catalog.list(f.a.id)).videos.length,3);await assert.rejects(f.catalog.upload(f.a.id,again.id,Readable.from([f.bytes])),e=>e.code==='IMPORT_BUSY');assert.equal(f.catalog.receiptDTO(f.catalog.receipt(f.a.id,again.id)).status,'ready');});
 test('分镜仅绑定项目管理视频，覆盖与参考提示词无关，移除需精确采用确认',async t=>{const f=await fixture(t);init(f);const a=await imported(f),duplicate=await imported(f,{mode:'new',text:'另一份经验'}),b=await f.catalog.resolve(f.a.id,duplicate.id,{choice:'import'});await assert.rejects(f.store.inspect(f.a.id,[{path:f.file}]),e=>e.code==='PROJECT_VIDEO_REQUIRED');await assert.rejects(f.store.inspect(f.b.id,[{sourceId:a.videoId}]));await bind(f,a.videoId,[0,1]);const state=await f.store.state(f.a.id),oldFirst=state.plan.adopted[state.shots[0].id];await bind(f,b.videoId,[1,2]);let list=await f.catalog.list(f.a.id);assert.deepEqual(list.videos.find(v=>v.id===a.videoId).adoptedShots.map(s=>s.number),['01']);assert.equal((await f.store.state(f.a.id)).plan.adopted[state.shots[0].id],oldFirst);let video=list.videos.find(v=>v.id===b.videoId);await assert.rejects(Promise.resolve().then(()=>f.catalog.remove(f.a.id,video.id,{expectedRevision:video.revision,adoptionStamp:list.adoptionStamp})),e=>e.code==='UNBIND_CONFIRMATION_REQUIRED');await f.catalog.update(f.a.id,video.id,{expectedRevision:video.revision,title:video.name,notes:'经验只读',prompt:{mode:'none'}});list=await f.catalog.list(f.a.id);video=list.videos.find(v=>v.id===b.videoId);const beforeState=(await f.store.state(f.a.id)).plan;assert.equal(Object.keys(beforeState.adopted).length,3);f.catalog.remove(f.a.id,video.id,{expectedRevision:video.revision,adoptionStamp:list.adoptionStamp,confirmUnbind:true});assert.equal(Object.keys((await f.store.state(f.a.id)).plan.adopted).length,1);await fs.access(video.path);await assert.rejects(f.store.inspect(f.a.id,[{sourceId:video.id}]),e=>e.code==='PROJECT_VIDEO_REQUIRED');});
