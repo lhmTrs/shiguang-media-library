@@ -1,0 +1,12 @@
+import type {RoutingOptions, RoutingPreferences, IntakeFile, IntakeDestination} from './types';
+export type RouteSuggestion = {destination: IntakeDestination | null; group: string; reason: string; decision?: 'new-character' | 'audio-kind'; hint?: string};
+export const AUDIO_SFX_MAX: number;
+export const AUDIO_MUSIC_MIN: number;
+export function stem(name: string): string;
+export function longestPrefix<T>(items: readonly T[] | undefined, text: string, nameOf?: (item: T) => string): T | null;
+export function isGenericName(name: string): boolean;
+export function audioKindFor(durationSec: number | null | undefined, lastAudioKind?: 'music' | 'sfx' | null): {kind: 'music' | 'sfx'; reason: string} | null;
+export function formatDuration(sec: number | null | undefined): string;
+export function batchProject(files: readonly IntakeFile[], options: RoutingOptions): RoutingOptions['projects'][number] | null;
+export function suggest(file: IntakeFile, ctx: {options: RoutingOptions; prefs?: Partial<RoutingPreferences>; batch?: RoutingOptions['projects'][number] | null}): RouteSuggestion;
+export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>): Record<string, RouteSuggestion>;

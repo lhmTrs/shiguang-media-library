@@ -29,7 +29,8 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   if(location.current.key!==locationKey)location.current={key:locationKey,version:location.current.version+1};
   const shownProposal=locked?value?.imageProposal:proposal;
   const proposalRef=useRef('');
-  const patch=(fields:Partial<DestinationDraft>)=>{if(value)onChange({...value,...fields});};
+  // Any edit here leaves a scene/prop target; those are chosen in 「放进项目…」.
+  const patch=(fields:Partial<DestinationDraft>)=>{if(value)onChange({...value,...(value.assetKind?{assetKind:undefined,assetId:undefined,assetRevision:undefined}:{}),...fields});};
   useEffect(()=>{
     if(locked||!value||scope==='project'&&kind==='photo'){setFolders([]);setReading(false);setError('');return;}
     const c=new AbortController();let current=true;setReading(true);setError('');
@@ -75,5 +76,6 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
 export function submittedDestination(v:DestinationDraft):IntakeDestination {
   if(v.scope==='library')return {kind:v.kind,scope:'library',directory:v.directory||'',...(v.fileName?{fileName:v.fileName}:{})};
   if(v.kind==='video')return {kind:'video',scope:'project',projectId:v.projectId,folderId:v.folderId||'root',...(v.fileName?{fileName:v.fileName}:{})};
+  if(v.assetKind&&v.assetId)return {kind:'photo',scope:'project',projectId:v.projectId,assetKind:v.assetKind,assetId:v.assetId,assetRevision:v.assetRevision,...(v.fileName?{fileName:v.fileName}:{})};
   return {kind:'photo',scope:'project',projectId:v.projectId,...(v.fileName?{fileName:v.fileName}:{}),imageProposal:v.imageProposal};
 }
