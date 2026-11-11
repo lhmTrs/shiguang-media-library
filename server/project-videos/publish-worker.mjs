@@ -3,7 +3,6 @@
 // This helper accepts only metadata and creates no model, network or DB work.
 import fs from 'node:fs/promises';
 import {constants,lstatSync,unlinkSync} from 'node:fs';
-import {pipeline} from 'node:stream/promises';
 import path from 'node:path';
 
 const identity=s=>[s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs].join(':');
@@ -21,7 +20,14 @@ async function copyWithProof(stage,stageIdentity,name){
   try{
     if(identity(await source.stat())!==stageIdentity)throw Error('待导入视频已变化');
     output=await fs.open(name,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-    await pipeline(source.createReadStream({autoClose:false}),output.createWriteStream({autoClose:false}));
+    for await(const chunk of source.createReadStream({autoClose:false})){
+      for(let offset=0;offset<chunk.length;){
+        const {bytesWritten}=await output.write(chunk,offset,chunk.length-offset);
+        if(!bytesWritten)throw Error('视频副本写入不完整');
+        offset+=bytesWritten;
+      }
+    }
+    if(identity(await source.stat())!==stageIdentity)throw Error('待导入视频已变化');
     await output.sync();
     return identity(await output.stat());
   }catch(e){
