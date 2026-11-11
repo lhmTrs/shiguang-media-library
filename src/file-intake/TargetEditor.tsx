@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {Image,Film,Music,RefreshCw} from 'lucide-react';
 import {imageNamePreset} from '../import-presets.mjs';
-import {INTAKE_API,kindLabel,encoded,errorMessage,type IntakeDestination,type IntakeFile,type IntakeFolder,type IntakeRequest,type MediaKind,type ImageProposal} from './types';
+import {INTAKE_API,kindLabel,encoded,errorMessage,type IntakeDestination,type IntakeFile,type IntakeFolder,type IntakeRequest,type MediaKind,type ImageProposal,type RoutingProject} from './types';
 
 type Proposal=ImageProposal;
 export type DestinationDraft=IntakeDestination & {characterNameManual?:boolean;lookNameManual?:boolean};
@@ -14,7 +14,7 @@ export function initialDestination(file:IntakeFile,preferences:Partial<Record<Me
   const target=kind==='photo'&&!suggestion.structured?{kind,scope:'library' as const,directory:''}:pref||{kind,scope:'library' as const,directory:''};
   return {...target,kind,...(kind==='photo'?{characterName:suggestion.name,lookName:suggestion.lookName}:{})};
 }
-export function TargetEditor({file,handoffId,api,projects,value,locked,previewReady=true,showPreview=true,onChange,onReady}:{file:IntakeFile;handoffId:string;api:IntakeRequest;projects:{id:string;name:string}[];value:DestinationDraft|null;locked:boolean;previewReady?:boolean;showPreview?:boolean;onChange:(v:DestinationDraft,manual?:boolean)=>void;onReady:(v:boolean)=>void}){
+export function TargetEditor({file,handoffId,api,projects,assetProjects,value,locked,previewReady=true,showPreview=true,onChange,onReady}:{file:IntakeFile;handoffId:string;api:IntakeRequest;projects:{id:string;name:string}[];assetProjects?:RoutingProject[];value:DestinationDraft|null;locked:boolean;previewReady?:boolean;showPreview?:boolean;onChange:(v:DestinationDraft,manual?:boolean)=>void;onReady:(v:boolean)=>void}){
   const [folders,setFolders]=useState<IntakeFolder[]>([]),[reading,setReading]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),[newFolder,setNewFolder]=useState(''),[creating,setCreating]=useState(false),[proposal,setProposal]=useState<Proposal|null>(null),[checking,setChecking]=useState(false);
   const [previewError,setPreviewError]=useState(''),[previewAttempt,setPreviewAttempt]=useState(0);
   const previewSrc='/api'+INTAKE_API+'/handoffs/'+encoded(handoffId)+'/files/'+encoded(file.id)+'/preview'+(previewAttempt?'?retry='+previewAttempt:'');
@@ -23,7 +23,7 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   const mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const kind=value?.kind,scope=value?.scope,project=value?.projectId||'';
-  const name=value?.characterName??value?.imageProposal?.characterName??'',look=value?.lookName??value?.imageProposal?.lookName??'',proposalKey=JSON.stringify([scope,project,name,look]);
+  const name=value?.characterName??value?.imageProposal?.characterName??'',look=value?.lookName??value?.imageProposal?.lookName??'',proposalKey=JSON.stringify([scope,project,name,look,value?.assetKind||'']);
   const locationKey=JSON.stringify([kind,scope,project,value?.directory||'',value?.folderId||'root']);
   const location=useRef({key:locationKey,version:0});
   if(location.current.key!==locationKey)location.current={key:locationKey,version:location.current.version+1};
@@ -31,6 +31,9 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
   const proposalRef=useRef('');
   // Any edit here leaves a scene/prop target; those are chosen in 「放进项目…」.
   const patch=(fields:Partial<DestinationDraft>)=>{if(value)onChange({...value,...(value.assetKind?{assetKind:undefined,assetId:undefined,assetRevision:undefined}:{}),...fields});};
+  // Scenes and props of a project (from routing options); choosing one replaces the person target.
+  const assetsIn=(projectId:string)=>assetProjects?.find(p=>p.id===projectId)?.assets.filter(a=>a.kind==='scene'||a.kind==='prop')||[];
+  const pickAsset=(projectId:string)=>{if(!value)return;const a=assetsIn(projectId)[0];if(a)onChange({...value,scope:'project',projectId,assetKind:a.kind as 'scene'|'prop',assetId:a.id,assetRevision:a.revision,imageProposal:undefined});else patch({scope:'project',projectId,imageProposal:undefined});};
   useEffect(()=>{
     if(locked||!value||scope==='project'&&kind==='photo'){setFolders([]);setReading(false);setError('');return;}
     const c=new AbortController();let current=true;setReading(true);setError('');
@@ -40,7 +43,7 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
     return()=>{current=false;c.abort();};
   },[api,kind,scope,project,refresh,locked]);
   useEffect(()=>{
-    if(locked||scope!=='project'||kind!=='photo'){setProposal(null);setChecking(false);proposalRef.current='';return;}
+    if(locked||scope!=='project'||kind!=='photo'||value?.assetKind){setProposal(null);setChecking(false);proposalRef.current='';return;}
     setProposal(null);proposalRef.current='';
     if(!project||!name.trim()||!look.trim()){setChecking(false);return;}
     const c=new AbortController();let current=true;setChecking(true);setError('');
@@ -57,9 +60,18 @@ export function TargetEditor({file,handoffId,api,projects,value,locked,previewRe
     <strong>{file.mediaKind==='photo'?<Image size={15}/>:file.mediaKind==='audio'?<Music size={15}/>:<Film size={15}/>} {file.name}</strong>
     {file.mediaKind==='audio'&&<label><span>类型</span><select aria-label={'素材类型 '+file.id} value={value?.kind||''} disabled={locked} onChange={e=>onChange({kind:e.target.value as MediaKind,scope:'library',directory:''})}><option value="" disabled>请选择音乐或音效</option><option value="music">音乐</option><option value="sfx">音效</option></select></label>}
     {value&&<>
-      {['photo','video'].includes(value.kind)&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'收纳范围 '+file.id}>{(['project','library'] as const).map(scope=><button key={scope} type="button" disabled={locked} aria-pressed={value.scope===scope} onClick={()=>value.scope!==scope&&patch({scope,imageProposal:undefined})}>{scope==='project'?'项目':kindLabel[value.kind]}</button>)}</span></div>}
-      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>patch({projectId:e.target.value,folderId:'root',imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
-      {value.scope==='project'&&value.kind==='photo'?<>
+      {value.kind==='video'&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'收纳范围 '+file.id}>{(['project','library'] as const).map(scope=><button key={scope} type="button" disabled={locked} aria-pressed={value.scope===scope} onClick={()=>value.scope!==scope&&patch({scope,imageProposal:undefined})}>{scope==='project'?'项目':kindLabel[value.kind]}</button>)}</span></div>}
+      {value.kind==='photo'&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'收纳范围 '+file.id}>
+        <button type="button" disabled={locked} aria-pressed={value.scope==='project'&&!value.assetKind} onClick={()=>(value.scope!=='project'||value.assetKind)&&patch({scope:'project',imageProposal:undefined})}>人物</button>
+        {assetProjects&&<button type="button" disabled={locked||!!project&&!assetsIn(project).length} title={project&&!assetsIn(project).length?'这个项目还没有场景或道具':undefined} aria-pressed={!!value.assetKind} onClick={()=>!value.assetKind&&pickAsset(project||assetProjects.find(p=>assetsIn(p.id).length)?.id||'')}>场景/道具</button>}
+        <button type="button" disabled={locked} aria-pressed={value.scope==='library'} onClick={()=>value.scope!=='library'&&patch({scope:'library',imageProposal:undefined})}>{kindLabel.photo}</button>
+      </span></div>}
+      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>value.assetKind?pickAsset(e.target.value):patch({projectId:e.target.value,folderId:'root',imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+      {value.scope==='project'&&value.kind==='photo'&&value.assetKind?<div className="fi-field"><span>放进</span>
+        {assetsIn(project).length?<span className="fi-pop-list" role="radiogroup" aria-label={'场景或道具 '+file.id}>{assetsIn(project).map(a=><button key={a.id} type="button" role="radio" disabled={locked} aria-checked={value.assetId===a.id} onClick={()=>onChange({...value,assetKind:a.kind as 'scene'|'prop',assetId:a.id,assetRevision:a.revision,imageProposal:undefined})}>{a.kind==='scene'?'场景':'道具'} · {a.name}</button>)}</span>
+          :<small className="fi-muted">这个项目还没有场景或道具</small>}
+      </div>
+      :value.scope==='project'&&value.kind==='photo'?<>
         <div className="fi-target-fields"><label><span>人物</span><input className="fi-button" aria-label={'人物名 '+file.id} value={name} disabled={locked} onChange={e=>patch({characterName:e.target.value,characterNameManual:true,imageProposal:undefined})}/></label><label><span>造型</span><input className="fi-button" aria-label={'造型名 '+file.id} value={look} disabled={locked} onChange={e=>patch({lookName:e.target.value,lookNameManual:true,imageProposal:undefined})}/></label></div>
         {checking?<p role="status">正在核对人物和造型…</p>:shownProposal&&(locked||proposalRef.current===proposalKey)?<p className="fi-muted">{shownProposal.newCharacter?'将新建人物：':'添加到现有人物：'}{shownProposal.characterName} · {shownProposal.newLook?'将新建造型：':'现有造型：'}{shownProposal.lookName}</p>:<p className="fi-muted">{locked?'原提交目标保留，请核对原请求结果。':'请填写人物和造型。缺少信息时也可改为收纳到摄影照片。'}</p>}
         <p className="fi-muted fi-keep-note">确认收纳后正式保存关联；已有代表图保持不变。</p>

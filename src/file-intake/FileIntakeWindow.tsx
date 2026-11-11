@@ -276,8 +276,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     <div className="fi-panel-head"><Thumb file={r.file} handoffId={handoffId} ready={!checking && !prepFailed} size="small"/>
       <div><strong title={r.name}>{r.name}</strong><small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
       <button className="fi-icon-button" aria-label="关闭" onClick={() => closePanel()}>×</button></div>
-    <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
-      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return; // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
+    <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} assetProjects={options?.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
+      onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return;
+      // Renaming the copy is not choosing a destination: the new name is routed again (so a look it
+      // names is matched, or still asked about), and a destination set by hand stays as it was.
+      if (v.fileName !== undefined && v.fileName !== (drafts[r.file.id]?.fileName ?? r.file.name)) {rename(r.file.id, v.fileName); return;}
+      // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
       // kind's last category (as before); later switches start at 待确认, and the same kind keeps its category.
       const pickedKind = (v.kind === 'music' || v.kind === 'sfx') && v.scope === 'library' && !v.directory && Object.keys(v).length === 3;
       const next = !pickedKind ? v : {...v, directory: r.destination?.kind === v.kind ? r.destination.directory || '' : drafts[r.file.id]?.manual ? '' : libraryDir(v.kind)}; setDrafts(old => ({...old, [r.file.id]: {...old[r.file.id], destination: next, manual: true, fileName: v.fileName ?? old[r.file.id]?.fileName}}));}} onReady={() => undefined}/>
@@ -301,8 +305,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       </span>
     : r.decision === 'new-look'
     ? <span className="fi-choice" role="group" aria-label={'去向 ' + r.file.name}>
-        <button disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建造型</button>
-        <button disabled={locked} onClick={() => setDestination([r.file.id], {...r.destination!, lookName: r.fallbackLook || '默认'})}>放进{r.fallbackLook && r.fallbackLook !== '默认' ? '造型·' + r.fallbackLook : '默认造型'}</button>
+        <button disabled={locked} onClick={() => setDestination([r.file.id], r.destination)}>新建造型「{r.destination?.lookName}」</button>
+        {/* Only offer an existing look; a character with none gets the general photos instead. */}
+        {r.fallbackLook ? <button disabled={locked} onClick={() => setDestination([r.file.id], {...r.destination!, lookName: r.fallbackLook!})}>放进造型「{r.fallbackLook}」</button>
+          : <button disabled={locked} onClick={() => setDestination([r.file.id], {kind: 'photo', scope: 'library', directory: libraryDir('photo')})}>摄影照片</button>}
       </span>
     : audioSwitch(r);
   const audioSwitch = (r: Row) => <span className="fi-choice" role="group" aria-label={'素材类型 ' + r.file.name}>{(['music', 'sfx'] as const).map(k => <button key={k} disabled={locked} aria-pressed={!r.decision && r.destination?.kind === k} onClick={() => setDestination([r.file.id], {kind: k, scope: 'library', directory: libraryDir(k)})}>{k === 'music' ? '音乐' : '音效'}</button>)}</span>;
@@ -386,9 +392,6 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
             </div>
             <span className="fi-single-actions">
               <button data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '改去处 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '改去处…'}</button>
-              {/* The per-file panel has no scene/prop picker; a single photo keeps that route here. */}
-              {single.file.mediaKind === 'photo' && options && !locked && <span className="fi-anchor"><button className="fi-link-muted" data-popover-trigger onClick={() => setPopover(p => p === 'put:single' ? '' : 'put:single')}>放进场景或道具…</button>
-                {popover === 'put:single' && <PutPopover options={options} count={1} defaultProject={single.destination?.projectId || lastPhotoProject} onClose={() => setPopover('')} onApply={d => {setDestination([single.file.id], d); setPopover('');}}/>}</span>}
             </span>
           </div>
         </div> : groups.map(renderGroup)}

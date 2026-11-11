@@ -68,7 +68,7 @@ try {
   const edit=async(p,file)=>{await p.locator('[data-file-id="'+file.id+'"]').click();return p.getByRole('dialog',{name:'收纳设置 '+file.name,exact:true});};
   const confirmButton=p=>p.locator('.fi-confirm-button');
   let panel=await edit(page,handoff.files[0]);
-  await panel.getByRole('group',{name:'收纳范围 '+handoff.files[0].id}).getByRole('button',{name:'项目',exact:true}).click();
+  await panel.getByRole('group',{name:'收纳范围 '+handoff.files[0].id}).getByRole('button',{name:/^(项目|人物)$/}).click(); // photos say 人物 since scenes/props joined the panel
   await panel.getByLabel('目标项目 '+handoff.files[0].id).selectOption(project.id);
   await expect(panel.getByLabel('人物名 '+handoff.files[0].id)).toHaveValue('苏禾');await expect(panel.getByLabel('造型名 '+handoff.files[0].id)).toHaveValue('日常');
   await expect(panel.getByText('将新建人物：苏禾 · 将新建造型：日常')).toBeVisible();

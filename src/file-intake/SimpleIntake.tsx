@@ -5,7 +5,7 @@ import type {DestinationDraft} from './TargetEditor';
 
 export type Row = {
   file: IntakeFile; name: string; destination: DestinationDraft | null; reason: string; hint?: string;
-  decision?: 'new-character' | 'new-look' | 'audio-kind'; alternative?: {directory: string; name: string}; fallbackLook?: string; manual?: boolean; ready: boolean; checking?: string; problem?: string; newName?: string | null;
+  decision?: 'new-character' | 'new-look' | 'audio-kind'; alternative?: {directory: string; name: string}; fallbackLook?: string | null; manual?: boolean; ready: boolean; checking?: string; problem?: string; newName?: string | null;
 };
 export type Group = {key: string; title: string; detail: string; tone: 'decide' | 'project' | 'video' | 'library' | 'audio'; rows: Row[]; photos: boolean};
 

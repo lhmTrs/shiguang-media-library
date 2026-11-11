@@ -76,8 +76,9 @@ test('photo priority 2: existing character, existing look only; a new look is as
   assert.equal(fresh.destination.lookName, '雨夜风衣'); assert.equal(fresh.fallbackLook, '日常'); assert.equal(fresh.reason, '「阿青」还没有造型「雨夜风衣」');
   const extra = one(ph('阿青_视频3_05.png'));
   assert.equal(extra.decision, 'new-look'); assert.equal(extra.destination.lookName, '视频3', 'only the part right after the person is offered as a look');
-  // A character with no looks at all offers 默认 as the fallback.
-  assert.equal(suggest(ph('小满_校服.png'), {options, prefs: {...prefs, lastProjectId: {photo: P3, video: P3}}}).fallbackLook, '默认');
+  // A character with no looks at all gets no invented fallback look.
+  const none = suggest(ph('小满_校服.png'), {options, prefs: {...prefs, lastProjectId: {photo: P3, video: P3}}});
+  assert.equal(none.decision, 'new-look'); assert.equal(none.fallbackLook, null); assert.equal(none.reason, '「小满」还没有任何造型');
 });
 
 test('photo: new-character guess accepts common separators and only the next part as look', () => {

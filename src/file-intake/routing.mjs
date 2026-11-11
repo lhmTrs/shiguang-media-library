@@ -71,7 +71,7 @@ function matchInProject(project, text) {
     // name that starts with a look (张大山_视频3_额伤正脸_05 → 额伤). Nothing here creates a look.
     const look = !tail ? fallback : looks.find(l => fold(l.name) === fold(tail)) || longestPrefix(looks, tail)
       || parts(tail).map(part => longestPrefix(looks, part)).find(Boolean) || null;
-    return {type: 'character', character, look, lookName: look ? look.name : parts(tail)[0] || '默认', fallbackLook: fallback ? fallback.name : '默认'};
+    return {type: 'character', character, look, lookName: look ? look.name : parts(tail)[0] || '默认', fallbackLook: fallback ? fallback.name : null};
   }
   return null;
 }
@@ -137,7 +137,8 @@ function suggestPhoto(file, options, s, project, text, hint) {
     group: 'asset:' + project.id, reason: '按名字认出' + (found.asset.kind === 'scene' ? '场景' : '道具') + '「' + found.asset.name + '」'};
   // A look the character doesn't have is asked about, like a new character: never created silently.
   if (found?.type === 'character' && !found.look) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
-    group: 'decide', decision: 'new-look', reason: '「' + found.character.name + '」还没有造型「' + found.lookName + '」', fallbackLook: found.fallbackLook};
+    group: 'decide', decision: 'new-look', fallbackLook: found.fallbackLook,
+    reason: found.fallbackLook ? '「' + found.character.name + '」还没有造型「' + found.lookName + '」' : '「' + found.character.name + '」还没有任何造型'};
   if (found?.type === 'character') return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: found.character.name, lookName: found.lookName},
     group: 'character:' + project.id, reason: '按名字认出人物「' + found.character.name + '」'};
   // Agreed order: a possible new character is asked about before category matching.

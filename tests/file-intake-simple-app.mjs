@@ -117,7 +117,7 @@ try {
   await expect(page2.getByRole('checkbox', {name: '收纳时按规范改名'})).toBeChecked();
   // 日常 is not a look of 阿青 yet: asked about, never created silently; the user picks 新建造型.
   await expect(page2.getByRole('region', {name: '需要你决定', exact: true})).toContainText('「阿青」还没有造型「日常」');
-  await page2.getByRole('group', {name: '去向 阿青_日常.png', exact: true}).getByRole('button', {name: '新建造型', exact: true}).click();
+  await page2.getByRole('group', {name: '去向 阿青_日常.png', exact: true}).getByRole('button', {name: '新建造型「日常」', exact: true}).click();
   await expect(page2.getByRole('region', {name: '项目「穿越计」 · 人物照片', exact: true})).toContainText('阿青_日常.png');
   await expect(page2.locator('.fi-confirm-button')).toBeEnabled(); await page2.locator('.fi-confirm-button').click();
   await expect(page2.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible();

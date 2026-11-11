@@ -288,7 +288,7 @@ try {
     await expect(page.locator('.fi-projectbar')).toHaveCount(0);
     await expect(page.locator('.fi-bar-title')).toContainText('1 张名字认不出，先放进待确认'); await expect(page.locator('.fi-bar-title')).not.toContainText('KB');
     await expect(page.locator('.fi-single-dest')).toContainText('名字认不出，先放这里');
-    await expect(page.getByRole('button', {name: '放进场景或道具…', exact: true})).toBeVisible();
+    await expect(page.getByRole('button', {name: '放进场景或道具…', exact: true})).toHaveCount(0); // scenes and props now live in the panel
     await page.getByRole('button', {name: '改去处 E采用末帧_用户确认.png', exact: true}).click();
     await expect(page.getByRole('dialog', {name: '收纳设置 E采用末帧_用户确认.png', exact: true})).toBeVisible();
     await page.keyboard.press('Escape');
@@ -304,9 +304,9 @@ try {
     await fresh(f => {f.handoff.files = files([['n1', '阿青_婚纱.png', 'photo']]); f.handoff.files.push(...files([['n2', '阿青_视频3_泳衣正脸_05.png', 'photo']]));});
     const ask = page.getByRole('group', {name: '去向 阿青_婚纱.png', exact: true});
     await expect(group('需要你决定')).toContainText('「阿青」还没有造型「婚纱」');
-    await expect(ask.getByRole('button', {name: '新建造型', exact: true})).toBeVisible();
+    await expect(ask.getByRole('button', {name: '新建造型「婚纱」', exact: true})).toBeVisible();
     await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_视频3_泳衣正脸_05.png');
-    await ask.getByRole('button', {name: '放进造型·日常', exact: true}).click();
+    await ask.getByRole('button', {name: '放进造型「日常」', exact: true}).click();
     await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     const b = fx.confirmBodies[0];
     assert.equal(target(b, 'n1').destination.imageProposal.lookName, '日常'); assert.equal(target(b, 'n1').destination.imageProposal.newLook, false);
@@ -331,6 +331,50 @@ try {
     await expect(group('项目「短剧2」 › 项目根目录')).toContainText('canvas_77.mp4');
     await projectBar().click(); await page.keyboard.press('Escape'); await expect(list).toHaveCount(0);
     assert.equal(fx.confirmBodies.length, 0);
+  });
+
+  await check('renaming in the panel routes again; a hand-set target stays; scenes and props in the panel (POLISH-1 rework)', async () => {
+    const files = names => names.map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
+    const panelFor = name => page.getByRole('dialog', {name: '收纳设置 ' + name, exact: true});
+    const renameTo = async (id, name, to) => {await page.locator('[data-file-id="' + id + '"]').click(); await panelFor(name).getByLabel('副本名称 ' + id, {exact: true}).fill(to); await panelFor(name).getByRole('button', {name: '完成', exact: true}).click();};
+    await fresh(f => {
+      f.options.projects[1].assets = [{id: 'c9', kind: 'character', name: '小满', revision: 1, defaultLookId: null, looks: []}];
+      f.handoff.files = files([['n1', '阿青_婚纱.png', 'photo'], ['n2', '阿青_婚纱2.png', 'photo'], ['n3', '阿青_婚纱3.png', 'photo'], ['p2', 'image_0931.png', 'photo']]);
+    });
+    // 1. Renamed to a name with an existing look: matched, no question, no new look.
+    await renameTo('n1', '阿青_婚纱.png', '阿青_泳衣_留档.png');
+    await expect(page.getByRole('group', {name: '去向 阿青_婚纱.png', exact: true})).toHaveCount(0);
+    await expect(group('项目「穿越计」 · 人物照片')).toContainText('阿青_泳衣_留档.png');
+    // 2. Renamed to a name that still has no look: still asked.
+    await renameTo('n2', '阿青_婚纱2.png', '阿青_礼服.png');
+    await expect(group('需要你决定')).toContainText('「阿青」还没有造型「礼服」');
+    // 3. A target set by hand stays when the copy is renamed.
+    await page.getByRole('group', {name: '去向 阿青_婚纱3.png', exact: true}).getByRole('button', {name: '放进造型「日常」', exact: true}).click();
+    await renameTo('n3', '阿青_婚纱3.png', '阿青_泳衣_备份.png');
+    // 4. Scene from the panel: 场景/道具 picks the project's first one; the request carries the asset.
+    await page.locator('[data-file-id="p2"]').click();
+    await panelFor('image_0931.png').getByRole('group', {name: '收纳范围 p2', exact: true}).getByRole('button', {name: '场景/道具', exact: true}).click();
+    await expect(panelFor('image_0931.png').getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await panelFor('image_0931.png').getByRole('button', {name: '完成', exact: true}).click();
+    await expect(group('项目「穿越计」 · 场景和道具')).toContainText('image_0931.png');
+    await page.getByRole('group', {name: '去向 阿青_婚纱2.png', exact: true}).getByRole('button', {name: '新建造型「礼服」', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    const b = fx.confirmBodies[0], d = id => target(b, id).destination;
+    assert.deepEqual([d('n1').fileName, d('n1').imageProposal.lookName, d('n1').imageProposal.newLook], ['阿青_泳衣_留档.png', '泳衣', false]);
+    assert.deepEqual([d('n2').fileName, d('n2').imageProposal.lookName, d('n2').imageProposal.newLook], ['阿青_礼服.png', '礼服', true]);
+    assert.deepEqual([d('n3').fileName, d('n3').imageProposal.lookName], ['阿青_泳衣_备份.png', '日常'], 'the hand-set look is not replaced by the new name');
+    assert.deepEqual(d('p2'), {kind: 'photo', scope: 'project', projectId: P1, assetKind: 'scene', assetId: 's1', assetRevision: 5});
+
+    // A character without any look: no invented 默认 choice, the other answer is 摄影照片.
+    await fresh(f => {
+      f.options.projects[1].assets = [{id: 'c9', kind: 'character', name: '小满', revision: 1, defaultLookId: null, looks: []}];
+      f.handoff.routingPreferences.lastProjectId = {photo: P2, video: P2}; f.handoff.files = files([['m1', '小满_校服.png', 'photo']]);
+    });
+    const ask = page.getByRole('group', {name: '去向 小满_校服.png', exact: true});
+    await expect(page.locator('.fi-single-dest')).toContainText('「小满」还没有任何造型');
+    await expect(ask.getByRole('button')).toHaveText(['新建造型「校服」', '摄影照片']);
+    await ask.getByRole('button', {name: '摄影照片', exact: true}).click(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'm1').destination, {kind: 'photo', scope: 'library', directory: ''});
   });
 
   await check('footer stays clickable while an editable settings panel is open (FE5 R2)', async () => {
