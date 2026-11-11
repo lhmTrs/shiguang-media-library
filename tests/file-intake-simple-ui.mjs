@@ -54,6 +54,7 @@ async function routeApi(route) {
   if (ep === '/routing-options') return fx.routing404 ? respond({error: 'Not found'}, 404) : respond(fx.options);
   if (ep === '/image-proposal') {
     const p = fx.options.projects.find(x => x.id === url.searchParams.get('projectId')), name = url.searchParams.get('name'), lookName = url.searchParams.get('lookName');
+    (fx.proposalProjects ||= []).push(p?.id);
     const c = p.assets.find(a => a.kind === 'character' && a.name === name), l = c?.looks.find(x => x.name === lookName);
     return respond({destination: {projectId: p.id, characterId: c?.id || null, characterRevision: c?.revision ?? null, lookId: l?.id || null, lookRevision: l?.revision ?? null, newCharacter: !c, newLook: !l, characterName: name, lookName}, message: ''});
   }
@@ -375,6 +376,51 @@ try {
     await expect(ask.getByRole('button')).toHaveText(['新建造型「校服」', '摄影照片']);
     await ask.getByRole('button', {name: '摄影照片', exact: true}).click(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(target(fx.confirmBodies[0], 'm1').destination, {kind: 'photo', scope: 'library', directory: ''});
+  });
+
+  await check('switching a scene/prop choice to a project without any never becomes a person target (POLISH-2)', async () => {
+    const P3 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await fresh(f => {
+      // A = 穿越计 (scene 雨夜街口), B = 雨巷 (nothing), C = 道具项目 (prop 灯笼).
+      f.options.projects.push({id: P3, name: '道具项目', videoFolders: [{id: 'root', name: '项目根目录', relativePath: ''}], assets: [{id: 'pp', kind: 'prop', name: '灯笼', revision: 2, defaultLookId: null, looks: []}]});
+      f.handoff.projects.push({id: P3, name: '道具项目'});
+      f.handoff.files = [{id: 'x1', name: '穿越计_阿青_泳衣_复验.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/穿越计_阿青_泳衣_复验.png'}];
+    });
+    const panel = page.getByRole('dialog', {name: '收纳设置 穿越计_阿青_泳衣_复验.png', exact: true});
+    const range = panel.getByRole('group', {name: '收纳范围 x1', exact: true}), project = panel.getByLabel('目标项目 x1', {exact: true});
+    await page.getByRole('button', {name: '改去处 穿越计_阿青_泳衣_复验.png', exact: true}).click();
+    await range.getByRole('button', {name: '场景/道具', exact: true}).click();
+    await expect(panel.getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    // A → B: still 场景/道具, nothing chosen, a plain message, and 收纳 blocked.
+    await project.selectOption(P2);
+    await expect(range.getByRole('button', {name: '场景/道具', exact: true})).toHaveAttribute('aria-pressed', 'true');
+    await expect(range.getByRole('button', {name: '人物', exact: true})).toHaveAttribute('aria-pressed', 'false');
+    await expect(panel).toContainText('这个项目还没有场景或道具'); await expect(panel.getByRole('radio')).toHaveCount(0);
+    await expect(confirmButton()).toBeDisabled();
+    // B → A: back to the first scene.
+    await project.selectOption(P1);
+    await expect(panel.getByRole('radio', {name: '场景 · 雨夜街口', exact: true})).toHaveAttribute('aria-checked', 'true');
+    // A → B → C, done, confirm: the request is C's prop; no person check ever ran for B.
+    await project.selectOption(P2); await expect(confirmButton()).toBeDisabled();
+    await panel.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(page.locator('.fi-single-dest')).toContainText('这个项目没有场景或道具'); await expect(confirmButton()).toBeDisabled();
+    await page.getByRole('button', {name: '改去处 穿越计_阿青_泳衣_复验.png', exact: true}).click();
+    await project.selectOption(P3);
+    await expect(panel.getByRole('radio', {name: '道具 · 灯笼', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await panel.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'x1').destination, {kind: 'photo', scope: 'project', projectId: P3, assetKind: 'prop', assetId: 'pp', assetRevision: 2});
+    assert.ok(!(fx.proposalProjects || []).includes(P2), 'no person/look check for the empty project');
+    assert.equal(fx.confirmBodies.length, 1);
+    // The explicit ways out still work.
+    await fresh(f => {f.handoff.files = [{id: 'x2', name: 'image_0931.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/image_0931.png'}];});
+    await page.getByRole('button', {name: '改去处 image_0931.png', exact: true}).click();
+    const panel2 = page.getByRole('dialog', {name: '收纳设置 image_0931.png', exact: true}), range2 = panel2.getByRole('group', {name: '收纳范围 x2', exact: true});
+    await range2.getByRole('button', {name: '场景/道具', exact: true}).click();
+    await panel2.getByLabel('目标项目 x2', {exact: true}).selectOption(P2);
+    await range2.getByRole('button', {name: '摄影照片', exact: true}).click();
+    await panel2.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(confirmButton()).toBeEnabled();
   });
 
   await check('footer stays clickable while an editable settings panel is open (FE5 R2)', async () => {

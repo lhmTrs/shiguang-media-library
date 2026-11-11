@@ -158,11 +158,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const decision = draft?.manual ? undefined : s?.decision;
     const p = isCharacter(destination) && destination.projectId && destination.characterName && destination.lookName ? proposals[proposalKey(destination)] : undefined;
     const needsProposal = isCharacter(destination) && !decision;
-    const ready = !!destination && !decision && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
+    const assetMissing = !!destination?.assetKind && !destination.assetId;
+    const ready = !!destination && !decision && !assetMissing && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
     const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
       reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, fallbackLook: decision ? s?.fallbackLook : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
-      problem: needsProposal && p?.state === 'error' ? p.error : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
+      problem: needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
   });
   // Character targets are checked against the project before confirmation. Each key is
   // fetched once; a late answer only fills its own key, so it cannot overwrite a newer choice.
@@ -194,7 +195,9 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     return () => {current = false; clearTimeout(timer); controller.abort();};
   }, [api, previewBody, handoffId]);
 
-  const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination, manual: true}]))}));
+  // A person/look picked here (decision buttons, 放进项目…) is an explicit choice: a later rename keeps it.
+  const pinned = (d: DestinationDraft | null) => d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind ? {...d, characterNameManual: true, lookNameManual: true} : d;
+  const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination: pinned(destination), manual: true}]))}));
   const rename = (id: string, fileName: string) => setDrafts(old => ({...old, [id]: {...old[id], destination: old[id]?.destination ?? null, manual: !!old[id]?.manual, fileName}}));
   const remove = (id: string) => {setSelected(old => old.filter(x => x !== id)); setChecked(old => old.filter(x => x !== id));};
   const pending = rows.filter(r => !r.ready).length;
@@ -278,9 +281,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <button className="fi-icon-button" aria-label="关闭" onClick={() => closePanel()}>×</button></div>
     <div className="fi-panel-body"><TargetEditor file={r.file} handoffId={handoffId} api={api} projects={handoff.projects} assetProjects={options?.projects} value={r.destination} locked={locked} previewReady={false} showPreview={false}
       onChange={(v, manual = true) => {if (!manual && !drafts[r.file.id]?.manual) return;
-      // Renaming the copy is not choosing a destination: the new name is routed again (so a look it
-      // names is matched, or still asked about), and a destination set by hand stays as it was.
-      if (v.fileName !== undefined && v.fileName !== (drafts[r.file.id]?.fileName ?? r.file.name)) {rename(r.file.id, v.fileName); return;}
+      // Renaming the copy is not choosing a destination: an automatic one is routed again from the new
+      // name (an existing look is matched, a missing one is still asked about). A destination set by hand
+      // keeps every field the user typed or picked; only untouched person/look fields follow the name.
+      if (v.fileName !== undefined && v.fileName !== (drafts[r.file.id]?.fileName ?? r.file.name) && !drafts[r.file.id]?.manual) {rename(r.file.id, v.fileName); return;}
       // Picking music/sfx sends a bare {kind, scope, directory:''}. The first explicit pick starts from that
       // kind's last category (as before); later switches start at 待确认, and the same kind keeps its category.
       const pickedKind = (v.kind === 'music' || v.kind === 'sfx') && v.scope === 'library' && !v.directory && Object.keys(v).length === 3;
