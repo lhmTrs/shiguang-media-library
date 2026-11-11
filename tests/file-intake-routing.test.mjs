@@ -22,6 +22,7 @@ const prefs = {lastProjectId: {photo: P1, video: P3}, lastVideoFolderByProject: 
 const v = name => ({id: name, name, mediaKind: 'video', bytes: 1, path: '/s/' + name});
 const ph = name => ({id: name, name, mediaKind: 'photo', bytes: 1, path: '/s/' + name});
 const au = (name, durationSec) => ({id: name, name, mediaKind: 'audio', bytes: 1, path: '/s/' + name, durationSec});
+const lib = ({kind, scope, directory}) => ({kind, scope, directory});
 const one = (file, extra = {}) => suggest(file, {options, prefs: {...prefs, ...extra}, batch: null});
 
 test('longest project prefix wins and needs no separator', () => {
@@ -81,11 +82,12 @@ test('photo: generic platform names never become new characters', () => {
 });
 
 test('photo priority 4 and 5: category prefix, then 待确认', () => {
-  assert.deepEqual(one(ph('场景天台.png')).destination, {kind: 'photo', scope: 'library', directory: '场景'});
+  assert.deepEqual(lib(one(ph('场景天台.png')).destination), {kind: 'photo', scope: 'library', directory: '场景'});
   // Agreed order asks about a possible new character first and offers the category as the other answer.
   const both = one(ph('场景_天台.png'));
   assert.equal(both.decision, 'new-character'); assert.deepEqual(both.alternative, {directory: '场景', name: '场景'});
-  assert.deepEqual(one(ph('image_0931.png')).destination, {kind: 'photo', scope: 'library', directory: ''});
+  assert.deepEqual(lib(one(ph('image_0931.png')).destination), {kind: 'photo', scope: 'library', directory: ''});
+  assert.equal(one(ph('苏禾_日常.png'), {lastProjectId: {photo: null, video: null}}).destination.characterName, '苏禾', 'library photo keeps the name guess for the editor');
 });
 
 test('photo: project prefix switches project only when the rest matches', () => {

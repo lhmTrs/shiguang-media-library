@@ -116,8 +116,11 @@ export function suggest(file, ctx) {
     const preset = imageNamePreset(text);
     if (project && preset.structured && !preset.generated && !isGenericName(text)) return {destination: {kind: 'photo', scope: 'project', projectId: project.id, characterName: preset.name, lookName: preset.lookName},
       group: 'decide', decision: 'new-character', reason: '「' + project.name + '」里还没有人物「' + preset.name + '」', ...(category ? {alternative: {directory: category.id, name: category.relativePath || category.name}} : {})};
-    if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
-    return {destination: {kind: 'photo', scope: 'library', directory: ''}, group: 'library:photo:', reason: '名字认不出', hint};
+    // Library photos still carry the name-based person/look guess, so switching one to a project
+    // in its 「改…」 panel starts prefilled. These fields are dropped when a library target is submitted.
+    const guess = {characterName: preset.name, lookName: preset.lookName};
+    if (category) return {destination: {kind: 'photo', scope: 'library', directory: category.id, ...guess}, group: 'library:photo:' + category.id, reason: '按名字认出分类「' + category.name + '」', hint};
+    return {destination: {kind: 'photo', scope: 'library', directory: '', ...guess}, group: 'library:photo:', reason: '名字认不出', hint};
   }
   // Audio stays in the general music/sfx library; only the kind is preset.
   const preset = audioKindFor(file.durationSec, prefs.lastAudioKind);
