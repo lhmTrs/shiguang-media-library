@@ -319,7 +319,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
           <div className="fi-single-name"><RowName row={single}/><small>{fileMeta(single)} · 来自「{folderLabel(single.file.path)}」</small></div>
           <div className={'fi-single-dest' + (single.decision || single.problem ? ' fi-single-warn' : '')}>
             {single.decision ? <><span>{single.reason}</span>{decisionControls(single)}</>
-              : single.destination ? <><span>收到 <strong>{destLabel(single.destination)}</strong></span><small>{single.problem || single.checking || single.reason}</small>{single.file.mediaKind === 'audio' && audioSwitch(single)}</>
+              : single.destination ? <><span>收到 <strong>{destLabel(single.destination)}</strong></span><small>{single.problem || single.checking || single.reason}</small>{single.hint && <small className="fi-single-hint">{single.hint}</small>}{single.file.mediaKind === 'audio' && audioSwitch(single)}</>
               : <span>{single.problem}</span>}
             {rowTools(single)}
           </div>

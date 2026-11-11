@@ -112,3 +112,4 @@
 .fi-simple .fi-group-head .fi-group-toggle{flex:0 1 auto}
 .fi-simple .fi-group-head .fi-group-actions{margin-left:auto}
 .fi-simple .fi-popover-fixed{position:fixed;top:62px;right:20px;width:340px;max-height:calc(100% - 150px);overflow:auto}
+.fi-simple .fi-single-dest .fi-single-hint{color:var(--fi-warn)}

@@ -158,6 +158,16 @@ try {
     assert.equal(target(b, 'v1').destination.fileName, '我的成片.mp4'); assert.equal(target(b, 'v1').nameMode, undefined, 'a hand-typed name wins over standard naming');
   });
 
+  await check('single file keeps the project-name hint and stays a general photo', async () => {
+    // Independent review counterexample (FE3): a lone 穿越计_天台.png must show the same hint as in the grid.
+    await fresh(f => {f.handoff.files = [{id: 'x1', name: '穿越计_天台.png', mediaKind: 'photo', bytes: 4096, path: '/synthetic/Downloads/穿越计_天台.png'}];});
+    const dest = page.locator('.fi-single-dest');
+    await expect(dest).toContainText('收到 摄影照片 › 待确认'); await expect(dest).toContainText('名字里有项目「穿越计」');
+    await expect(page.getByRole('region', {name: '需要你决定', exact: true})).toHaveCount(0);
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(fx.confirmBodies[0].targets, [{fileId: 'x1', destination: {kind: 'photo', scope: 'library', directory: ''}}]);
+  });
+
   await check('removed files leave the submission and can be restored; audio kind can be switched', async () => {
     await fresh();
     await page.getByRole('button', {name: '移除 小雨_校服.png', exact: true}).click(); await page.getByRole('button', {name: '移除 片尾.m4a', exact: true}).click();
