@@ -590,3 +590,11 @@
 .ca-workspace.ca-v2 .ca-pickbar button.ca-primary,.ca-workspace.ca-v2 .ca-pickbar button.ca-primary:hover:not(:disabled){color:var(--c-fff)}
 /* Reference tiles carry their role badge top-left; the checkbox goes top-right there. */
 .ca-v2 .ca-tile-pick{left:auto;right:6px;top:6px}
+/* 自动框到头部 */
+.ca-v2 .ca-quick-cropbox{position:relative}
+.ca-v2 .ca-head-hint{position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);padding:3px 9px;border-radius:999px;background:var(--c-fff);color:var(--muted);font-size:11px;line-height:1.5;box-shadow:0 1px 4px rgba(0,0,0,.12);pointer-events:none}
+.ca-v2 .ca-head-hint.is-found{color:var(--green)}
+.ca-v2 .ca-head-hint.is-miss{color:var(--ca-warn)}
+.ca-v2 .ca-head-hint.is-inline{position:static;box-shadow:none;padding:0;background:none}
+.ca-v2 .ca-head-reframe{align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
+.ca-v2 .ca-head-row-detail{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0}
