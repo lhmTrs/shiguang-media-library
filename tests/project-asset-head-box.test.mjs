@@ -69,6 +69,8 @@ test('manual editing at default values and legacy records remain protected on fi
   a.images[1].crop_source='manual';a=await f.store.save(a.id,a,a.revision);
   assert.deepEqual(a.images[1].crop,DEFAULT);assert.equal(a.images[1].crop_manually_edited,true);
   for(const id of [a.images[1].id,legacyId]){
+    // A client cannot convert unknown historical state to untouched.
+    if(id===legacyId)a.images[2].crop_source='untouched';
     a.looks[0].default_image_id=id;a=await f.store.save(a.id,a,a.revision);
   }
   assert.equal(f.calls.length,0);

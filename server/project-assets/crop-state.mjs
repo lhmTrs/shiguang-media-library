@@ -15,7 +15,7 @@ export function cropState(binding,old,{copy=false}={}){
   if(!old)source=asked==='auto'?'auto':asked==='manual'||!defaultCrop(binding.crop)?'manual':'untouched';
   else if(asked==='manual'||asked==='auto')source=asked;
   else if(prior!==null&&hasOrigin&&asked===null)source=null;
-  else if(prior!=='untouched'&&asked==='untouched'&&defaultCrop(binding.crop))source='untouched';
+  else if(prior!==null&&prior!=='untouched'&&asked==='untouched'&&defaultCrop(binding.crop))source='untouched';
   else if(!sameCrop(binding.crop,old.crop))source='manual';
   else source=prior;
   return {crop_source:source,crop_manually_edited:edited||source==='manual'};
