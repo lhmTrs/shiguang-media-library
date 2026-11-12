@@ -13,7 +13,7 @@ await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
 const { port } = socket.address();
 await new Promise(resolve => socket.close(resolve));
 const origin = 'http://127.0.0.1:' + port;
-let server, browser;
+let server, browser, releaseEpisode;
 
 async function start(name) {
   const dir = path.join(temp, name);
@@ -30,18 +30,21 @@ async function start(name) {
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk; });
   child.stderr.on('data', chunk => { logs += chunk; });
-  server = { child, exited: new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal }))) };
+  server = {
+    child, logs: () => logs,
+    exited: new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal }))),
+  };
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
 }
 
 async function stop() {
   if (!server) return;
-  const { child, exited } = server;
+  const { child, exited, logs } = server;
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   let timer;
-  const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve(null), 10000); })]);
+  const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve(null), 20000); })]);
   clearTimeout(timer);
-  assert.deepEqual(outcome, { code: 0, signal: null }, 'isolated app should stop normally');
+  assert.deepEqual(outcome, { code: 0, signal: null }, 'isolated app should stop normally\n' + logs());
   server = undefined;
 }
 
@@ -60,13 +63,16 @@ async function seed(name) {
 const heading = (page, name) => page.locator('.pf').getByRole('heading', { level: 1, name, exact: true });
 const card = (page, name) => page.getByRole('button', { name: '打开剧 ' + name, exact: true });
 const savedLocation = (page, libraryId) => page.evaluate(id => sessionStorage.getItem('shiguang.projectFolders.loc:' + id), libraryId);
+const identityAlert = page => page.locator('.banner[role="alert"]').filter({ hasText: '素材库已变化，请刷新页面后重新读取项目' });
 
 try {
   await start('a');
   const a = await seed('仅库甲有的剧');
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } });
-  await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
+  await context.addInitScript(() => {
+    try { localStorage.setItem('shiguang.refreshSeconds', sessionStorage.getItem('test.directoryRefresh') ?? '0'); } catch {}
+  });
   const page = await context.newPage();
   const retry = page.getByRole('button', { name: '重试项目目录' });
   let failDirectory = false;
@@ -82,6 +88,7 @@ try {
     failDirectory = true;
     await page.reload();
     await expect(retry).toBeVisible();
+    await page.waitForLoadState('networkidle', { timeout: 10000 });
     failDirectory = false;
   }
 
@@ -101,19 +108,49 @@ try {
   await other.goto(origin + '/#/projects');
   await expect(card(other, b.series.name)).toBeVisible();
   await retry.click();
-  await expect(page.locator('.banner[role="alert"]').filter({ hasText: '素材库已变化，请刷新页面后重新读取项目' })).toBeVisible();
+  await expect(identityAlert(page)).toBeVisible();
   await expect(card(page, b.series.name)).toHaveCount(0);
   assert.equal(await savedLocation(page, a.instanceId), aLocation);
   assert.equal(await savedLocation(page, b.instanceId), null);
   console.log('PASS 乙库新标签建立会话后，旧甲标签重试仍会拒绝乙库，并保留甲库记忆');
 
+  await page.evaluate(() => sessionStorage.setItem('test.directoryRefresh', '15'));
   await page.reload();
   await card(page, b.series.name).dblclick();
   await expect(heading(page, b.series.name)).toBeVisible();
   assert.deepEqual(JSON.parse(await savedLocation(page, b.instanceId)), { level: 'series', seriesId: b.series.id });
   assert.equal(await savedLocation(page, a.instanceId), aLocation);
   console.log('PASS 刷新后可正常使用乙库，两个库的位置独立保存');
+
+  const episodePath = `/api/project-series/${b.series.id}/episodes`;
+  let episodeReply;
+  const release = new Promise(resolve => { releaseEpisode = resolve; });
+  await page.route(url => url.pathname === episodePath, async route => {
+    const response = await route.fetch();
+    episodeReply = { status: response.status(), body: await response.json() };
+    await release;
+    await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: '新建第 1 集（剧里）', exact: true }).click();
+  await expect.poll(() => episodeReply?.status).toBe(200);
+  assert.ok(episodeReply.body.project.id, 'the old library has already committed the episode');
+
+  await stop();
+  await start('a');
+  await other.goto('about:blank');
+  await other.goto(origin + '/#/projects');
+  await expect(card(other, a.series.name)).toBeVisible();
+  await page.bringToFront();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(identityAlert(page)).toBeVisible();
+  const delivered = page.waitForResponse(response => new URL(response.url()).pathname === episodePath);
+  releaseEpisode();
+  assert.equal((await delivered).status(), 200);
+  await page.getByRole('button', { name: '生成视频', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '先选择一个项目', exact: true })).toBeVisible();
+  console.log('PASS 已写入原库的迟到回执保留成功语义，旧标签不会重新选中原项目');
 } finally {
+  releaseEpisode?.();
   try { await browser?.close(); }
   finally {
     await stop();

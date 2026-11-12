@@ -788,10 +788,12 @@ function App() {
     return () => { live = false; };
   }, [ready, activeProject, projectRevision]);
   function refreshProjects() {
+    if (!projectLibrary.current) return;
     projectReadVersion.current++;
     setProjectRevision(n => n + 1);
   }
   function projectChangeAllowed(id: string) {
+    if (!projectLibrary.current) return false;
     if (id === activeProject) return true;
     if (busy || projectVideoBusy || projectUsageBusy) {
       setNotice("请等待当前项目的操作完成，再切换项目");
@@ -800,7 +802,7 @@ function App() {
     return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
   }
   function activateProject(id: string) {
-    if (id === activeProject) return;
+    if (!projectLibrary.current || id === activeProject) return;
     pendingProjectVisit.current = id;
     if (!id) setProjectLocation(previous => ({ ...previous, projectId: "" }));
     setChecked(new Set());
@@ -1308,7 +1310,7 @@ function App() {
     let current=true;setSessionError('');
     api<LocalSession>("/session")
       .then((s) => {
-        if(!current)return;
+        if (!current || libraryIdentityChanged) return;
         token = s.token;
         setTrashAvailable(s.trashAvailable);
         setFolderPickerAvailable(s.folderPickerAvailable !== false);
@@ -2000,7 +2002,7 @@ function App() {
         <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={activateProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
-          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span><button onClick={refreshProjects}>重试项目目录</button></div>}
+          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
           {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
             request={api} changed={projectsChanged} openPage={openProjectPage}/> :
