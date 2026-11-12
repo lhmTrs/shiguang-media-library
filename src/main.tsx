@@ -283,7 +283,7 @@ async function api<T = unknown>(url: string, body?: unknown, method?: string, op
     }
     if (!response.ok) throw Object.assign(Error(hostBusyMessage(result.code,result.error || '请求失败')), {
       diagnostic: result.diagnostic, code: result.code, kind: result.kind, status: response.status, accepted:result.accepted,
-      retryAfterMs: result.retryAfterMs, requestId: result.requestId,
+      retryAfterMs: result.retryAfterMs, requestId: result.requestId, details: result.details,
     });
     if (verb !== 'GET') clearTagFacetCache();
     return result;

@@ -5,15 +5,18 @@ import { CREATIVE_TABLES, creativeSchema, creativeIndexes, migrateCreativeArchiv
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
 import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
+import { snapshotSeries, validateSeriesBackup, restoreSeriesBackup } from '../project-series/backup.mjs';
+import { lockSeriesDirectory } from '../project-series/schema.mjs';
 import {CharacterVoiceFiles} from './voices.mjs';
 import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 
 const parse = value => JSON.parse(value);
 const PUBLIC_KEY = 'creative-public';
 const active = row => row.archived_at === null;
-const backupContent = ({ tables, projects, project_scripts, project_attributes }) => ({
+const backupContent = ({ tables, projects, project_scripts, project_attributes, project_series }) => ({
   tables, projects, ...(project_scripts !== undefined && { project_scripts }),
   ...(project_attributes !== undefined && { project_attributes }),
+  ...(project_series !== undefined && { project_series }),
 });
 export class ProjectAssets {
   constructor(lib) { this.lib = lib; this.healthCache = new Map();this.voices=new CharacterVoiceFiles(lib); }
@@ -240,7 +243,9 @@ export class ProjectAssets {
   backup() { return this.tx(() => this.backupInTransaction()); }
   // Internal caller already owns the one transaction; never start a nested one.
   backupInTransaction() {
-    const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all(); const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), project_attributes: snapshotAttributes(this.db) }); return { format: 'shiguang-creative-backup', schema_version: 2, ...data, checksum: digest(data) };
+    const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all();
+    const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), project_attributes: snapshotAttributes(this.db), project_series: this.lib.projectSeries ? snapshotSeries(this.db) : undefined });
+    return { format: 'shiguang-creative-backup', schema_version: 2, ...data, checksum: digest(data) };
   }
   validateBackup(input) {
     if (!input || input.format !== 'shiguang-creative-backup' || ![1,2].includes(input.schema_version) || digest(backupContent(input)) !== input.checksum || canonical(Object.keys(input.tables ?? {}).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort()) || !Array.isArray(input.projects) || input.projects.length > 10000) throw fault('资产库备份格式或摘要无效');
@@ -259,6 +264,10 @@ export class ProjectAssets {
       projectIds.add(p.id);
     }
     if (input.projects.filter(p => p.project_kind === 'public').length !== 1) throw fault('备份公共项目身份无效');
+    if (Object.hasOwn(input, 'project_series')) {
+      if (!this.lib.projectSeries) throw fault('剧集目录尚未就绪，未恢复备份');
+      validateSeriesBackup(input.project_series, input.projects);
+    }
     this.scripts?.validateRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[],input.projects);
     for (const [table, columns] of Object.entries(CREATIVE_TABLES)) {
       const rows = input.tables[table], ids = new Set(); if (!Array.isArray(rows) || rows.length > 100000) throw fault('备份表数量无效');
@@ -297,6 +306,7 @@ export class ProjectAssets {
   }
   // Caller holds the transaction when restoring a combined storyboard backup.
   lockRestoreScope() {
+    if (this.lib.projectSeries) lockSeriesDirectory(this.db);
     const ids=this.db.prepare('SELECT id FROM media_projects ORDER BY id'+this.lock()).all().map(row=>row.id);
     this.generationLocks?.assertRestoreProjects(ids);
   }
@@ -332,6 +342,7 @@ export class ProjectAssets {
       for (const table of ['creative_looks', 'creative_image_bindings', 'creative_asset_versions']) for (const r of input.tables[table]) this.head(r.asset_id);
       this.scripts?.restoreRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[]);
       restoreAttributes(this.db, input.project_attributes);
+      if (Object.hasOwn(input, 'project_series')) restoreSeriesBackup(this.db, input.project_series);
       return { restored: true, assets: input.tables.creative_assets.length };
   }
 }

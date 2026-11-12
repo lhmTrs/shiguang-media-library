@@ -38,6 +38,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
+import { projectSeriesRouter } from "./project-series/router.mjs";
 import { projectAgentGuide } from "./project-agent-guide.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
 import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
@@ -819,6 +820,7 @@ app.post("/api/asset-metadata-registration/commands/:id/abort", fieldRegistratio
 app.post("/api/asset-fingerprints", (req, res) => res.status(202).json(assetFingerprints.start(req.body)));
 app.get("/api/asset-fingerprints/:id", (req, res) => res.json(assetFingerprints.get(req.params.id)));
 app.post("/api/asset-fingerprints/:id/cancel", (req, res) => res.json(assetFingerprints.cancel(req.params.id)));
+app.use("/api", projectSeriesRouter(projects.series));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
 app.get("/api/projects/usage-counts", (req,res) => res.json(lib.db.prepare("SELECT asset_id,COUNT(*) n FROM project_assets WHERE status='used' GROUP BY asset_id").all()));
 app.post("/api/projects/timeline-import/preview", (req,res) => res.json(projects.imports.preview(null,req.body,req.headers.cookie)));
