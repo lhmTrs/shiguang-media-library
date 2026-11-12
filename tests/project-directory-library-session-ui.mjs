@@ -143,9 +143,22 @@ try {
   await page.bringToFront();
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(identityAlert(page)).toBeVisible();
-  const delivered = page.waitForResponse(response => new URL(response.url()).pathname === episodePath);
+  await page.evaluate(pathname => {
+    const parse = Response.prototype.json;
+    Response.prototype.json = async function () {
+      const body = await parse.call(this);
+      if (this.url && new URL(this.url).pathname === pathname) {
+        Response.prototype.json = parse;
+        // Wait for the consumer of the parsed receipt and the resulting render.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          document.documentElement.dataset.episodeReceiptConsumed = 'yes';
+        }));
+      }
+      return body;
+    };
+  }, episodePath);
   releaseEpisode();
-  assert.equal((await delivered).status(), 200);
+  await expect(page.locator('html')).toHaveAttribute('data-episode-receipt-consumed', 'yes');
   await page.getByRole('button', { name: '生成视频', exact: true }).click();
   await expect(page.getByRole('heading', { name: '先选择一个项目', exact: true })).toBeVisible();
   console.log('PASS 已写入原库的迟到回执保留成功语义，旧标签不会重新选中原项目');
