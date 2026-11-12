@@ -525,7 +525,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       last = order.filter(id => base.includes(id) || hits.includes(id));
       setMarqueeHits(last);
     };
-    const up = () => { end(); if (cancelled) return; if (!moved) { if (!add) setPickedAssets([]); return; } applyPick(last, true); };
+    const up = () => { end(); focusGallery(); if (cancelled) return; if (!moved) { if (!add) setPickedAssets([]); return; } applyPick(last, true); };
     const cancel = () => { end(); if (!cancelled && moved) applyPick(last, true); };
     host.addEventListener('pointermove', move); host.addEventListener('pointerup', up); host.addEventListener('pointercancel', cancel);
   }
@@ -762,21 +762,23 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // A filter that hides picked characters drops them, so ⌘C never copies what is not shown (same as the video page).
   const visiblePickKey = visibleRows.filter(pickableAsset).map(r => r.id).join('|');
   useEffect(() => { setPickedAssets(list => { const order = visiblePickKey.split('|'), next = list.filter(id => order.includes(id)); return next.length === list.length ? list : next.length > 1 ? next : []; }); }, [visiblePickKey]);
-  // ⌘A / ⌘C on the character list. Ignored while typing, inside the detail panel, a menu or a dialog, or with text selected.
+  // ⌘A / ⌘C belong to the character list itself (as on the video page): they only act while focus is inside the gallery,
+  // never from the toolbar, the detail panel, a menu or a dialog, and not while typing or with text selected.
+  const galleryRef = useRef<HTMLElement>(null);
+  const focusGallery = () => galleryRef.current?.focus({ preventScroll: true });
   const pickKeys = useRef<(e: KeyboardEvent) => void>(() => {});
   pickKeys.current = e => {
     const mod = e.metaKey || e.ctrlKey && !isMac, k = e.key.toLowerCase();
     if (!mod || e.altKey || e.shiftKey || k !== 'a' && k !== 'c') return;
     if (!active || scriptView || kind !== 'character' || busy || quick || imageId || modal || dropJob) return;
     const t = e.target as HTMLElement | null;
-    if (t?.closest?.('input, textarea, select, [contenteditable="true"], .ca-detail, [role="dialog"], [role="menu"]')) return;
+    if (!t || !galleryRef.current?.contains(t) || t.closest('input, textarea, select, [contenteditable="true"], .ca-pickbar, [role="dialog"], [role="menu"]')) return;
     if (k === 'a') { const order = pickOrder(); if (!order.length) return; e.preventDefault(); if (applyPick(order)) lastPick.current.assets = order[0]; return; }
     if (String(window.getSelection?.() || '')) return;
     if (pickedAssets.length > 1) { e.preventDefault(); void copyFiles('defaults', defaultsItems(pickedAssets)); return; }
     const one = draft && rows.find(r => r.id === draft.id);
     if (one && coverOf(one)) { e.preventDefault(); void copyDefault(one); }
   };
-  useEffect(() => { const key = (e: KeyboardEvent) => pickKeys.current(e); window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, []);
   const listStatus = !scopesKnown && !rows.length ? (scopesError ? '范围未能读取' : '正在读取项目范围…') : listLoading ? '加载中…' : `${total} 个${archived ? '已归档的' : ''}${labels[kind]}`;
   const dialogImage = imageId ? images.find(b => b.id === imageId) ?? null : null;
   const dialogHealth = dialogImage ? health.find(h => h.id === dialogImage.id) : undefined;
@@ -830,8 +832,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     const groups = a.kind === 'character' ? a.looks.filter(l => !l.archived_at).map(l => ({ key: l.id, title: '造型 · ' + l.name, images: usable.filter(b => b.look_id === l.id) })).filter(g => g.images.length) : [{ key: 'all', title: '参考图', images: usable }];
     const style = { left, top, width };
     if (quick!.mode === 'multi') { const n = pickedAssets.length, over = overPick(n); return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={'已选 ' + n + ' 个' + labels[kind] + '的操作'} style={style}>
-      <button role="menuitem" disabled={!clipCap.available || desktopBusy || !!over} title={clipCap.reason || over || undefined} onClick={() => { setQuick(null); void copyFiles('defaults', defaultsItems(pickedAssets)); }}><Copy size={14}/>复制 {n} 张默认图<kbd>⌘C</kbd></button>
-      <button role="menuitem" disabled={!revealCap.available || desktopBusy || !!over} title={revealCap.reason || over || undefined} onClick={() => { setQuick(null); void revealFiles('defaults', defaultsItems(pickedAssets)); }}><FolderOpen size={14}/>在访达中显示 {n} 张</button>
+      <button role="menuitem" disabled={!clipCap.available || desktopBusy || !!over} title={clipCap.reason || over || undefined} onClick={() => { setQuick(null); focusGallery(); void copyFiles('defaults', defaultsItems(pickedAssets)); }}><Copy size={14}/>复制 {n} 张默认图<kbd>⌘C</kbd></button>
+      <button role="menuitem" disabled={!revealCap.available || desktopBusy || !!over} title={revealCap.reason || over || undefined} onClick={() => { setQuick(null); focusGallery(); void revealFiles('defaults', defaultsItems(pickedAssets)); }}><FolderOpen size={14}/>在访达中显示 {n} 张</button>
       <hr/>
       <button role="menuitem" disabled><Star size={14}/>换默认图…<small>一次只能换一个</small></button>
       <button role="menuitem" disabled><Maximize2 size={14}/>调整头像…<small>一次只能调一个</small></button>
@@ -893,7 +895,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     <div className="ca-stage" hidden={scriptView}><fieldset className="ca-interaction" disabled={!!busy}>
       <div className={'ca-body' + (draft || pickedAssets.length > 1 ? ' has-detail' : '')}>
         <section className={'ca-gallery' + (dragTarget === 'gallery' ? ' is-drop' : '') + (marquee ? ' is-marquee' : '')} aria-label={labels[kind] + '画廊'} aria-busy={listLoading||!scopesKnown&&!scopesError}
-          onPointerDown={marqueeStart} {...dragProps('gallery', dropOnGallery)} onDragLeave={e => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDragTarget(''); }}>
+          ref={galleryRef} tabIndex={-1} onKeyDown={e => pickKeys.current(e.nativeEvent)} onPointerDown={marqueeStart} {...dragProps('gallery', dropOnGallery)} onDragLeave={e => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDragTarget(''); }}>
           <div className="ca-gallery-bar">
             <div className="ca-filters" role="group" aria-label="筛选"><button type="button" aria-pressed={!missingOnly} onClick={() => setMissingOnly(false)}>全部</button><button type="button" aria-pressed={missingOnly} onClick={() => setMissingOnly(true)}>缺参考图</button></div>
             <span className="ca-count">{listStatus}{missingOnly && !listLoading ? ` · 本页缺参考图 ${visibleRows.length} 个` : ''}</span>

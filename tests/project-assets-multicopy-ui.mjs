@@ -143,7 +143,24 @@ try {
     const moved = await wrap('阿青').boundingBox(); assert.deepEqual([Math.round(moved.x), Math.round(moved.y)], [Math.round(a.x), Math.round(a.y)], 'cards stay put while dragging');
     await page.mouse.move(right - 16, top + 18, { steps: 2 }); await page.mouse.up();
     await expect(bar).toContainText('已选 2 个人物');
+    // Right after a box, ⌘C copies (focus is on the gallery).
+    await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled(); let n = posts('clipboard').length;
+    await page.keyboard.press('Meta+c'); await expect.poll(() => posts('clipboard').length).toBe(n + 1);
     await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+  });
+
+  await check('FE2-R3 反例：焦点离开人物画廊（顶部「检查文件状态」）时 ⌘C、⌘A 不动作；回到画廊后 ⌘C 正常复制', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' }), gallery = work().getByRole('region', { name: '人物画廊' });
+    await wrap('阿青').locator('.ca-card').click(); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] }); await expect(bar).toContainText('已选 2 个人物');
+    await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled();
+    const outside = page.getByRole('button', { name: '检查文件状态' }); await outside.focus();
+    assert.equal(await page.evaluate(() => !!document.activeElement?.closest('.ca-gallery')), false, 'focus left the gallery');
+    const n = posts('clipboard').length;
+    await page.keyboard.press('Meta+c'); await page.waitForTimeout(400); assert.equal(posts('clipboard').length, n, 'no copy from outside the gallery');
+    await expect(bar).toContainText('已选 2 个人物');
+    await gallery.focus(); await page.keyboard.press('Meta+c'); await expect.poll(() => posts('clipboard').length).toBe(n + 1);
+    await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+    await outside.focus(); await page.keyboard.press('Meta+a'); await page.waitForTimeout(300); await expect(bar).toHaveCount(0);
   });
 
   await check('FE1-R1 反例：未保存时 ⌘ 点或单击换人被取消，选择、详情和 Shift 起点都不变；再 Shift 点确认后选中两人', async () => {
