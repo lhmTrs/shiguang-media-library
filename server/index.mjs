@@ -38,6 +38,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
+import { projectAgentGuide } from "./project-agent-guide.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
 import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
 import { createFilePicker, filePickerAvailable } from "./file-picker.mjs";
@@ -434,6 +435,20 @@ app.get("/api/session", (req, res) => {
     app: "shiguang-local-media",
   });
 });
+// This local discovery document carries project identity and API instructions.
+// All project data and actions still go through the ordinary session gate below.
+app.get("/api/projects/:id/agent-guide", asyncRoute(async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (identityChanging) return res.status(423).json({ error: "IDENTITY_CHANGING", code: "IDENTITY_CHANGING" });
+  let target;
+  try { target = projectAssets.project(req.params.id); }
+  catch (error) {
+    if (error.status === 400 || error.status === 404) return res.status(error.status).json({ error: error.message });
+    throw error;
+  }
+  if (target.project_kind !== "normal") return res.status(404).json({ error: "未找到可分享的项目" });
+  res.type("text/markdown").send(projectAgentGuide({ project: target, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
+}));
 app.use("/api", (req, res, next) => {
   const cookie = req.headers.cookie?.match(
     /(?:^|; )media_session=([^;]+)/,

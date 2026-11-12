@@ -1,0 +1,95 @@
+.agent-share {
+  min-width: 0;
+}
+
+.project-title-actions:has(> .agent-share) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.agent-share-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.agent-share > .agent-share-trigger {
+  min-height: 30px;
+  padding: 5px 8px;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--c-fff);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.agent-share-panel {
+  position: fixed;
+  z-index: 12;
+  width: min(250px, calc(100% - 24px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--c-fff);
+  box-shadow: 0 8px 24px var(--c-24302418);
+  font-size: 12px;
+}
+
+.agent-share-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin: 2px 8px 5px;
+  line-height: 1.4;
+}
+
+.agent-share-panel > .agent-share-action {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  text-align: left;
+}
+
+.agent-share > .agent-share-trigger:hover,
+.agent-share > .agent-share-trigger[aria-expanded="true"],
+.agent-share-panel > .agent-share-action:hover {
+  background: var(--soft);
+}
+
+.agent-share-action[aria-disabled="true"] {
+  opacity: .55;
+  cursor: default;
+}
+
+.agent-share :focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.agent-share-status:not(:empty) {
+  padding: 5px 8px 2px;
+}
+
+.agent-share-panel > .agent-share-manual {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 6px 8px;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--c-fff);
+  color: inherit;
+  line-height: 1.45;
+}
