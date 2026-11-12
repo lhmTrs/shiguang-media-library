@@ -23,10 +23,59 @@ async function checkedFile(file){
 async function unchanged(file,handle,before){
   if(identity(await handle.stat())!==identity(before)||identity(await fs.lstat(file))!==identity(before)||await fs.realpath(file)!==file)throw fault('图片正在变化，请重新选择',409);
 }
-export async function imageDigest(file,{signal}={}){
+export async function imageDigest(file,{signal,maxBytes=Infinity}={}){
   const {handle,before}=await checkedFile(file);
-  try{const h=createHash('sha256');for await(const chunk of handle.createReadStream({autoClose:false,signal}))h.update(chunk);signal?.throwIfAborted();await unchanged(file,handle,before);return{hash:h.digest('hex'),stat:before};}finally{await handle.close();}
+  try{if(before.size>maxBytes)throw fault('该图暂不支持自动框选',415);const h=createHash('sha256');let size=0;for await(const chunk of handle.createReadStream({autoClose:false,signal})){size+=chunk.length;if(size>before.size)throw fault('图片正在变化，请重新选择',409);h.update(chunk);}signal?.throwIfAborted();await unchanged(file,handle,before);return{hash:h.digest('hex'),stat:before};}finally{await handle.close();}
 }
+// Pass an immutable, private snapshot to the decoder. For HEIC use the
+// same oriented JPEG conversion as the browser reference preview.
+export async function withHeadImage(file,expected,limit,signal,use){
+  const compatible=/\.(heic|heif)$/i.test(file),{handle,before}=await checkedFile(file);
+  let dir,snapshot,release;
+  try{
+    if(before.size>limit||(!compatible&&!mimeFor(file)))throw fault('该图暂不支持自动框选',415);
+    if(compatible)release=imagePreviewCache.acquire();
+    signal.throwIfAborted();
+    dir=await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-head-box-'));
+    dir=await fs.realpath(dir);
+    const input=path.join(dir,'input'+path.extname(file).toLowerCase());
+    snapshot=await fs.open(input,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+    const h=createHash('sha256');let size=0;
+    for await(const chunk of handle.createReadStream({autoClose:false,signal})){
+      size+=chunk.length;if(size>before.size)throw fault('图片正在变化，请重新选择',409);
+      h.update(chunk);await snapshot.writeFile(chunk);
+    }
+    const hash=h.digest('hex');
+    if(size!==before.size||hash!==expected)throw fault('引用失效：图片内容已变更',409);
+    await unchanged(file,handle,before);await snapshot.close();snapshot=null;
+    let decodePath=input;
+    if(compatible){
+      const output=path.join(dir,'preview.jpg');
+      const out=await fs.open(output,'wx',0o600);await out.close();
+      const key=createHash('sha256').update(file+'|'+identity(before)+'|'+hash).digest('hex');
+      const bytes=await imagePreviewCache.preview(input,output,key,{signal});
+      decodePath=path.join(dir,'decoded.jpg');await fs.writeFile(decodePath,bytes,{flag:'wx',mode:0o600});
+    }
+    signal.throwIfAborted();
+    const result=await use(decodePath);
+    // Cleanup can yield to a replacement at the original path. Hold the
+    // original descriptor until cleanup completes, and verify after that wait.
+    await fs.rm(dir,{recursive:true,force:true});
+    dir=null;
+    signal.throwIfAborted();
+    await unchanged(file,handle,before);
+    await handle.close();
+    if(await fs.realpath(file)!==file||identity(await fs.lstat(file))!==identity(before))
+      throw fault('图片正在变化，请重新选择',409);
+    return result;
+  }finally{
+    try{
+      await Promise.allSettled([handle.close(),snapshot?.close()]);
+      if(dir)await fs.rm(dir,{recursive:true,force:true});
+    }finally{release?.();}
+  }
+}
+
 // Verify from the same descriptor that is streamed. Never read the whole image into memory.
 export async function streamImage(file,expected,res,{media,verifySource}={}){
   const compatible=/\.(heic|heif)$/i.test(file),controller=new AbortController(),signal=controller.signal;

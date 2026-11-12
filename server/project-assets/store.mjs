@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CREATIVE_TABLES, creativeSchema, creativeIndexes, migrateCreativeArchive } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import {CharacterVoiceFiles} from './voices.mjs';
+import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 
 const parse = value => JSON.parse(value);
 const PUBLIC_KEY = 'creative-public';
@@ -51,7 +52,16 @@ export class ProjectAssets {
   expected(row, revision) { if (!Number.isSafeInteger(revision) || row.revision !== revision) throw fault('角色已经更新，请核对最新版本；你的编辑仍保留', 409, { current_revision: row.revision }); }
   get(id) {
     const a = this.head(id), unpack = r => { const { data_json, source_json, ...rest } = r; return { ...rest, ...parse(data_json), source: parse(source_json) }; };
-    return { ...unpack(a), ...(this.storyboards ? {storyboard_protected: !!this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)} : {}), looks: this.db.prepare('SELECT * FROM creative_looks WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack), images: this.db.prepare('SELECT * FROM creative_image_bindings WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack) };
+    const asset={ ...unpack(a), ...(this.storyboards ? {storyboard_protected: !!this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)} : {}), looks: this.db.prepare('SELECT * FROM creative_looks WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack), images: this.db.prepare('SELECT * FROM creative_image_bindings WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack) };
+    if(asset.kind==='character'){
+      const cover=cardBinding(asset);
+      for(const b of asset.images){
+        b.crop_source??=null;
+        b.crop_manually_edited=b.crop_manually_edited===true||b.crop_source==='manual';
+        b.was_card_default=b.was_card_default===true||b.id===cover;
+      }
+    }
+    return asset;
   }
   associatedShots(id) { this.head(id); if(!this.storyboards)throw fault('分镜模块尚未就绪，请稍后重试',503); return this.storyboards.assetShots(id); }
   list(query) {
@@ -115,6 +125,19 @@ export class ProjectAssets {
   async save(id, input, revision) {
     const old = this.get(id); this.expected(old, revision);
     const a = await this.prepare({ ...input, id }, old);
+    const cover=cardBinding(a),before=cardBinding(old);
+    if(this.headBox&&cover&&cover!==before){
+      const binding=a.images.find(b=>b.id===cover),previous=old.images.find(b=>b.id===cover);
+      const state=cropState(binding,previous);
+      if(!previous?.was_card_default&&!state.crop_manually_edited&&state.crop_source==='untouched'&&defaultCrop(binding.crop)){
+        // Optional suggestion. The same revision check and transaction still
+        // guard the default change; a detector failure never blocks the save.
+        const found=await this.headBox.detect(binding).catch(()=>null);
+        if(found?.status==='found'){
+          binding.crop=found.crop;binding.crop_source='auto';
+        }
+      }
+    }
     return this.tx(() => { this.project(a.project_id, true); const current = this.get(id); this.expected(this.head(id, true), revision); return this.write(a, current, '保存资料'); });
   }
   write(a, previous, summary, source = previous?.source ?? null) {
@@ -128,6 +151,16 @@ export class ProjectAssets {
     }
     const existingName = this.db.prepare('SELECT id FROM creative_assets WHERE project_id=? AND kind=? AND name_key=? AND archived_at=?').get(a.project_id, a.kind, nameKey(a.name), a.archived_at);
     if (existingName && existingName.id !== a.id) throw fault('该名称已存在，本项目不允许同名资产，请修改名称', 409);
+    if(a.kind==='character'){
+      const cover=cardBinding(a);
+      for(const b of a.images){
+        const old=previous?.images.find(r=>r.id===b.id);
+        Object.assign(b,cropState(b,old,{copy:!previous&&summary==='复制人物'}));
+        b.was_card_default=old?.was_card_default===true||b.id===cover;
+      }
+    }else{
+      for(const b of a.images){delete b.crop_source;delete b.crop_manually_edited;delete b.was_card_default;}
+    }
     const now = Math.max(Date.now(), (previous?.updated_at ?? 0) + 1), revision = (previous?.revision ?? 0) + 1;
     const data = canonical({ base_info: a.base_info, performance_info: a.performance_info, details: a.details });
     const args = [a.project_id, a.kind, a.name, nameKey(a.name), data, a.default_look_id, a.default_image_id, revision, a.archived_at, canonical(source)];
@@ -153,7 +186,7 @@ export class ProjectAssets {
     this.db.prepare('INSERT INTO creative_asset_versions(id,asset_id,version,snapshot,summary,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(randomUUID(), a.id, revision, canonical(result), summary, now, now);
     return result;
   }
-  imageData(b) { return { reference_type: b.reference_type, purpose: b.purpose, locks: b.locks, ignores: b.ignores, confirmed: b.confirmed, crop: b.crop, last_known_name: b.last_known_name ?? '' }; }
+  imageData(b) { return { reference_type: b.reference_type, purpose: b.purpose, locks: b.locks, ignores: b.ignores, confirmed: b.confirmed, crop: b.crop, ...(Object.hasOwn(b,'crop_source')?{crop_source:b.crop_source,crop_manually_edited:b.crop_manually_edited,was_card_default:b.was_card_default}:{}), last_known_name: b.last_known_name ?? '' }; }
   assertUnlinked(id) {
     const exists = this.db.kind === 'mysql' ? this.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='storyboard_asset_links'").get() : this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='storyboard_asset_links'").get();
     if (exists && this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)) throw fault('该资产属于当前分镜素材清单，不能删除或归档；请先用完整 JSON 重新初始化并移出清单', 409);
