@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { digest, fault, idOK, nameKey } from '../project-assets/model.mjs';
+import { canonical, digest, fault, idOK, nameKey } from '../project-assets/model.mjs';
 import { DEFAULT_DIMENSIONS, dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from './model.mjs';
 import { attributeSchema } from './schema.mjs';
 
@@ -174,6 +174,9 @@ export class ProjectAttributes {
   putConfig(id, input, source = 'user') {
     const proposed = dimensionsInput(input?.dimensions);
     const confirmation = input.removal_confirmation;
+    const preserve = input.preserve_scored_axes;
+    const preserveScoredAxes = new Set(preserve === undefined || Array.isArray(preserve) && preserve.length === 0
+      ? [] : distinctIds(preserve, 8, '确认保持评分含义的维度'));
     if (confirmation !== undefined && (!isRecord(confirmation) || typeof confirmation.token !== 'string' ||
         !/^[a-f0-9]{64}$/.test(confirmation.token))) throw fault('删除确认凭证无效');
     return this.write(id, projectId => {
@@ -198,6 +201,7 @@ export class ProjectAttributes {
         throw conflict('DIMENSION_REMOVAL_CONFIRM', '请先核对删除维度的影响');
       }
 
+      const changedUnconfirmed = new Set();
       const dimensions = proposed.map(dimension => {
         if (dimension.id === null) return { ...dimension, id: randomUUID() };
         const previous = old.get(dimension.id);
@@ -206,9 +210,19 @@ export class ProjectAttributes {
             nameKey(dimension.negative_label) === nameKey(previous.positive_label)) {
           throw fault('对调维度两端时，请以新维度替换，避免旧分数含义反转');
         }
-        if (dimension.tier_labels === undefined && previous.tier_labels) return { ...dimension, tier_labels: previous.tier_labels };
-        return dimension;
+        const next = dimension.tier_labels === undefined && previous.tier_labels
+          ? { ...dimension, tier_labels: previous.tier_labels } : dimension;
+        if (!preserveScoredAxes.has(next.id) && canonical(dimensionDTO(previous)) !== canonical(dimensionDTO(next))) {
+          changedUnconfirmed.add(next.id);
+        }
+        return next;
       });
+      if (source === 'user' && changedUnconfirmed.size) {
+        const rows = this.db.prepare('SELECT data_json FROM project_character_attributes WHERE project_id=?').all(projectId);
+        if (rows.some(row => Object.keys(JSON.parse(row.data_json)).some(dimId => changedUnconfirmed.has(dimId)))) {
+          throw conflict('AXIS_MEANING_CONFIRM', '修改已有分数的维度前，请确认评分含义和正负方向不变，或换用新维度');
+        }
+      }
       for (const row of impact.records) {
         for (const dimId of row.removed) delete row.scores[dimId];
         this.saveScores(projectId, row.id, { revision: row.revision, scores: row.scores });

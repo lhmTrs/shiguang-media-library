@@ -184,3 +184,29 @@ test('回执持久化失败时，整批评分原样保留', async t => {
   f.db.exec('DROP TRIGGER fail_receipt');
   assert.equal(attrs.scoreBatch(f.a.id, input).applied, 1);
 });
+
+test('有评分的维度修改文案需明确确认，改变含义用新 ID', async t => {
+  const f = await creativeFixture();
+  t.after(f.close);
+  const a = await addCharacter(f), attrs = f.store.attributes, config = attrs.getConfig(f.a.id);
+  const [first, ...rest] = config.dimensions;
+  attrs.patchScores(a.id, edit(f.a, 0, 0, first.id, 80));
+  const reversed = { ...first, negative_label: '仁慈', positive_label: '残酷', criterion: '对他人越残酷评分越高' };
+  const replacement = { expected_revision: 0, dimensions: [reversed, ...rest] };
+  assert.throws(() => attrs.putConfig(f.a.id, replacement), { code: 'AXIS_MEANING_CONFIRM' });
+  assert.deepEqual(attrs.getConfig(f.a.id), config);
+  assert.equal(attrs.getScores(a.id).scores[first.id].value, 80);
+  const polish = { ...first, name: '善恶倾向' };
+  assert.throws(() => attrs.putConfig(f.a.id, { expected_revision: 0, dimensions: [polish, ...rest] }), { code: 'AXIS_MEANING_CONFIRM' });
+  const relabelled = attrs.putConfig(f.a.id, { expected_revision: 0, dimensions: [polish, ...rest], preserve_scored_axes: [first.id] });
+  assert.equal(relabelled.dimensions[0].id, first.id);
+  assert.equal(attrs.getScores(a.id).scores[first.id].value, 80);
+  const swapped = { ...first, negative_label: first.positive_label, positive_label: first.negative_label };
+  assert.throws(() => attrs.putConfig(f.a.id, { expected_revision: 1, dimensions: [swapped, ...rest],
+    preserve_scored_axes: [first.id] }), /对调维度两端/);
+  const { token } = attrs.removalPreview(f.a.id, { expected_revision: 1, remove: [first.id] });
+  const next = attrs.putConfig(f.a.id, { expected_revision: 1, dimensions: [{ ...reversed, id: null }, ...rest],
+    removal_confirmation: { token } });
+  assert.notEqual(next.dimensions[0].id, first.id);
+  assert.deepEqual(attrs.getScores(a.id).scores, {});
+});
