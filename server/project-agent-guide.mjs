@@ -2,6 +2,7 @@ export function projectAgentGuide({ project, origin, instanceId }) {
   const projectId = project.id;
   const storyboard = `/api/storyboard/projects/${projectId}`;
   const assets = '/api/project-assets/assets';
+  const projectAssets = `/api/project-assets/projects/${projectId}`;
   const rules = `/api/concierge/rules?scope=${projectId}`;
   const example = value => ['```json', JSON.stringify(value, null, 2), '```'].join('\n');
 
@@ -45,6 +46,21 @@ ${example({ project_id: projectId, kind: 'character', name: '人物名称' })}
 ${example({ asset: '<基于读取结果修改后的完整 asset 对象>', expected_revision: 2 })}
 
 用户明确指定要复制的来源人物时，先调用 \`GET ${assets}/<source_id>/copy-preview?project_id=${projectId}\`，核对来源与目标。再调用 \`POST ${assets}/<source_id>/copy\`，发送目标 \`project_id\`、预览返回的 \`source_revision\` 与 \`request_id\`、以及目标人物 \`name\`。结果未知时查询 \`GET /api/project-assets/copies/<request_id>\`。使用响应中的新人物 ID 建立关联。
+
+## 人物属性打分
+
+1. 先读取 \`GET ${projectAssets}/script\`、项目规则及人物列表。需要核对人物背景时，读取人物完整资料。只给剧本或资料有依据的维度打分。
+2. 读取 \`GET ${projectAssets}/attribute-config\`。使用返回的维度 ID 和评分依据，按该维度的两端含义打整数分。五档区间从低到高为 −100～−60、−59～−20、−19～19、20～59、60～100。0 是有效分数。没有依据时跳过该格。用户授权初始化且项目尚无评分记录时，可调用 \`POST ${projectAssets}/attribute-config/initialize\`，提交 \`expected_revision\` 和 3–8 个 \`dimensions\`。沿用的维度传现有 ID，新维度传 \`id:null\`。已经评分的项目若需改维度，请将提案交给用户核对。
+3. 用 \`GET ${assets}/<asset_id>/attributes\` 查看已有评分。\`source:manual\` 包含人工清空，应跳过。用户授权打分后，用 \`POST ${projectAssets}/attribute-scores\` 提交，每次 1–200 格，每格附最多 200 字的依据。
+4. 回执包含 \`applied\` 和 \`skipped\`。\`MANUAL_PRESERVED\` 表示人工记录已保留，\`ASSET_UNAVAILABLE\` 表示当前项目中没有该可评分人物，\`DIMENSION_UNAVAILABLE\` 表示该维度不可用。遇到 \`CONFIG_STALE\` 时重新读取配置再评估。请求结果未知时，用相同 \`request_id\` 和相同请求内容取回原回执。完成后读取人物属性核对。
+
+打分请求示例（替换为本次读取的 ID、版本及依据）：
+
+${example({
+  request_id: '<新生成的 UUID>',
+  config_revision: 0,
+  scores: [{ asset_id: '<人物 ID>', dimension_id: '<维度 ID>', value: 30, reason: '对应剧本或人物资料中的依据' }],
+})}
 
 ## 核对结果
 
