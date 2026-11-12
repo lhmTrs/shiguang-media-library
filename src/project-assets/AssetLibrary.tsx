@@ -153,7 +153,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const [scriptView,setScriptView]=useState(false),[scriptDirty,setScriptDirty]=useState(false);const scriptDirtyRef=useRef(scriptDirty);scriptDirtyRef.current=scriptDirty;
   // 新界面状态：参考图弹窗、菜单、画廊筛选、拖入导入、剧本中出现的资产名称
   const [imageId, setImageId] = useState<string | null>(null), [menu, setMenu] = useState<'' | 'page' | 'detail'>(''), [missingOnly, setMissingOnly] = useState(false);
-  const [dragTarget, setDragTarget] = useState(''), [dropJob, setDropJob] = useState<DropJob | null>(null), [scriptNames, setScriptNames] = useState<{ kind: Kind; name: string }[]>([]);
+  const [dragTarget, setDragTarget] = useState(''), [dropJob, setDropJob] = useState<DropJob | null>(null), [scriptNames, setScriptNames] = useState<{ kind: Kind; name: string }[]>([]), [scriptNamesRead, setScriptNamesRead] = useState<{ project: string; status: 'loading' | 'ok' | 'error' }>({ project: '', status: 'loading' });
   const dropJobRef = useRef(dropJob); dropJobRef.current = dropJob;
   const dragDepth = useRef(0), detailScroll = useRef<HTMLDivElement>(null);
   useEffect(() => setImageViewer(null), [active, scope, draft?.id, lookId, kind, scriptView]);
@@ -334,9 +334,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // 剧本右栏：读取本项目三类资产的名称（各取第一页）
   useEffect(() => {
     if (!active || !scriptView || !scope || publicScope) return;
-    let live = true;
+    let live = true; setScriptNamesRead({ project: scope, status: 'loading' });
     void Promise.all((['character', 'scene', 'prop'] as Kind[]).map(k => api<{ items: Asset[] }>('/assets?' + new URLSearchParams({ project_id: scope, kind: k, q: '', archived: 'false', page: '1' })).then(r => r.items.map(a => ({ kind: k, name: a.name })))))
-      .then(all => { if (live) setScriptNames(all.flat()); }).catch(() => { if (live) setScriptNames([]); });
+      .then(all => { if (live) { setScriptNames(all.flat()); setScriptNamesRead({ project: scope, status: 'ok' }); } }).catch(() => { if (live) { setScriptNames([]); setScriptNamesRead({ project: scope, status: 'error' }); } });
     return () => { live = false; };
   }, [active, scriptView, scope, publicScope]);
   async function openAsset(id: string, asked = false) { if (busy || !asked && !canLeave()) return; const ticket = ++selectionGeneration.current, project = scope; await run('正在读取资料…', async () => { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }); }
@@ -898,7 +898,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     </header>
     {(error||scopesError) && <div className="ca-alert" role="alert">{error||scopesError}{scopesError&&<button onClick={()=>retryScopes(n=>n+1)}>重试项目范围</button>}<button aria-label="关闭错误" onClick={() => {setError('');if(scopesKnown)setScopesError('');}}><X size={14}/></button></div>}{notice && <div className="ca-notice" role="status">{notice}<button aria-label="关闭通知" onClick={() => setNotice('')}><X size={14}/></button></div>}
     {busy && <div className="ca-progress" role="status"><span className="spinner"/>{busy}</div>}
-    <div className="ca-script-host" hidden={!scriptView}><ProjectScript projectId={scope} visible={active&&scriptView&&!publicScope} request={request} onDirtyChange={setScriptDirty} names={scriptNames}/></div>
+    <div className="ca-script-host" hidden={!scriptView}><ProjectScript projectId={scope} visible={active&&scriptView&&!publicScope} request={request} onDirtyChange={setScriptDirty} names={scriptNames} namesStatus={scriptNamesRead.project === scope ? scriptNamesRead.status : 'loading'}/></div>
     <div className="ca-stage" hidden={scriptView}><fieldset className="ca-interaction" disabled={!!busy}>
       <div className={'ca-body' + (draft || pickedAssets.length > 1 ? ' has-detail' : '')}>
         <section className={'ca-gallery' + (dragTarget === 'gallery' ? ' is-drop' : '') + (marquee ? ' is-marquee' : '')} aria-label={labels[kind] + '画廊'} aria-busy={listLoading||!scopesKnown&&!scopesError}

@@ -2,6 +2,11 @@ import React,{useEffect,useRef,useState} from 'react';
 import {useFeedbackToast} from '../global-feedback';
 import type {PromptRequest} from '../PromptTemplateWorkspace';
 import {ScriptMarkdown,scriptOutline} from './ScriptMarkdown';
+import {readMemory,readStored,saveStored} from '../browser-preferences';
+// 正文宽度：适中（三栏整组最宽 1400 居中，正文最宽 860）/ 铺满。记在这台电脑上（尊重「记住显示偏好」设置）。
+type ScriptWidth='mid'|'full';
+const widthKey='shiguang.scriptWidth.v1';
+const readWidth=():ScriptWidth=>readMemory().display?readStored<ScriptWidth>(widthKey,'mid',(v):v is ScriptWidth=>v==='mid'||v==='full'):'mid';
 type Doc={project_id:string;title:string;content:string;revision:number;updated_at:number|null};
 type Entry={doc:Doc;title:string;content:string;loaded:boolean;reading:boolean;saving:boolean;error:string;edits:number;read:number};
 const fresh=(id:string):Entry=>({doc:{project_id:id,title:'',content:'',revision:0,updated_at:null},title:'',content:'',loaded:false,reading:false,saving:false,error:'',edits:0,read:0});
@@ -10,10 +15,14 @@ function checked(doc:Doc,id:string){if(doc?.project_id!==id||typeof doc.title!==
 type Name={kind:'character'|'scene'|'prop';name:string};
 const kindLabel={character:'人物',scene:'场景',prop:'道具'} as const;
 function countOf(text:string,name:string){if(!name)return 0;let n=0,i=text.indexOf(name);while(i>=0&&n<9999){n++;i=text.indexOf(name,i+name.length);}return n;}
-export function ProjectScript({projectId,visible,request,onDirtyChange,names=[]}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[]}){
+export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],namesStatus='ok'}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[];namesStatus?:'loading'|'ok'|'error'}){
  const editor=useRef<HTMLTextAreaElement>(null),reader=useRef<HTMLDivElement>(null);
  // 正文默认「阅读」（排好版的 Markdown）；空剧本直接「编辑」；有未保存修改时始终停在「编辑」。
  const [view,setView]=useState<'read'|'edit'|null>(null);
+ const [width,setWidthState]=useState<ScriptWidth>(readWidth);
+ const setWidth=(w:ScriptWidth)=>{setWidthState(w);if(readMemory().display)saveStored(widthKey,w);};
+ // 「重置导航与浏览偏好」：存储已由重置清掉，这里只把当页宽度切回「适中」；正文草稿和保存状态不动。
+ useEffect(()=>{const reset=()=>setWidthState('mid');window.addEventListener('shiguang-browser-preferences-reset',reset);return()=>window.removeEventListener('shiguang-browser-preferences-reset',reset);},[]);
  useEffect(()=>setView(null),[projectId]);
  const cache=useRef(new Map<string,Entry>()),alive=useRef(true),[,render]=useState(0);const update=()=>{if(alive.current)render(n=>n+1);};
  function entry(id:string){let e=cache.current.get(id);if(!e){if(cache.current.size>=20){const removable=[...cache.current].find(([,v])=>!dirty(v)&&!v.reading&&!v.saving);if(removable)cache.current.delete(removable[0]);else return{...fresh(id),error:'已保留20份未保存或处理中剧本，请先返回原项目保存'};}e=fresh(id);cache.current.set(id,e);}return e;}
@@ -46,8 +55,8 @@ export function ProjectScript({projectId,visible,request,onDirtyChange,names=[]}
  function jumpTo(offset:number,line:number){
   if(mode==='read'){const host=reader.current;if(!host)return;let target:HTMLElement|null=null;host.querySelectorAll<HTMLElement>('[data-line]').forEach(el=>{if(Number(el.dataset.line)<=line)target=el;});if(target){const t=target as HTMLElement;host.scrollTop=Math.max(0,t.offsetTop-host.offsetTop-8);}return;}
   const t=editor.current;if(!t)return;t.focus();t.setSelectionRange(offset,offset);const lh=parseFloat(getComputedStyle(t).lineHeight)||22;t.scrollTop=Math.max(0,line*lh-lh*2);}
- return <section className="ca-project-script" aria-label="项目剧本" aria-busy={current.reading||current.saving}>
-  <header><div><h2>剧本</h2><p role="status">{current.saving?'保存中…':current.reading?'读取中…':current.error?'操作失败，输入保留':!current.loaded?'尚未读取':unsaved?'有未保存修改':current.doc.revision?'已保存 · V'+current.doc.revision:'尚未保存'}{current.doc.updated_at!==null&&<> · 最后保存 {new Date(current.doc.updated_at).toLocaleString('zh-CN')}</>} · 保存在当前项目，不会自动生成或修改分镜</p></div><div className="ca-actions"><div className="ca-script-view" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={mode==='read'} disabled={unsaved||!current.loaded} title={unsaved?'有未保存修改，保存后才能切到阅读':undefined} onClick={()=>setView('read')}>阅读</button><button type="button" aria-pressed={mode==='edit'} disabled={!current.loaded} onClick={()=>setView('edit')}>编辑</button></div><button disabled={current.reading||current.saving} onClick={()=>void read(true)}>重新读取剧本</button><button className="ca-primary" disabled={!current.loaded||current.reading||current.saving||!unsaved} onClick={()=>void save()}>保存剧本</button></div></header>
+ return <section className={'ca-project-script '+(width==='full'?'is-full':'is-mid')} aria-label="项目剧本" aria-busy={current.reading||current.saving}>
+  <header><div><h2>剧本</h2><p role="status">{current.saving?'保存中…':current.reading?'读取中…':current.error?'操作失败，输入保留':!current.loaded?'尚未读取':unsaved?'有未保存修改':current.doc.revision?'已保存 · V'+current.doc.revision:'尚未保存'}{current.doc.updated_at!==null&&<> · 最后保存 {new Date(current.doc.updated_at).toLocaleString('zh-CN')}</>} · 保存在当前项目，不会自动生成或修改分镜</p></div><div className="ca-actions"><div className="ca-script-view" role="group" aria-label="正文宽度" title="正文宽度（记在这台电脑上）"><button type="button" aria-pressed={width==='mid'} onClick={()=>setWidth('mid')}>适中</button><button type="button" aria-pressed={width==='full'} onClick={()=>setWidth('full')}>铺满</button></div><div className="ca-script-view" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={mode==='read'} disabled={unsaved||!current.loaded} title={unsaved?'有未保存修改，保存后才能切到阅读':undefined} onClick={()=>setView('read')}>阅读</button><button type="button" aria-pressed={mode==='edit'} disabled={!current.loaded} onClick={()=>setView('edit')}>编辑</button></div><button disabled={current.reading||current.saving} onClick={()=>void read(true)}>重新读取剧本</button><button className="ca-primary" disabled={!current.loaded||current.reading||current.saving||!unsaved} onClick={()=>void save()}>保存剧本</button></div></header>
   {current.error&&<p className="ca-alert" role="alert">{current.error}</p>}
   <div className="ca-script-cols">
    <nav className="ca-script-outline" aria-label="场次大纲"><h3>场次大纲</h3>{outline.length?<ol>{outline.map(o=><li key={o.line+':'+o.offset}><button type="button" title={o.text} onClick={()=>jumpTo(o.offset,o.line)}>{o.text}</button></li>)}</ol>:<p className="ca-muted">以“## ”开头的标题，或“1. ”这样的数字编号开头的行，会显示为场次。</p>}</nav>
@@ -60,7 +69,7 @@ export function ProjectScript({projectId,visible,request,onDirtyChange,names=[]}
      <label className="ca-field ca-script-body"><span>剧本正文<small className="ca-script-hint">支持 Markdown：<code>## 场次标题</code> <code>**加粗**</code> <code>&gt; 引用</code> <code>- 列表</code> <code>---</code> 分隔</small></span><textarea ref={editor} aria-label="剧本正文" maxLength={200000} rows={22} disabled={!current.loaded||current.reading} value={current.content} onChange={e=>{current.content=e.target.value;current.edits++;if(view===null)setView('edit');update();}}/></label>
     </>}<small>{current.content.length.toLocaleString()} / 200,000 字</small>
    </div>
-   <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>
+   <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{namesStatus==='loading'?<p className="ca-muted">正在读取本项目的人物、场景、道具…</p>:namesStatus==='error'?<p className="ca-muted">资产列表没有读到，暂时无法统计；剧本照常可读写</p>:!names.length?<p className="ca-muted">本项目还没有人物、场景、道具</p>:(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>
   </div>
  </section>;
 }
