@@ -1,7 +1,8 @@
 import express from 'express';
 import {ProjectScripts} from '../project-scripts/store.mjs';
+import {fault} from './model.mjs';
 import {streamImage} from './image-import.mjs';
-export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{}}={}) {
+export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{},desktop}={}) {
   const router = express.Router(),scripts=new ProjectScripts(store).init();
   router.post('/assets/:id/voice',express.json({limit:'15mb'}),asyncRoute(async(req,res)=>{
     const id=req.params.id;
@@ -17,6 +18,20 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('post','/image-imports/:id/resolve',req=>store.imageImports.resolve(req.params.id,req.body));
   router.get('/image-imports/:id/candidates/:candidateId/preview',asyncRoute((req,res)=>store.imageImports.preview(req.params.id,req.params.candidateId,res)));
   router.get('/media/:id/preview',asyncRoute(async(req,res)=>{const h=await store.inspect(req.params.id);if(h.state!=='available')return res.status(409).json({error:h.label});const a=store.lib.asset(req.params.id);await streamImage(await store.lib.checked(a.path,a.root_id),h.sha256,res);}));
+  const local=req=>{if(!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress))throw fault('桌面操作仅限本机连接',403,{code:'DESKTOP_LOCAL_ONLY'});};
+  if(desktop){
+    const base='/projects/:id';
+    const action=(method,url,fn)=>router[method](base+url,asyncRoute(async(req,res)=>{
+      local(req);res.set('Cache-Control','no-store');
+      const result=await fn(req);
+      res.status(['checking','dispatching'].includes(result.status)?202:200).json(result);
+    }));
+    action('get','/desktop-capabilities',req=>desktop.capabilities(req.params.id));
+    action('post','/images/clipboard',req=>desktop.clipboard(req.params.id,req.body));
+    action('post','/images/reveal/preview',req=>desktop.revealPreview(req.params.id,req.body));
+    action('post','/images/reveal',req=>desktop.reveal(req.params.id,req.body));
+    action('get','/desktop-actions/:requestId',req=>desktop.status(req.params.id,req.params.requestId));
+  }
   route('get','/projects/:id/script',req=>scripts.get(req.params.id));
   route('put','/projects/:id/script',req=>scripts.put(req.params.id,req.body));
   route('get', '/scopes', () => store.scopes());
@@ -55,6 +70,6 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('get', '/backup', () => store.backup());
   route('post', '/restore', req => store.restore(req.body));
   router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
-  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.current_revision ? { current_revision: error.current_revision } : {}) }); });
+  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(error.current_revision ? { current_revision: error.current_revision } : {}) }); });
   return router;
 }

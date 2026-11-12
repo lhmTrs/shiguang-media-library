@@ -42,17 +42,25 @@ try {
     looks: [{ id: swim, name: '泳衣', description: '', tags: [], default_image_id: A, archived_at: null }, { id: daily, name: '日常', description: '', tags: [], default_image_id: C, archived_at: null }],
     images: [bind(A, swim, '泳衣正面.png'), bind(B, swim, '泳衣侧面.png'), bind(C, daily, '日常.png')] }, expected_revision: hero.revision }, 'PUT');
   await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '苏禾' });
+  let scene = await api('/project-assets/assets', { project_id: project.id, kind: 'scene', name: '海边' }); const S = crypto.randomUUID();
+  scene = await api('/project-assets/assets/' + scene.id, { asset: { ...scene, default_image_id: S, images: [{ ...bind(S, null, '日常.png'), reference_type: '空间结构' }] }, expected_revision: scene.revision }, 'PUT');
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.method() === 'PUT' && /\/api\/project-assets\/assets\/[^/]+$/.test(new URL(r.url()).pathname)) puts++; });
   await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
   await expect(wrap('阿青')).toBeVisible(); await expect(wrap('苏禾')).toBeVisible();
 
-  await check('悬停卡片出现「复制」，复制的是整张原图（PNG，原尺寸）；没有默认图的不显示复制', async () => {
+  await check('悬停卡片出现「复制」；人物只复制原图文件，本机不可用时说明原因、不写 PNG；场景仍复制整张图（PNG，原尺寸）；没有默认图的不显示复制', async () => {
+    // 本实例没有图片文件复制能力（主线后端），人物单张不退回浏览器 PNG。
     await wrap('阿青').hover(); await shot('1-hover'); await wrap('阿青').getByRole('button', { name: '复制阿青的默认图' }).click();
-    await expect(page.getByText('已复制「阿青」的默认图（整张原图），到画布平台按 ⌘V 粘贴').first()).toBeVisible();
+    await expect(page.getByText(/没有复制「阿青」的默认图：/).first()).toBeVisible();
+    await expect(page.getByText(/已复制「阿青」/)).toHaveCount(0); assert.equal(await page.evaluate(() => window.__clipWrites), 0);
+    await work().getByRole('tab', { name: '场景', exact: true }).click(); await expect(wrap('海边')).toBeVisible();
+    await wrap('海边').hover(); await wrap('海边').getByRole('button', { name: '复制海边的默认图' }).click();
+    await expect(page.getByText('已复制「海边」的默认图（整张原图，PNG），到画布平台按 ⌘V 粘贴').first()).toBeVisible();
+    await work().getByRole('tab', { name: '人物', exact: true }).click(); await expect(wrap('阿青')).toBeVisible();
     const copied = await page.evaluate(async () => { const [item] = await navigator.clipboard.read(); const blob = await item.getType('image/png'); const bmp = await createImageBitmap(blob); return { types: item.types, w: bmp.width, h: bmp.height }; });
     assert.deepEqual(copied, { types: ['image/png'], w: 300, h: 400 });
     await expect(wrap('苏禾').getByRole('button', { name: /复制/ })).toHaveCount(0);

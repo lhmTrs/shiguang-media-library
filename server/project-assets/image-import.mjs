@@ -23,9 +23,9 @@ async function checkedFile(file){
 async function unchanged(file,handle,before){
   if(identity(await handle.stat())!==identity(before)||identity(await fs.lstat(file))!==identity(before)||await fs.realpath(file)!==file)throw fault('图片正在变化，请重新选择',409);
 }
-export async function imageDigest(file){
+export async function imageDigest(file,{signal}={}){
   const {handle,before}=await checkedFile(file);
-  try{const h=createHash('sha256');for await(const chunk of handle.createReadStream({autoClose:false}))h.update(chunk);await unchanged(file,handle,before);return{hash:h.digest('hex'),stat:before};}finally{await handle.close();}
+  try{const h=createHash('sha256');for await(const chunk of handle.createReadStream({autoClose:false,signal}))h.update(chunk);signal?.throwIfAborted();await unchanged(file,handle,before);return{hash:h.digest('hex'),stat:before};}finally{await handle.close();}
 }
 // Verify from the same descriptor that is streamed. Never read the whole image into memory.
 export async function streamImage(file,expected,res,{media,verifySource}={}){

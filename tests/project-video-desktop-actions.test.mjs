@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
+import {ProjectVideoDesktopNative} from '../server/project-videos/desktop-native.mjs';
 import {fixture,imported,finish,initialize,bind,appendXmp,replaceBytes} from './helpers/project-video-desktop-fixture.mjs';
 
 test('C: XMP-only byte drift keeps source, metadata, prompt and precise adopts; changed pixels do not',async t=>{
@@ -77,4 +78,43 @@ test('shared stat recheck does not queue unrelated reads or trust a missing hist
   f.catalog.hash=async(file,...args)=>{if(file===one.path)await blocked;return original(file,...args);};
   const pending=f.catalog.verifiedSource(f.project.id,one.id).catch(e=>e);await new Promise(r=>setTimeout(r,5));
   assert.equal((await f.catalog.verifiedSource(f.project.id,two.id)).id,two.id);unblock();await pending;
+});
+
+
+test('a queued video copy rechecks its authority after an image write has finished', async t=>{
+  const f=await fixture(t),source=await imported(f);
+  const native=new ProjectVideoDesktopNative({directory:f.dir});
+  t.after(()=>native.close());
+  native.helper=async()=>'/tmp/owned-stub';
+  native.capabilities=async()=>({clipboard:{available:true}});
+  f.catalog.desktop.native=native;
+  const pic=f.dir+'/owned-photo.png',writes=[];
+  let version=11, entered, release, queued;
+  const firstWriting=new Promise(r=>{entered=r;}),holdAck=new Promise(r=>{release=r;}),enqueued=new Promise(r=>{queued=r;});
+  native.invoke=async(_binary,req)=>{
+    if(req.operation==='clipboard-version')return {changeCount:version};
+    assert.equal(req.expectedChangeCount,version);
+    writes.push(req.paths[0]);version++;
+    if(req.paths[0]===pic){entered();await holdAck;}
+    return {ack:'written',count:1,changeCount:version};
+  };
+  const copy=native.copyFiles.bind(native);
+  native.copyFiles=(files,options)=>{
+    const work=copy(files,options);
+    if(files[0]===source.path)queued();
+    return work;
+  };
+  const image=native.copyFiles([pic],{expectedChangeCount:11});
+  await firstWriting;
+  let receipt;
+  try{
+    const action=f.catalog.desktop.clipboard(f.project.id,{requestId:randomUUID(),ids:[source.id]});
+    receipt=finish(f,action);
+    await enqueued;
+    await f.catalog.update(f.project.id,source.id,{expectedRevision:1,title:'Change while queued',notes:'',prompt:{mode:'none'}});
+  }finally{release();}
+  await image;
+  const result=await receipt;
+  assert.equal(result.status,'failed');assert.equal(result.code,'PREVIEW_STALE');
+  assert.deepEqual(writes,[pic]);
 });
