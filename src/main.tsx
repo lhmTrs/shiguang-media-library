@@ -250,6 +250,14 @@ let token = "";
 type LocalSession = { token: string; app: string; instanceId: string; trashAvailable: boolean; folderPickerAvailable?: boolean };
 let localSession: LocalSession | null = null;
 let sessionEstablishing: Promise<LocalSession> | null = null;
+let libraryIdentityChanged = false;
+function libraryIdentityError() {
+  if (!libraryIdentityChanged) {
+    libraryIdentityChanged = true;
+    window.dispatchEvent(new Event('shiguang-library-identity-changed'));
+  }
+  return Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED', status: 409 });
+}
 async function establishLocalSession(force = false): Promise<LocalSession> {
   if (sessionEstablishing) return sessionEstablishing;
   if (!force && localSession && token) return localSession;
@@ -258,7 +266,7 @@ async function establishLocalSession(force = false): Promise<LocalSession> {
     if (!response.ok) throw Error('无法建立本机会话，请检查素材管理器服务后重试');
     const next = await response.json() as LocalSession;
     if (next.app !== 'shiguang-local-media' || typeof next.token !== 'string' || !next.token || typeof next.instanceId !== 'string') throw Error('本机服务身份无法确认，请检查地址后刷新页面');
-    if (localSession && next.instanceId !== localSession.instanceId) {window.dispatchEvent(new Event('shiguang-library-identity-changed'));throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });}
+    if (localSession && next.instanceId !== localSession.instanceId) throw libraryIdentityError();
     localSession = next; token = next.token; return next;
   })();
   try { return await sessionEstablishing; }
@@ -268,17 +276,26 @@ async function readLibraryIdentity(){return(await establishLocalSession(true)).i
 async function api<T = unknown>(url: string, body?: unknown, method?: string, options?: { signal?: AbortSignal }): Promise<T> {
   const verb = (method || (body ? 'POST' : 'GET')).toUpperCase();
   if (url === '/session' && verb === 'GET') return await establishLocalSession() as T;
+  const projectRequest = /^\/(?:projects|project-series)(?:[/?]|$)/.test(url);
+  if (projectRequest && libraryIdentityChanged) throw libraryIdentityError();
   const expectedInstance = (await establishLocalSession()).instanceId;
   const assertCurrent = async () => {
-    if (await readLibraryIdentity() !== expectedInstance) throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });
+    if (await readLibraryIdentity() !== expectedInstance) throw libraryIdentityError();
   };
   const perform = async (recovered = false): Promise<T> => {
     const sentToken = token, headers: Record<string, string> = {};
     const binary = body instanceof Blob;
     if (body) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
     if (verb !== 'GET') headers['X-Local-Token'] = sentToken;
+    if (projectRequest) {
+      if (libraryIdentityChanged) throw libraryIdentityError();
+      headers['X-Shiguang-Library-Id'] = expectedInstance;
+    }
     const response = await hostReads.fetch('/api' + url, { method: verb, headers, body: binary ? body : body ? JSON.stringify(body) : undefined, signal: options?.signal }, assertCurrent);
     const result = await response.json();
+    if (projectRequest && (verb === 'GET' && libraryIdentityChanged || response.status === 409 && result.code === 'LOCAL_INSTANCE_CHANGED')) {
+      throw libraryIdentityError();
+    }
     // Only these exact local middleware refusals prove the handler never ran.
     // Never replay a generation or another business write after re-establishing a session.
     const localRefusal = !result.code && (response.status === 401 && result.error === '本机会话失效，请刷新页面' || response.status === 403 && result.error === '本机会话校验失败');
@@ -771,10 +788,12 @@ function App() {
     return () => { live = false; };
   }, [ready, activeProject, projectRevision]);
   function refreshProjects() {
+    if (!projectLibrary.current) return;
     projectReadVersion.current++;
     setProjectRevision(n => n + 1);
   }
   function projectChangeAllowed(id: string) {
+    if (!projectLibrary.current) return false;
     if (id === activeProject) return true;
     if (busy || projectVideoBusy || projectUsageBusy) {
       setNotice("请等待当前项目的操作完成，再切换项目");
@@ -783,7 +802,7 @@ function App() {
     return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
   }
   function activateProject(id: string) {
-    if (id === activeProject) return;
+    if (!projectLibrary.current || id === activeProject) return;
     pendingProjectVisit.current = id;
     if (!id) setProjectLocation(previous => ({ ...previous, projectId: "" }));
     setChecked(new Set());
@@ -1291,7 +1310,7 @@ function App() {
     let current=true;setSessionError('');
     api<LocalSession>("/session")
       .then((s) => {
-        if(!current)return;
+        if (!current || libraryIdentityChanged) return;
         token = s.token;
         setTrashAvailable(s.trashAvailable);
         setFolderPickerAvailable(s.folderPickerAvailable !== false);
@@ -1983,7 +2002,7 @@ function App() {
         <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={activateProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
-          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span><button onClick={refreshProjects}>重试项目目录</button></div>}
+          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
           {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
             request={api} changed={projectsChanged} openPage={openProjectPage} libraryId={projectLibraryId}/> :

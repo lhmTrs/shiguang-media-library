@@ -459,6 +459,10 @@ app.use("/api", (req, res, next) => {
     return res.status(401).json({ error: "本机会话失效，请刷新页面" });
   if (req.method !== "GET" && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
+  // A different tab can establish a valid cookie while this page still belongs to its old library.
+  const expectedLibrary = req.get("X-Shiguang-Library-Id");
+  if (expectedLibrary !== undefined && expectedLibrary !== mysqlStorage.sourceId)
+    return res.status(409).json({ error: "素材库实例已变化，请刷新页面并核对当前素材库后继续", code: "LOCAL_INSTANCE_CHANGED" });
   if (identityChanging && !(req.method === "GET" && req.path === "/cloud-auth/status")) return res.status(423).json({ error: "IDENTITY_CHANGING", code: "IDENTITY_CHANGING" });
   // The same gate includes synchronous API handlers while registration/maintenance
   // owns an awaited operation; response closure never releases that ownership.
