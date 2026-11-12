@@ -136,6 +136,34 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  await check('FE1-R1 反例（#72）：项目有资产但场景列表 503 时，右栏不说「本项目还没有」，写读取失败；剧本照常可读；恢复后列出资产', async () => {
+    await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '李四' });
+    const fail = route => new URL(route.request().url()).searchParams.get('kind') === 'scene' && route.request().method() === 'GET' ? route.fulfill({ status: 503, json: { error: '服务暂时不可用' } }) : route.fallback();
+    const assetList = url => url.pathname === '/api/project-assets/assets';
+    await page.route(assetList, fail);
+    await open(); const mentions = script().getByRole('complementary', { name: '剧本中出现的资产' });
+    await expect(mentions).toContainText('资产列表没有读到'); await expect(mentions).not.toContainText('本项目还没有');
+    await expect(reader()).toBeVisible();
+    await page.unroute(assetList, fail);
+    await open(); await expect(mentions.locator('li', { hasText: '李四' })).toBeVisible(); await expect(mentions).not.toContainText('资产列表没有读到');
+  });
+
+  await check('FE1-R2 反例（#72）：从「界面设置 → 重置导航与浏览偏好」重置：剧本页当页回到「适中」且未保存正文保留；在别的页面重置、刷新后首次打开剧本也是「适中」', async () => {
+    const width = name => script().getByRole('group', { name: '正文宽度' }).getByRole('button', { name });
+    const reset = async () => { await page.locator('.sidebar').getByRole('button', { name: '界面设置', exact: true }).click(); const d = page.getByRole('dialog', { name: '界面设置' }); await d.getByRole('button', { name: '重置导航与浏览偏好' }).click(); await d.getByRole('button', { name: '关闭界面设置' }).click(); };
+    // On the script page, with an unsaved edit.
+    await open(); await width('铺满').click(); await viewBtn('编辑').click();
+    const before = await body().inputValue(); await body().fill(before + '\n未保存的一行'); await expect(script()).toContainText('有未保存修改');
+    await reset();
+    await expect(width('适中')).toHaveAttribute('aria-pressed', 'true'); await expect(body()).toHaveValue(before + '\n未保存的一行'); await expect(script()).toContainText('有未保存修改');
+    assert.equal(await page.evaluate(() => localStorage.getItem('shiguang.scriptWidth.v1')), null);
+    await body().fill(before); await expect(script().getByRole('button', { name: '保存剧本' })).toBeDisabled();
+    // From another page, before the script view has mounted.
+    await width('铺满').click(); assert.equal(await page.evaluate(() => localStorage.getItem('shiguang.scriptWidth.v1')), '"full"');
+    await page.goto(origin + '/#/project-videos'); await page.reload(); await reset();
+    await open(); await expect(width('适中')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误'); assert.deepEqual(external, [], '不应请求外部地址');
   passed = true;
 } finally {

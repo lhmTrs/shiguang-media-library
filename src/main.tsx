@@ -662,7 +662,7 @@ function App() {
     else removeStored('shiguang.lastView');
   }, [view, memory.location]);
   useEffect(() => { setLayoutPreferences(old => old[view] === layout ? old : { ...old, [view]: layout }); }, [view, layout]);
-  useEffect(() => { if (memory.display) saveStored('shiguang.assetLayouts.v1', layoutPreferences); else removeStored('shiguang.assetLayouts.v1', 'shiguang.searchPreferences.v1', 'shiguang.volume'); }, [layoutPreferences, memory.display]);
+  useEffect(() => { if (memory.display) saveStored('shiguang.assetLayouts.v1', layoutPreferences); else removeStored('shiguang.assetLayouts.v1', 'shiguang.searchPreferences.v1', 'shiguang.volume', 'shiguang.scriptWidth.v1'); }, [layoutPreferences, memory.display]);
   useEffect(() => { if (memory.display) saveStored('shiguang.searchPreferences.v1', { mode: searchMode, nameOnly, expanded: advancedFilters }); }, [searchMode, nameOnly, advancedFilters, memory.display]);
   const [storyboardAppearance, setStoryboardAppearance] = useState(readStoryboardAppearance);
   useEffect(() => { try { localStorage.setItem(storyboardAppearanceKey, JSON.stringify(storyboardAppearance)); } catch {} }, [storyboardAppearance]);
@@ -1365,6 +1365,8 @@ function App() {
     setExpandedNavGroups({ ...groupDefaults }); setNavCollapsed(false); setLayoutPreferences({}); setLayout(defaultLayout(view));
     setSearchMode('all'); setNameOnly(false); setAdvancedFilters(false); setVolume(.7);
     setSort('revealCount'); setSeriesMode(true); setPageSize(60); setCompactActions(true); setDetailsHidden(false); setDetailsWidth(340);
+    // 剧本正文宽度（ProjectScript）：清掉记忆，并通知已打开的剧本页回到「适中」（剧本组件可能尚未挂载）。
+    removeStored('shiguang.scriptWidth.v1'); window.dispatchEvent(new Event('shiguang-browser-preferences-reset'));
     setNotice('导航与浏览偏好已恢复默认，模板、项目和素材数据保留');
   }
   async function patch(a: Asset, patch: unknown) {

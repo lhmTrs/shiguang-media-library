@@ -15,12 +15,14 @@ function checked(doc:Doc,id:string){if(doc?.project_id!==id||typeof doc.title!==
 type Name={kind:'character'|'scene'|'prop';name:string};
 const kindLabel={character:'人物',scene:'场景',prop:'道具'} as const;
 function countOf(text:string,name:string){if(!name)return 0;let n=0,i=text.indexOf(name);while(i>=0&&n<9999){n++;i=text.indexOf(name,i+name.length);}return n;}
-export function ProjectScript({projectId,visible,request,onDirtyChange,names=[]}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[]}){
+export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],namesStatus='ok'}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[];namesStatus?:'loading'|'ok'|'error'}){
  const editor=useRef<HTMLTextAreaElement>(null),reader=useRef<HTMLDivElement>(null);
  // 正文默认「阅读」（排好版的 Markdown）；空剧本直接「编辑」；有未保存修改时始终停在「编辑」。
  const [view,setView]=useState<'read'|'edit'|null>(null);
  const [width,setWidthState]=useState<ScriptWidth>(readWidth);
  const setWidth=(w:ScriptWidth)=>{setWidthState(w);if(readMemory().display)saveStored(widthKey,w);};
+ // 「重置导航与浏览偏好」：存储已由重置清掉，这里只把当页宽度切回「适中」；正文草稿和保存状态不动。
+ useEffect(()=>{const reset=()=>setWidthState('mid');window.addEventListener('shiguang-browser-preferences-reset',reset);return()=>window.removeEventListener('shiguang-browser-preferences-reset',reset);},[]);
  useEffect(()=>setView(null),[projectId]);
  const cache=useRef(new Map<string,Entry>()),alive=useRef(true),[,render]=useState(0);const update=()=>{if(alive.current)render(n=>n+1);};
  function entry(id:string){let e=cache.current.get(id);if(!e){if(cache.current.size>=20){const removable=[...cache.current].find(([,v])=>!dirty(v)&&!v.reading&&!v.saving);if(removable)cache.current.delete(removable[0]);else return{...fresh(id),error:'已保留20份未保存或处理中剧本，请先返回原项目保存'};}e=fresh(id);cache.current.set(id,e);}return e;}
@@ -67,7 +69,7 @@ export function ProjectScript({projectId,visible,request,onDirtyChange,names=[]}
      <label className="ca-field ca-script-body"><span>剧本正文<small className="ca-script-hint">支持 Markdown：<code>## 场次标题</code> <code>**加粗**</code> <code>&gt; 引用</code> <code>- 列表</code> <code>---</code> 分隔</small></span><textarea ref={editor} aria-label="剧本正文" maxLength={200000} rows={22} disabled={!current.loaded||current.reading} value={current.content} onChange={e=>{current.content=e.target.value;current.edits++;if(view===null)setView('edit');update();}}/></label>
     </>}<small>{current.content.length.toLocaleString()} / 200,000 字</small>
    </div>
-   <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{!names.length?<p className="ca-muted">本项目还没有人物、场景、道具</p>:(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>
+   <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{namesStatus==='loading'?<p className="ca-muted">正在读取本项目的人物、场景、道具…</p>:namesStatus==='error'?<p className="ca-muted">资产列表没有读到，暂时无法统计；剧本照常可读写</p>:!names.length?<p className="ca-muted">本项目还没有人物、场景、道具</p>:(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>
   </div>
  </section>;
 }
