@@ -58,7 +58,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import "./style.css";
-import {ProjectSelector} from "./ProjectSelector";
 import {useLibraryStats} from "./useLibraryStats";
 import {hostReads,hostBusyMessage} from "./host-read";
 import {BackgroundReadStatus} from "./BackgroundReadStatus";
@@ -94,6 +93,7 @@ import { ProjectHistory } from "./ProjectManager";
 import { AgentShare } from "./AgentShare";
 import { ProjectUsage } from "./ProjectUsage";
 import { ProjectFolders, type FolderPage } from "./series/ProjectFolders";
+import { ProjectPathBar } from "./series/ProjectPathBar";
 import type { GroupedProject, Series } from "./series/model";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
@@ -116,6 +116,7 @@ import { ProjectAssetWorkspace } from "./ProjectAssetWorkspace";
 import { readStoryboardAppearance, storyboardAppearanceKey } from "./storyboard/preferences";
 import type {ShotFocus} from "./storyboard/shot-navigation";
 import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, readGroups, groupDefaults, navigationGroupsKey, readLayouts, defaultLayout, readSearchPreferences, readVolume, saveStored, removeStored } from "./browser-preferences";
+import { clearProjectLocations, emptyProjectLocation, readProjectLocation, recentProjectLimit, saveProjectLocation } from "./browser-preferences";
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
@@ -643,7 +644,7 @@ function App() {
       if(detail.taskId!==task.taskId||detail.projectId!==task.projectId)throw Error('分镜任务目标不符，未跳转');
       await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
       if(storyboardDirty&&activeProject!==detail.projectId&&!confirm('当前分镜有未保存草稿，切换后保留在原项目。继续查看目标任务？'))throw Error('已取消跳转，原分镜草稿保留');
-      setActiveProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
+      activateProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
     }
     if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
     if(!promptWorkspace.current)throw Error('工作台暂未就绪，请重试');
@@ -689,13 +690,62 @@ function App() {
   const projectReadVersion = useRef(0);
   const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
   useFeedbackToast(projectsError, {source: '素材管理'});
-  const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
+  const [activeProject, setActiveProject] = useState("");
+  const [projectLibraryId, setProjectLibraryId] = useState("");
+  const projectLibrary = useRef("");
+  const [projectLocation, setProjectLocation] = useState(emptyProjectLocation);
+  const pendingProjectVisit = useRef("");
   const [projectMembers, setProjectMembers] = useState<{ asset_id: string; status: string }[]>([]);
   const [projectUsageCounts,setProjectUsageCounts] = useState<Record<string,number>>({});
   useEffect(()=>{let live=true;if(ready)void api<{asset_id:string;n:number}[]>("/projects/usage-counts").then(rows=>{if(live)setProjectUsageCounts(Object.fromEntries(rows.map(row=>[row.asset_id,Number(row.n)])));}).catch(()=>{});return()=>{live=false;};},[ready,projectRevision]);
-  useEffect(() => { try { localStorage.setItem("shiguang.activeProject", activeProject); } catch {} }, [activeProject]);
   useEffect(() => {
-    if (!ready) return;
+    const changed = () => {
+      projectReadVersion.current++;
+      cancelCodexNavigation();
+      pendingProjectVisit.current = "";
+      projectLibrary.current = "";
+      setProjectLibraryId("");
+      setProjects([]);
+      setProjectsKnown(false);
+      setProjectDirectory(null);
+      setActiveProject("");
+      setProjectLocation(emptyProjectLocation);
+      setDirectoryError("素材库已变化，请刷新页面后重新读取项目");
+      setProjectsError("素材库已变化，请刷新页面后重新读取项目");
+    };
+    window.addEventListener("shiguang-library-identity-changed", changed);
+    return () => window.removeEventListener("shiguang-library-identity-changed", changed);
+  }, [cancelCodexNavigation]);
+  useEffect(() => {
+    if (!projectsKnown) return;
+    const byId = new Map(projects.map(project => [project.id, project]));
+    const visited = pendingProjectVisit.current === activeProject ? byId.get(activeProject) : undefined;
+    if (visited) pendingProjectVisit.current = "";
+    setProjectLocation(previous => {
+      const recent = previous.recent.filter(id => byId.has(id) && id !== visited?.id);
+      const lastInContainer = Object.fromEntries(Object.entries(previous.lastInContainer).filter(([key, id]) => {
+        const project = byId.get(id);
+        return project?.series_id && (key === "series:" + project.series_id ||
+          key === (project.season_id ?? "root:" + project.series_id));
+      }));
+      if (visited?.series_id) {
+        lastInContainer["series:" + visited.series_id] = visited.id;
+        lastInContainer[visited.season_id ?? "root:" + visited.series_id] = visited.id;
+      }
+      if (visited) recent.unshift(visited.id);
+      return {
+        projectId: visited?.id ?? (byId.has(previous.projectId) ? previous.projectId : ""),
+        recent: recent.slice(0, recentProjectLimit),
+        lastInContainer,
+      };
+    });
+  }, [activeProject, projects, projectsKnown]);
+  useEffect(() => {
+    if (!memory.location) clearProjectLocations();
+    else if (projectLibraryId && projectsKnown) saveProjectLocation(projectLibraryId, projectLocation);
+  }, [memory.location, projectLibraryId, projectLocation, projectsKnown]);
+  useEffect(() => {
+    if (!ready || !projectLibraryId) return;
     const controller = new AbortController();
     const version = projectReadVersion.current;
     const live = () => !controller.signal.aborted && version === projectReadVersion.current;
@@ -714,7 +764,7 @@ function App() {
       if (live()) setProjectDirectory({ projects, series });
     }).catch(error => { if (live()) setDirectoryError(error.message || "项目目录读取失败"); });
     return () => controller.abort();
-  }, [ready, projectRevision]);
+  }, [ready, projectLibraryId, projectRevision]);
   useEffect(() => {
     let live = true; setProjectMembers([]);
     if (ready && activeProject) api<typeof projectMembers>(`/projects/${activeProject}/members`).then(rows => { if (live) setProjectMembers(rows); }).catch(e => { if (live) fail(e); });
@@ -732,17 +782,25 @@ function App() {
     }
     return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
   }
+  function activateProject(id: string) {
+    if (id === activeProject) return;
+    pendingProjectVisit.current = id;
+    if (!id) setProjectLocation(previous => ({ ...previous, projectId: "" }));
+    setChecked(new Set());
+    setMediaPreview(null);
+    if (view === "projectUsage") pauseAudition();
+    setActiveProject(id);
+  }
   function selectKnownProject(id: string) {
     if ((id && !projects.some(project => project.id === id)) || !projectChangeAllowed(id)) return false;
     cancelCodexNavigation();
-    if (id !== activeProject && view === "projectUsage") pauseAudition();
-    setActiveProject(id);
+    activateProject(id);
     return true;
   }
   function projectsChanged(id?: string) {
     if (id && id !== activeProject && projectChangeAllowed(id)) {
       cancelCodexNavigation();
-      setActiveProject(id);
+      activateProject(id);
     }
     refreshProjects();
   }
@@ -1231,12 +1289,19 @@ function App() {
   }
   useEffect(() => {
     let current=true;setSessionError('');
-    api<{ token: string; trashAvailable: boolean; folderPickerAvailable?: boolean }>("/session")
+    api<LocalSession>("/session")
       .then((s) => {
         if(!current)return;
         token = s.token;
         setTrashAvailable(s.trashAvailable);
         setFolderPickerAvailable(s.folderPickerAvailable !== false);
+        if (projectLibrary.current !== s.instanceId) {
+          const location = readMemory().location ? readProjectLocation(s.instanceId) : emptyProjectLocation;
+          projectLibrary.current = s.instanceId;
+          setProjectLocation(location);
+          setActiveProject(location.projectId);
+          setProjectLibraryId(s.instanceId);
+        }
         setReady(true);
       })
       .catch(e=>{if(current)setSessionError(e instanceof Error?e.message:'素材库连接未能建立');});
@@ -1420,6 +1485,9 @@ function App() {
     setExpandedNavGroups({ ...groupDefaults }); setNavCollapsed(false); setLayoutPreferences({}); setLayout(defaultLayout(view));
     setSearchMode('all'); setNameOnly(false); setAdvancedFilters(false); setVolume(.7);
     setSort('revealCount'); setSeriesMode(true); setPageSize(60); setCompactActions(true); setDetailsHidden(false); setDetailsWidth(340);
+    pendingProjectVisit.current = "";
+    clearProjectLocations();
+    setProjectLocation(emptyProjectLocation);
     // 剧本正文宽度（ProjectScript）：清掉记忆，并通知已打开的剧本页回到「适中」（剧本组件可能尚未挂载）。
     removeStored('shiguang.scriptWidth.v1'); window.dispatchEvent(new Event('shiguang-browser-preferences-reset'));
     setNotice('导航与浏览偏好已恢复默认，模板、项目和素材数据保留');
@@ -1871,10 +1939,17 @@ function App() {
           </div>
           <BackgroundReadStatus/>
           <div className="topbar-actions">
-          {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy||projectUsageBusy} label="当前项目" onChange={selectKnownProject}/></div>}
+          {["projectAssets", "storyboard", "promptTemplates"].includes(view) ?
+            <div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/> :
+            <div className="topbar-project-slot">
+              <ProjectPathBar projects={projectDirectory?.projects ?? projects} series={projectDirectory?.series ?? []}
+                value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
+                disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
+                onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
+            </div>}
           <CodexTaskEntry controller={codexTasks}/>
           <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
-            if(projectId){if(storyboardDirty&&activeProject!==projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
+            if(projectId){if(!projectChangeAllowed(projectId))return;activateProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
             else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
           }}/>
           <div className="file-check-entry">
@@ -1903,10 +1978,10 @@ function App() {
           </div>
         </header>
         {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
-        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={setActiveProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(storyboardDirty&&activeProject!==target.projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
-        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
-        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
-        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
+        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={activateProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!projectChangeAllowed(target.projectId))return;activateProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
+        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={activateProject} onStoryboard={()=>navigate("storyboard")}/>
+        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span><button onClick={refreshProjects}>重试项目目录</button></div>}
           {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}

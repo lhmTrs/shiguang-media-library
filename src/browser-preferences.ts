@@ -9,6 +9,37 @@ export const memoryKey = 'shiguang.browserMemory.v1';
 export type BrowserMemory = { location: boolean; navigation: boolean; display: boolean };
 export const memoryDefaults: BrowserMemory = { location: true, navigation: true, display: true };
 
+export type ProjectLocation = { projectId: string; recent: string[]; lastInContainer: Record<string, string> };
+export const emptyProjectLocation: ProjectLocation = { projectId: '', recent: [], lastInContainer: {} };
+export const recentProjectLimit = 10;
+const projectLocationPrefix = 'shiguang.projectLocation.v1:';
+const legacyProjectKey = 'shiguang.activeProject';
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+export function readProjectLocation(libraryId: string): ProjectLocation {
+  const saved = readStored<Record<string, unknown> | null>(projectLocationPrefix + libraryId, null, isRecord);
+  if (!saved) return { ...emptyProjectLocation, projectId: readTextPreference(legacyProjectKey) ?? '' };
+  const recent = Array.isArray(saved.recent)
+    ? [...new Set(saved.recent.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, recentProjectLimit)
+    : [];
+  const lastInContainer = isRecord(saved.lastInContainer)
+    ? Object.fromEntries(Object.entries(saved.lastInContainer).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+    : {};
+  return { projectId: typeof saved.projectId === 'string' ? saved.projectId : '', recent, lastInContainer };
+}
+
+export function saveProjectLocation(libraryId: string, location: ProjectLocation) {
+  saveStored(projectLocationPrefix + libraryId, location);
+  removeStored(legacyProjectKey);
+}
+
+export function clearProjectLocations() {
+  try {
+    const keys = Object.keys(localStorage).filter(key => key.startsWith(projectLocationPrefix));
+    removeStored(legacyProjectKey, ...keys);
+  } catch {}
+}
+
 export function readStored<T>(key: string, fallback: T, validate: (value: unknown) => value is T): T {
   try { const value: unknown = JSON.parse(localStorage.getItem(key) || 'null'); return validate(value) ? value : fallback; } catch { return fallback; }
 }
