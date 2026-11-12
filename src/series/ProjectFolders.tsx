@@ -190,6 +190,13 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const deleteSeries = (n: SeriesNode) => { if (window.confirm(`删除剧“${n.series.name}”？只有没有任何集时才能删除。`)) void run(async () => { await api.deleteSeries(n.series); if (pending?.series.id === n.series.id) setPending(null); setLoc({ level: 'root' }); seriesChanged(); }); };
   const deleteSeason = (s: Season) => { if (window.confirm(`删除「${seasonName(s)}」？只有空季才能删除。`)) void run(async () => { await api.deleteSeason(s); seriesChanged(); }); };
   const undo = (id: string) => void run(async () => { await api.undoMove(id); setToast({ text: '已撤销这次移动' }); refresh(); });
+  /** 菜单按实际大小放：放不下就往上挪，再不够就贴着窗口边、在菜单里滚动（max-height 由样式限制）。 */
+  const placeMenu = (el: HTMLDivElement | null) => {
+    if (!el || !menu) return;
+    const margin = 8, w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = Math.max(margin, Math.min(menu.x, window.innerWidth - w - margin)) + 'px';
+    el.style.top = Math.max(margin, Math.min(menu.y, window.innerHeight - h - margin)) + 'px';
+  };
   const openMenu = (e: MouseEvent, m: MenuBody) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, ...m }); };
 
   // —— 卡片（R1/R2/R4：矮卡片，状态各用一种手段） ——
@@ -262,7 +269,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
       </div></header>
     {loc.level !== 'root' && crumbs}
     <div className="pf-body">{body}</div>
-    {menu && <div className="pf-menu" role="menu" aria-label="操作" style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 260) }} onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') setMenu(null); }}>
+    {menu && <div className="pf-menu" role="menu" aria-label="操作" ref={placeMenu} style={{ left: menu.x, top: menu.y }} onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') setMenu(null); }}>
       {menu.kind === 'new' && <>
         <button role="menuitem" onClick={() => { setMenu(null); setDialog({ type: 'project', project: null }); }}><Plus size={14}/> 新建项目</button>
         <button role="menuitem" onClick={() => { setMenu(null); setDialog({ type: 'xml' }); }}><FileUp size={14}/> 从达芬奇 XML 新建</button>
