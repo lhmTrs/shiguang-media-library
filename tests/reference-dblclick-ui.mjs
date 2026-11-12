@@ -88,6 +88,32 @@ try {
     await settingsOpen().click(); await expect(settingsOpen()).toHaveCount(0);
   });
 
+  await check('卡片：双击人物、场景卡片放大默认图；右键「放大查看」同样放大；没有默认图时这一项停用', async () => {
+    for (const [tab, name] of [['人物', '阿青'], ['场景', '海边']]) {
+      await work().getByRole('tab', { name: new RegExp('^' + tab) }).click(); await expect(wrap(name)).toBeVisible();
+      await wrap(name).locator('.ca-card').dblclick(); await expect(viewer()).toBeVisible(); await expect(viewer()).toContainText(name + '.png');
+      await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
+      await wrap(name).click({ button: 'right' }); await page.getByRole('menu', { name: name + '的操作' }).getByRole('menuitem', { name: '放大查看' }).click();
+      await expect(viewer()).toBeVisible(); await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
+    }
+    await api('/project-assets/assets', { project_id: (await page.getByLabel('资产所属项目').inputValue()), kind: 'character', name: '无图人物' });
+    await work().getByRole('tab', { name: /^人物/ }).click(); await work().getByRole('button', { name: '更多资产操作' }).click(); await work().getByRole('menuitem', { name: '刷新列表' }).click();
+    await wrap('无图人物').click({ button: 'right' }); await expect(page.getByRole('menu', { name: '无图人物的操作' }).getByRole('menuitem', { name: '放大查看' })).toBeDisabled();
+    await page.keyboard.press('Escape');
+  });
+
+  await check('不闪：再点已经打开的人物不重新读取；换人物时不出现整页的「正在读取」条，按钮不变灰', async () => {
+    await page.evaluate(() => { window.__flash = 0; new MutationObserver(() => { if (document.querySelector('.ca-v2 > .ca-progress') || document.querySelector('fieldset.ca-interaction:disabled')) window.__flash++; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
+    let reads = 0; const count = r => { if (r.method() === 'GET' && /\/api\/project-assets\/assets\/[^/?]+$/.test(new URL(r.url()).pathname)) reads++; }; page.on('request', count);
+    await wrap('阿青').locator('.ca-card').click(); await expect(work().locator('.ca-name-input')).toHaveValue('阿青');
+    const after = reads; await wrap('阿青').locator('.ca-card').click(); await wrap('阿青').locator('.ca-card').click(); await page.waitForTimeout(400);
+    assert.equal(reads, after, 'clicking the open character does not reload');
+    await wrap('无图人物').locator('.ca-card').click(); await expect(work().locator('.ca-name-input')).toHaveValue('无图人物');
+    await wrap('阿青').locator('.ca-card').click(); await expect(work().locator('.ca-name-input')).toHaveValue('阿青');
+    assert.equal(await page.evaluate(() => window.__flash), 0, 'no page-wide busy bar or disabled fieldset while opening details');
+    page.off('request', count);
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {

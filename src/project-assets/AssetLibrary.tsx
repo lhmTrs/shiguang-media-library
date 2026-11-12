@@ -355,7 +355,19 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       .then(all => { if (live) { setScriptNames(all.flat()); setScriptNamesRead({ project: scope, status: 'ok' }); } }).catch(() => { if (live) { setScriptNames([]); setScriptNamesRead({ project: scope, status: 'error' }); } });
     return () => { live = false; };
   }, [active, scriptView, scope, publicScope]);
-  async function openAsset(id: string, asked = false) { if (busy || !asked && !canLeave()) return; const ticket = ++selectionGeneration.current, project = scope; await run('正在读取资料…', async () => { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }); }
+  // Opening a detail is a quiet read: no page-wide busy bar (it pushed the page down and greyed every button, so each
+  // click flashed). Only the detail panel is held while it loads; a short note appears if it takes longer than 300 ms.
+  const [detailLoading, setDetailLoading] = useState(false), [detailSlow, setDetailSlow] = useState(false);
+  useEffect(() => { if (!detailLoading) { setDetailSlow(false); return; } const t = window.setTimeout(() => setDetailSlow(true), 300); return () => clearTimeout(t); }, [detailLoading]);
+  async function openAsset(id: string, asked = false) {
+    if (busy || !asked && !canLeave()) return;
+    const ticket = ++selectionGeneration.current, project = scope; setDetailLoading(true); setError('');
+    try { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }
+    catch (e: any) { if (ticket === selectionGeneration.current) setError(e.message || '读取资料失败'); }
+    finally { if (ticket === selectionGeneration.current) setDetailLoading(false); }
+  }
+  /** Clicking the character whose detail is already open does nothing (no reload, no flash). */
+  const alreadyOpen = (id: string) => draft?.id === id && !detailLoading;
   function dropDetail() { selectionGeneration.current++; setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
@@ -504,7 +516,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   function pickCard(e: React.MouseEvent, a: Asset) {
     const mod = e.metaKey || e.ctrlKey && !isMac;
-    if (!mod && !e.shiftKey) { if (busy || !canLeave()) return; setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id, true); return; }
+    if (!mod && !e.shiftKey) { if (!pickedAssets.length && alreadyOpen(a.id)) { lastPick.current.assets = a.id; return; } if (busy || !canLeave()) return; setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id, true); return; }
     e.preventDefault();
     if (!pickableAsset(a)) { setNotice('「' + a.name + '」还没有默认图，不能选'); return; }
     const now = pickedNow();
@@ -867,7 +879,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
       <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => void openCrop(a, quick!)}><Maximize2 size={14}/>调整头像…</button>
       <hr/>
-      <button role="menuitem" onClick={() => { setQuick(null); void openAsset(a.id); }}>打开详情</button>
+      <button role="menuitem" disabled={!cover} onClick={() => { setQuick(null); setImageViewer({ src: bindingSrc(cover!), name: cover!.last_known_name || a.name }); }}><ZoomIn size={14}/>放大查看</button>
+      <button role="menuitem" onClick={() => { setQuick(null); if (!alreadyOpen(a.id)) void openAsset(a.id); }}>打开详情</button>
     </div>;
     if (quick!.mode === 'pick') return <div ref={ref} className="ca-quick ca-quick-panel" role="dialog" aria-label={'换' + a.name + '的默认图'} style={style}>
       <header><strong>换「{a.name}」的默认图</strong><small>点一张就换，马上生效</small></header>
@@ -935,7 +948,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
             {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
-              onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
+              onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else if (!alreadyOpen(a.id)) void openAsset(a.id); }} onDoubleClick={e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; const c = coverOf(a); if (c) setImageViewer({ src: bindingSrc(c), name: c.last_known_name || a.name }); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
@@ -960,7 +973,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           <ul>{pickedAssets.map(id => rows.find(r => r.id === id)).filter((r): r is Asset => !!r).map(r => <li key={r.id}><Avatar a={r}/><span>{r.name}</span></li>)}</ul>
           <p className="ca-muted">多选时这里只列出已选的{labels[kind]}。单击某一张卡片，回到只选它并显示详情。</p>
         </aside>}
-        {draft && <aside className="ca-detail" aria-label={labels[draft.kind] + '详情'}>
+        {draft && <aside className={'ca-detail' + (detailLoading ? ' is-loading' : '')} aria-label={labels[draft.kind] + '详情'} aria-busy={detailLoading || undefined}>
+          {detailSlow && <div className="ca-detail-loading" role="status">正在读取资料…</div>}
           <div className="ca-detail-head">
             <Avatar a={draft}/>
             <div className="ca-detail-title">
