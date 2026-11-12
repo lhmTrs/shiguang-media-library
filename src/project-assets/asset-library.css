@@ -463,6 +463,10 @@
 .ca-script-body{flex:1;min-height:0}
 .ca-script-body textarea{flex:1;min-height:320px!important;resize:none!important;font-size:14px;line-height:1.9!important}
 .ca-script-editor>small{color:var(--muted);font-size:11px;text-align:right}
+.ca-v2 .ca-project-script.is-mid>header,.ca-v2 .ca-project-script.is-mid>.ca-script-cols{width:100%;max-width:1400px;margin-left:auto;margin-right:auto;box-sizing:border-box}
+.ca-v2 .ca-project-script.is-mid>.ca-alert{max-width:1400px;margin:10px auto}
+.ca-v2 .ca-project-script.is-full .ca-script-editor{max-width:none}
+.ca-script-outline,.ca-script-mentions{align-self:start;max-height:100%}
 .ca-script-view{display:inline-flex;gap:2px;padding:3px;border-radius:8px;background:var(--soft)}
 .ca-workspace .ca-script-view button{border:0;background:transparent;padding:4px 12px;border-radius:6px;font-size:12px;color:var(--muted)}
 .ca-workspace .ca-script-view button[aria-pressed=true]{background:var(--c-fff);color:var(--green);font-weight:600;box-shadow:0 1px 3px color-mix(in srgb,var(--c-24292c) 14%,transparent)}

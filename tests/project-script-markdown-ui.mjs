@@ -118,6 +118,24 @@ try {
     await expect.poll(() => inReader(second)).toBe(true); assert.equal(await inReader(reader().getByText('第二场正文开头。')), true);
   });
 
+  await check('宽屏：默认「适中」三栏收拢居中、正文不超过 860；切「铺满」后变宽并记住；大纲和右栏高度跟内容走；没有资产时右栏只写一行', async () => {
+    await page.setViewportSize({ width: 1920, height: 1000 }); await open();
+    const cols = script().locator('.ca-script-cols'), width = name => script().getByRole('group', { name: '正文宽度' }).getByRole('button', { name });
+    await expect(width('适中')).toHaveAttribute('aria-pressed', 'true');
+    const box = async () => { const c = await cols.boundingBox(), host = await script().boundingBox(), r = await reader().boundingBox(); return { w: c.width, left: c.x - host.x, right: host.x + host.width - c.x - c.width, reader: r.width }; };
+    let b = await box(); assert.ok(b.w <= 1401, 'group at most 1400 wide: ' + b.w); assert.ok(Math.abs(b.left - b.right) < 4, 'centered'); assert.ok(b.reader <= 861, 'text at most 860: ' + b.reader);
+    const nav = await script().getByRole('navigation', { name: '场次大纲' }).boundingBox(), readerBox = await reader().boundingBox(); assert.ok(nav.height < readerBox.height, 'outline only as tall as its content');
+    const mentions = script().getByRole('complementary', { name: '剧本中出现的资产' }); await expect(mentions).toContainText('本项目还没有人物、场景、道具'); await expect(mentions.locator('h4')).toHaveCount(0);
+    if (process.env.SCRIPT_MD_SHOTS) await page.screenshot({ path: path.join(process.env.SCRIPT_MD_SHOTS, 'script-wide-mid.png') });
+    await width('铺满').click(); await expect(width('铺满')).toHaveAttribute('aria-pressed', 'true');
+    b = await box(); assert.ok(b.w > 1500, 'full spreads out: ' + b.w); assert.ok(b.reader > 1100, 'text widens: ' + b.reader);
+    if (process.env.SCRIPT_MD_SHOTS) await page.screenshot({ path: path.join(process.env.SCRIPT_MD_SHOTS, 'script-wide-full.png') });
+    await open(); await expect(width('铺满')).toHaveAttribute('aria-pressed', 'true'); // remembered on this computer
+    await viewBtn('编辑').click(); assert.ok((await body().boundingBox()).width > 1100, 'edit mode uses the same width');
+    await width('适中').click(); assert.ok((await body().boundingBox()).width <= 861);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误'); assert.deepEqual(external, [], '不应请求外部地址');
   passed = true;
 } finally {
