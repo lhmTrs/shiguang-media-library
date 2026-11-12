@@ -32,6 +32,7 @@ import {
   X,
   Download,
   FilePenLine,
+  Layers,
   FolderInput,
   Trash2,
   Tag,
@@ -89,7 +90,11 @@ import { QuickTagDialog } from "./QuickTagDialog";
 import { MissingCleanupDialog, type CleanupResult } from "./MissingCleanupDialog";
 import { readMergePairs } from "./AssetMergeDialog";
 import { OfflineRepairDialog } from "./OfflineRepairDialog";
-import { ProjectManager, ProjectHistory, type Project } from "./ProjectManager";
+import { ProjectHistory } from "./ProjectManager";
+import { AgentShare } from "./AgentShare";
+import { ProjectUsage } from "./ProjectUsage";
+import { ProjectFolders, type FolderPage } from "./series/ProjectFolders";
+import type { GroupedProject, Series } from "./series/model";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
 import { FolderBrowser } from "./FolderBrowser";
@@ -114,7 +119,7 @@ import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, 
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
-  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
+  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
 
@@ -623,6 +628,8 @@ function App() {
   const [projectAssetFocus,setProjectAssetFocus]=useState({id:"",request:0});
   const [generationFocus,setGenerationFocus]=useState<GenerationFocus|null>(null);
   const [projectVideoBusy,setProjectVideoBusy]=useState(false);
+  const [projectUsageBusy, setProjectUsageBusy] = useState(false);
+  useEffect(() => { if (view !== "projectUsage") setProjectUsageBusy(false); }, [view]);
   const [storyboardShotFocus,setStoryboardShotFocus]=useState<ShotFocus|null>(null),[storyboardDirty,setStoryboardDirty]=useState(false);
   const [projectAssetSelectorHost, setProjectAssetSelectorHost] = useState<HTMLElement | null>(null);
   useEffect(()=>{const host=projectAssetSelectorHost;if(!host)return;const cancel=()=>cancelCodexNavigation();host.addEventListener('change',cancel,true);return()=>host.removeEventListener('change',cancel,true);},[projectAssetSelectorHost,cancelCodexNavigation]);
@@ -676,7 +683,10 @@ function App() {
   useEffect(() => { try { if (memory.navigation) localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed, memory.navigation]);
   useEffect(() => { try { localStorage.setItem("shiguang.hiddenNav", JSON.stringify(hiddenNav)); } catch {} }, [hiddenNav]);
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
-  const [projects, setProjects] = useState<Project[]>([]), [projectRevision, setProjectRevision] = useState(0);
+  const [projects, setProjects] = useState<GroupedProject[]>([]), [projectRevision, setProjectRevision] = useState(0);
+  const [projectDirectory, setProjectDirectory] = useState<{ projects: GroupedProject[]; series: Series[] } | null>(null);
+  const [directoryError, setDirectoryError] = useState("");
+  const projectReadVersion = useRef(0);
   const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
   useFeedbackToast(projectsError, {source: '素材管理'});
   const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
@@ -686,17 +696,62 @@ function App() {
   useEffect(() => { try { localStorage.setItem("shiguang.activeProject", activeProject); } catch {} }, [activeProject]);
   useEffect(() => {
     if (!ready) return;
-    let live = true;
+    const controller = new AbortController();
+    const version = projectReadVersion.current;
+    const live = () => !controller.signal.aborted && version === projectReadVersion.current;
     setProjectsError('');
-    api<Project[]>("/projects").then(rows => { if (live) { setProjects(rows); setProjectsKnown(true); setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || ""); } }).catch(e => { if (live) setProjectsError(e.message||'项目列表读取失败'); });
-    return () => { live = false; };
+    setDirectoryError('');
+    const options = { signal: controller.signal };
+    const projectRead = api<GroupedProject[]>("/projects", undefined, undefined, options);
+    const directoryRead = api<Series[]>("/project-series", undefined, undefined, options);
+    void projectRead.then(rows => {
+      if (!live()) return;
+      setProjects(rows);
+      setProjectsKnown(true);
+      setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || "");
+    }).catch(error => { if (live()) setProjectsError(error.message || "项目列表读取失败"); });
+    void Promise.all([projectRead, directoryRead]).then(([projects, series]) => {
+      if (live()) setProjectDirectory({ projects, series });
+    }).catch(error => { if (live()) setDirectoryError(error.message || "项目目录读取失败"); });
+    return () => controller.abort();
   }, [ready, projectRevision]);
   useEffect(() => {
     let live = true; setProjectMembers([]);
     if (ready && activeProject) api<typeof projectMembers>(`/projects/${activeProject}/members`).then(rows => { if (live) setProjectMembers(rows); }).catch(e => { if (live) fail(e); });
     return () => { live = false; };
   }, [ready, activeProject, projectRevision]);
-  function projectsChanged(id?: string) { if (id !== undefined) setActiveProject(id); setProjectRevision(n => n + 1); }
+  function refreshProjects() {
+    projectReadVersion.current++;
+    setProjectRevision(n => n + 1);
+  }
+  function projectChangeAllowed(id: string) {
+    if (id === activeProject) return true;
+    if (busy || projectVideoBusy || projectUsageBusy) {
+      setNotice("请等待当前项目的操作完成，再切换项目");
+      return false;
+    }
+    return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
+  }
+  function selectKnownProject(id: string) {
+    if ((id && !projects.some(project => project.id === id)) || !projectChangeAllowed(id)) return false;
+    cancelCodexNavigation();
+    if (id !== activeProject && view === "projectUsage") pauseAudition();
+    setActiveProject(id);
+    return true;
+  }
+  function projectsChanged(id?: string) {
+    if (id && id !== activeProject && projectChangeAllowed(id)) {
+      cancelCodexNavigation();
+      setActiveProject(id);
+    }
+    refreshProjects();
+  }
+  function openProjectPage(page: FolderPage, projectId: string) {
+    if (!projectId || !selectKnownProject(projectId)) return;
+    const routes = { usage: "projectUsage", assets: "projectAssets", videos: "projectVideos", storyboard: "storyboard" };
+    if (page === "assets") setProjectAssetFocus(previous => ({ id: projectId, request: previous.request + 1 }));
+    navigate(routes[page]);
+  }
   async function addToProject(ids: string[]) {
     if (!activeProject) { navigate("projects"); setNotice("请先选择或新建一个项目"); return; }
     const result = await api<{ added: number; alreadyAdded: number }>(`/projects/${activeProject}/items`, { ids });
@@ -1030,7 +1085,7 @@ function App() {
   const facetQuery = assetParams(1).toString();
   useEffect(() => {
     let live = true;
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
     const timer = setTimeout(() => {
       void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
         if (live) setFilterTags(result.items);
@@ -1063,7 +1118,7 @@ function App() {
    */
   async function refresh(opts: { silent?: boolean; stats?: boolean } = {}) {
     if(opts.stats!==false)void globalStats.refresh();
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
     if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
     browseRead.current?.abort();
     const controller = new AbortController(); browseRead.current = controller;
@@ -1337,7 +1392,7 @@ function App() {
       setCaptureUnknown(saved?.captureUnknown || false);
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(v)) pauseAudition();
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
     viewRef.current = v;
     setView(v);
     setRootMenuOpen(false);
@@ -1431,7 +1486,7 @@ function App() {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > length + 0.01 || end - start < 0.05) return;
     setInPoint(start); setOutPoint(Math.min(length, end));
   }
-  const libraryView = !["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
+  const libraryView = !["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
   const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
@@ -1610,8 +1665,9 @@ function App() {
         });
       });
   }
+  const currentProject = projects.find(project => project.id === activeProject);
   const title =
-    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
@@ -1641,6 +1697,7 @@ function App() {
     ["sfx", "音效", AudioLines],
     ["music", "音乐", Music2],
     ["projects", "项目", FolderKanban],
+    ["projectUsage", "素材使用", Layers],
     ["projectAssets", "项目资产", Users],
     ["projectVideos", "生成视频", Film],
     ["storyboard", "分镜设计", Clapperboard],
@@ -1744,7 +1801,7 @@ function App() {
                   className={view === value ? "nav-item selected" : "nav-item"} onClick={() => navigate(value)}>
                   <Icon size={19} aria-hidden="true"/>
                   <span>{itemLabel}</span>
-                  {!["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
+                  {!["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
                 </button>)}
               </div>
             </section>;
@@ -1809,12 +1866,12 @@ function App() {
             onClick={() => setMobileNav(!mobileNav)}
           />
           <div className="breadcrumb">
-            {["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
+            {["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
           </div>
           <BackgroundReadStatus/>
           <div className="topbar-actions">
-          {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy} label="当前项目" onChange={id=>{cancelCodexNavigation();setActiveProject(id);}}/></div>}
+          {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy||projectUsageBusy} label="当前项目" onChange={selectKnownProject}/></div>}
           <CodexTaskEntry controller={codexTasks}/>
           <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
             if(projectId){if(storyboardDirty&&activeProject!==projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
@@ -1845,12 +1902,31 @@ function App() {
           <AccountEntry auth={cloudAuth} onLogin={openLogin} onWorkspace={openWorkspace} onNotice={setNotice} />
           </div>
         </header>
-        {projectsError&&["projects","storyboard","promptTemplates"].includes(view)&&<div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={()=>setProjectRevision(n=>n+1)}>重试项目列表</button></div>}
+        {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
         <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={setActiveProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(storyboardDirty&&activeProject!==target.projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
         <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
-        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" && !projectsKnown ? <div className="empty" role="status">{projectsError?"项目列表未能读取，请重试":"正在读取项目…"}</div> : view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
+        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
+          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span><button onClick={refreshProjects}>重试项目目录</button></div>}
+          {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
+            seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
+            request={api} changed={projectsChanged} openPage={openProjectPage}/> :
+            !directoryError && <div className="empty" role="status">正在读取项目目录…</div>}
+        </> : view === "projectUsage" ? <div className="project-manager">
+          <header className="project-heading"><h1>素材使用</h1></header>
+          <section className="project-content" aria-label="项目素材篮">
+            {currentProject ? <ProjectUsage key={currentProject.id} project={currentProject} request={api}
+              revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id}
+              isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}
+              onBusyChange={setProjectUsageBusy}
+              headerActions={<AgentShare projectId={currentProject.id} projectName={currentProject.name} disabled={projectUsageBusy}/>}/> :
+              projectsKnown ? <div className="project-items-empty project-unselected">
+                <FolderKanban size={32} strokeWidth={1.5}/><h2>选择一个项目</h2>
+                <button className="plain" onClick={() => navigate("projects")}>去项目页选择</button>
+              </div> : !projectsError && <div className="empty" role="status">正在读取项目…</div>}
+          </section>
+        </div> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}
