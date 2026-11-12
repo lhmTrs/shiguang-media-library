@@ -216,7 +216,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     tileTimer.current = window.setTimeout(() => { tileTimer.current = undefined; setImageId(id); }, TILE_OPEN_DELAY);
   };
   useEffect(() => cancelTileOpen, []);
-  useEffect(cancelTileOpen, [draft?.id, lookId, active]);
+  useEffect(cancelTileOpen, [draft?.id, lookId, active, scriptView]);
+  // The script view covers the gallery: no image settings stay open (or reopen) across it.
+  useEffect(() => { if (scriptView) setImageId(null); }, [scriptView]);
   const revealingRef=useRef(new Set<string>()),[revealing,setRevealing]=useState<string[]>([]);
   async function revealImage(b:Binding){
     if(revealingRef.current.has(b.id))return;
@@ -1047,7 +1049,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     </div>}
     {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; if (undoBlocked(u.id)) { setError('这个' + labels[draftRef.current!.kind] + '有未保存的修改，请先保存或放弃修改，再撤销'); return; } setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
     {active && !scriptView && imageViewer && <ReferenceImageViewer src={imageViewer.src} name={imageViewer.name} onClose={() => setImageViewer(null)}/>}
-    {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
+    {draft && dialogImage && !imageViewer && !scriptView && active && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
         <div className="ca-image-dialog-visual">
           {dialogHealth && dialogHealth.state !== 'available' ? <span className="ca-tile-state">{dialogHealth.label}</span> : cropOpen ? <CropBox src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'} crop={dialogImage.crop} aspect={cropAspect} disabled={imageLocked(dialogImage)} onChange={(c: Crop) => dragDetail(dialogImage.id, () => c)}/> : <ReferencePreview src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'}/>}
