@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { TimelineImports } from "./timeline-imports.mjs";
 import { ProjectRenders } from "./project-renders.mjs";
 import { ensureCreativeProjects } from "./project-assets/schema.mjs";
+import { ProjectSeries } from "./project-series/store.mjs";
 
 export class Projects {
   constructor(lib) { this.lib = lib; }
@@ -15,6 +16,7 @@ export class Projects {
          "CREATE INDEX IF NOT EXISTS project_assets_asset ON project_assets(asset_id)"];
     for (const sql of definitions) this.lib.db.exec(sql);
     ensureCreativeProjects(this.lib);
+    this.lib.projectSeries = this.series = new ProjectSeries(this).init();
     this.imports = new TimelineImports(this).init();
     this.renders = new ProjectRenders(this).init();
     return this;
@@ -30,11 +32,15 @@ export class Projects {
     return p;
   }
   list() {
-    return this.lib.db.prepare(`SELECT p.*,COUNT(a.id) total,
+    return this.lib.db.prepare(`SELECT p.*,m.series_id,m.season_id,m.episode_no,m.revision membership_revision,COUNT(a.id) total,
       SUM(CASE WHEN a.status='candidate' THEN 1 ELSE 0 END) candidates,
       SUM(CASE WHEN a.status='used' THEN 1 ELSE 0 END) used
       FROM media_projects p LEFT JOIN project_assets a ON a.project_id=p.id
-      WHERE p.project_kind='normal' GROUP BY p.id ORDER BY p.updated_at DESC,p.id`).all().map(p => ({ ...p, candidates: Number(p.candidates), used: Number(p.used), total: Number(p.total) }));
+      LEFT JOIN project_series_members m ON m.id=p.id
+      WHERE p.project_kind='normal' GROUP BY p.id,m.series_id,m.season_id,m.episode_no,m.revision ORDER BY p.updated_at DESC,p.id`).all().map(p => ({
+      ...p, candidates: Number(p.candidates), used: Number(p.used), total: Number(p.total),
+      episode_no: p.episode_no === null ? null : Number(p.episode_no), membership_revision: Number(p.membership_revision ?? 0),
+    }));
   }
   save(id, input) {
     if(this.generationLocks&&id)return this.lib.db.transaction(()=>{this.lib.db.prepare("SELECT id FROM media_projects WHERE id=?"+(this.lib.db.kind==="mysql"?" FOR UPDATE":"")).get(id);this.generationLocks.assertWritable(id);return this.saveUnlocked(id,input);})();
@@ -56,8 +62,8 @@ export class Projects {
     return this.get(id);
   }
   remove(id) {
-    this.get(id);
-    this.lib.db.transaction(() => {
+    this.series.transaction(() => {
+      this.get(id);
       this.lib.db.prepare('SELECT id FROM media_projects WHERE id=?' + (this.lib.db.kind === 'mysql' ? ' FOR UPDATE' : '')).get(id);
       this.generationLocks?.assertWritable(id);
       const hasCreative = this.lib.db.kind === 'mysql'
@@ -76,8 +82,9 @@ export class Projects {
       const hasScript=this.lib.db.kind==='mysql'?this.lib.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_scripts'").get():this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_scripts'").get();
       this.lib.projectAttributes?.removeProject(id);
       if(hasScript)this.lib.db.prepare('DELETE FROM project_scripts WHERE id=?').run(id);
+      this.lib.db.prepare("DELETE FROM project_series_members WHERE id=?").run(id);
       this.lib.db.prepare("DELETE FROM media_projects WHERE id=?").run(id);
-    })();
+    });
     return { removed: true };
   }
   ids(value) {
