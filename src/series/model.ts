@@ -14,6 +14,11 @@ export type MoveConflict = { project_id: string; code: string; series_id?: strin
 export type MoveItem = { project_id: string; expected_revision: number; episode_no?: number };
 export type MoveTarget = { series_id: string | null; season_id: string | null };
 export type MoveReceipt = { request_id: string; changes: MoveChange[]; can_undo: boolean; undo_of?: string };
+/** 整理旧项目：一次请求、服务端一个事务（Codex 20261112-195208 合同）。 */
+export type OrganizeGroup = { group_id: string; target: MoveTarget | { new_series: { name: string; software?: string } }; items: { project_id: string; expected_revision: number; episode_no: number }[] };
+export type OrganizeRequest = { request_id: string; groups: OrganizeGroup[] };
+export type OrganizeReceipt = { request_id: string; created_series: { group_id: string; series: Series }[]; changes: (MoveChange & { group_id: string })[] };
+export type OrganizeConflict = { group_id: string; code: string; project_id?: string; series_id?: string; season_id?: string; episode_no?: number; conflicting_project_id?: string };
 
 /** 一个装集的容器：某一季，或剧根（season 为 null）。 */
 export type Container = { key: string; series: Series; season: Season | null; episodes: GroupedProject[] };
@@ -80,6 +85,7 @@ export function seriesApi(request: ProjectRequest) {
     reorderEpisode: (p: GroupedProject, direction: "previous" | "next", neighbor: GroupedProject) => request<MoveReceipt>(`/projects/${p.id}/series/reorder`, { direction, expected_revision: p.membership_revision ?? 0, expected_neighbor_id: neighbor.id, expected_neighbor_revision: neighbor.membership_revision ?? 0, request_id: newRequestId() }),
     reorderSeason: (season: Season, direction: "previous" | "next", neighbor: Season) => request<{ request_id: string; seasons: Season[] }>(`/project-series/${season.series_id}/seasons/${season.id}/reorder`, { direction, expected_revision: season.revision, expected_neighbor_id: neighbor.id, expected_neighbor_revision: neighbor.revision, request_id: newRequestId() }),
     requestStatus: (requestId: string) => request<{ found: boolean; result?: unknown }>(`/project-series/requests/${requestId}`),
+    organize: (body: OrganizeRequest) => request<OrganizeReceipt>("/project-series/organize", body),
   };
 }
 
@@ -95,6 +101,11 @@ export const seriesErrorText: Record<string, string> = {
   SEASON_NOT_EMPTY: "这一季还有集，不能删除",
   SERIES_REORDER_CHANGED: "相邻的集刚被改过，已刷新，请再试一次",
   SERIES_UNDO_CONFLICT: "这些集在移动后又被改过，不能整批撤销",
+  SERIES_NOT_FOUND: "目标剧已不存在",
+  SEASON_NOT_FOUND: "目标季已不存在",
+  PROJECT_NOT_FOUND: "项目已不存在",
+  STORYBOARD_GENERATION_LOCKED: "这一集正在生成分镜，暂时不能移动",
+  SERIES_REQUEST_CONFLICT: "请求编号已被另一份内容用过，请重新提交",
 };
 export const errorText = (e: unknown) => {
   const err = e as { code?: string; message?: string };

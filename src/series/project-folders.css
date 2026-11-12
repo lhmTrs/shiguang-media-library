@@ -64,3 +64,4 @@
 .pf-og tr[data-conflict] .pf-og-no input { border-color: #b4472f; }
 .pf-warn { display: block; font-size: 11px; color: #8a5a12; margin-top: 2px; }
 .pf-og-summary { margin-right: auto; font-size: 12px; color: var(--muted); }
+.pf-unknown { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; background: #fbf3e6; color: #6b4410; font-size: 12px; line-height: 1.7; }

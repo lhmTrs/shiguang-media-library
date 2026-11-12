@@ -1,4 +1,4 @@
-// 「整理旧项目」批量归组（SERIES-P1 原型 ④）：真实本地服务 + 合成项目；不接入真实素材库。
+// 「整理旧项目」批量归组（SERIES-P1 原型 ④）：一次 POST /project-series/organize，服务端一个事务；真实本地服务 + 合成项目；不接入真实素材库。
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,7 +10,7 @@ import { chromium, expect } from '@playwright/test';
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-organize-'));
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
-let logs = '', browser, page, cookie, token, passed = false, failSeriesPost = 0, seriesPosts = 0; const checks = [], errors = [];
+let logs = '', browser, page, cookie, token, passed = false, organizeMode = 'pass'; const checks = [], errors = [], organizeBodies = [];
 const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal'), CODEX_HOME: path.join(temp, 'no-codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
@@ -33,10 +33,11 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  await page.route(url => url.pathname === '/api/project-series', async route => {
-    if (route.request().method() !== 'POST') return route.fallback();
-    seriesPosts++;
-    if (failSeriesPost && seriesPosts === failSeriesPost) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '服务暂时不可用' }) });
+  // organizeMode：pass 照常；lost-after = 服务端已执行但回应丢失；lost-before = 请求没到服务端。
+  await page.route(url => url.pathname === '/api/project-series/organize', async route => {
+    organizeBodies.push(JSON.parse(route.request().postData() || '{}'));
+    if (organizeMode === 'lost-after') { organizeMode = 'pass'; await route.fetch(); return route.abort('connectionreset'); }
+    if (organizeMode === 'lost-before') { organizeMode = 'pass'; return route.abort('connectionreset'); }
     return route.fallback();
   });
   await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
@@ -60,28 +61,31 @@ try {
     await dlg().getByLabel('此恨的剧名').fill('玫瑰的婚姻'); await expect(submit()).toBeEnabled();
   });
 
-  await check('撞号时一个都不写：此恨剧里已有第 2 集 → 提示冲突，没有新建任何剧，项目仍未分组', async () => {
+  await check('撞号时一个都不写：此恨剧里已有第 2 集 → 服务端整批回退，没有新建任何剧，项目仍未分组', async () => {
     await submit().click();
-    await expect(dlg().getByRole('alert')).toContainText('有集号冲突，还没有写入任何内容'); await expect(dlg().getByText('第 2 集已被占用')).toBeVisible();
+    await expect(dlg().getByRole('alert')).toContainText('整批都没有写入'); await expect(dlg().getByText('第 2 集已被占用')).toBeVisible();
     assert.deepEqual(await seriesNames(), ['此恨']);
     assert.deepEqual(await ungroupedNames(), ['此恨2', '温情短剧', '玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3', '赤贫农夫养家计_1', '赤贫农夫养家计_54'].sort());
   });
 
-  await check('中途失败可接着来：第二个新剧建不成时，已完成的第一组保留并标「已建好」；重试只做剩下的，不会重复建剧', async () => {
-    await no('此恨2').fill('5'); failSeriesPost = seriesPosts + 2;
+  await check('第二组在服务端冲突时整批回退：打开整理后有人另建了「赤贫农夫养家计」→ 提交得到冲突，零新剧、零归属变化；改名后一次成功', async () => {
+    await no('此恨2').fill('5');
+    await api('/project-series', { name: '赤贫农夫养家计', software: 'jianying', request_id: rid() });
     await submit().click();
-    await expect(dlg().getByRole('alert')).toContainText('前 1 组已完成'); await expect(dlg().getByRole('alert')).toContainText('「赤贫农夫养家计」没有完成');
-    assert.deepEqual(await seriesNames(), ['此恨', '玫瑰的婚姻']);
-    await expect(dlg().locator('.pf-og').filter({ hasText: '玫瑰的婚姻' })).toContainText('已建好');
-    await expect(dlg()).toContainText('将新建 1 部剧，归组 3 个项目');
-    failSeriesPost = 0; await submit().click();
-    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 1 部剧、归组 3 个项目');
-    assert.deepEqual(await seriesNames(), ['此恨', '玫瑰的婚姻', '赤贫农夫养家计']);
+    await expect(dlg().getByRole('alert')).toContainText('整批都没有写入');
+    await expect(dlg().locator('.pf-og').filter({ hasText: '赤贫农夫养家计_54' })).toContainText('已有同名的剧');
+    assert.deepEqual(await seriesNames(), ['此恨', '赤贫农夫养家计']);
+    assert.deepEqual(await ungroupedNames(), ['此恨2', '温情短剧', '玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3', '赤贫农夫养家计_1', '赤贫农夫养家计_54'].sort());
+    const first = organizeBodies.at(-1).request_id;
+    await dlg().getByLabel('赤贫农夫养家计的剧名').fill('赤贫农夫养家计（重剪）'); await submit().click();
+    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 2 部剧、归组 6 个项目');
+    assert.notEqual(organizeBodies.at(-1).request_id, first, '改过内容后应换新的请求编号');
+    assert.deepEqual(await seriesNames(), ['此恨', '玫瑰的婚姻', '赤贫农夫养家计', '赤贫农夫养家计（重剪）']);
   });
 
   await check('归组结果：集号按确认的来、项目名一个都没改；根目录只剩温情短剧，再打开整理显示没有可归组的项目', async () => {
     const projects = await api('/projects'), series = await api('/project-series'), by = n => projects.find(p => p.name === n), sid = n => series.find(s => s.name === n).id;
-    assert.deepEqual([by('赤贫农夫养家计_1').episode_no, by('赤贫农夫养家计_54').episode_no], [1, 54]); assert.equal(by('赤贫农夫养家计_54').series_id, sid('赤贫农夫养家计'));
+    assert.deepEqual([by('赤贫农夫养家计_1').episode_no, by('赤贫农夫养家计_54').episode_no], [1, 54]); assert.equal(by('赤贫农夫养家计_54').series_id, sid('赤贫农夫养家计（重剪）'));
     assert.deepEqual(['玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3'].map(n => [by(n).series_id === sid('玫瑰的婚姻'), by(n).season_id, by(n).episode_no]), [[true, null, 1], [true, null, 2], [true, null, 3]]);
     assert.deepEqual([by('此恨2').series_id === sid('此恨'), by('此恨2').season_id, by('此恨2').episode_no], [true, null, 5]);
     assert.equal(series.find(s => s.name === '玫瑰的婚姻').software, 'resolve');
@@ -89,6 +93,30 @@ try {
     await expect(pf().getByRole('region', { name: '未分组的项目' }).getByRole('button', { name: /^温情短剧/ })).toBeVisible();
     await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg()).toContainText('没找到能归到同一部剧的项目');
     await dlg().getByRole('button', { name: '关闭', exact: true }).click(); await expect(dlg()).toHaveCount(0);
+  });
+
+  await check('回应丢失：服务端已归组但回应没回来 → 按原编号查到结果直接完成，不重复写入', async () => {
+    for (const name of ['番外篇_1', '番外篇_2']) await api('/projects', { name });
+    await page.reload(); await expect(pf()).toBeVisible();
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg().locator('.pf-og')).toHaveCount(1);
+    organizeMode = 'lost-after'; const before = organizeBodies.length; await submit().click();
+    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 1 部剧、归组 2 个项目');
+    assert.equal(organizeBodies.length, before + 1, '只发了一次归组请求');
+    assert.equal((await seriesNames()).filter(n => n === '番外篇').length, 1);
+  });
+
+  await check('请求没到服务端：核对得知没收到、什么都没写 → 弹窗锁定编辑，「用原请求重新提交」沿用原编号与内容，只写一次', async () => {
+    for (const name of ['花絮_1', '花絮_2']) await api('/projects', { name });
+    await page.reload(); await expect(pf()).toBeVisible();
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg().locator('.pf-og')).toHaveCount(1);
+    organizeMode = 'lost-before'; await submit().click();
+    await expect(dlg().getByRole('alert')).toContainText('服务端没有收到这次归组'); assert.ok(!(await seriesNames()).includes('花絮'));
+    await expect(dlg().getByLabel('花絮_1的集号')).toBeDisabled();
+    const original = organizeBodies.at(-1);
+    await dlg().getByRole('button', { name: '用原请求重新提交' }).click();
+    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 1 部剧、归组 2 个项目');
+    assert.deepEqual(organizeBodies.at(-1), original, '重发的编号和内容与原请求一致');
+    assert.equal((await seriesNames()).filter(n => n === '花絮').length, 1);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

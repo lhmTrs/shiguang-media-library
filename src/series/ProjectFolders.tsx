@@ -279,7 +279,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     {dialog?.type === 'moveTo' && <MoveToDialog tree={tree.series} busy={busy} close={() => setDialog(null)} pick={(target, name, container) => { const ids = dialog.ids; setDialog(null); startMove(target, name, container, ids); }}/>}
     {dialog?.type === 'episodeName' && <NameDialog expected={dialog.expected} busy={busy} close={() => setDialog(null)} save={name => createEpisode(dialog.node, dialog.container, name)}/>}
     {dialog?.type === 'project' && <ProjectEditor project={dialog.project} request={request} close={() => setDialog(null)} saved={id => { setDialog(null); refresh(id); }} importXml={dialog.project ? undefined : () => setDialog({ type: 'xml' })}/>}
-    {dialog?.type === 'organize' && <OrganizeDialog ungrouped={tree.ungrouped} series={series} api={api} close={() => setDialog(null)} changed={() => refresh()} done={summary => { setDialog(null); refresh(); setToast({ text: summary }); }}/>}
+    {dialog?.type === 'organize' && <OrganizeDialog ungrouped={tree.ungrouped} series={series} api={api} close={() => setDialog(null)} done={summary => { setDialog(null); refresh(); setToast({ text: summary }); }}/>}
     {dialog?.type === 'xml' && <TimelineImportDialog key="create-from-xml" request={request} close={() => setDialog(null)} changed={id => { setDialog(null); refresh(id); }}/>}
   </div>;
 }
