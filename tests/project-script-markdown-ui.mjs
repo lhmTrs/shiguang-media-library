@@ -97,6 +97,27 @@ try {
     const saved = await api('/project-assets/projects/' + project.id + '/script'); assert.ok(saved.content.endsWith('## 场四｜内景｜工棚｜夜'), 'stored as plain Markdown text');
   });
 
+  const saveAndRead = async text => {
+    if (await viewBtn('编辑').getAttribute('aria-pressed') !== 'true') await viewBtn('编辑').click();
+    await body().fill(text); await script().getByRole('button', { name: '保存剧本' }).click(); await expect(viewBtn('阅读')).toBeEnabled();
+    await open(); await expect(viewBtn('阅读')).toHaveAttribute('aria-pressed', 'true');
+  };
+  const inReader = loc => loc.evaluate(el => { const box = el.closest('.ca-script-reader').getBoundingClientRect(), r = el.getBoundingClientRect(); return r.top >= box.top - 1 && r.top < box.bottom; });
+
+  await check('FE1-R1 反例：只有「## 」或「## ###」的空标题行，保存并重新打开阅读不会卡住，下一行正文照常显示', async () => {
+    await saveAndRead('## \n## ###\n空标题后的正文。\n\n## 正常标题\n正常段落。');
+    await expect(reader()).toContainText('空标题后的正文。', { timeout: 5000 }); await expect(reader()).toContainText('## ###');
+    await expect(reader().getByRole('heading')).toHaveText(['正常标题']); await expect(outline()).toHaveText(['正常标题']);
+  });
+
+  await check('FE1-R2 反例：旧写法「1、第一场」「2、第二场」中间无空行，阅读状态点「2、第二场」后第二场原文进入阅读视口', async () => {
+    await saveAndRead(['1、第一场', ...Array.from({ length: 52 }, (_, i) => '第一场正文 ' + (i + 1)), '2、第二场', '第二场正文开头。'].join('\n'));
+    await expect(outline()).toHaveText(['1、第一场', '2、第二场']);
+    const second = reader().locator('p', { hasText: '2、第二场' }); assert.equal(await inReader(second), false, 'starts below the fold');
+    await outline().nth(1).click();
+    await expect.poll(() => inReader(second)).toBe(true); assert.equal(await inReader(reader().getByText('第二场正文开头。')), true);
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误'); assert.deepEqual(external, [], '不应请求外部地址');
   passed = true;
 } finally {

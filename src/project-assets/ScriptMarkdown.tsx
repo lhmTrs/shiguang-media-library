@@ -16,6 +16,10 @@ const quoteRe = /^\s{0,3}>\s?/;
 const bulletRe = /^\s{0,3}[-*+]\s+/;
 const orderedRe = /^\s{0,3}(\d{1,9})[.)]\s+/;
 const fenceRe = /^\s{0,3}```/;
+/** A heading needs text: a bare 「## 」 or 「## ###」 is ordinary text, so the parser always moves on. */
+const headingOf = (l: string) => { const h = l.match(headingRe); return h && h[2] ? { level: h[1].length, text: h[2] } : null; };
+/** Lines that start their own block (a paragraph stops before them). Legacy 「1、」「2．」 scene lines start a new paragraph so they get their own line position. */
+const startsBlock = (l: string) => fenceRe.test(l) || !!headingOf(l) || ruleRe.test(l) || quoteRe.test(l) || orderedRe.test(l) || bulletRe.test(l) || numberedRe.test(l);
 
 /** 场次大纲：「## 标题」和原来的「1. 场一」都算。 */
 export function scriptOutline(text: string): ScriptHeading[] {
@@ -23,8 +27,8 @@ export function scriptOutline(text: string): ScriptHeading[] {
   text.split('\n').forEach((l, i) => {
     if (fenceRe.test(l)) fenced = !fenced;
     else if (!fenced) {
-      const h = l.match(headingRe);
-      if (h && h[2]) out.push({ line: i, offset, text: h[2].trim() });
+      const h = headingOf(l);
+      if (h) out.push({ line: i, offset, text: h.text.trim() });
       else if (numberedRe.test(l)) out.push({ line: i, offset, text: l.trim() });
     }
     offset += l.length + 1;
@@ -63,8 +67,8 @@ export function parseScript(text: string): Block[] {
       while (i < lines.length && !fenceRe.test(lines[i])) body.push(lines[i++]);
       i++; blocks.push({ kind: 'code', line: start, lines: body }); continue;
     }
-    const h = l.match(headingRe);
-    if (h && h[2]) { blocks.push({ kind: 'heading', level: h[1].length, line: i, text: h[2] }); i++; continue; }
+    const h = headingOf(l);
+    if (h) { blocks.push({ kind: 'heading', level: h.level, line: i, text: h.text }); i++; continue; }
     if (ruleRe.test(l)) { blocks.push({ kind: 'rule', line: i }); i++; continue; }
     if (quoteRe.test(l)) {
       const start = i, body: string[] = [];
@@ -77,8 +81,9 @@ export function parseScript(text: string): Block[] {
       while (i < lines.length && re.test(lines[i])) { items.push({ line: i, text: lines[i].replace(re, '') }); i++; }
       blocks.push({ kind: 'list', ordered, start: ordered ? Number(l.match(orderedRe)![1]) : 1, line: start, items }); continue;
     }
-    const start = i, body: string[] = [];
-    while (i < lines.length && lines[i].trim() && !fenceRe.test(lines[i]) && !headingRe.test(lines[i]) && !ruleRe.test(lines[i]) && !quoteRe.test(lines[i]) && !orderedRe.test(lines[i]) && !bulletRe.test(lines[i])) body.push(lines[i++]);
+    // A paragraph always takes its first line (so every pass moves forward), then runs until a blank line or a new block.
+    const start = i, body: string[] = [lines[i++]];
+    while (i < lines.length && lines[i].trim() && !startsBlock(lines[i])) body.push(lines[i++]);
     blocks.push({ kind: 'para', line: start, lines: body });
   }
   return blocks;
