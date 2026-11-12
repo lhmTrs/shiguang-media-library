@@ -139,27 +139,61 @@ try {
     await dlg.getByLabel('对主角左端名称').fill('疏远'); await dlg.getByLabel('对主角右端名称').fill('亲密');
     await dlg.getByRole('button', { name: '保存配置' }).click();
     const review = dlg.getByRole('group', { name: '保存前确认' }); await expect(review).toContainText('「权势」→「权位」'); await expect(review).toContainText('「对主角」→「对主角」');
-    await expect(dlg.getByRole('button', { name: '确认并保存' })).toBeDisabled();
+    await expect(dlg.getByRole('button', { name: '下一步' })).toBeDisabled();
     await review.getByRole('radio', { name: /只改了文字/ }).first().check(); await review.getByRole('radio', { name: /含义变了/ }).nth(1).check();
-    await dlg.getByRole('button', { name: '确认并保存' }).click(); await expect(dlg).toHaveCount(0);
+    await dlg.getByRole('button', { name: '下一步' }).click();
+    const fin = dlg.getByRole('group', { name: '保存前确认' }); await expect(fin).toContainText('保存会删掉这些维度的分数'); await expect(fin).toContainText('「对主角」：1 个人物有分数'); await expect(fin).toContainText('保留分数：「权位」');
+    await dlg.getByRole('button', { name: '确认删除并保存' }).click(); await expect(dlg).toHaveCount(0);
     const put = sent.put.at(-1); assert.deepEqual(put.preserve_scored_axes, [D['权势']]); assert.equal(put.dimensions.find(d => d.name === '对主角').id, null); assert.match(put.removal_confirmation.token, /^[a-f0-9]{64}$/);
     const z = (await attrs(ids['赵乾'])).scores, c = await config(project.id);
     assert.equal(z[D['权势']].value, 95, 'text-only rename keeps the score'); assert.equal(z[D['对主角']], undefined, 'meaning change drops the old score');
     assert.ok(c.dimensions.some(d => d.name === '对主角' && d.id !== D['对主角'] && d.negative_label === '疏远'));
   });
 
-  await check('删除有分数的维度：先看影响再「确认并保存」；配置在别处被改时保留草稿，选「保留我的改动」后在新版本上再保存', async () => {
-    let dlg = await openConfig();
-    await dlg.getByRole('button', { name: '删除善恶' }).click(); await dlg.getByRole('button', { name: '保存配置' }).click();
-    await expect(dlg.getByRole('group', { name: '保存前确认' })).toContainText('「善恶」：2 个人物有分数');
-    await dlg.getByRole('button', { name: '确认并保存' }).click(); await expect(dlg).toHaveCount(0);
-    assert.match(sent.put.at(-1).removal_confirmation.token, /^[a-f0-9]{64}$/); assert.equal((await attrs(ids['张大山'])).scores[D['善恶']], undefined);
-    dlg = await openConfig(); await dlg.getByLabel('财力右端名称').fill('豪富');
-    const c = await config(project.id); await api('/project-assets/projects/' + project.id + '/attribute-config', { expected_revision: c.revision, dimensions: c.dimensions.map(d => d.name === '城府' ? { ...d, criterion: '别处补了判断标准' } : d) }, 'PUT');
+  await check('FE2-R2 反例：删除确认开着时别处给第三人补分 → 确认后后端拒绝（不删任何分），重新显示 3 人，再确认才删', async () => {
+    const dlg = await openConfig();
+    await dlg.getByRole('button', { name: '删除权位' }).click(); await dlg.getByRole('button', { name: '保存配置' }).click();
+    const fin = dlg.getByRole('group', { name: '保存前确认' }); await expect(fin).toContainText('「权位」：2 个人物有分数');
+    const rev = (await config(project.id)).revision;
+    await aiScore(project.id, [{ asset_id: ids['工头'], dimension_id: D['权势'], value: 33, reason: '别处补分' }]);
+    await dlg.getByRole('button', { name: '确认删除并保存' }).click();
+    await expect(dlg.getByRole('alert')).toContainText('删除影响刚变了'); await expect(fin).toContainText('「权位」：3 个人物有分数');
+    assert.equal((await config(project.id)).revision, rev, 'stale confirmation wrote nothing');
+    assert.equal((await attrs(ids['工头'])).scores[D['权势']].value, 33); assert.equal((await attrs(ids['赵乾'])).scores[D['权势']].value, 95);
+    await dlg.getByRole('button', { name: '确认删除并保存' }).click(); await expect(dlg).toHaveCount(0);
+    for (const n of ['工头', '赵乾', '张大山']) assert.equal((await attrs(ids[n])).scores[D['权势']], undefined, n + ' score removed after the new confirmation');
+  });
+
+  await check('FE2-R1 反例：配置在别处被改时按字段合并——别处的判断标准和新增维度保留、我改的右端保留；同一字段两边都改时让我选', async () => {
+    const dlg = await openConfig(); await dlg.getByLabel('财力右端名称').fill('豪富'); await dlg.getByLabel('财力左端名称').fill('赤贫');
+    const c = await config(project.id);
+    await api('/project-assets/projects/' + project.id + '/attribute-config', { expected_revision: c.revision, dimensions: [...c.dimensions.map(d => d.name === '城府' ? { ...d, criterion: '别处补了判断标准' } : d.name === '财力' ? { ...d, negative_label: '清贫', tier_labels: undefined } : d), { id: null, name: '地位', negative_label: '低', positive_label: '高', neutral_label: '中', criterion: '' }] }, 'PUT');
     await dlg.getByRole('button', { name: '保存配置' }).click();
     await expect(dlg.getByRole('alert')).toContainText('你的改动还在'); await expect(dlg.getByLabel('财力右端名称')).toHaveValue('豪富'); await expect(dlg.getByRole('button', { name: '保存配置' })).toBeDisabled();
-    await dlg.getByRole('button', { name: '保留我的改动，基于新版本核对' }).click(); await dlg.getByRole('button', { name: '保存配置' }).click(); await expect(dlg).toHaveCount(0);
-    const now = await config(project.id); assert.equal(now.dimensions.find(d => d.name === '财力').positive_label, '豪富');
+    await dlg.getByRole('button', { name: '保留我的改动，与新版本合并' }).click();
+    const conflict = dlg.getByRole('group', { name: '合并冲突' }); await expect(conflict).toContainText('「财力」的左端'); await expect(conflict).toContainText('用我的：赤贫'); await expect(conflict).toContainText('用别处的：清贫');
+    await conflict.getByRole('radio', { name: /用别处的/ }).check(); await conflict.getByRole('button', { name: '按以上选择合并' }).click();
+    await expect(dlg.getByRole('status')).toContainText('别处新增了「地位」'); await expect(dlg.getByLabel('第 7 个维度名称')).toHaveValue('地位');
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await expect(dlg).toHaveCount(0);
+    const now = await config(project.id), fin = now.dimensions.find(d => d.name === '财力');
+    assert.equal(fin.positive_label, '豪富', 'my edit kept'); assert.equal(fin.negative_label, '清贫', 'conflict resolved to theirs');
+    assert.equal(now.dimensions.find(d => d.name === '城府').criterion, '别处补了判断标准', 'their criterion kept'); assert.ok(now.dimensions.some(d => d.name === '地位'), 'their new dimension kept');
+  });
+
+  await check('FE2-R1 边界：别处删了我没碰的维度 → 合并后跟着删；别处删了我改过的维度 → 让我选（选「不要了」就不带回）', async () => {
+    const dlg = await openConfig();
+    const idx = await dlg.locator('.ca-attr-dim input[aria-label$="个维度名称"]').evaluateAll(els => els.findIndex(e => e.value === '地位'));
+    await dlg.locator('.ca-attr-tiers').nth(idx).click(); await dlg.getByLabel('地位判断标准').fill('看官职');
+    const c = await config(project.id);
+    await api('/project-assets/projects/' + project.id + '/attribute-config', { expected_revision: c.revision, dimensions: c.dimensions.filter(d => d.name !== '地位' && d.name !== '城府') }, 'PUT');
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await dlg.getByRole('button', { name: '保留我的改动，与新版本合并' }).click();
+    const conflict = dlg.getByRole('group', { name: '合并冲突' }); await expect(conflict).toContainText('「地位」已在别处删除，但你改过它');
+    await conflict.getByRole('radio', { name: '不要了' }).check(); await conflict.getByRole('button', { name: '按以上选择合并' }).click();
+    await expect(dlg.getByRole('status')).toContainText('「城府」已在别处删除');
+    const shown = await dlg.locator('.ca-attr-dim input[aria-label$="个维度名称"]').evaluateAll(els => els.map(e => e.value)); assert.ok(!shown.includes('地位') && !shown.includes('城府'), shown.join(','));
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await expect(dlg).toHaveCount(0);
+    const names = (await config(project.id)).dimensions.map(d => d.name); assert.ok(!names.includes('地位') && !names.includes('城府'), names.join(','));
+    assert.ok(names.includes('财力'), 'others kept');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
