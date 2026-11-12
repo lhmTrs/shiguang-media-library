@@ -147,7 +147,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const [busy, setBusy] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState(''), [conflict, setConflict] = useState<Asset | null>(null), [health, setHealth] = useState<Health[]>([]);
   useFeedbackToast(notice, {source: '项目资产', active: active, kind: 'auto'});
   useFeedbackToast(error, {source: '项目资产', active: active});
-  const [imageViewer, setImageViewer] = useState<{src:string;name:string}|null>(null);
+  // from: 'card' = opened from a gallery card (stays while the detail of that card loads); otherwise it belongs to the open detail.
+  const [imageViewer, setImageViewer] = useState<{src:string;name:string;from?:'card'}|null>(null);
   const [modal, setModal] = useState<any>(null), [mediaQ, setMediaQ] = useState(''), [mediaPage, setMediaPage] = useState(1), [mediaRows, setMediaRows] = useState<any[]>([]), [mediaTotal, setMediaTotal] = useState(0), [versions, setVersions] = useState<any[]>([]);
   const [scopesKnown,setScopesKnown]=useState(false),[scopesError,setScopesError]=useState(''),[scopesRetry,retryScopes]=useState(0);
   useFeedbackToast(scopesError, {source: '项目资产', active: active});
@@ -158,7 +159,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const [dragTarget, setDragTarget] = useState(''), [dropJob, setDropJob] = useState<DropJob | null>(null), [scriptNames, setScriptNames] = useState<{ kind: Kind; name: string }[]>([]), [scriptNamesRead, setScriptNamesRead] = useState<{ project: string; status: 'loading' | 'ok' | 'error' }>({ project: '', status: 'loading' });
   const dropJobRef = useRef(dropJob); dropJobRef.current = dropJob;
   const dragDepth = useRef(0), detailScroll = useRef<HTMLDivElement>(null);
-  useEffect(() => setImageViewer(null), [active, scope, draft?.id, lookId, kind, scriptView]);
+  useEffect(() => setImageViewer(null), [active, scope, kind, scriptView]);
+  useEffect(() => setImageViewer(v => v?.from === 'card' ? v : null), [draft?.id, lookId]);
   useEffect(() => setImageId(null), [active, scope, draft?.id, lookId, kind, scriptView]);
   const [cropOpen, setCropOpen] = useState(false);
   useEffect(() => setCropOpen(false), [imageId]);
@@ -253,7 +255,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const canLeave = () => (!scriptDirtyRef.current || window.confirm('剧本尚未保存，确定切换吗？未保存内容仍保留在当前页面。')) && (!dirtyRef.current || window.confirm('当前修改尚未保存，确定放弃这些修改吗？'));
   function changeScope(next: string) {
     if (next === scope || !canLeave()) return;
-    const pref = readScopePrefs(next); selectionGeneration.current++; generation.current++; healthGeneration.current++; scopeRef.current = next;
+    const pref = readScopePrefs(next); selectionGeneration.current++; setDetailLoading(false); generation.current++; healthGeneration.current++; scopeRef.current = next;
     setScope(next); setRows([]); setTotal(0); setListLoading(!!next && active);
     setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setError(''); setNotice('');
     if(scopes.find(s=>s.id===next)?.project_kind==='public')setScriptView(false);
@@ -357,18 +359,20 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }, [active, scriptView, scope, publicScope]);
   // Opening a detail is a quiet read: no page-wide busy bar (it pushed the page down and greyed every button, so each
   // click flashed). Only the detail panel is held while it loads; a short note appears if it takes longer than 300 ms.
-  const [detailLoading, setDetailLoading] = useState(false), [detailSlow, setDetailSlow] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false), [detailSlow, setDetailSlow] = useState(false), detailRef = useRef<HTMLElement>(null);
   useEffect(() => { if (!detailLoading) { setDetailSlow(false); return; } const t = window.setTimeout(() => setDetailSlow(true), 300); return () => clearTimeout(t); }, [detailLoading]);
   async function openAsset(id: string, asked = false) {
     if (busy || !asked && !canLeave()) return;
     const ticket = ++selectionGeneration.current, project = scope; setDetailLoading(true); setError('');
+    // The old detail stays on screen but must not take input while it is being replaced (keyboard included).
+    if (detailRef.current?.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
     try { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }
     catch (e: any) { if (ticket === selectionGeneration.current) setError(e.message || '读取资料失败'); }
     finally { if (ticket === selectionGeneration.current) setDetailLoading(false); }
   }
   /** Clicking the character whose detail is already open does nothing (no reload, no flash). */
   const alreadyOpen = (id: string) => draft?.id === id && !detailLoading;
-  function dropDetail() { selectionGeneration.current++; setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
+  function dropDetail() { selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   async function save() { if (!draft || draft.archived_at || importActivity.current.size) return; await run('正在保存资产…', async () => { try { const a = await api<Asset>('/assets/' + draft.id, { asset: draft, expected_revision: draft.revision }, 'PUT'); install(a); await loadList(); const adopted=a.images.some(b=>!b.archived_at&&importedBindings.current.has(b.id));a.images.forEach(b=>importedBindings.current.delete(b.id));setNotice((adopted?(a.kind==='character'?'已绑定到造型 · ':'已绑定参考图片 · '):'')+'已保存 · V'+a.revision); } catch (e: any) { if (e.message.includes('已经更新')) setConflict(await api<Asset>('/assets/' + draft.id)); throw e; } }); }
@@ -612,7 +616,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       install(await api<Asset>('/assets/' + updated.id));
     });
   }
-  async function create() { if (!scope || !canLeave()) return; selectionGeneration.current++; setModal({ type: 'create', name: '' }); }
+  async function create() { if (!scope || !canLeave()) return; selectionGeneration.current++; setDetailLoading(false); setModal({ type: 'create', name: '' }); }
   const currentLook = draft?.looks.find(l => l.id === lookId), images = draft?.images.filter(b => b.look_id === (draft.kind === 'character' ? lookId : null)) ?? [];
   const representative = draft?.kind === 'character' ? currentLook?.default_image_id : draft?.default_image_id;
   function setDefault(a: Asset, id: string | null) { if (a.kind === 'character') { const l = a.looks.find(l => l.id === lookId); if (l) l.default_image_id = id; } else a.default_image_id = id; }
@@ -828,12 +832,12 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     setScriptView(false);
     if (kind === k) {
       if (draft?.project_id === scope && draft.kind === k) return;
-      selectionGeneration.current++;
+      selectionGeneration.current++; setDetailLoading(false);
       setDraft(null);
       void loadList().catch(e => setError(e.message));
       return;
     }
-    selectionGeneration.current++; setKind(k); setDraft(null); setPage(1); setMissingOnly(false);
+    selectionGeneration.current++; setDetailLoading(false); setKind(k); setDraft(null); setPage(1); setMissingOnly(false);
   };
 
   // Progress and result of the current copy / reveal; lost answers can only be looked up, never resent.
@@ -879,7 +883,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
       <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => void openCrop(a, quick!)}><Maximize2 size={14}/>调整头像…</button>
       <hr/>
-      <button role="menuitem" disabled={!cover} onClick={() => { setQuick(null); setImageViewer({ src: bindingSrc(cover!), name: cover!.last_known_name || a.name }); }}><ZoomIn size={14}/>放大查看</button>
+      <button role="menuitem" disabled={!cover} onClick={() => { setQuick(null); setImageViewer({ src: bindingSrc(cover!), name: cover!.last_known_name || a.name, from: 'card' }); }}><ZoomIn size={14}/>放大查看</button>
       <button role="menuitem" onClick={() => { setQuick(null); if (!alreadyOpen(a.id)) void openAsset(a.id); }}>打开详情</button>
     </div>;
     if (quick!.mode === 'pick') return <div ref={ref} className="ca-quick ca-quick-panel" role="dialog" aria-label={'换' + a.name + '的默认图'} style={style}>
@@ -924,7 +928,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           </div>
         </div>}
       </div>
-      <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++;setModal(null);setScriptView(true);}}>剧本</button></div>
+      <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++; setDetailLoading(false);setModal(null);setScriptView(true);}}>剧本</button></div>
     </header>
     {(error||scopesError) && <div className="ca-alert" role="alert">{error||scopesError}{scopesError&&<button onClick={()=>retryScopes(n=>n+1)}>重试项目范围</button>}<button aria-label="关闭错误" onClick={() => {setError('');if(scopesKnown)setScopesError('');}}><X size={14}/></button></div>}{notice && <div className="ca-notice" role="status">{notice}<button aria-label="关闭通知" onClick={() => setNotice('')}><X size={14}/></button></div>}
     {busy && <div className="ca-progress" role="status"><span className="spinner"/>{busy}</div>}
@@ -948,7 +952,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
             {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
-              onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else if (!alreadyOpen(a.id)) void openAsset(a.id); }} onDoubleClick={e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; const c = coverOf(a); if (c) setImageViewer({ src: bindingSrc(c), name: c.last_known_name || a.name }); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
+              onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else if (!alreadyOpen(a.id)) void openAsset(a.id); }} onDoubleClick={e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; const c = coverOf(a); if (c) setImageViewer({ src: bindingSrc(c), name: c.last_known_name || a.name, from: 'card' }); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
@@ -973,7 +977,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           <ul>{pickedAssets.map(id => rows.find(r => r.id === id)).filter((r): r is Asset => !!r).map(r => <li key={r.id}><Avatar a={r}/><span>{r.name}</span></li>)}</ul>
           <p className="ca-muted">多选时这里只列出已选的{labels[kind]}。单击某一张卡片，回到只选它并显示详情。</p>
         </aside>}
-        {draft && <aside className={'ca-detail' + (detailLoading ? ' is-loading' : '')} aria-label={labels[draft.kind] + '详情'} aria-busy={detailLoading || undefined}>
+        {draft && <aside ref={detailRef} className={'ca-detail' + (detailLoading ? ' is-loading' : '')} aria-label={labels[draft.kind] + '详情'} aria-busy={detailLoading || undefined} {...(detailLoading ? { inert: '' } : {})}>
           {detailSlow && <div className="ca-detail-loading" role="status">正在读取资料…</div>}
           <div className="ca-detail-head">
             <Avatar a={draft}/>
