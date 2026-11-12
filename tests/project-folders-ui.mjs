@@ -139,7 +139,8 @@ try {
   passed = true;
 } finally {
   if (!passed) { console.error(logs.slice(-3000)); if (page) await page.screenshot({ path: path.join(os.tmpdir(), 'creative-folders-failure.png') }).catch(() => {}); }
-  await browser?.close(); child.kill('SIGTERM'); await exited; await fs.rm(temp, { recursive: true, force: true });
+  holdSeries = false; releaseSeries?.(); releaseSeries = null;
+  await browser?.close(); child.kill('SIGTERM'); let timer; if (await Promise.race([exited, new Promise(r => timer = setTimeout(() => r('timeout'), 10000))]) === 'timeout') { child.kill('SIGKILL'); await exited; } clearTimeout(timer); await fs.rm(temp, { recursive: true, force: true });
   console.log(`${checks.length} 项${passed ? '全部通过' : '未全部通过'}`);
 }
 if (!passed) process.exit(1);
