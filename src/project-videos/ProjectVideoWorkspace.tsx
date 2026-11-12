@@ -536,7 +536,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const childFolderCount = folders.filter(f => f.parentId === (folderId === 'all' ? 'root' : folderId)).length;
   // The whole project has nothing yet (no videos here, no folders, nothing in the reject bin, no search or filter):
   // hide the all-zero search, chips and count, and show one card in the grid that opens the import.
-  const projectEmpty = !!collection && !loading && !videos.length && folderId !== 'reject' && !folders.some(f => !rejectSet.has(f.id)) && !(roles?.rejectVideoCount)
+  // FE1-R2: legacy (pre-upgrade) videos live outside any folder, so an empty root is not an empty project while any remain.
+  const legacyLeft = collection?.legacyUpgrade?.count ?? (collection?.legacyUpgrade?.completed ? 0 : 1);
+  const projectEmpty = !!collection && !loading && !videos.length && folderId !== 'reject' && !folders.some(f => !rejectSet.has(f.id)) && !(roles?.rejectVideoCount) && !legacyLeft
     && !query.trim() && adoptionFilter === 'all' && !attentionOnly;
   const importDisabled = readOnly || !collection || importUnavailable || unresolved && task?.kind !== 'import';
   function openImport() {

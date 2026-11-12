@@ -246,16 +246,20 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   function install(a: Asset) { if (draftRef.current?.id !== a.id || draftRef.current?.kind !== a.kind) setVersions([]); if (draftRef.current?.id !== a.id || draftRef.current?.revision !== a.revision) setHealth([]); setDraft(a); setBase(JSON.stringify(a)); setLookId(old => draftIdRef.current === a.id && a.looks.some(l => l.id === old) ? old : a.default_look_id ?? a.looks.find(l => !l.archived_at)?.id ?? ''); setConflict(null); }
   const edit = (fn: (a: Asset) => void) => setDraft(old => { if (!old || old.archived_at) return old; const next = structuredClone(old); fn(next); return next; });
+  // Key of the last list query that came back successfully; "empty" is only shown for that exact query (FE1-R1:
+  // a failed read is not an empty project, also after the error is dismissed).
+  const [listOkKey, setListOkKey] = useState('');
+  const listKey = [scope, kind, q, archived, page].join('|');
   async function loadList() {
     if (!active || !scope) return;
-    const ticket = ++generation.current, context = listContext; setListLoading(true);
+    const ticket = ++generation.current, context = listContext, key = listKey; setListLoading(true);
     try {
       const result = await api<{ items: Asset[]; total: number }>('/assets?' + new URLSearchParams({ project_id: scope, kind, q, archived: String(archived), page: String(page) }));
       if (ticket !== generation.current || scopeRef.current !== scope || listContextRef.current !== context) return;
       // 画廊优先：不再自动打开第一项，由使用者点选后在右侧查看详情。
-      setRows(result.items); setTotal(result.total);
+      setRows(result.items); setTotal(result.total); setListOkKey(key);
     } catch (e) {
-      if (ticket === generation.current && scopeRef.current === scope) { setRows([]); setTotal(0); throw e; }
+      if (ticket === generation.current && scopeRef.current === scope) { setRows([]); setTotal(0); setListOkKey(''); throw e; }
     } finally { if (ticket === generation.current) setListLoading(false); }
   }
   async function loadHealth(a: Asset) { const ticket = ++healthGeneration.current; const result = await api<{ revision: number; images: Health[] }>('/assets/' + a.id + '/health'); if (ticket === healthGeneration.current && draftIdRef.current === a.id && result.revision === a.revision) setHealth(result.images); }
@@ -760,7 +764,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   /* ------------------------------------------------------------------ 界面 */
   const visibleRows = rows.filter(a => a.project_id === scope && (!missingOnly || !coverOf(a)));
   // Truly empty (this kind has nothing yet, not a search or filter result): no filters or count, and the add card says so.
-  const trulyEmpty = !!scope && scopesKnown && !listLoading && !archived && !q.trim() && total === 0 && !rows.length;
+  const trulyEmpty = !!scope && scopesKnown && listOkKey === listKey && !archived && !q.trim() && total === 0 && !rows.length;
   // A filter that hides picked characters drops them, so ⌘C never copies what is not shown (same as the video page).
   const visiblePickKey = visibleRows.filter(pickableAsset).map(r => r.id).join('|');
   useEffect(() => { setPickedAssets(list => { const order = visiblePickKey.split('|'), next = list.filter(id => order.includes(id)); return next.length === list.length ? list : next.length > 1 ? next : []; }); }, [visiblePickKey]);

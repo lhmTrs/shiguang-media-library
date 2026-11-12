@@ -46,6 +46,19 @@ try {
     await assets().getByLabel('搜索资产').fill(''); await expect(addCard()).toContainText('还没有人物');
   });
 
+  await check('FE1-R1 反例：资产列表读取 503 时不显示「还没有人物」、不收筛选；关掉错误后仍不显示；重读成功确认零条后才显示', async () => {
+    let fail = 1;
+    await page.route(url => url.pathname === '/api/project-assets/assets', route => { if (route.request().method() === 'GET' && fail > 0) { fail--; return route.fulfill({ status: 503, json: { error: '服务暂时不可用' } }); } return route.fallback(); });
+    await page.reload(); await expect(assets()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+    const alert = assets().getByRole('alert'); await expect(alert).toContainText('服务暂时不可用');
+    await expect(addCard()).toHaveText('新建人物'); await expect(assets().getByRole('group', { name: '筛选' })).toBeVisible();
+    await alert.getByRole('button', { name: '关闭错误' }).click(); await expect(alert).toHaveCount(0);
+    await page.waitForTimeout(300); await expect(addCard()).toHaveText('新建人物'); await expect(assets().getByRole('group', { name: '筛选' })).toBeVisible();
+    await assets().getByRole('tab', { name: '场景', exact: true }).click(); await assets().getByRole('tab', { name: '人物', exact: true }).click();
+    await expect(addCard()).toContainText('还没有人物'); await expect(assets().getByRole('group', { name: '筛选' })).toHaveCount(0);
+    assert.equal(fail, 0); await page.unroute(url => url.pathname === '/api/project-assets/assets');
+  });
+
   await check('有了第一个人物：筛选和计数回来，新建卡只写「新建人物」', async () => {
     await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '阿青' });
     await page.reload(); await expect(assets()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
@@ -63,6 +76,18 @@ try {
     await expect(videos().getByRole('button', { name: '导入视频' }).first()).toBeVisible(); await expect(videos().getByRole('navigation', { name: /视频文件夹/ })).toBeVisible();
     await shot('videos-empty');
     await card.click(); await expect(page.getByRole('dialog', { name: '导入视频' })).toBeVisible();
+  });
+
+  await check('FE1-R2 反例：根目录为空但项目还有 1 个待升级旧视频：不显示「还没有生成视频」，搜索、筛选和原提示都保留', async () => {
+    await page.route(url => /\/api\/project-videos\/projects\/[^/]+$/.test(url.pathname), async route => {
+      const res = await route.fetch(), data = await res.json();
+      if (res.ok()) data.legacyUpgrade = { count: 1, completed: false };
+      await route.fulfill({ response: res, json: data });
+    });
+    await page.goto(origin + '/#/project-videos'); await page.reload(); await expect(videos()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(project.id);
+    await expect(videos().locator('.pv-empty')).toContainText('当前目录还没有视频');
+    await expect(videos().locator('.pv-card-empty')).toHaveCount(0);
+    await expect(videos().getByLabel('搜索视频')).toBeVisible(); await expect(videos().getByRole('group', { name: '按采用状态筛选' })).toBeVisible(); await expect(videos().locator('.pv-library-head')).toBeVisible();
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
