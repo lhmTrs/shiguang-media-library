@@ -180,6 +180,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const quickRef = useRef<HTMLDivElement>(null);
   // 人物属性：维度配置弹窗；配置保存后递增版本让详情里的属性重新读取。
   const [attrConfigOpen, setAttrConfigOpen] = useState(false), [attrConfigVersion, setAttrConfigVersion] = useState(0);
+  // The dimension dialog belongs to one project: switching project (from any entry) closes it, so a draft never follows.
+  useEffect(() => { setAttrConfigOpen(false); }, [scope]);
   // Characters pick like the video page (Finder): a click selects one and shows its detail; ⌘ adds or removes;
   // Shift picks the run from the anchor; dragging on empty space draws a box; ⌘A / ⌘C / Esc; right-click acts on the picks.
   // pickedAssets only holds two or more (a single pick is the open detail). Reference images keep option A (checkbox / ⌘ / Shift).
@@ -1034,7 +1036,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
     </fieldset></div>
     {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
-    {active && attrConfigOpen && scope && !publicScope && <AttributeConfig projectId={scope} projectName={scopes.find(s => s.id === scope)?.name ?? ''} request={request} onClose={() => setAttrConfigOpen(false)} onSaved={() => setAttrConfigVersion(v => v + 1)}/>}
+    {active && attrConfigOpen && scope && !publicScope && <AttributeConfig key={scope} projectId={scope} projectName={scopes.find(s => s.id === scope)?.name ?? ''} request={request} onClose={() => setAttrConfigOpen(false)} onSaved={() => setAttrConfigVersion(v => v + 1)}/>}
     {active && desktop.action && desktopStatus()}
     {active && revealAsk && desktop.action?.requestId === revealAsk && desktop.action.receipt && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setRevealAsk(null); }}>
       <div className="ca-modal ca-reveal-ask" role="dialog" aria-label="在访达中显示所选图片">

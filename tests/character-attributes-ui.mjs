@@ -233,6 +233,25 @@ try {
     assert.equal((await attrs(ids['张大山'])).scores[D['善恶']].value, 70, 'text-only rename keeps the score');
   });
 
+  await check('FE4-R3 反例：维度设置开着时切换项目（新项目配置迟到）→ 弹窗关闭，两个项目都不写入；新项目打开后正常保存只改自己', async () => {
+    const other = await api('/projects', { name: '属性短片乙' });
+    await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('赵乾')).toBeVisible();
+    const before = { a: (await config(project.id)).revision, b: (await config(other.id)).revision };
+    const dlg = await openConfig(); await dlg.getByLabel('第 4 个维度名称').fill('仅甲项目的草稿');
+    let release; const hold = new Promise(r => { release = r; }); let held = 0;
+    const handler = async route => { if (route.request().method() === 'GET' && new URL(route.request().url()).pathname.includes(other.id)) { held++; if (held === 1) await hold; } return route.fallback(); };
+    await page.route(url => url.pathname.endsWith('/attribute-config'), handler);
+    await page.getByLabel('资产所属项目').selectOption(other.id);
+    await expect(dlg).toHaveCount(0);
+    release(); await page.waitForTimeout(400);
+    assert.equal((await config(project.id)).revision, before.a, 'project A untouched'); assert.equal((await config(other.id)).revision, before.b, 'project B untouched');
+    assert.ok(!(await config(other.id)).dimensions.some(d => d.name === '仅甲项目的草稿'));
+    await page.unroute(url => url.pathname.endsWith('/attribute-config'), handler);
+    const dlgB = await openConfig(); await expect(dlgB).toContainText('属性短片乙'); await expect(dlgB.getByLabel('第 1 个维度名称')).toHaveValue('善恶');
+    await dlgB.getByLabel('第 4 个维度名称').fill('乙项目心智'); await dlgB.getByRole('button', { name: '保存配置' }).click(); await expect(dlgB).toHaveCount(0);
+    assert.equal((await config(other.id)).dimensions[3].name, '乙项目心智'); assert.equal((await config(project.id)).revision, before.a, 'project A still untouched');
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {

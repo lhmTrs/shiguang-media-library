@@ -99,10 +99,10 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   // Editing, confirming, choosing a merge and waiting for the server are separate states: the draft is read-only
   // while any of the others is on screen; 「返回修改」 leaves a confirmation and unlocks it.
   const locked = saving || !!stale || !!merge || !!review;
-  const blocked = !config || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
+  const blocked = !config || config.project_id !== projectId || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
 
   async function put(meaning: string[], preserve: string[], token?: string) {
-    if (!config) return;
+    if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
     const next = await attrApi.saveConfig(request, projectId, { expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
     if (next.project_id !== projectId) throw Error('保存回执不属于当前项目');
@@ -110,7 +110,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   }
   /** Preview exactly the removal that will be sent; with scores at stake, show it and wait for the user's confirmation. */
   async function toFinal(set: string[], preserve: string[], meaning: string[], message = '', gen = generation.current) {
-    if (!config) return;
+    if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     if (!set.length) { await put(meaning, preserve); return; }
     const pv = await attrApi.removalPreview(request, projectId, { expected_revision: config.revision, remove: set });
     if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
