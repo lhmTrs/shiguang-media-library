@@ -47,3 +47,20 @@
 .pf-numbers tr[data-conflict] td input { border-color: #b4472f; }
 .pf-conflict { display: block; font-size: 11px; color: #a33a2a; margin-top: 2px; }
 @media (max-width: 760px) { .pf-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); } .pf .project-heading-actions { justify-content: flex-start; } }
+/* 整理旧项目（原型 ④） */
+.pf-modal:has(.pf-organize) { width: min(640px, calc(100vw - 32px)); }
+.pf-organize .modal-body { max-height: min(62vh, 560px); overflow: auto; }
+.pf-og { border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px 10px; margin: 10px 0 0; min-width: 0; }
+.pf-og-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 4px; font-size: 13px; }
+.pf-og-head input { height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; font: 600 13px inherit; width: 220px; }
+.pf-og-target { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-left: auto; }
+.pf-og-target select { height: 28px; border: 1px solid var(--line); border-radius: 6px; background: var(--c-fff); }
+.pf-og table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pf-og td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: middle; }
+.pf-og tr:first-child td { border-top: 0; }
+.pf-og td:first-child { width: 24px; }
+.pf-og-no { white-space: nowrap; text-align: right; color: var(--muted); }
+.pf-og-no input { width: 64px; height: 28px; box-sizing: border-box; padding: 0 6px; border: 1px solid var(--line); border-radius: 6px; margin: 0 4px; }
+.pf-og tr[data-conflict] .pf-og-no input { border-color: #b4472f; }
+.pf-warn { display: block; font-size: 11px; color: #8a5a12; margin-top: 2px; }
+.pf-og-summary { margin-right: auto; font-size: 12px; color: var(--muted); }

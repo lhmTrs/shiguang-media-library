@@ -6,6 +6,8 @@ import { ProjectEditor, type ProjectRequest } from '../ProjectManager';
 import { TimelineImportDialog } from '../TimelineImportDialog';
 import { softwareNames } from '../ProjectUsage';
 import { AgentShare } from '../AgentShare';
+import { Modal } from './Modal';
+import { OrganizeDialog } from './OrganizeDialog';
 import { buildTree, errorText, seasonName, seriesApi, type Container, type GroupedProject, type MoveConflict, type MoveItem, type MoveTarget, type Season, type Series, type SeriesNode } from './model';
 
 // 目录式项目页（SERIES-P1，原型 ⑤⑥⑦⑨）：根目录 = 剧文件夹 + 未分组项目；剧里先季后散放集；季里是集。
@@ -27,7 +29,8 @@ type Dialog =
   | { type: 'moveTo'; ids: string[] }
   | { type: 'episodeName'; node: SeriesNode; container: Container; expected: number }
   | { type: 'project'; project: GroupedProject | null }
-  | { type: 'xml' };
+  | { type: 'xml' }
+  | { type: 'organize' };
 type Toast = { text: string; undo?: string };
 
 const LOC_KEY = 'shiguang.projectFolders.loc', SORT_KEY = 'shiguang.projectFolders.sort', PENDING_KEY = 'shiguang.projectFolders.pendingSeries', DRAG_TYPE = 'text/x-shiguang-projects';
@@ -224,6 +227,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     <header className="project-heading"><div className="project-page-title"><h1>{title}</h1>{loc.level === 'root' && <span className="project-count">{projects.length}</span>}{node && loc.level === 'series' && <small className="pf-meta">{node.seasons.length ? `${node.seasons.length} 季 · ` : ''}{node.episodeCount} 集 · {softwareNames[node.series.software] || '未指定'}</small>}</div>
       <div className="project-heading-actions">
         {loc.level === 'root' && !empty && <><label className="pf-sort">排序<select aria-label="项目排序" value={sort} onChange={e => setSort(e.target.value as Sort)}><option value="updated">最近修改</option><option value="name">名称</option><option value="created">创建时间</option></select></label>
+          {tree.ungrouped.length > 0 && <button className="plain" onClick={() => setDialog({ type: 'organize' })}>整理旧项目</button>}
           <button className="plain" onClick={() => setDialog({ type: 'project', project: null })}><Plus size={16}/>新建项目</button><button className="plain" onClick={() => setDialog({ type: 'xml' })}><FileUp size={16}/>从达芬奇 XML 新建</button><button className="primary" onClick={() => setDialog({ type: 'series' })}><Plus size={16}/>新建剧</button></>}
         {node && loc.level === 'series' && <><button className="plain" disabled={busy} onClick={() => setDialog({ type: 'series', series: node.series })}>改剧名</button><button className="icon-button" aria-label={`${node.series.name}的更多操作`} title="更多操作" onClick={e => openMenu(e, { kind: 'series', node })}><MoreHorizontal size={17}/></button></>}
         {seasonContainer && <button className="icon-button" aria-label={`${seasonName(seasonContainer.season!)}的更多操作`} title="更多操作" onClick={e => openMenu(e, { kind: 'season', season: seasonContainer.season!, node: node! })}><MoreHorizontal size={17}/></button>}
@@ -263,17 +267,9 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     {dialog?.type === 'moveTo' && <MoveToDialog tree={tree.series} busy={busy} close={() => setDialog(null)} pick={(target, name, container) => { const ids = dialog.ids; setDialog(null); startMove(target, name, container, ids); }}/>}
     {dialog?.type === 'episodeName' && <NameDialog expected={dialog.expected} busy={busy} close={() => setDialog(null)} save={name => createEpisode(dialog.node, dialog.container, name)}/>}
     {dialog?.type === 'project' && <ProjectEditor project={dialog.project} request={request} close={() => setDialog(null)} saved={id => { setDialog(null); refresh(id); }} importXml={dialog.project ? undefined : () => setDialog({ type: 'xml' })}/>}
+    {dialog?.type === 'organize' && <OrganizeDialog ungrouped={tree.ungrouped} series={series} api={api} close={() => setDialog(null)} changed={() => refresh()} done={summary => { setDialog(null); refresh(); setToast({ text: summary }); }}/>}
     {dialog?.type === 'xml' && <TimelineImportDialog key="create-from-xml" request={request} close={() => setDialog(null)} changed={id => { setDialog(null); refresh(id); }}/>}
   </div>;
-}
-
-function Modal({ label, children, close, busy }: { label: string; children: ReactNode; close: () => void; busy: boolean }) {
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => { const previous = document.activeElement as HTMLElement | null; root.current?.querySelector<HTMLElement>('input,select,button')?.focus(); return () => previous?.focus(); }, []);
-  return <div className="modal-backdrop"><div className="modal pf-modal" ref={root} role="dialog" aria-modal="true" aria-label={label} onKeyDown={e => { if (e.key === 'Escape' && !busy) { e.stopPropagation(); close(); } }}>
-    <div className="modal-head"><h2>{label}</h2><button className="icon-button" type="button" aria-label={'关闭' + label} disabled={busy} onClick={close}><X size={18}/></button></div>
-    {children}
-  </div></div>;
 }
 
 function SeriesDialog({ series, busy, close, save }: { series?: Series; busy: boolean; close: () => void; save: (name: string, software: string) => void }) {

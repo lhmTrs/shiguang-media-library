@@ -1,0 +1,101 @@
+// 「整理旧项目」批量归组（SERIES-P1 原型 ④）：真实本地服务 + 合成项目；不接入真实素材库。
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import net from 'node:net';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { chromium, expect } from '@playwright/test';
+
+const root = path.resolve(import.meta.dirname, '..');
+const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-organize-'));
+const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
+let logs = '', browser, page, cookie, token, passed = false, failSeriesPost = 0, seriesPosts = 0; const checks = [], errors = [];
+const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal'), CODEX_HOME: path.join(temp, 'no-codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
+async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
+async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
+const rid = () => crypto.randomUUID();
+const pf = () => page.locator('.pf');
+const dlg = () => page.getByRole('dialog', { name: '整理旧项目' });
+const submit = () => dlg().getByRole('button', { name: /^归组 \d+ 个项目$/ });
+const no = name => dlg().getByLabel(name + '的集号');
+const seriesNames = async () => (await api('/project-series')).map(s => s.name).sort();
+const ungroupedNames = async () => (await api('/projects')).filter(p => !p.series_id).map(p => p.name).sort();
+
+try {
+  await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
+  const sessionResponse = await fetch(origin + '/api/session'), session = await sessionResponse.json(); cookie = sessionResponse.headers.get('set-cookie').split(';')[0]; token = session.token;
+  for (const name of ['赤贫农夫养家计_1', '赤贫农夫养家计_54', '玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3', '温情短剧', '此恨2']) await api('/projects', { name, software: name.startsWith('玫瑰') ? 'resolve' : 'jianying' });
+  const hen = await api('/project-series', { name: '此恨', software: 'jianying', request_id: rid() });
+  await api(`/project-series/${hen.id}/seasons`, { request_id: rid() });
+  for (const n of [1, 2]) await api(`/project-series/${hen.id}/episodes`, { season_id: null, expected_episode_no: n, request_id: rid() });
+  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+  const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
+  page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+  await page.route(url => url.pathname === '/api/project-series', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    seriesPosts++;
+    if (failSeriesPost && seriesPosts === failSeriesPost) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '服务暂时不可用' }) });
+    return route.fallback();
+  });
+  await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
+
+  await check('按名字给出 3 组建议：玫瑰的婚姻（1-1 编号不确定）、赤贫农夫养家计（1、54）、已有剧「此恨」；温情短剧不在其中', async () => {
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg()).toBeVisible();
+    await expect(dlg().locator('.pf-og')).toHaveCount(3);
+    await expect(dlg().getByLabel('玫瑰的婚姻的剧名')).toHaveValue('玫瑰的婚姻'); await expect(dlg().getByLabel('赤贫农夫养家计的剧名')).toHaveValue('赤贫农夫养家计');
+    await expect(dlg().locator('.pf-og').filter({ hasText: '此恨2' })).toContainText('已有剧');
+    await expect(dlg().getByText('编号不确定，请核对')).toHaveCount(1); await expect(no('玫瑰的婚姻1-1')).toHaveValue('1');
+    await expect(no('赤贫农夫养家计_54')).toHaveValue('54'); await expect(no('此恨2')).toHaveValue('2');
+    await expect(dlg()).not.toContainText('温情短剧');
+    await expect(dlg().getByLabel('此恨的放入位置')).toHaveValue('root');
+    await expect(dlg()).toContainText('将新建 2 部剧，归组 6 个项目');
+  });
+
+  await check('本组重号、剧名和已有剧重名时不能提交；改回后可以提交', async () => {
+    await no('玫瑰的婚姻3').fill('2'); await expect(dlg().getByText('和本组另一项重号')).toHaveCount(2); await expect(submit()).toBeDisabled();
+    await no('玫瑰的婚姻3').fill('3'); await expect(submit()).toBeEnabled();
+    await dlg().getByLabel('玫瑰的婚姻的剧名').fill('此恨'); await expect(dlg().getByText('已有同名的剧')).toBeVisible(); await expect(submit()).toBeDisabled();
+    await dlg().getByLabel('此恨的剧名').fill('玫瑰的婚姻'); await expect(submit()).toBeEnabled();
+  });
+
+  await check('撞号时一个都不写：此恨剧里已有第 2 集 → 提示冲突，没有新建任何剧，项目仍未分组', async () => {
+    await submit().click();
+    await expect(dlg().getByRole('alert')).toContainText('有集号冲突，还没有写入任何内容'); await expect(dlg().getByText('第 2 集已被占用')).toBeVisible();
+    assert.deepEqual(await seriesNames(), ['此恨']);
+    assert.deepEqual(await ungroupedNames(), ['此恨2', '温情短剧', '玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3', '赤贫农夫养家计_1', '赤贫农夫养家计_54'].sort());
+  });
+
+  await check('中途失败可接着来：第二个新剧建不成时，已完成的第一组保留并标「已建好」；重试只做剩下的，不会重复建剧', async () => {
+    await no('此恨2').fill('5'); failSeriesPost = seriesPosts + 2;
+    await submit().click();
+    await expect(dlg().getByRole('alert')).toContainText('前 1 组已完成'); await expect(dlg().getByRole('alert')).toContainText('「赤贫农夫养家计」没有完成');
+    assert.deepEqual(await seriesNames(), ['此恨', '玫瑰的婚姻']);
+    await expect(dlg().locator('.pf-og').filter({ hasText: '玫瑰的婚姻' })).toContainText('已建好');
+    await expect(dlg()).toContainText('将新建 1 部剧，归组 3 个项目');
+    failSeriesPost = 0; await submit().click();
+    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 1 部剧、归组 3 个项目');
+    assert.deepEqual(await seriesNames(), ['此恨', '玫瑰的婚姻', '赤贫农夫养家计']);
+  });
+
+  await check('归组结果：集号按确认的来、项目名一个都没改；根目录只剩温情短剧，再打开整理显示没有可归组的项目', async () => {
+    const projects = await api('/projects'), series = await api('/project-series'), by = n => projects.find(p => p.name === n), sid = n => series.find(s => s.name === n).id;
+    assert.deepEqual([by('赤贫农夫养家计_1').episode_no, by('赤贫农夫养家计_54').episode_no], [1, 54]); assert.equal(by('赤贫农夫养家计_54').series_id, sid('赤贫农夫养家计'));
+    assert.deepEqual(['玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3'].map(n => [by(n).series_id === sid('玫瑰的婚姻'), by(n).season_id, by(n).episode_no]), [[true, null, 1], [true, null, 2], [true, null, 3]]);
+    assert.deepEqual([by('此恨2').series_id === sid('此恨'), by('此恨2').season_id, by('此恨2').episode_no], [true, null, 5]);
+    assert.equal(series.find(s => s.name === '玫瑰的婚姻').software, 'resolve');
+    await expect(pf().getByRole('button', { name: /^打开剧 玫瑰的婚姻$/ })).toContainText('3 集');
+    await expect(pf().getByRole('region', { name: '未分组的项目' }).getByRole('button', { name: /^温情短剧/ })).toBeVisible();
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg()).toContainText('没找到能归到同一部剧的项目');
+    await dlg().getByRole('button', { name: '关闭', exact: true }).click(); await expect(dlg()).toHaveCount(0);
+  });
+
+  assert.deepEqual(errors, [], '页面不应出现脚本错误');
+  passed = true;
+} finally {
+  if (!passed) { console.error(logs.slice(-3000)); if (page) await page.screenshot({ path: path.join(os.tmpdir(), 'creative-organize-failure.png') }).catch(() => {}); }
+  await browser?.close(); child.kill('SIGTERM'); await exited; await fs.rm(temp, { recursive: true, force: true });
+  console.log(`${checks.length} 项${passed ? '全部通过' : '未全部通过'}`);
+}
+if (!passed) process.exit(1);
