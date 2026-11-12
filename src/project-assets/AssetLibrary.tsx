@@ -164,7 +164,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // crop 面板：source 是这次要提交的裁切来源（拖过 manual，采用建议 auto）；head 是自动框状态；
   // seq 每次请求或拖动都加一，晚于用户操作返回的识别结果按 seq 丢弃。
   // base：打开「调整头像」时的默认图身份与裁切，点「完成」前用最新记录核对，变了就不覆盖。
-  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
+  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'multi' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
   // 详情图片设置里的裁切：只有「重新框到头部」，不在打开时自动改草稿。
   // 当前浮层（菜单 / 面板）的实例：异步打开「调整头像」只在发起它的那个菜单仍然开着时才生效。
   const quickNow = useRef(quick); quickNow.current = quick;
@@ -175,7 +175,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   useEffect(() => { detailSeq.current++; setDetailHead(null); }, [imageId, draft?.id]);
   useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(t); }, [undo]);
   const quickRef = useRef<HTMLDivElement>(null);
-  // Multi-select (option A): a checkbox or ⌘/Shift starts it; while anything is picked, a plain click adds or removes.
+  // Characters pick like the video page (Finder): a click selects one and shows its detail; ⌘ adds or removes;
+  // Shift picks the run from the anchor; dragging on empty space draws a box; ⌘A / ⌘C / Esc; right-click acts on the picks.
+  // pickedAssets only holds two or more (a single pick is the open detail). Reference images keep option A (checkbox / ⌘ / Shift).
   const [pickedAssets, setPickedAssets] = useState<string[]>([]), [pickedImages, setPickedImages] = useState<string[]>([]);
   const lastPick = useRef<{ assets?: string; images?: string }>({});
   const [caps, setCaps] = useState<ImageCapabilities | null>(null), [revealAsk, setRevealAsk] = useState<string | null>(null);
@@ -332,8 +334,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       .then(all => { if (live) setScriptNames(all.flat()); }).catch(() => { if (live) setScriptNames([]); });
     return () => { live = false; };
   }, [active, scriptView, scope, publicScope]);
-  async function openAsset(id: string) { if (busy || !canLeave()) return; const ticket = ++selectionGeneration.current, project = scope; await run('正在读取资料…', async () => { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }); }
-  function closeDetail() { if (busy || !canLeave()) return; selectionGeneration.current++; setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
+  async function openAsset(id: string, asked = false) { if (busy || !asked && !canLeave()) return; const ticket = ++selectionGeneration.current, project = scope; await run('正在读取资料…', async () => { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }); }
+  function dropDetail() { selectionGeneration.current++; setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
+  function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   async function save() { if (!draft || draft.archived_at || importActivity.current.size) return; await run('正在保存资产…', async () => { try { const a = await api<Asset>('/assets/' + draft.id, { asset: draft, expected_revision: draft.revision }, 'PUT'); install(a); await loadList(); const adopted=a.images.some(b=>!b.archived_at&&importedBindings.current.has(b.id));a.images.forEach(b=>importedBindings.current.delete(b.id));setNotice((adopted?(a.kind==='character'?'已绑定到造型 · ':'已绑定参考图片 · '):'')+'已保存 · V'+a.revision); } catch (e: any) { if (e.message.includes('已经更新')) setConflict(await api<Asset>('/assets/' + draft.id)); throw e; } }); }
   // ---- Card quick actions: copy the default image, change it, adjust the avatar crop. ----
@@ -455,7 +458,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // ---- Multi-select and file copy (原图文件放进系统剪贴板 / 在访达中显示) ----
   const clipCap = capability(caps, 'clipboard'), revealCap = capability(caps, 'revealMany'), maxPick = caps?.maxSelection || 50;
   const desktopBusy = actionPending(desktop.action) || !!desktop.action?.unknown;
-  // A plain pick toggles one; Shift picks the run from the last picked in the shown order.
+  // Reference images: a plain pick toggles one; Shift picks the run from the last picked in the shown order.
   function pickRange(list: string[], order: string[], id: string, shift: boolean, last?: string) {
     if (shift && last && order.includes(last) && order.includes(id)) {
       const [a, b] = [order.indexOf(last), order.indexOf(id)].sort((x, y) => x - y);
@@ -465,10 +468,70 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   // File copy covers characters (the backend's scope); scenes and props keep the single PNG copy.
   const pickableAsset = (a: Asset) => a.kind === 'character' && !!coverOf(a)?.revision;
-  function pickAsset(a: Asset, shift: boolean) {
+  const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
+  const pickOrder = () => visibleRows.filter(pickableAsset).map(r => r.id);
+  // The current selection in shown order: the multi-pick, else the open character as a single pick.
+  const pickedNow = () => pickedAssets.length ? pickedAssets : draft && pickOrder().includes(draft.id) ? [draft.id] : [];
+  /** Two or more → multi (the detail closes, asking first when it has unsaved edits); one → open it; none → clear. */
+  function applyPick(ids: string[], asked = false) {
+    const order = pickOrder(), next = order.filter(id => ids.includes(id));
+    if (next.length > 1) { if (draft) { if (asked) dropDetail(); else if (!closeDetail()) return false; } setPickedAssets(next); return true; }
+    setPickedAssets([]);
+    if (next.length === 1 && draft?.id !== next[0]) void openAsset(next[0], asked);
+    return true;
+  }
+  function pickCard(e: React.MouseEvent, a: Asset) {
+    const mod = e.metaKey || e.ctrlKey && !isMac;
+    if (!mod && !e.shiftKey) { setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id); return; }
+    e.preventDefault();
     if (!pickableAsset(a)) { setNotice('「' + a.name + '」还没有默认图，不能选'); return; }
-    const order = visibleRows.filter(pickableAsset).map(r => r.id);
-    setPickedAssets(list => pickRange(list, order, a.id, shift, lastPick.current.assets)); lastPick.current.assets = a.id;
+    const now = pickedNow();
+    if (mod) {
+      lastPick.current.assets = a.id;
+      if (!now.includes(a.id)) { applyPick([...now, a.id]); return; }
+      const rest = now.filter(id => id !== a.id);
+      if (rest.length) applyPick(rest); else closeDetail();
+      return;
+    }
+    const order = pickOrder(), last = lastPick.current.assets, anchor = last && order.includes(last) ? last : now[0];
+    if (!anchor) { lastPick.current.assets = a.id; applyPick([a.id]); return; }
+    const [i, j] = [order.indexOf(anchor), order.indexOf(a.id)].sort((x, y) => x - y);
+    applyPick(order.slice(i, j + 1));
+  }
+  // Box select on the gallery's empty space, same rules as the video page; ⌘ / Shift keep what is already picked.
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  function marqueeStart(e: React.PointerEvent<HTMLElement>) {
+    if (kind !== 'character' || e.button !== 0 || busy || (e.target as Element).closest('.ca-card-wrap, .ca-card, button, a, input, select, textarea, label, .ca-pickbar, .ca-gallery-bar, .ca-pagination')) return;
+    const host = e.currentTarget, start = { x: e.clientX, y: e.clientY }, add = e.metaKey || e.ctrlKey || e.shiftKey;
+    const edge = host.getBoundingClientRect(); if (e.clientX >= edge.left + host.clientLeft + host.clientWidth || e.clientY >= edge.top + host.clientTop + host.clientHeight) return; // the gallery's own scrollbar
+    const base = add ? pickedNow() : [], cards = Array.from(host.querySelectorAll<HTMLElement>('[data-pick-id]')), order = pickOrder();
+    let moved = false, cancelled = false, last = base;
+    e.preventDefault(); setQuick(null); setMenu('');
+    host.setPointerCapture?.(e.pointerId);
+    const end = () => { host.removeEventListener('pointermove', move); host.removeEventListener('pointerup', up); host.removeEventListener('pointercancel', cancel); setMarquee(null); };
+    const move = (ev: PointerEvent) => {
+      if (!moved) {
+        if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
+        // Unsaved edits: ask once before the box starts (the same confirm as switching characters); cancel changes nothing.
+        if (draft && dirtyRef.current && !canLeave()) { cancelled = true; end(); return; }
+        moved = true;
+      }
+      const box = host.getBoundingClientRect();
+      const left = Math.min(start.x, ev.clientX), top = Math.min(start.y, ev.clientY), right = Math.max(start.x, ev.clientX), bottom = Math.max(start.y, ev.clientY);
+      setMarquee({ x: left - box.left + host.scrollLeft, y: top - box.top + host.scrollTop, w: right - left, h: bottom - top });
+      const hits = cards.filter(c => { const r = c.getBoundingClientRect(); return r.left < right && r.right > left && r.top < bottom && r.bottom > top; }).map(c => c.dataset.pickId || '');
+      last = order.filter(id => base.includes(id) || hits.includes(id));
+      setPickedAssets(last);
+    };
+    const up = () => { end(); if (cancelled) return; if (!moved) { if (!add) setPickedAssets([]); return; } applyPick(last, true); };
+    const cancel = () => { end(); if (!cancelled && moved) applyPick(last, true); };
+    host.addEventListener('pointermove', move); host.addEventListener('pointerup', up); host.addEventListener('pointercancel', cancel);
+  }
+  // Right-click on a picked card acts on all picks; on any other card it drops the multi-pick and acts on that one.
+  function openMenu(a: Asset, x: number, y: number) {
+    if (pickedAssets.length > 1 && pickedAssets.includes(a.id)) { setQuick({ id: a.id, mode: 'multi', x, y }); return; }
+    if (pickedAssets.length) setPickedAssets([]);
+    setQuick({ id: a.id, mode: 'menu', x, y });
   }
   const pickableImage = (b: Binding) => draft?.kind === 'character' && !b.archived_at && !!b.revision;
   function pickImage(b: Binding, shift: boolean) {
@@ -478,14 +541,20 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   const defaultsItems = (ids: string[]): ImageSelectionItem[] => ids.map(id => coverOf(rows.find(r => r.id === id)!)).filter((b): b is Binding => !!b?.revision).map(b => ({ bindingId: b.id, bindingRevision: b.revision }));
   const referenceItems = (ids: string[]): ImageSelectionItem[] => (draft?.images ?? []).filter(b => ids.includes(b.id) && pickableImage(b)).map(b => ({ bindingId: b.id, bindingRevision: b.revision }));
+  const busyText = '上一笔复制或在访达中显示还没有结束或结果待核对，请先查看它的结果。';
+  const overPick = (n: number) => n > maxPick ? '一次最多 ' + maxPick + ' 张，当前选了 ' + n + ' 张' : '';
   async function copyFiles(mode: ImageCopyMode, items: ImageSelectionItem[]) {
     if (!items.length) return;
     if (!clipCap.available) { setError(clipCap.reason); return; }
+    if (overPick(items.length)) { setError('没有复制：' + overPick(items.length)); return; }
+    if (desktopBusy) { setError(busyText); return; }
     setError(''); await desktop.start('clipboard', mode, items);
   }
   async function revealFiles(mode: ImageCopyMode, items: ImageSelectionItem[]) {
     if (!items.length) return;
     if (!revealCap.available) { setError(revealCap.reason); return; }
+    if (overPick(items.length)) { setError('没有在访达中显示：' + overPick(items.length)); return; }
+    if (desktopBusy) { setError(busyText); return; }
     setError(''); setRevealAsk(null); await desktop.start('reveal-preview', mode, items);
   }
   // Same folder: open at once. Several folders: ask first (they open several Finder windows).
@@ -688,6 +757,24 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
 
   /* ------------------------------------------------------------------ 界面 */
   const visibleRows = rows.filter(a => a.project_id === scope && (!missingOnly || !coverOf(a)));
+  // A filter that hides picked characters drops them, so ⌘C never copies what is not shown (same as the video page).
+  const visiblePickKey = visibleRows.filter(pickableAsset).map(r => r.id).join('|');
+  useEffect(() => { setPickedAssets(list => { const order = visiblePickKey.split('|'), next = list.filter(id => order.includes(id)); return next.length === list.length ? list : next.length > 1 ? next : []; }); }, [visiblePickKey]);
+  // ⌘A / ⌘C on the character list. Ignored while typing, inside the detail panel, a menu or a dialog, or with text selected.
+  const pickKeys = useRef<(e: KeyboardEvent) => void>(() => {});
+  pickKeys.current = e => {
+    const mod = e.metaKey || e.ctrlKey && !isMac, k = e.key.toLowerCase();
+    if (!mod || e.altKey || e.shiftKey || k !== 'a' && k !== 'c') return;
+    if (!active || scriptView || kind !== 'character' || busy || quick || imageId || modal || dropJob) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('input, textarea, select, [contenteditable="true"], .ca-detail, [role="dialog"], [role="menu"]')) return;
+    if (k === 'a') { const order = pickOrder(); if (!order.length) return; e.preventDefault(); lastPick.current.assets = order[0]; applyPick(order); return; }
+    if (String(window.getSelection?.() || '')) return;
+    if (pickedAssets.length > 1) { e.preventDefault(); void copyFiles('defaults', defaultsItems(pickedAssets)); return; }
+    const one = draft && rows.find(r => r.id === draft.id);
+    if (one && coverOf(one)) { e.preventDefault(); void copyDefault(one); }
+  };
+  useEffect(() => { const key = (e: KeyboardEvent) => pickKeys.current(e); window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, []);
   const listStatus = !scopesKnown && !rows.length ? (scopesError ? '范围未能读取' : '正在读取项目范围…') : listLoading ? '加载中…' : `${total} 个${archived ? '已归档的' : ''}${labels[kind]}`;
   const dialogImage = imageId ? images.find(b => b.id === imageId) ?? null : null;
   const dialogHealth = dialogImage ? health.find(h => h.id === dialogImage.id) : undefined;
@@ -735,11 +822,18 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // Rendered by a plain function (not a nested component) so the crop box keeps its state while dragging.
   function quickPanel(a: Asset) {
     const ref = quickRef, cover = coverOf(a), aspect = a.kind === 'character' ? 3 / 4 : 16 / 10;
-    const width = quick!.mode === 'menu' ? 196 : quick!.mode === 'pick' ? 560 : 540;
-    const left = Math.max(12, Math.min(quick!.x, window.innerWidth - width - 12)), top = Math.max(12, Math.min(quick!.y, window.innerHeight - (quick!.mode === 'menu' ? 200 : 520)));
+    const width = quick!.mode === 'menu' ? 196 : quick!.mode === 'multi' ? 252 : quick!.mode === 'pick' ? 560 : 540;
+    const left = Math.max(12, Math.min(quick!.x, window.innerWidth - width - 12)), top = Math.max(12, Math.min(quick!.y, window.innerHeight - (quick!.mode === 'menu' || quick!.mode === 'multi' ? 200 : 520)));
     const usable = (a.images ?? []).filter(b => !b.archived_at);
     const groups = a.kind === 'character' ? a.looks.filter(l => !l.archived_at).map(l => ({ key: l.id, title: '造型 · ' + l.name, images: usable.filter(b => b.look_id === l.id) })).filter(g => g.images.length) : [{ key: 'all', title: '参考图', images: usable }];
     const style = { left, top, width };
+    if (quick!.mode === 'multi') { const n = pickedAssets.length, over = overPick(n); return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={'已选 ' + n + ' 个' + labels[kind] + '的操作'} style={style}>
+      <button role="menuitem" disabled={!clipCap.available || desktopBusy || !!over} title={clipCap.reason || over || undefined} onClick={() => { setQuick(null); void copyFiles('defaults', defaultsItems(pickedAssets)); }}><Copy size={14}/>复制 {n} 张默认图<kbd>⌘C</kbd></button>
+      <button role="menuitem" disabled={!revealCap.available || desktopBusy || !!over} title={revealCap.reason || over || undefined} onClick={() => { setQuick(null); void revealFiles('defaults', defaultsItems(pickedAssets)); }}><FolderOpen size={14}/>在访达中显示 {n} 张</button>
+      <hr/>
+      <button role="menuitem" disabled><Star size={14}/>换默认图…<small>一次只能换一个</small></button>
+      <button role="menuitem" disabled><Maximize2 size={14}/>调整头像…<small>一次只能调一个</small></button>
+    </div>; }
     if (quick!.mode === 'menu') return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={a.name + '的操作'} style={style}>
       <button role="menuitem" disabled={!cover} onClick={() => void copyDefault(a)}><Copy size={14}/>复制默认图</button>
       <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
@@ -795,9 +889,9 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     {busy && <div className="ca-progress" role="status"><span className="spinner"/>{busy}</div>}
     <div className="ca-script-host" hidden={!scriptView}><ProjectScript projectId={scope} visible={active&&scriptView&&!publicScope} request={request} onDirtyChange={setScriptDirty} names={scriptNames}/></div>
     <div className="ca-stage" hidden={scriptView}><fieldset className="ca-interaction" disabled={!!busy}>
-      <div className={'ca-body' + (draft ? ' has-detail' : '')}>
-        <section className={'ca-gallery' + (dragTarget === 'gallery' ? ' is-drop' : '')} aria-label={labels[kind] + '画廊'} aria-busy={listLoading||!scopesKnown&&!scopesError}
-          {...dragProps('gallery', dropOnGallery)} onDragLeave={e => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDragTarget(''); }}>
+      <div className={'ca-body' + (draft || pickedAssets.length > 1 ? ' has-detail' : '')}>
+        <section className={'ca-gallery' + (dragTarget === 'gallery' ? ' is-drop' : '') + (marquee ? ' is-marquee' : '')} aria-label={labels[kind] + '画廊'} aria-busy={listLoading||!scopesKnown&&!scopesError}
+          onPointerDown={marqueeStart} {...dragProps('gallery', dropOnGallery)} onDragLeave={e => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDragTarget(''); }}>
           <div className="ca-gallery-bar">
             <div className="ca-filters" role="group" aria-label="筛选"><button type="button" aria-pressed={!missingOnly} onClick={() => setMissingOnly(false)}>全部</button><button type="button" aria-pressed={missingOnly} onClick={() => setMissingOnly(true)}>缺参考图</button></div>
             <span className="ca-count">{listStatus}{missingOnly && !listLoading ? ` · 本页缺参考图 ${visibleRows.length} 个` : ''}</span>
@@ -805,22 +899,21 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           {!scopesKnown&&!scopesError&&<div className="ca-progress" role="status">正在读取项目范围…</div>}
           {listLoading && <div className="ca-progress" role="status"><span className="spinner"/>正在加载当前项目的{labels[kind]}…</div>}
           {pickedAssets.length > 0 && <div className="ca-pickbar" role="toolbar" aria-label={'已选' + labels[kind] + '操作'}>
-            <strong>已选 {pickedAssets.length} 个{labels[kind]}</strong><small>每个复制一张默认图（原图文件）</small><span className="ca-grow"/>
-            <button type="button" className="ca-primary" disabled={!clipCap.available || desktopBusy} title={clipCap.reason || undefined} onClick={() => void copyFiles('defaults', defaultsItems(pickedAssets))}><Copy size={14}/>复制</button>
-            <button type="button" disabled={!revealCap.available || desktopBusy} title={revealCap.reason || undefined} onClick={() => void revealFiles('defaults', defaultsItems(pickedAssets))}><FolderOpen size={14}/>在访达中显示</button>
+            <strong>已选 {pickedAssets.length} 个{labels[kind]}</strong><small>每个复制一张默认图（原图文件）· ⌘C 也可以复制</small><span className="ca-grow"/>
+            <button type="button" className="ca-primary" disabled={!clipCap.available || desktopBusy || !!overPick(pickedAssets.length)} title={clipCap.reason || overPick(pickedAssets.length) || undefined} onClick={() => void copyFiles('defaults', defaultsItems(pickedAssets))}><Copy size={14}/>复制</button>
+            <button type="button" disabled={!revealCap.available || desktopBusy || !!overPick(pickedAssets.length)} title={revealCap.reason || overPick(pickedAssets.length) || undefined} onClick={() => void revealFiles('defaults', defaultsItems(pickedAssets))}><FolderOpen size={14}/>在访达中显示</button>
             <button type="button" className="ca-link-button" onClick={() => setPickedAssets([])}>取消选择</button>
             {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
-            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = pickedAssets.includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')}
-              onContextMenu={e => { e.preventDefault(); setQuick({ id: a.id, mode: 'menu', x: e.clientX, y: e.clientY }); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} onClick={e => { if (kind === 'character' && (pickedAssets.length || e.metaKey || e.ctrlKey || e.shiftKey)) { e.preventDefault(); pickAsset(a, e.shiftKey); return; } void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
+            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = pickedAssets.includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
+              onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
               </span>
               {dragTarget === a.id && <span className="ca-card-drop">添加为“{a.name}”的参考图</span>}
             </button>
-              {a.kind === 'character' && <button type="button" role="checkbox" className="ca-card-pick" aria-checked={picked} aria-label={'选择' + a.name} disabled={!pickableAsset(a)} title={pickableAsset(a) ? '选择（按住 ⌘ 或 Shift 点卡片也可以）' : '还没有默认图，不能选'} onClick={e => pickAsset(a, e.shiftKey)}>{picked ? '✓' : ''}</button>}
               <span className="ca-card-quick">
                 {cover && <button type="button" className="ca-card-copy" aria-label={'复制' + a.name + '的默认图'} title="复制默认图（整张原图），到画布平台按 ⌘V 粘贴" onClick={() => void copyDefault(a)}><Copy size={13}/>复制</button>}
                 <button type="button" className="ca-card-more" aria-label={a.name + '的更多操作'} aria-haspopup="menu" data-quick-trigger onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setQuick(q => q?.id === a.id && q.mode === 'menu' ? null : { id: a.id, mode: 'menu', x: r.right - 196, y: r.bottom + 6 }); }}><MoreHorizontal size={15}/></button>
@@ -832,7 +925,13 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           {missingOnly && !listLoading && !!rows.length && !visibleRows.length && empty('本页的' + labels[kind] + '都已有参考图')}
           {total > 40 && <div className="ca-pagination"><button disabled={page === 1} onClick={() => setPage(v => v - 1)}>上一页</button><span>{page} / {Math.ceil(total / 40)}</span><button disabled={page * 40 >= total} onClick={() => setPage(v => v + 1)}>下一页</button></div>}
           {dragTarget === 'gallery' && <div className="ca-drop-hint" aria-hidden="true"><ImagePlus size={26}/>松开以新建{labels[kind]}</div>}
+          {marquee && <div className="ca-marquee" aria-hidden="true" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }}/>}
         </section>
+        {!draft && pickedAssets.length > 1 && <aside className="ca-detail ca-pick-summary" aria-label={'已选' + labels[kind]}>
+          <h3>已选 {pickedAssets.length} 个{labels[kind]}</h3>
+          <ul>{pickedAssets.map(id => rows.find(r => r.id === id)).filter((r): r is Asset => !!r).map(r => <li key={r.id}><Avatar a={r}/><span>{r.name}</span></li>)}</ul>
+          <p className="ca-muted">多选时这里只列出已选的{labels[kind]}。单击某一张卡片，回到只选它并显示详情。</p>
+        </aside>}
         {draft && <aside className="ca-detail" aria-label={labels[draft.kind] + '详情'}>
           <div className="ca-detail-head">
             <Avatar a={draft}/>
