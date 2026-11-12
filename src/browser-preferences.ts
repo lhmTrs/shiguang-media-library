@@ -1,6 +1,6 @@
 export const viewPaths: Record<string, string> = {
   all: 'materials', photo: 'photos', video: 'videos', sfx: 'sound-effects', music: 'music', favorites: 'favorites',
-  projects: 'projects', projectAssets: 'project-assets', projectVideos:'project-videos', storyboard: 'storyboards', promptTemplates: 'prompt-templates',
+  projects: 'projects', projectUsage: 'project-usage', projectAssets: 'project-assets', projectVideos:'project-videos', storyboard: 'storyboards', promptTemplates: 'prompt-templates',
   categoryManagement: 'categories', tagManagement: 'tags', duplicates: 'duplicates', review: 'review', offline: 'offline', missing: 'missing',
 };
 export const groupDefaults = { find: true, design: true, manage: false, roots: true };
