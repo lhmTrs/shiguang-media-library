@@ -345,7 +345,11 @@
 .ca-v2 .ca-card.is-archived .ca-card-cover{opacity:.6}
 .ca-v2 .ca-card.is-drop{border-color:var(--green);box-shadow:0 0 0 3px var(--green)}
 .ca-v2 .ca-card-drop{position:absolute;inset:0;display:flex!important;align-items:center;justify-content:center;padding:14px;text-align:center;background:var(--c-14251c55);color:var(--c-fff);font-size:13px;font-weight:600;pointer-events:none}
-.ca-v2 .ca-cards .ca-card.ca-card-add{justify-content:center!important;align-items:center!important;flex-direction:column;gap:8px!important;padding:16px!important;border-style:dashed!important;background:transparent!important;color:var(--muted);min-height:180px}
+.ca-v2 .ca-cards .ca-card.ca-card-add{justify-content:center!important;align-items:center!important;flex-direction:column;gap:8px!important;padding:16px!important;background:var(--c-fff)!important;color:var(--c-24292c);min-height:180px}
+.ca-v2 .ca-cards .ca-card.ca-card-add>svg{color:var(--green)}
+.ca-v2 .ca-card-add strong{display:block;font-size:14px}
+.ca-v2 .ca-cards.ca-grid.ca-portrait .ca-card.ca-card-add.is-empty{aspect-ratio:10/19;min-height:0}
+.ca-v2 .ca-cards.ca-grid.ca-landscape .ca-card.ca-card-add.is-empty{aspect-ratio:12/13;min-height:0}
 .ca-v2 .ca-card-add span{text-align:center;display:block!important}
 .ca-v2 .ca-card-add small{display:block;margin-top:4px;font-size:11px;color:var(--muted);min-height:0}
 .ca-v2 .ca-cards.ca-list{display:flex;flex-direction:column;gap:6px}

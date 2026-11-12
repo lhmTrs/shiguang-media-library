@@ -534,6 +534,15 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const importFrozen = !!taskRef.current || !!sending;
   const editChanged = !!selected && !!draft && JSON.stringify(draft) !== JSON.stringify(editFor(selected));
   const childFolderCount = folders.filter(f => f.parentId === (folderId === 'all' ? 'root' : folderId)).length;
+  // The whole project has nothing yet (no videos here, no folders, nothing in the reject bin, no search or filter):
+  // hide the all-zero search, chips and count, and show one card in the grid that opens the import.
+  const projectEmpty = !!collection && !loading && !videos.length && folderId !== 'reject' && !folders.some(f => !rejectSet.has(f.id)) && !(roles?.rejectVideoCount)
+    && !query.trim() && adoptionFilter === 'all' && !attentionOnly;
+  const importDisabled = readOnly || !collection || importUnavailable || unresolved && task?.kind !== 'import';
+  function openImport() {
+    if (taskRef.current?.kind !== 'import' && terminal(taskRef.current?.receipt || null)) putTask(null);
+    setImportOpen(true); setUpgradeOpen(false);
+  }
   const draftDirty = (video: ProjectVideo) => !!edits[video.id] && JSON.stringify(edits[video.id]) !== JSON.stringify(editFor(video));
   // “全部视频”聚合时服务端不逐个核验，状态都是“尚未核验”；页头已说明，卡片上不再逐张重复。
   const showStatus = (video: ProjectVideo) => video.status !== 'available' && !(folderId === 'all' && video.status === 'unchecked');
@@ -719,17 +728,14 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     <div className="pv-content" aria-hidden={modalOpen || undefined}>
       <div className="pv-bar">
         <div className="pv-bar-row">
-          <label className="pv-search"><Search size={15} aria-hidden="true"/><input type="search" aria-label="搜索视频" value={query} onChange={e => setQuery(e.target.value)} placeholder={folderId === 'all' ? '搜索全部视频' : '搜索当前目录'}/>
-            <select aria-label="搜索范围" value={queryScope} onChange={e => setQueryScope(e.target.value as typeof queryScope)}><option value="all">名称和提示词</option><option value="name">只搜名称</option><option value="prompt">只搜提示词</option></select></label>
-          <div className="pv-chips" role="group" aria-label="按采用状态筛选">
+          {!projectEmpty && <label className="pv-search"><Search size={15} aria-hidden="true"/><input type="search" aria-label="搜索视频" value={query} onChange={e => setQuery(e.target.value)} placeholder={folderId === 'all' ? '搜索全部视频' : '搜索当前目录'}/>
+            <select aria-label="搜索范围" value={queryScope} onChange={e => setQueryScope(e.target.value as typeof queryScope)}><option value="all">名称和提示词</option><option value="name">只搜名称</option><option value="prompt">只搜提示词</option></select></label>}
+          {!projectEmpty && <div className="pv-chips" role="group" aria-label="按采用状态筛选">
             {(['all', 'candidate', 'adopted'] as const).map(key => <button key={key} type="button" aria-pressed={adoptionFilter === key} onClick={() => setAdoptionFilter(key)}>{{all: '全部', candidate: '候选', adopted: '已采用'}[key]}<span>{key === 'all' ? videos.length : videos.filter(v => (key === 'adopted') === v.adoptedShots.length > 0).length}</span></button>)}
             {(attentionCount > 0 || attentionOnly) && <button type="button" className="pv-chip-attention" aria-pressed={attentionOnly} title="文件缺失、待核验、格式不支持或待升级" onClick={() => setAttentionOnly(on => !on)}>需处理<span>{attentionCount}</span></button>}
-          </div>
+          </div>}
           <div className="pv-bar-actions">
-            <button type="button" className="pv-primary" disabled={readOnly || !collection || importUnavailable || unresolved && task?.kind !== 'import'} title={importUnavailable ? '另一个项目有一笔导入待结束；浏览和切换不受影响' : undefined} onClick={() => {
-              if (taskRef.current?.kind !== 'import' && terminal(taskRef.current?.receipt || null)) putTask(null);
-              setImportOpen(true); setUpgradeOpen(false);
-            }}><Upload size={16}/>导入视频</button>
+            <button type="button" className="pv-primary" disabled={importDisabled} title={importUnavailable ? '另一个项目有一笔导入待结束；浏览和切换不受影响' : undefined} onClick={openImport}><Upload size={16}/>导入视频</button>
             {menuWrap('more', <Ellipsis size={18}/>, {label: '更多视频操作', className: 'pv-icon-button'}, <>
               <button type="button" role="menuitemcheckbox" aria-checked={view === 'prompts'} onClick={() => { setOpenMenu(''); setView(old => old === 'prompts' ? 'videos' : 'prompts'); }}><span>按参考提示词分组</span>{view === 'prompts' && <Check size={14}/>}</button>
               {menuItem(loading ? '正在刷新…' : '刷新视频资料', () => void refresh(), {disabled: loading})}
@@ -804,11 +810,12 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           onDragOver={e => { if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked && !importUnavailable && !(task && !terminal(task.receipt))) { e.dataTransfer.dropEffect = 'copy'; setDragging(true); } else e.dataTransfer.dropEffect = 'none'; }}
           onDragLeave={e => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
           onDrop={e => { setDragging(false); if (!e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(VIDEO_DRAG_TYPE)) return; e.preventDefault(); if (!locked) acceptFiles(e.dataTransfer.files); }}>
-          <div className="pv-library-head"><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频{folderId === 'all' ? ' · 全部文件夹聚合，文件状态打开时核验' : ''}{loading && collection ? ' · 正在刷新…' : ''}</span><span className="pv-save-location" title={folderName}>导入到：<strong>{folderName}</strong></span></div>
+          {!projectEmpty && <div className="pv-library-head"><span>{childFolderCount ? `${childFolderCount} 个文件夹 · ` : ''}{filtered.length} / {videos.length} 个视频{folderId === 'all' ? ' · 全部文件夹聚合，文件状态打开时核验' : ''}{loading && collection ? ' · 正在刷新…' : ''}</span><span className="pv-save-location" title={folderName}>导入到：<strong>{folderName}</strong></span></div>}
           {dragging && <div className="pv-drop-overlay" role="status"><Upload size={18}/><span>松开导入一个视频到“{folderName}”，会先核对再复制</span></div>}
           {!collection && loading && <p className="pv-empty">正在读取项目视频…</p>}
           {view === 'prompts' && childFolderCount > 0 && <div className="pv-cards pv-folder-cards" role="group" aria-label="当前层子文件夹">{folderCards}</div>}
-          {groups.map(group => <section key={group.id} className="pv-group">
+          {projectEmpty && <div className="pv-cards"><button type="button" className="pv-card pv-card-empty" disabled={importDisabled} onClick={openImport}><Upload size={20} aria-hidden="true"/><strong>还没有生成视频</strong>{!importDisabled && <small>拖入视频或点击导入</small>}</button></div>}
+          {!projectEmpty && groups.map(group => <section key={group.id} className="pv-group">
             {view === 'prompts' && <header><h2>{group.title}<small>{group.videos.length} 个视频</small></h2>{group.text && <details><summary>查看完整参考提示词</summary><pre>{group.text}</pre></details>}</header>}
             <div className="pv-cards" role="group" aria-label={view === 'videos' ? '当前目录的文件夹与视频' : group.title}>{view === 'videos' && folderCards}{group.videos.map(video => <div className="pv-card-entry" key={video.id}><button type="button" data-video-id={video.id} className={`pv-card${picked.includes(video.id) ? ' pv-selected' : ''}${multi && picked.includes(video.id) ? ' pv-multi' : ''}`} aria-pressed={picked.includes(video.id)} draggable={video.managed && !readOnly && !operationPending} onDragStart={e => { e.dataTransfer.setData(VIDEO_DRAG_TYPE, JSON.stringify({projectId, videoId: video.id})); e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDropFolder('')} onClick={e => pickCard(e, video.id)} onDoubleClick={() => { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); }}
               onContextMenu={e => { e.preventDefault(); if (!picked.includes(video.id)) { anchorRef.current = video.id; applyPick([video.id]); } openContext(e.clientX, e.clientY); }}
@@ -830,7 +837,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {folderId !== 'reject' && <button type="button" disabled={rejectBlocked} title={`移入废片收纳处（一次最多 ${MAX_REJECT} 个），会先核对影响`} onClick={() => markReject(pickedOrdered)}><Archive size={14}/>标记为废片</button>}
             <button type="button" onClick={() => applyPick([])}>取消选择</button>
             {(copyDisabledReason || revealDisabledReason) && <small>{copyDisabledReason || revealDisabledReason}</small>}</div>}
-          {!loading && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
+          {!loading && !projectEmpty && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
         </section>
         {multi && <aside className="pv-detail pv-detail-multi" aria-label="已选视频">
           <header className="pv-detail-head"><div className="pv-detail-title"><small>多选</small><h2>已选 {picked.length} 个视频</h2></div>

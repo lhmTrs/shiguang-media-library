@@ -759,6 +759,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
 
   /* ------------------------------------------------------------------ 界面 */
   const visibleRows = rows.filter(a => a.project_id === scope && (!missingOnly || !coverOf(a)));
+  // Truly empty (this kind has nothing yet, not a search or filter result): no filters or count, and the add card says so.
+  const trulyEmpty = !!scope && scopesKnown && !listLoading && !archived && !q.trim() && total === 0 && !rows.length;
   // A filter that hides picked characters drops them, so ⌘C never copies what is not shown (same as the video page).
   const visiblePickKey = visibleRows.filter(pickableAsset).map(r => r.id).join('|');
   useEffect(() => { setPickedAssets(list => { const order = visiblePickKey.split('|'), next = list.filter(id => order.includes(id)); return next.length === list.length ? list : next.length > 1 ? next : []; }); }, [visiblePickKey]);
@@ -896,10 +898,10 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       <div className={'ca-body' + (draft || pickedAssets.length > 1 ? ' has-detail' : '')}>
         <section className={'ca-gallery' + (dragTarget === 'gallery' ? ' is-drop' : '') + (marquee ? ' is-marquee' : '')} aria-label={labels[kind] + '画廊'} aria-busy={listLoading||!scopesKnown&&!scopesError}
           ref={galleryRef} tabIndex={-1} onKeyDown={e => pickKeys.current(e.nativeEvent)} onPointerDown={marqueeStart} {...dragProps('gallery', dropOnGallery)} onDragLeave={e => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDragTarget(''); }}>
-          <div className="ca-gallery-bar">
+          {!trulyEmpty && <div className="ca-gallery-bar">
             <div className="ca-filters" role="group" aria-label="筛选"><button type="button" aria-pressed={!missingOnly} onClick={() => setMissingOnly(false)}>全部</button><button type="button" aria-pressed={missingOnly} onClick={() => setMissingOnly(true)}>缺参考图</button></div>
             <span className="ca-count">{listStatus}{missingOnly && !listLoading ? ` · 本页缺参考图 ${visibleRows.length} 个` : ''}</span>
-          </div>
+          </div>}
           {!scopesKnown&&!scopesError&&<div className="ca-progress" role="status">正在读取项目范围…</div>}
           {listLoading && <div className="ca-progress" role="status"><span className="spinner"/>正在加载当前项目的{labels[kind]}…</div>}
           {pickedAssets.length > 0 && <div className="ca-pickbar" role="toolbar" aria-label={'已选' + labels[kind] + '操作'}>
@@ -923,7 +925,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                 <button type="button" className="ca-card-more" aria-label={a.name + '的更多操作'} aria-haspopup="menu" data-quick-trigger onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setQuick(q => q?.id === a.id && q.mode === 'menu' ? null : { id: a.id, mode: 'menu', x: r.right - 196, y: r.bottom + 6 }); }}><MoreHorizontal size={15}/></button>
               </span>
             </div>; })}
-            {!archived && <button className="ca-card ca-card-add" disabled={!scope || !!busy || publicScope && kind !== 'character'} onClick={() => void create()}><Plus size={18}/><span>新建{labels[kind]}<small>或把图片拖到这里</small></span></button>}
+            {!archived && (() => { const off = !scope || !!busy || publicScope && kind !== 'character'; return <button className={'ca-card ca-card-add' + (trulyEmpty ? ' is-empty' : '')} disabled={off} onClick={() => void create()}><Plus size={18}/>{trulyEmpty ? <span><strong>还没有{labels[kind]}</strong>{!off && <small>拖入图片或点击新建</small>}</span> : <span>新建{labels[kind]}</span>}</button>; })()}
           </div>
           {scopesKnown && !listLoading && !rows.length && !error && !scopesError && (archived || !scope) && empty(scope ? '暂无归档' + labels[kind] : '请先选择项目')}
           {missingOnly && !listLoading && !!rows.length && !visibleRows.length && empty('本页的' + labels[kind] + '都已有参考图')}
