@@ -1,3 +1,4 @@
+import { ATTRIBUTE_TABLES, attributeColumnType } from './project-attributes/schema.mjs';
 import {VIDEO_TABLES,videoColumnType} from './storyboard-video/schema.mjs';
 import {SCRIPT_TABLES,scriptColumnType} from './project-scripts/schema.mjs';
 import {TABLES as GENERATION_TABLES,generationColumnType,generationConstraints} from './storyboard-generation/schema.mjs';
@@ -83,6 +84,7 @@ export function mysqlColumnType(table, col) {
   if(Object.hasOwn(CONCIERGE_TABLES,table))return conciergeColumnType(table,col);
   if(Object.hasOwn(VIDEO_TABLES,table))return videoColumnType(table,col);
   if(Object.hasOwn(SCRIPT_TABLES,table))return scriptColumnType(table,col);
+  if (Object.hasOwn(ATTRIBUTE_TABLES, table)) return attributeColumnType(table, col);
   if(Object.hasOwn(GENERATION_TABLES,table))return generationColumnType(table,col);
   if (Object.hasOwn(STORYBOARD_TABLES,table)) return storyboardColumnType(table,col);
   if (Object.hasOwn(CREATIVE_TABLES,table)) return creativeColumnType(table,col) + (table === 'creative_schema' && col.name === 'id' ? ' PRIMARY KEY' : '');
@@ -298,6 +300,9 @@ export class MysqlStorage {
       for(const table of Object.keys(PROMPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(VIDEO_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(SCRIPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for (const table of Object.keys(ATTRIBUTE_TABLES)) {
+        if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
+      }
       for(const table of Object.keys(CREATIVE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(STORYBOARD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(GENERATION_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
@@ -355,6 +360,7 @@ export class MysqlStorage {
           if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(VIDEO_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if (Object.hasOwn(ATTRIBUTE_TABLES, t)) return `\`${col.name}\` ${type} NOT NULL`;
           if(Object.hasOwn(SCRIPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(CREATIVE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${t==='creative_assets'&&col.name==='archived_at'?" DEFAULT 0":""}`;
           if(Object.hasOwn(STORYBOARD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;

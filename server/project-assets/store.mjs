@@ -3,12 +3,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { CREATIVE_TABLES, creativeSchema, creativeIndexes, migrateCreativeArchive } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
+import { ProjectAttributes } from '../project-attributes/store.mjs';
+import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
 import {CharacterVoiceFiles} from './voices.mjs';
 import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 
 const parse = value => JSON.parse(value);
 const PUBLIC_KEY = 'creative-public';
 const active = row => row.archived_at === null;
+const backupContent = ({ tables, projects, project_scripts, project_attributes }) => ({
+  tables, projects, ...(project_scripts !== undefined && { project_scripts }),
+  ...(project_attributes !== undefined && { project_attributes }),
+});
 export class ProjectAssets {
   constructor(lib) { this.lib = lib; this.healthCache = new Map();this.voices=new CharacterVoiceFiles(lib); }
   get db() { return this.lib.db; }
@@ -34,6 +40,8 @@ export class ProjectAssets {
         this.db.prepare('INSERT INTO media_projects(id,name,software,note,created_at,updated_at,project_kind,system_key) VALUES(?,?,?,?,?,?,?,?)').run(id, '@公共人物库-' + id.slice(0, 8), '', '系统公共人物库', now, now, 'public', PUBLIC_KEY);
       }
     });
+    this.attributes = new ProjectAttributes(this).init();
+    this.lib.projectAttributes = this.attributes;
     return this;
   }
   project(id, lock = false) {
@@ -232,10 +240,10 @@ export class ProjectAssets {
   backup() { return this.tx(() => this.backupInTransaction()); }
   // Internal caller already owns the one transaction; never start a nested one.
   backupInTransaction() {
-    const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all(); const data = { tables, projects, ...(this.scripts?{project_scripts:this.scripts.snapshot()}:{}) }; return { format: 'shiguang-creative-backup', schema_version: 2, ...data, checksum: digest(data) };
+    const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all(); const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), project_attributes: snapshotAttributes(this.db) }); return { format: 'shiguang-creative-backup', schema_version: 2, ...data, checksum: digest(data) };
   }
   validateBackup(input) {
-    if (!input || input.format !== 'shiguang-creative-backup' || ![1,2].includes(input.schema_version) || digest({ tables: input.tables, projects: input.projects, ...(Object.hasOwn(input,'project_scripts')?{project_scripts:input.project_scripts}:{}) }) !== input.checksum || canonical(Object.keys(input.tables ?? {}).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort()) || !Array.isArray(input.projects) || input.projects.length > 10000) throw fault('资产库备份格式或摘要无效');
+    if (!input || input.format !== 'shiguang-creative-backup' || ![1,2].includes(input.schema_version) || digest(backupContent(input)) !== input.checksum || canonical(Object.keys(input.tables ?? {}).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort()) || !Array.isArray(input.projects) || input.projects.length > 10000) throw fault('资产库备份格式或摘要无效');
     input = structuredClone(input);
     if(Object.hasOwn(input,'project_scripts')&&!this.scripts)throw fault('项目剧本模块尚未就绪，未恢复备份');
     if (input.tables.creative_schema?.length !== 1 || input.tables.creative_schema[0].version !== input.schema_version) throw fault('备份 schema 版本无效');
@@ -243,7 +251,7 @@ export class ProjectAssets {
       for (const a of input.tables.creative_assets) a.archived_at ??= 0;
       for (const s of input.tables.creative_schema) s.version = 2;
       input.schema_version = 2;
-      input.checksum = digest({tables: input.tables, projects: input.projects,...(Object.hasOwn(input,'project_scripts')?{project_scripts:input.project_scripts}:{})});
+      input.checksum = digest(backupContent(input));
     }
     const projectIds = new Set();
     for (const p of input.projects) {
@@ -267,6 +275,7 @@ export class ProjectAssets {
     const t = input.tables;
     if (t.creative_schema.length !== 1 || t.creative_schema[0].id !== 'asset-library' || t.creative_schema[0].version !== 2) throw fault('备份 schema 版本无效');
     const assets = new Map(t.creative_assets.map(a => [a.id, a]));
+    if (Object.hasOwn(input, 'project_attributes')) validateAttributes(input.project_attributes, input.projects, assets);
     const looks = new Map(t.creative_looks.map(l => [l.id,l]));
     for (const a of assets.values()) if (!projectIds.has(a.project_id)) throw fault('备份资产项目不存在');
     for (const l of looks.values()) if (assets.get(l.asset_id)?.kind !== 'character') throw fault('备份造型归属无效');
@@ -322,6 +331,7 @@ export class ProjectAssets {
       for (const row of input.tables.creative_assets) { const a = this.get(row.id); this.project(a.project_id); normalize(a); }
       for (const table of ['creative_looks', 'creative_image_bindings', 'creative_asset_versions']) for (const r of input.tables[table]) this.head(r.asset_id);
       this.scripts?.restoreRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[]);
+      restoreAttributes(this.db, input.project_attributes);
       return { restored: true, assets: input.tables.creative_assets.length };
   }
 }
