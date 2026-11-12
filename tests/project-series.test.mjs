@@ -28,6 +28,8 @@ const item = (project, number) => ({
 });
 const move = (series, target, items) => series.move({ target, items, request_id: randomUUID() });
 const listed = (projects, project) => projects.list().find(row => row.id === project.id);
+const organizeGroup = (group_id, target, ...items) => ({ group_id, target, items });
+const newDrama = name => ({ new_series: { name, software: "jianying" } });
 
 test("empty containers, independent numbering and stable project references", async t => {
   const { series, projects, store, a } = await setup(t);
@@ -112,6 +114,76 @@ test("batch move preserves all prior positions on conflict and undo requires the
   assert.equal(listed(projects, b).season_id, season.id);
 });
 
+test("organize rolls back earlier groups when a later membership write fails", async t => {
+  const { series, projects, a, b } = await setup(t);
+  const drama = createDrama(series);
+  const beforeDirectory = series.list();
+  const beforeProjects = projects.list();
+  const request_id = randomUUID();
+  const input = { request_id, groups: [
+    organizeGroup("existing", root(drama), item(a, 7)),
+    organizeGroup("new", newDrama("第二组新剧"), item(b, 9)),
+  ] };
+  series.db.exec(`CREATE TEMP TRIGGER organize_write_failure BEFORE INSERT ON project_series_members
+    WHEN NEW.episode_no=9 BEGIN SELECT RAISE(ABORT,'fixture rejected later write'); END`);
+  assert.throws(() => series.organize(input), /fixture rejected later write/);
+  assert.deepEqual(series.list(), beforeDirectory);
+  assert.deepEqual(projects.list(), beforeProjects);
+  assert.deepEqual(series.request(request_id), { found: false });
+
+  series.db.exec("DROP TRIGGER organize_write_failure");
+  const result = series.organize(input);
+  assert.equal(result.created_series[0].series.next_episode_no, 10);
+  assert.deepEqual(result.changes.map(change => [change.group_id, change.project_id, change.after.episode_no]),
+    [["existing", a.id, 7], ["new", b.id, 9]]);
+  assert.deepEqual(series.organize(input), result);
+  assert.deepEqual(series.request(request_id), { found: true, result });
+  assert.equal(series.list().length, 2);
+});
+
+test("organize detects cross-group slot conflicts and rejects already grouped or locked projects", async t => {
+  const { series, projects, a, b } = await setup(t);
+  const drama = createDrama(series);
+  const season = series.createSeason(drama.id, { request_id: randomUUID() });
+  const request_id = randomUUID();
+  const grouped = { request_id, groups: [
+    organizeGroup("first", inSeason(season), item(a, 1)),
+    organizeGroup("second", inSeason(season), item(b, 1)),
+  ] };
+  assert.throws(() => series.organize(grouped), { code: "SERIES_ORGANIZE_CONFLICT", details: { conflicts: [{
+    group_id: "second", project_id: b.id, code: "EPISODE_NUMBER_CONFLICT", ...inSeason(season),
+    episode_no: 1, conflicting_project_id: a.id,
+  }] } });
+  assert.throws(() => series.organize({ ...grouped, groups: [
+    grouped.groups[0], organizeGroup("duplicate", newDrama("不应创建"), item(a, 2)),
+  ] }), { code: "INVALID_SERIES_INPUT" });
+
+  move(series, inSeason(season), [item(b, 5)]);
+  const before = series.list();
+  const target = { request_id, groups: [
+    organizeGroup("new", newDrama("不应创建"), item(a, 1)),
+    organizeGroup("existing", root(drama), item(listed(projects, b), 2)),
+  ] };
+  assert.throws(() => series.organize(target), { code: "SERIES_ORGANIZE_CONFLICT", details: {
+    conflicts: [{ group_id: "existing", project_id: b.id, code: "SERIES_STALE" }],
+  } });
+  assert.deepEqual(series.list(), before);
+  assert.deepEqual(series.request(request_id), { found: false });
+
+  move(series, outside, [item(listed(projects, b))]);
+  target.groups[1].items = [item(listed(projects, b), 2)];
+  projects.generationLocks = { assertWritable(id) {
+    if (id === b.id) throw Object.assign(Error("fixture has a generation lock"), { code: "STORYBOARD_GENERATION_LOCKED" });
+  } };
+  assert.throws(() => series.organize(target), { code: "SERIES_ORGANIZE_CONFLICT", details: {
+    conflicts: [{ group_id: "existing", project_id: b.id, code: "STORYBOARD_GENERATION_LOCKED" }],
+  } });
+  assert.deepEqual(series.list(), before);
+  assert.deepEqual(series.request(request_id), { found: false });
+  projects.generationLocks = undefined;
+  assert.deepEqual(series.organize(target).changes.map(change => change.before.revision), [0, 2]);
+});
+
 test("episodes and seasons swap the visible neighbor across gaps, and stale neighbors cannot swap", async t => {
   const { series, projects, a, b } = await setup(t);
   const drama = createDrama(series);
@@ -132,12 +204,15 @@ test("episodes and seasons swap the visible neighbor across gaps, and stale neig
 });
 
 test("creative backup round-trips directory, high-water marks and receipts; older backups preserve grouping", async t => {
-  const { series, store, a } = await setup(t);
+  const { series, store, a, b } = await setup(t);
   const legacy = store.backup();
   assert.equal(Object.hasOwn(legacy, "project_series"), false);
   const drama = createDrama(series);
   const season = series.createSeason(drama.id, { request_id: randomUUID(), season_no: 3 });
   const moved = move(series, inSeason(season), [item(a, 7)]);
+  const organized = series.organize({ request_id: randomUUID(), groups: [
+    organizeGroup("new", newDrama("备份归组剧"), item(b, 6)),
+  ] });
   await store.restore(legacy);
   assert.equal(series.membership(a.id).season_id, season.id);
   const backup = store.backup();
@@ -147,10 +222,11 @@ test("creative backup round-trips directory, high-water marks and receipts; olde
   await target.store.restore(backup);
   assert.deepEqual(target.series.list(), series.list());
   assert.deepEqual(target.series.request(moved.request_id), series.request(moved.request_id));
+  assert.deepEqual(target.series.request(organized.request_id), { found: true, result: organized });
   assert.deepEqual(target.series.membership(a.id), series.membership(a.id));
   target.series.undo(moved.request_id, { request_id: randomUUID() });
   assert.equal(target.series.membership(a.id).series_id, null);
-  assert.equal(target.series.list()[0].seasons[0].next_episode_no, 8);
+  assert.equal(target.series.list().find(row => row.id === drama.id).seasons[0].next_episode_no, 8);
   await assert.rejects(target.store.restore(backup), { status: 409 });
   assert.equal(target.series.membership(a.id).series_id, null);
 
@@ -159,10 +235,19 @@ test("creative backup round-trips directory, high-water marks and receipts; olde
   const { format, schema_version, checksum, ...content } = invalid;
   invalid.checksum = digest(content);
   assert.throws(() => store.validateBackup(invalid), /备份剧集目录/);
+
+  const invalidReceipt = structuredClone(backup);
+  const row = invalidReceipt.project_series.project_series_requests.find(request => request.id === organized.request_id);
+  const result = JSON.parse(row.result_json);
+  result.created_series[0].group_id = "另一个组";
+  row.result_json = JSON.stringify(result);
+  const { format: _format, schema_version: _version, checksum: _checksum, ...receiptContent } = invalidReceipt;
+  invalidReceipt.checksum = digest(receiptContent);
+  assert.throws(() => store.validateBackup(invalidReceipt), /备份剧集目录/);
 });
 
 test("HTTP series routes return the published contract and distinguish invalid input and stale requests", async t => {
-  const { series, projects } = await setup(t);
+  const { series, projects, a, b } = await setup(t);
   const app = express();
   app.use(express.json());
   app.use("/api", projectSeriesRouter(series));
@@ -189,6 +274,29 @@ test("HTTP series routes return the published contract and distinguish invalid i
   const projectsResult = await call("/projects");
   assert.equal(listed({ list: () => projectsResult.data }, result.data.project).episode_no, 1);
   assert.deepEqual((await call("/project-series/requests/" + input.request_id)).data, { found: true, result: result.data });
+
+  const organize = "/project-series/organize";
+  const request_id = randomUUID();
+  const batch = { request_id, groups: [
+    organizeGroup("new", newDrama("接口归组剧"), item(a, 3)),
+    organizeGroup("existing", root(created.data), item(b, 1)),
+  ] };
+  const conflict = await call(organize, "POST", batch);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.data.code, "SERIES_ORGANIZE_CONFLICT");
+  assert.deepEqual(conflict.data.details.conflicts, [{
+    group_id: "existing", project_id: b.id, code: "EPISODE_NUMBER_CONFLICT", ...root(created.data),
+    episode_no: 1, conflicting_project_id: result.data.project.id,
+  }]);
+  assert.deepEqual((await call("/project-series/requests/" + request_id)).data, { found: false });
+  assert.deepEqual(series.list().map(row => row.name), ["接口剧名"]);
+  batch.groups[1].items = [item(b, 2)];
+  const organized = await call(organize, "POST", batch);
+  assert.equal(organized.status, 200);
+  assert.deepEqual((await call("/project-series/requests/" + request_id)).data, { found: true, result: organized.data });
+  assert.deepEqual(await call(organize, "POST", batch), organized);
+  batch.groups[1].items = [item(b, 5)];
+  assert.equal((await call(organize, "POST", batch)).data.code, "SERIES_REQUEST_CONFLICT");
 });
 
 test("the SQLite-to-MySQL mapping retains series keys and collision constraints", () => {

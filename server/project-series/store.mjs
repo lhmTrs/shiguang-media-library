@@ -9,6 +9,7 @@ const ungrouped = { series_id: null, season_id: null, episode_no: null, revision
 const mysqlLock = db => db.kind === "mysql" ? " FOR UPDATE" : "";
 const containerKey = position => position.season_id ?? rootKey;
 const slot = position => JSON.stringify([position.series_id, containerKey(position), position.episode_no]);
+const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
 
 export class SeriesError extends Error {
   constructor(code, message, status = 409, details) {
@@ -19,6 +20,10 @@ export class SeriesError extends Error {
 
 function invalid(message) {
   throw new SeriesError("INVALID_SERIES_INPUT", message, 400);
+}
+
+function organizeConflict(conflicts) {
+  return new SeriesError("SERIES_ORGANIZE_CONFLICT", "归组有冲突，请核对后重新提交", 409, { conflicts });
 }
 
 function identifier(value, label) {
@@ -46,6 +51,39 @@ function editor(value) {
 function checkRevision(row, expected) {
   if (Number(row.revision) !== number(expected, "版本")) {
     throw new SeriesError("SERIES_STALE", "目录已修改，请刷新后重试");
+  }
+}
+
+function validateOrganizeGroups(groups) {
+  if (!Array.isArray(groups) || !groups.length || groups.length > 200) invalid("请选择 1–200 个项目归组");
+  const groupIds = new Set(), projectIds = new Set();
+  for (const group of groups) {
+    if (!record(group)) invalid("归组格式不正确");
+    const { group_id, target, items } = group;
+    label(group_id, "分组编号");
+    if (group_id.length > 120 || groupIds.has(group_id)) invalid("分组编号无效或重复");
+    groupIds.add(group_id);
+    if (!record(target)) invalid("请选择目标剧或季");
+    if (Object.hasOwn(target, "new_series")) {
+      if (!record(target.new_series) || Object.hasOwn(target, "series_id") || Object.hasOwn(target, "season_id")) {
+        invalid("请选择一个现有目标或新建一部剧");
+      }
+      label(target.new_series.name, "剧名");
+      editor(target.new_series.software ?? "");
+    } else {
+      identifier(target.series_id, "剧编号");
+      if (target.season_id !== null) identifier(target.season_id, "季编号");
+    }
+    if (!Array.isArray(items) || !items.length || items.length > 200) invalid("每组须选择 1–200 个项目");
+    for (const item of items) {
+      if (!record(item)) invalid("项目归组格式不正确");
+      const id = identifier(item.project_id, "项目编号").toLowerCase();
+      if (projectIds.has(id)) invalid("同一项目不能重复选择");
+      projectIds.add(id);
+      if (projectIds.size > 200) invalid("一批最多归组 200 个项目");
+      number(item.expected_revision, "归组版本", 0);
+      number(item.episode_no, "集号");
+    }
   }
 }
 
@@ -158,15 +196,17 @@ export class ProjectSeries {
     if (existing && existing.id !== id) throw new SeriesError("SERIES_NAME_CONFLICT", "剧名已存在，请换一个名称");
   }
 
+  insertSeries(input) {
+    const name = label(input.name, "剧名"), software = editor(input.software ?? "");
+    this.assertSeriesNameAvailable(name);
+    const id = randomUUID(), now = Date.now();
+    this.db.prepare("INSERT INTO project_series (id,name,name_key,software,revision,max_season_no,max_root_episode_no,created_at,updated_at) VALUES (?,?,?,?,1,0,0,?,?)")
+      .run(id, name, nameKey(name), software, now, now);
+    return id;
+  }
+
   createSeries(input) {
-    return this.withReceipt("create-series", null, input, () => {
-      const name = label(input.name, "剧名"), software = editor(input.software ?? "");
-      this.assertSeriesNameAvailable(name);
-      const id = randomUUID(), now = Date.now();
-      this.db.prepare("INSERT INTO project_series (id,name,name_key,software,revision,max_season_no,max_root_episode_no,created_at,updated_at) VALUES (?,?,?,?,1,0,0,?,?)")
-        .run(id, name, nameKey(name), software, now, now);
-      return seriesView(this.series(id), []);
-    });
+    return this.withReceipt("create-series", null, input, () => seriesView(this.series(this.insertSeries(input)), []));
   }
 
   updateSeries(id, input) {
@@ -299,9 +339,15 @@ export class ProjectSeries {
 
   planMove(input) {
     const target = this.target(input.target);
-    if (!Array.isArray(input.items) || !input.items.length || input.items.length > 200) invalid("请选择 1–200 个项目");
+    const { changes, conflicts } = this.planMembership(target, input.items);
+    conflicts.push(...this.numberConflicts(changes));
+    return { ready: conflicts.length === 0, changes, conflicts };
+  }
+
+  planMembership(target, items, ungroupedOnly = false) {
+    if (!Array.isArray(items) || !items.length || items.length > 200) invalid("请选择 1–200 个项目");
     const seen = new Set(), conflicts = [], changes = [];
-    for (const item of input.items) {
+    for (const item of items) {
       const id = identifier(item?.project_id, "项目编号");
       if (seen.has(id)) invalid("同一项目不能重复选择");
       seen.add(id);
@@ -316,7 +362,7 @@ export class ProjectSeries {
         continue;
       }
       const before = this.membership(id);
-      if (before.revision !== expected) {
+      if (before.revision !== expected || (ungroupedOnly && before.series_id !== null)) {
         conflicts.push({ project_id: id, code: "SERIES_STALE" });
         continue;
       }
@@ -327,8 +373,7 @@ export class ProjectSeries {
       }
       changes.push({ project_id: id, before, after: { ...target, episode_no: episodeNo, revision: before.revision + 1 } });
     }
-    conflicts.push(...this.numberConflicts(changes));
-    return { ready: conflicts.length === 0, changes, conflicts };
+    return { changes, conflicts };
   }
 
   numberConflicts(changes) {
@@ -354,9 +399,16 @@ export class ProjectSeries {
   applyChanges(changes) {
     const remove = this.db.prepare("DELETE FROM project_series_members WHERE id=?");
     const project = this.db.prepare("SELECT id FROM media_projects WHERE id=? AND project_kind='normal'" + mysqlLock(this.db));
-    for (const id of changes.map(change => change.project_id).sort()) {
-      if (!project.get(id)) throw new SeriesError("PROJECT_NOT_FOUND", "项目已删除，请刷新后重试", 404);
-      this.projects.generationLocks?.assertWritable(id);
+    const byProject = new Map(changes.map(change => [change.project_id, change]));
+    for (const id of [...byProject.keys()].sort()) {
+      try {
+        if (!project.get(id)) throw new SeriesError("PROJECT_NOT_FOUND", "项目已删除，请刷新后重试", 404);
+        this.projects.generationLocks?.assertWritable(id);
+      } catch (error) {
+        const { group_id } = byProject.get(id);
+        if (group_id === undefined || !["PROJECT_NOT_FOUND", "STORYBOARD_GENERATION_LOCKED"].includes(error.code)) throw error;
+        throw organizeConflict([{ group_id, project_id: id, code: error.code }]);
+      }
       remove.run(id);
     }
     for (const { project_id, after } of changes) this.writeMembership(project_id, after);
@@ -377,6 +429,42 @@ export class ProjectSeries {
       }
       this.applyChanges(changes);
       return { request_id: requestId, changes, can_undo: true };
+    });
+  }
+
+  organize(input) {
+    return this.withReceipt("organize", null, input, requestId => {
+      validateOrganizeGroups(input.groups);
+      const changes = [], conflicts = [], created = [];
+      for (const { group_id, target, items } of input.groups) {
+        let position;
+        try {
+          if (target.new_series) {
+            const id = this.insertSeries(target.new_series);
+            created.push({ group_id, id });
+            position = { series_id: id, season_id: null };
+          } else {
+            const series = this.series(target.series_id);
+            const season = target.season_id === null ? null : this.season(series.id, target.season_id);
+            position = { series_id: series.id, season_id: season?.id ?? null };
+          }
+        } catch (error) {
+          if (!(error instanceof SeriesError) || !["SERIES_NAME_CONFLICT", "SERIES_NOT_FOUND", "SEASON_NOT_FOUND"].includes(error.code)) throw error;
+          const { series_id, season_id } = target;
+          conflicts.push({ group_id, code: error.code, ...(series_id && { series_id, season_id }) });
+          continue;
+        }
+        const planned = this.planMembership(position, items, true);
+        changes.push(...planned.changes.map(change => ({ group_id, ...change })));
+        conflicts.push(...planned.conflicts.map(conflict => ({ group_id, ...conflict })));
+      }
+      const groupByProject = new Map(changes.map(change => [change.project_id, change.group_id]));
+      conflicts.push(...this.numberConflicts(changes).map(conflict => ({ group_id: groupByProject.get(conflict.project_id), ...conflict })));
+      if (conflicts.length) throw organizeConflict(conflicts);
+
+      this.applyChanges(changes);
+      const created_series = created.map(({ group_id, id }) => ({ group_id, series: seriesView(this.series(id), []) }));
+      return { request_id: requestId, created_series, changes };
     });
   }
 

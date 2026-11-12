@@ -2,7 +2,7 @@ import { canonical, fault, idOK, nameKey } from "../project-assets/model.mjs";
 import { SERIES_TABLES } from "./schema.mjs";
 
 const tables = Object.keys(SERIES_TABLES).filter(table => table !== "project_series_lock");
-const requestKinds = new Set(["create-series", "create-season", "create-episode", "move", "undo-move", "reorder-episodes", "reorder-seasons"]);
+const requestKinds = new Set(["create-series", "create-season", "create-episode", "move", "undo-move", "reorder-episodes", "reorder-seasons", "organize"]);
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min && value < Number.MAX_SAFE_INTEGER;
 const validName = value => typeof value === "string" && value.length > 0 && value.length <= 120 && value === value.trim() && !/[\x00-\x1f\x7f]/.test(value);
 const validTimes = row => integer(row.created_at) && integer(row.updated_at, row.created_at);
@@ -17,6 +17,33 @@ function positionValid(position) {
     integer(position.episode_no, 1) && integer(position.revision, 1);
 }
 
+const groupIdValid = value => typeof value === "string" && value.trim().length > 0 && value.length <= 120 && !/[\x00-\x1f\x7f]/.test(value);
+const changeValid = change => idOK(change.project_id) && positionValid(change.before) && positionValid(change.after) &&
+  change.after.revision === change.before.revision + 1;
+
+function validOrganizeReceipt(result) {
+  if (!sameKeys(result, ["request_id", "created_series", "changes"]) || !Array.isArray(result.created_series) ||
+      !Array.isArray(result.changes) || !result.changes.length || result.changes.length > 200 ||
+      result.created_series.length > result.changes.length) return false;
+  const targets = new Map(), projects = new Set(), createdGroups = new Set(), createdIds = new Set();
+  for (const change of result.changes) {
+    if (!sameKeys(change, ["group_id", "project_id", "before", "after"]) || !groupIdValid(change.group_id) ||
+        !changeValid(change) || projects.has(change.project_id.toLowerCase()) || change.before.series_id !== null || change.after.series_id === null) return false;
+    const target = canonical([change.after.series_id, change.after.season_id]);
+    if (targets.has(change.group_id) && targets.get(change.group_id) !== target) return false;
+    targets.set(change.group_id, target);
+    projects.add(change.project_id.toLowerCase());
+  }
+  for (const entry of result.created_series) {
+    if (!sameKeys(entry, ["group_id", "series"]) || !idOK(entry.series?.id) || !groupIdValid(entry.group_id) ||
+        createdGroups.has(entry.group_id) || createdIds.has(entry.series.id) ||
+        targets.get(entry.group_id) !== canonical([entry.series.id, null])) return false;
+    createdGroups.add(entry.group_id);
+    createdIds.add(entry.series.id);
+  }
+  return true;
+}
+
 function validReceipt(row) {
   if (!validHash(row.request_hash) || !requestKinds.has(row.kind) || !integer(row.created_at) || typeof row.result_json !== "string") return false;
   let result;
@@ -26,14 +53,14 @@ function validReceipt(row) {
   if (result.request_id !== row.id) return false;
   if (row.kind === "create-episode") return idOK(result.project?.id);
   if (row.kind === "reorder-seasons") return Array.isArray(result.seasons) && result.seasons.length === 2 && result.seasons.every(season => idOK(season?.id));
+  if (row.kind === "organize") return validOrganizeReceipt(result);
   if (row.kind === "move") {
     if (result.can_undo !== true && !(result.can_undo === false && idOK(result.undone_by))) return false;
   } else if (result.can_undo !== false || row.kind === "undo-move" && !idOK(result.undo_of)) return false;
   if (!Array.isArray(result.changes) || !result.changes.length || result.changes.length > 200) return false;
   const seen = new Set();
   for (const change of result.changes) {
-    if (!sameKeys(change, ["project_id", "before", "after"]) || !idOK(change.project_id) || seen.has(change.project_id) ||
-        !positionValid(change.before) || !positionValid(change.after) || change.after.revision !== change.before.revision + 1) return false;
+    if (!sameKeys(change, ["project_id", "before", "after"]) || !changeValid(change) || seen.has(change.project_id)) return false;
     seen.add(change.project_id);
   }
   return true;
