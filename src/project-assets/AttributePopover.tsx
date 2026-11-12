@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { AttributeRadar, RadarLegend, type RadarSeries } from './AttributeRadar';
-import { type AttrConfig, SERIES_COLORS, SINGLE_COLOR, attrApi, sourceSummary } from './attributes';
+import { type AttrConfig, SERIES_COLORS, SINGLE_COLOR, attrApi, readConsistent, sourceSummary } from './attributes';
 
 /** 右键「查看属性图」（1 人）/ 多选「对比属性图」（2–3 人）的小窗内容。只读，不改数据。 */
 export function AttributePopover({ projectId, people, request, onEdit, onClose }: {
@@ -14,13 +14,12 @@ export function AttributePopover({ projectId, people, request, onEdit, onClose }
   useEffect(() => {
     let live = true; setConfig(null); setSeries(null); setError('');
     (async () => {
-      const c = await attrApi.config(request, projectId);
       if (single) {
-        const a = await attrApi.get(request, people[0].id);
+        const [c, a] = await readConsistent(() => Promise.all([attrApi.config(request, projectId), attrApi.get(request, people[0].id)]));
         if (a.asset_id !== people[0].id || a.project_id !== projectId) throw Error('属性返回的人物不一致');
         if (live) { setConfig(c); setSource(sourceSummary(a, c.dimensions)); setSeries([{ name: people[0].name, color: SINGLE_COLOR, scores: a.scores }]); }
       } else {
-        const r = await attrApi.compare(request, projectId, people.map(p => p.id));
+        const [c, r] = await readConsistent(() => Promise.all([attrApi.config(request, projectId), attrApi.compare(request, projectId, people.map(p => p.id))]));
         const byId = new Map(r.items.map(i => [i.asset_id, i]));
         if (people.some(p => !byId.has(p.id))) throw Error('有人物的属性没有读到（已归档或不在本项目），没有画对比图');
         if (live) { setConfig(c); setSeries(people.map((p, i) => ({ name: p.name, color: SERIES_COLORS[i], scores: byId.get(p.id)!.scores }))); }

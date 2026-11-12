@@ -39,7 +39,7 @@ export function sourceSummary(a: AssetAttributes | null, dims: AttrDimension[]) 
 const base = (projectId: string) => '/project-assets/projects/' + encodeURIComponent(projectId);
 export const attrApi = {
   config: (request: PromptRequest, projectId: string) => request<AttrConfig>(base(projectId) + '/attribute-config'),
-  saveConfig: (request: PromptRequest, projectId: string, body: { expected_revision: number; dimensions: DimensionDraft[]; removal_confirmation?: { token: string } }) =>
+  saveConfig: (request: PromptRequest, projectId: string, body: { expected_revision: number; dimensions: DimensionDraft[]; removal_confirmation?: { token: string }; preserve_scored_axes?: string[] }) =>
     request<AttrConfig>(base(projectId) + '/attribute-config', body, 'PUT'),
   removalPreview: (request: PromptRequest, projectId: string, body: { expected_revision: number; remove: string[] }) =>
     request<RemovalPreview>(base(projectId) + '/attribute-config/removal-preview', body, 'POST'),
@@ -50,3 +50,9 @@ export const attrApi = {
     request<{ config_revision: number; items: { asset_id: string; attribute_revision: number; scores: Record<string, AttrScore> }[] }>(base(projectId) + '/attributes?' + new URLSearchParams({ asset_ids: ids.join(',') })),
 };
 export const errCode = (e: unknown) => String((e as { code?: string })?.code || '');
+
+/** Config and scores must describe the same config revision before they are shown or edited; re-read a few times if not. */
+export async function readConsistent<T extends { config_revision: number }>(read: () => Promise<[AttrConfig, T]>, tries = 3): Promise<[AttrConfig, T]> {
+  for (let i = 0; i < tries; i++) { const [c, a] = await read(); if (c.revision === a.config_revision) return [c, a]; }
+  throw Object.assign(Error('维度配置正在更新，属性暂时没读到一致的版本，请稍后重试'), { code: 'CONFIG_REVISION_MISMATCH' });
+}
