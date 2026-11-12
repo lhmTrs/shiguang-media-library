@@ -638,3 +638,5 @@
 .ca-v2 .ca-head-hint.is-inline{position:static;box-shadow:none;padding:0;background:none}
 .ca-v2 .ca-head-reframe{align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .ca-v2 .ca-head-row-detail{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0}
+.ca-v2 .ca-detail.is-loading>*:not(.ca-detail-loading){pointer-events:none}
+.ca-v2 .ca-detail-loading{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--soft);border-bottom:1px solid var(--line)}
