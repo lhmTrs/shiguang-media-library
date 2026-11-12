@@ -203,6 +203,16 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, [pickedAssets.length, pickedImages.length, !!quick, !!imageId, !!modal]);
   const modalScroll = useRef<HTMLDivElement>(null);
+  // Reference tiles: a click opens 图片设置 and a double click opens the large view. The settings dialog covers the
+  // tile, so it opens after a short wait; a second click within it becomes the double click. Keyboard (detail 0) opens at once.
+  const tileTimer = useRef<number>();
+  const tileClick = (id: string, detail: number) => {
+    if (tileTimer.current) clearTimeout(tileTimer.current);
+    if (detail === 0) { tileTimer.current = undefined; setImageId(id); return; }
+    tileTimer.current = window.setTimeout(() => { tileTimer.current = undefined; setImageId(id); }, 250);
+  };
+  useEffect(() => () => { if (tileTimer.current) clearTimeout(tileTimer.current); }, []);
+  useEffect(() => { if (tileTimer.current) { clearTimeout(tileTimer.current); tileTimer.current = undefined; } }, [draft?.id]);
   const revealingRef=useRef(new Set<string>()),[revealing,setRevealing]=useState<string[]>([]);
   async function revealImage(b:Binding){
     if(revealingRef.current.has(b.id))return;
@@ -994,7 +1004,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                   {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
                 </div>}
                 <div className={'ca-image-grid-v2' + (pickedImages.length ? ' is-picking' : '')} role="list" aria-label={'参考图片，共 ' + images.length + ' 张'}>{images.map(b => { const h = health.find(h => h.id === b.id), name = b.last_known_name || '参考图片', locked = imageLocked(b); const tilePicked = pickedImages.includes(b.id); return <div role="listitem" key={b.id} className={'ca-tile' + (b.archived_at ? ' archived' : '') + (b.id === representative ? ' is-cover' : '') + (tilePicked ? ' is-picked' : '')} draggable={!locked} onDragStart={e => { if (locked) return; drag.current = b.id; e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => { drag.current = null; }} onDragOver={e => { if (drag.current) e.preventDefault(); }} onDrop={e => { if (!drag.current) return; e.preventDefault(); e.stopPropagation(); if (!locked) moveImage(drag.current, 0, b.id); drag.current = null; }}>
-                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (draft.kind === 'character' && (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey)) { pickImage(b, e.shiftKey); return; } setImageId(b.id); }} onDoubleClick={() => setImageViewer({ src: bindingSrc(b), name })}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
+                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (draft.kind === 'character' && (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey)) { pickImage(b, e.shiftKey); return; } tileClick(b.id, e.detail); }} onDoubleClick={() => { tileTimer.current && clearTimeout(tileTimer.current); tileTimer.current = undefined; setImageViewer({ src: bindingSrc(b), name }); }}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
                   {draft.kind === 'character' && <button type="button" role="checkbox" className="ca-tile-pick" aria-checked={tilePicked} aria-label={'选择 ' + name} disabled={!pickableImage(b)} title={pickableImage(b) ? '选择（按住 ⌘ 或 Shift 点图片也可以）' : b.archived_at ? '已归档的图片不能选' : '保存后才能选'} onClick={e => pickImage(b, e.shiftKey)}>{tilePicked ? '✓' : ''}</button>}
                   <span className="ca-tile-badge">{b.id === representative ? '代表图' : b.archived_at ? '已归档' : (b.reference_type || '补充参考')}</span>
                   {b.id !== representative && !b.archived_at && !locked && !draft.archived_at && (!h || h.state === 'available') && <button type="button" className="ca-tile-default" aria-label={'设为代表图：' + name}
