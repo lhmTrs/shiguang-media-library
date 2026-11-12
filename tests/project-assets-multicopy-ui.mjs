@@ -131,6 +131,32 @@ try {
     // ⌘A picks every shown character that has a default image; Esc leaves.
     await page.keyboard.press('Meta+a'); await expect(bar).toContainText('已选 2 个人物'); await expect(wrap('苏禾')).not.toHaveClass(/is-picked/);
     await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+  });
+
+  await check('FE1-R2 反例：框住两张卡片顶部后再小幅拖动，拖动中只高亮、布局不动，松手两张都选上', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' });
+    await expect(work().getByLabel('人物名称')).toHaveCount(0); await expect(bar).toHaveCount(0);
+    const gallery = work().getByRole('region', { name: '人物画廊' }), g = await gallery.boundingBox(), a = await wrap('阿青').boundingBox(), b = await wrap('小满').boundingBox();
+    const top = Math.min(a.y, b.y), right = Math.max(a.x + a.width, b.x + b.width);
+    await page.mouse.move(g.x + 8, top - 6); await page.mouse.down(); await page.mouse.move(g.x + 40, top + 4, { steps: 3 }); await page.mouse.move(right - 20, top + 14, { steps: 6 });
+    await expect(wrap('阿青')).toHaveClass(/is-picked/); await expect(wrap('小满')).toHaveClass(/is-picked/); await expect(bar).toHaveCount(0);
+    const moved = await wrap('阿青').boundingBox(); assert.deepEqual([Math.round(moved.x), Math.round(moved.y)], [Math.round(a.x), Math.round(a.y)], 'cards stay put while dragging');
+    await page.mouse.move(right - 16, top + 18, { steps: 2 }); await page.mouse.up();
+    await expect(bar).toContainText('已选 2 个人物');
+    await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+  });
+
+  await check('FE1-R1 反例：未保存时 ⌘ 点或单击换人被取消，选择、详情和 Shift 起点都不变；再 Shift 点确认后选中两人', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' }), name = work().getByLabel('人物名称');
+    for (const how of [['Meta'], []]) {
+      await wrap('阿青').locator('.ca-card').click(); await expect(name).toHaveValue('阿青');
+      await name.fill('阿青（改）');
+      page.once('dialog', d => d.dismiss()); await wrap('小满').locator('.ca-card').click({ modifiers: how });
+      await expect(name).toHaveValue('阿青（改）'); await expect(bar).toHaveCount(0);
+      page.once('dialog', d => d.accept()); await wrap('小满').locator('.ca-card').click({ modifiers: ['Shift'] });
+      await expect(bar).toContainText('已选 2 个人物'); await expect(name).toHaveCount(0);
+      await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+    }
     await wrap('小满').locator('.ca-card').click(); await expect(work().getByLabel('基础信息', { exact: true })).toBeVisible();
   });
 

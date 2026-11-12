@@ -472,34 +472,36 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const pickOrder = () => visibleRows.filter(pickableAsset).map(r => r.id);
   // The current selection in shown order: the multi-pick, else the open character as a single pick.
   const pickedNow = () => pickedAssets.length ? pickedAssets : draft && pickOrder().includes(draft.id) ? [draft.id] : [];
-  /** Two or more → multi (the detail closes, asking first when it has unsaved edits); one → open it; none → clear. */
+  /** Two or more → multi (the detail closes); one → open it; none → clear. Unsaved edits are asked about first (unless
+   *  `asked`); a refused switch returns false and leaves the picks, the detail and the Shift anchor exactly as they were. */
   function applyPick(ids: string[], asked = false) {
+    if (busy) return false;
     const order = pickOrder(), next = order.filter(id => ids.includes(id));
     if (next.length > 1) { if (draft) { if (asked) dropDetail(); else if (!closeDetail()) return false; } setPickedAssets(next); return true; }
-    setPickedAssets([]);
-    if (next.length === 1 && draft?.id !== next[0]) void openAsset(next[0], asked);
-    return true;
+    if (next.length === 1 && draft?.id !== next[0]) { if (!asked && !canLeave()) return false; setPickedAssets([]); void openAsset(next[0], true); return true; }
+    setPickedAssets([]); return true;
   }
   function pickCard(e: React.MouseEvent, a: Asset) {
     const mod = e.metaKey || e.ctrlKey && !isMac;
-    if (!mod && !e.shiftKey) { setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id); return; }
+    if (!mod && !e.shiftKey) { if (busy || !canLeave()) return; setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id, true); return; }
     e.preventDefault();
     if (!pickableAsset(a)) { setNotice('「' + a.name + '」还没有默认图，不能选'); return; }
     const now = pickedNow();
     if (mod) {
-      lastPick.current.assets = a.id;
-      if (!now.includes(a.id)) { applyPick([...now, a.id]); return; }
       const rest = now.filter(id => id !== a.id);
-      if (rest.length) applyPick(rest); else closeDetail();
+      const done = !now.includes(a.id) ? applyPick([...now, a.id]) : rest.length ? applyPick(rest) : closeDetail();
+      if (done) lastPick.current.assets = a.id;
       return;
     }
     const order = pickOrder(), last = lastPick.current.assets, anchor = last && order.includes(last) ? last : now[0];
-    if (!anchor) { lastPick.current.assets = a.id; applyPick([a.id]); return; }
+    if (!anchor) { if (applyPick([a.id])) lastPick.current.assets = a.id; return; }
     const [i, j] = [order.indexOf(anchor), order.indexOf(a.id)].sort((x, y) => x - y);
     applyPick(order.slice(i, j + 1));
   }
   // Box select on the gallery's empty space, same rules as the video page; ⌘ / Shift keep what is already picked.
-  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // While dragging, only `marqueeHits` changes (a highlight that does not move anything); the pick, the toolbar and the
+  // side list update once on release, so the cards never shift under the box.
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null), [marqueeHits, setMarqueeHits] = useState<string[] | null>(null);
   function marqueeStart(e: React.PointerEvent<HTMLElement>) {
     if (kind !== 'character' || e.button !== 0 || busy || (e.target as Element).closest('.ca-card-wrap, .ca-card, button, a, input, select, textarea, label, .ca-pickbar, .ca-gallery-bar, .ca-pagination')) return;
     const host = e.currentTarget, start = { x: e.clientX, y: e.clientY }, add = e.metaKey || e.ctrlKey || e.shiftKey;
@@ -508,7 +510,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     let moved = false, cancelled = false, last = base;
     e.preventDefault(); setQuick(null); setMenu('');
     host.setPointerCapture?.(e.pointerId);
-    const end = () => { host.removeEventListener('pointermove', move); host.removeEventListener('pointerup', up); host.removeEventListener('pointercancel', cancel); setMarquee(null); };
+    const end = () => { host.removeEventListener('pointermove', move); host.removeEventListener('pointerup', up); host.removeEventListener('pointercancel', cancel); setMarquee(null); setMarqueeHits(null); };
     const move = (ev: PointerEvent) => {
       if (!moved) {
         if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
@@ -521,7 +523,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       setMarquee({ x: left - box.left + host.scrollLeft, y: top - box.top + host.scrollTop, w: right - left, h: bottom - top });
       const hits = cards.filter(c => { const r = c.getBoundingClientRect(); return r.left < right && r.right > left && r.top < bottom && r.bottom > top; }).map(c => c.dataset.pickId || '');
       last = order.filter(id => base.includes(id) || hits.includes(id));
-      setPickedAssets(last);
+      setMarqueeHits(last);
     };
     const up = () => { end(); if (cancelled) return; if (!moved) { if (!add) setPickedAssets([]); return; } applyPick(last, true); };
     const cancel = () => { end(); if (!cancelled && moved) applyPick(last, true); };
@@ -768,7 +770,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     if (!active || scriptView || kind !== 'character' || busy || quick || imageId || modal || dropJob) return;
     const t = e.target as HTMLElement | null;
     if (t?.closest?.('input, textarea, select, [contenteditable="true"], .ca-detail, [role="dialog"], [role="menu"]')) return;
-    if (k === 'a') { const order = pickOrder(); if (!order.length) return; e.preventDefault(); lastPick.current.assets = order[0]; applyPick(order); return; }
+    if (k === 'a') { const order = pickOrder(); if (!order.length) return; e.preventDefault(); if (applyPick(order)) lastPick.current.assets = order[0]; return; }
     if (String(window.getSelection?.() || '')) return;
     if (pickedAssets.length > 1) { e.preventDefault(); void copyFiles('defaults', defaultsItems(pickedAssets)); return; }
     const one = draft && rows.find(r => r.id === draft.id);
@@ -906,7 +908,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
             {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
-            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = pickedAssets.includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
+            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
               onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else void openAsset(a.id); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a}/>
               <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
