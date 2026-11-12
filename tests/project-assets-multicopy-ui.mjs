@@ -83,20 +83,97 @@ try {
   await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
   await expect(wrap('阿青')).toBeVisible(); await expect(wrap('小满')).toBeVisible();
 
-  await check('人物列表：勾选进入多选，之后直接点卡片就是加选；复制按每人默认图发出原图文件请求', async () => {
-    await wrap('阿青').hover(); await wrap('阿青').getByRole('checkbox', { name: '选择阿青' }).click();
-    const bar = work().getByRole('toolbar', { name: '已选人物操作' }); await expect(bar).toContainText('已选 1 个人物');
-    await wrap('小满').locator('.ca-card').click(); await expect(bar).toContainText('已选 2 个人物');
-    await expect(work().getByRole('complementary')).toHaveCount(0).catch(() => {});
-    await expect(wrap('苏禾').getByRole('checkbox', { name: '选择苏禾' })).toBeDisabled();
-    await wrap('苏禾').locator('.ca-card').click(); await expect(bar).toContainText('已选 2 个人物');
+  await check('人物列表和视频页同一套选法：单击只选一个并打开详情，⌘ 点加选后详情换成已选清单；没有勾选框；复制按每人默认图发出原图文件请求', async () => {
+    await expect(work().locator('.ca-card-wrap [role=checkbox]')).toHaveCount(0);
+    await wrap('阿青').locator('.ca-card').click(); await expect(work().getByLabel('基础信息', { exact: true })).toBeVisible();
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' }); await expect(bar).toHaveCount(0);
+    await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] }); await expect(bar).toContainText('已选 2 个人物');
+    const summary = work().getByRole('complementary', { name: '已选人物' }); await expect(summary).toContainText('阿青'); await expect(summary).toContainText('小满');
+    await expect(work().getByLabel('基础信息', { exact: true })).toHaveCount(0);
+    await wrap('苏禾').locator('.ca-card').click({ modifiers: ['Meta'] }); await expect(page.getByText('「苏禾」还没有默认图，不能选').first()).toBeVisible(); await expect(bar).toContainText('已选 2 个人物');
     await bar.getByRole('button', { name: '复制' }).click();
     await expect(status()).toContainText('已复制 2 张原图文件，到画布平台按 ⌘V 粘贴'); await shot('1-gallery');
     const b = posts('clipboard')[0].body;
     assert.equal(b.mode, 'defaults'); assert.match(b.requestId, /^[0-9a-f-]{36}$/);
-    assert.deepEqual(b.items, [{ bindingId: hero.ids[0], bindingRevision: rev(hero, 0) }, { bindingId: second.ids[0], bindingRevision: rev(second, 0) }]);
+    // Picks go out in the order the cards are shown (same as the video page), not click order.
+    const shown = await work().locator('.ca-card-wrap strong').allTextContents(), want = { 阿青: { bindingId: hero.ids[0], bindingRevision: rev(hero, 0) }, 小满: { bindingId: second.ids[0], bindingRevision: rev(second, 0) } };
+    assert.deepEqual(b.items, shown.filter(n => want[n]).map(n => want[n]));
+    // A plain click drops the multi-pick and shows just that one.
+    await wrap('小满').locator('.ca-card').click(); await expect(bar).toHaveCount(0); await expect(work().getByLabel('基础信息', { exact: true })).toBeVisible();
+    await expect(work().locator('.ca-card-wrap.is-picked')).toHaveCount(0);
+  });
+
+  await check('框选、Shift 连选、⌘A、⌘C、Esc、右键作用于已选；有未保存修改时先确认，取消就什么都不变', async () => {
+    const gallery = work().getByRole('region', { name: '人物画廊' }), bar = work().getByRole('toolbar', { name: '已选人物操作' });
+    const g = await gallery.boundingBox(), a = await wrap('阿青').boundingBox(), b = await wrap('小满').boundingBox();
+    const top = Math.min(a.y, b.y) + 12, endX = Math.max(a.x + a.width / 2, b.x + b.width / 2), endY = Math.max(a.y + a.height / 2, b.y + b.height / 2);
+    const drag = async () => { await page.mouse.move(g.x + 8, top); await page.mouse.down(); await page.mouse.move(g.x + 40, top + 30, { steps: 3 }); await page.mouse.move(endX, endY, { steps: 6 }); await page.mouse.up(); };
+    // 小满's detail is open; make it dirty, then a box asks first. Dismiss → nothing changes and the edit stays.
+    const name = work().getByLabel('人物名称'); await name.fill('小满（改）');
+    page.once('dialog', d => d.dismiss()); await drag();
+    await expect(bar).toHaveCount(0); await expect(name).toHaveValue('小满（改）');
+    page.once('dialog', d => d.accept()); await drag();
+    await expect(bar).toContainText('已选 2 个人物'); await expect(work().getByLabel('人物名称')).toHaveCount(0); await shot('3-marquee');
+    // Right-click a picked card: the menu acts on all picks; single-only actions are off.
+    await wrap('阿青').click({ button: 'right' }); const menu = page.getByRole('menu', { name: '已选 2 个人物的操作' });
+    await expect(menu.getByRole('menuitem', { name: /换默认图/ })).toBeDisabled(); await expect(menu.getByRole('menuitem', { name: /调整头像/ })).toBeDisabled();
+    let n = posts('clipboard').length; await menu.getByRole('menuitem', { name: /复制 2 张默认图/ }).click();
+    await expect.poll(() => posts('clipboard').length).toBe(n + 1); assert.deepEqual(new Set(posts('clipboard').at(-1).body.items.map(i => i.bindingId)), new Set([hero.ids[0], second.ids[0]]));
+    // ⌘C copies the same picks (once the previous copy has finished).
+    await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled(); n = posts('clipboard').length; await page.keyboard.press('Meta+c'); await expect.poll(() => posts('clipboard').length).toBe(n + 1);
+    assert.equal(posts('clipboard').at(-1).body.items.length, 2);
+    // Right-click an unpicked card drops the multi-pick and shows that card's own menu.
+    await wrap('苏禾').click({ button: 'right' }); await expect(page.getByRole('menu', { name: '苏禾的操作' })).toBeVisible(); await expect(bar).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    // Shift picks the run from the clicked one; a click on empty space clears.
+    await wrap('阿青').locator('.ca-card').click(); await wrap('小满').locator('.ca-card').click({ modifiers: ['Shift'] }); await expect(bar).toContainText('已选 2 个人物');
+    await page.mouse.click(g.x + 8, top); await expect(bar).toHaveCount(0);
+    // ⌘A picks every shown character that has a default image; Esc leaves.
+    await page.keyboard.press('Meta+a'); await expect(bar).toContainText('已选 2 个人物'); await expect(wrap('苏禾')).not.toHaveClass(/is-picked/);
     await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
-    // Out of multi-select, a click opens the detail again.
+  });
+
+  await check('FE1-R2 反例：框住两张卡片顶部后再小幅拖动，拖动中只高亮、布局不动，松手两张都选上', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' });
+    await expect(work().getByLabel('人物名称')).toHaveCount(0); await expect(bar).toHaveCount(0);
+    const gallery = work().getByRole('region', { name: '人物画廊' }), g = await gallery.boundingBox(), a = await wrap('阿青').boundingBox(), b = await wrap('小满').boundingBox();
+    const top = Math.min(a.y, b.y), right = Math.max(a.x + a.width, b.x + b.width);
+    await page.mouse.move(g.x + 8, top - 6); await page.mouse.down(); await page.mouse.move(g.x + 40, top + 4, { steps: 3 }); await page.mouse.move(right - 20, top + 14, { steps: 6 });
+    await expect(wrap('阿青')).toHaveClass(/is-picked/); await expect(wrap('小满')).toHaveClass(/is-picked/); await expect(bar).toHaveCount(0);
+    const moved = await wrap('阿青').boundingBox(); assert.deepEqual([Math.round(moved.x), Math.round(moved.y)], [Math.round(a.x), Math.round(a.y)], 'cards stay put while dragging');
+    await page.mouse.move(right - 16, top + 18, { steps: 2 }); await page.mouse.up();
+    await expect(bar).toContainText('已选 2 个人物');
+    // Right after a box, ⌘C copies (focus is on the gallery).
+    await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled(); let n = posts('clipboard').length;
+    await page.keyboard.press('Meta+c'); await expect.poll(() => posts('clipboard').length).toBe(n + 1);
+    await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+  });
+
+  await check('FE2-R3 反例：焦点离开人物画廊（顶部「检查文件状态」）时 ⌘C、⌘A 不动作；回到画廊后 ⌘C 正常复制', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' }), gallery = work().getByRole('region', { name: '人物画廊' });
+    await wrap('阿青').locator('.ca-card').click(); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] }); await expect(bar).toContainText('已选 2 个人物');
+    await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled();
+    const outside = page.getByRole('button', { name: '检查文件状态' }); await outside.focus();
+    assert.equal(await page.evaluate(() => !!document.activeElement?.closest('.ca-gallery')), false, 'focus left the gallery');
+    const n = posts('clipboard').length;
+    await page.keyboard.press('Meta+c'); await page.waitForTimeout(400); assert.equal(posts('clipboard').length, n, 'no copy from outside the gallery');
+    await expect(bar).toContainText('已选 2 个人物');
+    await gallery.focus(); await page.keyboard.press('Meta+c'); await expect.poll(() => posts('clipboard').length).toBe(n + 1);
+    await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+    await outside.focus(); await page.keyboard.press('Meta+a'); await page.waitForTimeout(300); await expect(bar).toHaveCount(0);
+  });
+
+  await check('FE1-R1 反例：未保存时 ⌘ 点或单击换人被取消，选择、详情和 Shift 起点都不变；再 Shift 点确认后选中两人', async () => {
+    const bar = work().getByRole('toolbar', { name: '已选人物操作' }), name = work().getByLabel('人物名称');
+    for (const how of [['Meta'], []]) {
+      await wrap('阿青').locator('.ca-card').click(); await expect(name).toHaveValue('阿青');
+      await name.fill('阿青（改）');
+      page.once('dialog', d => d.dismiss()); await wrap('小满').locator('.ca-card').click({ modifiers: how });
+      await expect(name).toHaveValue('阿青（改）'); await expect(bar).toHaveCount(0);
+      page.once('dialog', d => d.accept()); await wrap('小满').locator('.ca-card').click({ modifiers: ['Shift'] });
+      await expect(bar).toContainText('已选 2 个人物'); await expect(name).toHaveCount(0);
+      await page.keyboard.press('Escape'); await expect(bar).toHaveCount(0);
+    }
     await wrap('小满').locator('.ca-card').click(); await expect(work().getByLabel('基础信息', { exact: true })).toBeVisible();
   });
 
@@ -105,7 +182,8 @@ try {
     await expect(status()).toContainText('已复制 1 张原图文件');
     assert.deepEqual(posts('clipboard').at(-1).body.items, [{ bindingId: hero.ids[0], bindingRevision: rev(hero, 0) }]);
     mock.skipLast = true;
-    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click();
+    // 小满's detail is open, so ⌘ on 阿青 makes two.
+    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await expect(work().getByRole('toolbar', { name: '已选人物操作' })).toContainText('已选 2 个人物');
     await work().getByRole('toolbar', { name: '已选人物操作' }).getByRole('button', { name: '复制' }).click();
     await expect(status()).toContainText('已复制 1 张原图文件'); await expect(status()).toContainText('跳过 1 张：最后一张：原图内容已变化');
     mock.skipLast = false; await page.keyboard.press('Escape');
@@ -141,7 +219,7 @@ try {
     await page.keyboard.press('Escape');
     mock.caps = { version: 1, maxSelection: 50, clipboard: { available: false, code: 'LOCAL_SESSION_REQUIRED', reason: '只能在运行拾光的这台 Mac 上使用。' }, revealMany: { available: false, reason: '只能在运行拾光的这台 Mac 上使用。' } };
     await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
-    await wrap('阿青').hover(); await wrap('阿青').getByRole('checkbox', { name: '选择阿青' }).click();
+    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] });
     const gbar = work().getByRole('toolbar', { name: '已选人物操作' });
     await expect(gbar.getByRole('button', { name: '复制' })).toBeDisabled(); await expect(gbar).toContainText('只能在运行拾光的这台 Mac 上使用');
     await page.keyboard.press('Escape');

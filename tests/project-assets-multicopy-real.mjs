@@ -60,13 +60,12 @@ try {
   await open();
 
   await check('人物列表多选复制：后端核对后把每人默认图的原文件交给系统剪贴板', async () => {
-    await wrap('阿青').hover(); await wrap('阿青').getByRole('checkbox', { name: '选择阿青' }).click();
-    await wrap('小满').locator('.ca-card').click();
+    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] });
     const bar = work().getByRole('toolbar', { name: '已选人物操作' }); await expect(bar).toContainText('已选 2 个人物');
     await expect(bar.getByRole('button', { name: '复制' })).toBeEnabled();
     await bar.getByRole('button', { name: '复制' }).click();
     await expect(status()).toContainText('已复制 2 张原图文件，到画布平台按 ⌘V 粘贴');
-    const copy = (await native('copy')).at(-1); assert.deepEqual(names(copy.paths), ['泳衣正面.png', '泳衣侧面.png']); assert.equal(copy.expectedChangeCount, 7);
+    const copy = (await native('copy')).at(-1); assert.deepEqual(new Set(names(copy.paths)), new Set(['泳衣正面.png', '泳衣侧面.png'])); assert.equal(copy.expectedChangeCount, 7);
     await page.keyboard.press('Escape'); await status().getByRole('button', { name: /收起|关闭/ }).click().catch(() => {});
   });
 
@@ -78,7 +77,7 @@ try {
   });
 
   await check('选中后绑定被别处改动：后端跳过这张并说明原因，界面如实显示部分完成', async () => {
-    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click();
+    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] });
     const fresh = await api('/project-assets/assets/' + second.a.id);
     await api('/project-assets/assets/' + second.a.id, { asset: { ...fresh, images: fresh.images.map(b => b.id === second.ids[0] ? { ...b, purpose: '别处改了用途' } : b) }, expected_revision: fresh.revision }, 'PUT');
     await work().getByRole('toolbar', { name: '已选人物操作' }).getByRole('button', { name: '复制' }).click();
@@ -111,7 +110,7 @@ try {
   await check('关闭本机桌面能力后：多选按钮停用并显示后端给的原因；人物单张两个入口都说明原因，不调用原生、不写浏览器剪贴板、不显示成功', async () => {
     child.kill('SIGTERM'); await exited; start({ MEDIA_DISABLE_DESKTOP_NATIVE: '1' }); await session();
     await context.clearCookies(); await open();
-    await wrap('阿青').hover(); await wrap('阿青').getByRole('checkbox', { name: '选择阿青' }).click();
+    await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] });
     const bar = work().getByRole('toolbar', { name: '已选人物操作' });
     await expect(bar.getByRole('button', { name: '复制' })).toBeDisabled(); await expect(bar).toContainText('本机桌面连接不可用');
     await page.keyboard.press('Escape');
