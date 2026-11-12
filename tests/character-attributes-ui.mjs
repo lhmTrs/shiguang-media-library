@@ -196,6 +196,43 @@ try {
     assert.ok(names.includes('财力'), 'others kept');
   });
 
+  await check('FE3-R1 反例：出现配置冲突、合并选择面板打开时，维度列表锁定不能改；合并后再改再保存', async () => {
+    const dlg = await openConfig(); await dlg.getByLabel('财力右端名称').fill('殷实');
+    const c = await config(project.id);
+    await api('/project-assets/projects/' + project.id + '/attribute-config', { expected_revision: c.revision, dimensions: c.dimensions.map(d => d.name === '财力' ? { ...d, positive_label: '富足', tier_labels: undefined } : d) }, 'PUT');
+    await dlg.getByRole('button', { name: '保存配置' }).click();
+    await expect(dlg.getByLabel('情绪左端名称')).toBeDisabled();
+    await dlg.getByRole('button', { name: '保留我的改动，与新版本合并' }).click();
+    const conflict = dlg.getByRole('group', { name: '合并冲突' }); await expect(conflict).toContainText('「财力」的右端');
+    await expect(dlg.getByLabel('情绪左端名称')).toBeDisabled(); await expect(dlg.getByText('请先处理上面的配置冲突')).toBeVisible();
+    await conflict.getByRole('radio', { name: /用别处的/ }).check(); await conflict.getByRole('button', { name: '按以上选择合并' }).click();
+    await expect(dlg.getByLabel('情绪左端名称')).toBeEnabled(); await dlg.getByLabel('财力判断标准').count();
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await expect(dlg).toHaveCount(0);
+    assert.equal((await config(project.id)).dimensions.find(d => d.name === '财力').positive_label, '富足');
+  });
+
+  await check('FE3-R2 反例：最终影响预览迟到时，草稿锁定不能改；返回后显示的确认与屏幕内容一致，保存写入的就是确认过的内容', async () => {
+    const dlg = await openConfig();
+    await dlg.getByLabel('第 1 个维度名称').fill('善行'); await dlg.getByRole('button', { name: '删除主动性' }).click();
+    let calls = 0, release; const hold = new Promise(r => { release = r; });
+    const handler = async route => { calls++; if (calls === 2) await hold; return route.fallback(); };
+    await page.route(url => url.pathname.endsWith('/attribute-config/removal-preview'), handler);
+    await dlg.getByRole('button', { name: '保存配置' }).click();
+    const review = dlg.getByRole('group', { name: '保存前确认' }); await expect(review).toContainText('「善恶」→「善行」');
+    await review.getByRole('radio', { name: /只改了文字/ }).check(); await dlg.getByRole('button', { name: '下一步' }).click();
+    await expect.poll(() => calls).toBe(2);
+    await expect(dlg.getByLabel('第 1 个维度名称')).toBeDisabled(); await expect(dlg.getByText('正在保存，暂时不能修改')).toBeVisible(); await expect(dlg.getByRole('button', { name: '返回修改' })).toBeDisabled();
+    release(); await expect(review).toContainText('保存会删掉这些维度的分数'); await expect(review).toContainText('保留分数：「善行」');
+    await expect(dlg.getByLabel('第 1 个维度名称')).toBeDisabled();
+    await dlg.getByRole('button', { name: '返回修改' }).click(); await expect(dlg.getByLabel('第 1 个维度名称')).toBeEnabled(); await expect(review).toHaveCount(0);
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await review.getByRole('radio', { name: /只改了文字/ }).check(); await dlg.getByRole('button', { name: '下一步' }).click();
+    await dlg.getByRole('button', { name: '确认删除并保存' }).click(); await expect(dlg).toHaveCount(0);
+    await page.unroute(url => url.pathname.endsWith('/attribute-config/removal-preview'), handler);
+    const now = await config(project.id), good = now.dimensions.find(d => d.id === D['善恶']);
+    assert.equal(good.name, '善行'); assert.equal(good.criterion, ''); assert.ok(!now.dimensions.some(d => d.id === D['主动性']));
+    assert.equal((await attrs(ids['张大山'])).scores[D['善恶']].value, 70, 'text-only rename keeps the score');
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {

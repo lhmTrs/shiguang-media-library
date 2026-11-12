@@ -75,6 +75,8 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const [config, setConfig] = useState<AttrConfig | null>(null), [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [saving, setSaving] = useState(false);
   const [review, setReview] = useState<Choose | Final | null>(null), [openTiers, setOpenTiers] = useState(''), [stale, setStale] = useState<AttrConfig | null>(null), [merge, setMerge] = useState<Merge | null>(null), [note, setNote] = useState('');
   const dialog = useRef<HTMLDivElement>(null);
+  // Every draft edit bumps the generation; any response that started on an older generation is dropped.
+  const generation = useRef(0);
   async function load() {
     try { const c = await attrApi.config(request, projectId); if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
     catch (e) { setError((e as Error).message || '维度配置读取失败'); }
@@ -83,7 +85,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   useEffect(() => { dialog.current?.querySelector<HTMLElement>('input, button')?.focus(); }, [!!config]);
 
   // Any edit invalidates a pending confirmation: the user confirms what is on screen, nothing older.
-  const touch = (fn: (rs: Row[]) => Row[]) => { setRows(fn); setReview(null); };
+  const touch = (fn: (rs: Row[]) => Row[]) => { generation.current++; setRows(fn); setReview(null); };
   const edit = (key: string, patch: Partial<Row>) => touch(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
   const move = (i: number, d: -1 | 1) => touch(rs => { const next = [...rs]; [next[i], next[i + d]] = [next[i + d], next[i]]; return next; });
   const base = new Map((config?.dimensions ?? []).map(d => [d.id, d]));
@@ -94,6 +96,9 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     : rows.some(r => !r.negative_label.trim() || !r.positive_label.trim()) ? '每个维度都要写两端名称'
     : rows.some(r => r.custom && tiersOfRow(r).some(t => !t.trim())) ? '自定义的五档名称不能留空'
     : swapped ? `「${swapped.name}」对调了两端，旧分数会被读反；请删掉它再新增一个维度` : '';
+  // Editing, confirming, choosing a merge and waiting for the server are separate states: the draft is read-only
+  // while any of the others is on screen; 「返回修改」 leaves a confirmation and unlocks it.
+  const locked = saving || !!stale || !!merge || !!review;
   const blocked = !config || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
 
   async function put(meaning: string[], preserve: string[], token?: string) {
@@ -104,38 +109,41 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     onSaved(next); onClose();
   }
   /** Preview exactly the removal that will be sent; with scores at stake, show it and wait for the user's confirmation. */
-  async function toFinal(set: string[], preserve: string[], meaning: string[], message = '') {
+  async function toFinal(set: string[], preserve: string[], meaning: string[], message = '', gen = generation.current) {
     if (!config) return;
     if (!set.length) { await put(meaning, preserve); return; }
     const pv = await attrApi.removalPreview(request, projectId, { expected_revision: config.revision, remove: set });
+    if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
     const affected = pv.affected.filter(a => a.scored_assets > 0);
     if (!affected.length) { await put(meaning, preserve); return; } // nothing scored: no token; the server refuses if scores appear meanwhile
     setReview({ stage: 'final', token: pv.token, affected, set, preserve, meaning }); setError(message);
   }
   async function save() {
     if (blocked || !config) return;
-    setSaving(true); setError('');
+    setSaving(true); setError(''); const gen = generation.current;
     const removed = config.dimensions.map(d => d.id).filter(id => !rows.some(r => r.id === id));
     try {
       if (review?.stage === 'final') { await put(review.meaning, review.preserve, review.token); return; }
       if (review?.stage === 'choose') {
         const meaning = review.changed.filter(c => review.choice[c.dimension_id] === 'meaning').map(c => c.dimension_id);
-        await toFinal([...removed, ...meaning], review.changed.filter(c => review.choice[c.dimension_id] === 'text').map(c => c.dimension_id), meaning); return;
+        await toFinal([...removed, ...meaning], review.changed.filter(c => review.choice[c.dimension_id] === 'text').map(c => c.dimension_id), meaning, '', gen); return;
       }
       const changed = rows.filter(r => r.id && base.has(r.id) && wording(outOf(r)) !== wording(base.get(r.id)!)).map(r => r.id!);
       if (changed.length) {
         // Read-only probe: which of the reworded dimensions actually have scores.
         const probe = await attrApi.removalPreview(request, projectId, { expected_revision: config.revision, remove: changed });
+        if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
         const scored = probe.affected.filter(a => a.scored_assets > 0);
         if (scored.length) { setReview({ stage: 'choose', changed: scored, choice: {} }); return; }
       }
-      await toFinal(removed, [], []);
+      await toFinal(removed, [], [], '', gen);
     } catch (e) {
       const code = errCode(e);
       if (code === 'CONFIG_STALE') { try { setStale(await attrApi.config(request, projectId)); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
       else if ((code === 'REMOVAL_PREVIEW_STALE' || code === 'DIMENSION_REMOVAL_CONFIRM') && review?.stage === 'final') {
         try { await toFinal(review.set, review.preserve, review.meaning, '删除影响刚变了（下面是最新人数），请重新确认'); } catch (e2) { setReview(null); setError((e2 as Error).message || '请再点一次保存'); }
       }
+      else if (code === 'DRAFT_CHANGED') { setReview(null); setError((e as Error).message); }
       else if (['REMOVAL_PREVIEW_STALE', 'DIMENSION_REMOVAL_CONFIRM', 'AXIS_MEANING_CONFIRM'].includes(code)) { setReview(null); setError('分数情况刚变了，需要重新确认；请再点一次「保存配置」'); }
       else setError((e as Error).message || '保存失败，改动仍保留');
     } finally { setSaving(false); }
@@ -147,7 +155,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     setMerge({ ...m, choice: {}, next }); setStale(null);
   }
   function finishMerge(m: Merge) {
-    setRows(applyMerge(m)); setConfig(m.next); setMerge(null); setStale(null); setReview(null); setError('');
+    generation.current++; setRows(applyMerge(m)); setConfig(m.next); setMerge(null); setStale(null); setReview(null); setError('');
     setNote(['已和最新配置合并：保留了你的改动和别处的修改', ...m.notes].join('；') + '。请核对后再保存');
   }
 
@@ -178,6 +186,8 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
         </div>}
         {note && !stale && !merge && <p className="ca-attrs-notice" role="status">{note}</p>}
         {!config ? <p className="ca-muted">正在读取维度配置…</p> : <>
+          <fieldset className="ca-attr-fieldset" disabled={locked} aria-describedby={locked ? 'ca-attr-locked' : undefined}>
+          {locked && <p id="ca-attr-locked" className="ca-muted ca-attr-locked">{saving ? '正在保存，暂时不能修改' : review ? '确认中，暂时不能修改；要改请点下方「返回修改」' : '请先处理上面的配置冲突'}</p>}
           <div className="ca-attr-table" role="list" aria-label="维度列表">
             <div className="ca-attr-cols" aria-hidden="true"><span/><span>维度</span><span>左端（负）</span><span>右端（正）</span><span>五档名称</span><span/></div>
             {rows.map((r, i) => <div key={r.key} role="listitem" className="ca-attr-dim">
@@ -200,6 +210,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
             <button type="button" disabled={rows.length >= MAX} onClick={() => touch(rs => [...rs, { key: crypto.randomUUID(), id: null, name: '', negative_label: '', positive_label: '', neutral_label: '中立', criterion: '', custom: false }])}><Plus size={14}/>新增维度</button>
             <small className="ca-muted">改顺序不影响分数；改了有分数维度的文字，保存时会请你确认含义是否变了。</small>
           </div>
+          </fieldset>
           <div className="ca-attr-ai"><Sparkles size={16}/><div><b>让 AI 按剧本打分</b><p className="ca-muted">打开「分享给 Agent」，把说明交给你常用的 Agent：它会读剧本和这些维度并打分；你手动改过的分不会被覆盖。这里只准备说明，不会自动开始。</p></div><AgentShare projectId={projectId} projectName={projectName}/></div>
           {review?.stage === 'choose' && <div className="ca-attr-confirm" role="group" aria-label="保存前确认">
             <b>这些维度已经有分数，你改了它们的文字。旧分数还按原来的意思理解吗？</b>
@@ -216,7 +227,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
         </>}
       </div>
       <footer>{problem && config && <small className="ca-attr-problem">{problem}</small>}
-        <button type="button" disabled={saving} onClick={() => review ? setReview(null) : onClose()}>{review ? '返回修改' : '取消'}</button>
+        <button type="button" disabled={saving} onClick={() => { if (review) { generation.current++; setReview(null); } else onClose(); }}>{review ? '返回修改' : '取消'}</button>
         <button type="button" className="ca-primary" disabled={blocked} onClick={() => void save()}>{saving ? '保存中…' : review?.stage === 'final' ? '确认删除并保存' : review?.stage === 'choose' ? '下一步' : '保存配置'}</button></footer>
     </div>
   </div>;
