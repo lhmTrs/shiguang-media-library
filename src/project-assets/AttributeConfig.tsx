@@ -74,7 +74,8 @@ function applyMerge(m: Merge): Row[] {
 export function AttributeConfig({ projectId, projectName, request, onClose, onSaved }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void }) {
   const [config, setConfig] = useState<AttrConfig | null>(null), [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [saving, setSaving] = useState(false);
   const [review, setReview] = useState<Choose | Final | null>(null), [openTiers, setOpenTiers] = useState(''), [stale, setStale] = useState<AttrConfig | null>(null), [merge, setMerge] = useState<Merge | null>(null), [note, setNote] = useState('');
-  const dialog = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement>(null), alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
   // Every draft edit bumps the generation; any response that started on an older generation is dropped.
   const generation = useRef(0);
   async function load() {
@@ -106,6 +107,8 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
     const next = await attrApi.saveConfig(request, projectId, { expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
     if (next.project_id !== projectId) throw Error('保存回执不属于当前项目');
+    // The save is settled for its own project either way; an unmounted dialog must not touch whatever is open now.
+    if (!alive.current) return;
     onSaved(next); onClose();
   }
   /** Preview exactly the removal that will be sent; with scores at stake, show it and wait for the user's confirmation. */

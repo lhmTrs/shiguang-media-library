@@ -252,6 +252,30 @@ try {
     assert.equal((await config(other.id)).dimensions[3].name, '乙项目心智'); assert.equal((await config(project.id)).revision, before.a, 'project A still untouched');
   });
 
+  await check('FE5-R4 反例：甲已提交的保存回执迟到，不会关掉乙新开的弹窗、不丢乙的草稿；甲的写入照常算甲；A→B→A 重开正常', async () => {
+    const third = await api('/projects', { name: '属性短片丙' });
+    await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('赵乾')).toBeVisible();
+    const revA = (await config(project.id)).revision, revB = (await config(third.id)).revision;
+    let release, accepted = false; const gate = new Promise(r => { release = r; });
+    const handler = async route => { if (route.request().method() === 'PUT' && new URL(route.request().url()).pathname.includes(project.id)) { const res = await route.fetch(); accepted = true; await gate; return route.fulfill({ response: res }); } return route.fallback(); };
+    await page.route(url => url.pathname.endsWith('/attribute-config'), handler);
+    const dlgA = await openConfig(); await dlgA.getByLabel('财力右端名称').fill('甲的新右端'); await dlgA.getByRole('button', { name: '保存配置' }).click();
+    await expect.poll(() => accepted).toBe(true); assert.equal((await config(project.id)).revision, revA + 1, 'server accepted A');
+    await expect(dlgA.getByText('正在保存，暂时不能修改')).toBeVisible();
+    await page.getByLabel('资产所属项目').selectOption(third.id); await expect(dlgA).toHaveCount(0);
+    const dlgB = await openConfig(); await expect(dlgB).toContainText('属性短片丙'); await dlgB.getByLabel('第 2 个维度名称').fill('乙尚未保存的新草稿');
+    release(); await page.waitForTimeout(600);
+    await expect(dlgB).toBeVisible(); await expect(dlgB.getByLabel('第 2 个维度名称')).toHaveValue('乙尚未保存的新草稿');
+    await page.unroute(url => url.pathname.endsWith('/attribute-config'), handler);
+    await dlgB.getByRole('button', { name: '保存配置' }).click(); await expect(dlgB).toHaveCount(0);
+    const b = await config(third.id), aConf = await config(project.id);
+    assert.equal(b.revision, revB + 1); assert.equal(b.dimensions[1].name, '乙尚未保存的新草稿');
+    assert.equal(aConf.revision, revA + 1); assert.equal(aConf.dimensions.find(d => d.name === '财力').positive_label, '甲的新右端'); assert.ok(!aConf.dimensions.some(d => d.name === '乙尚未保存的新草稿'));
+    await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('赵乾')).toBeVisible();
+    const again = await openConfig(); await expect(again).toContainText('属性短片'); await expect(again.getByLabel('财力右端名称')).toHaveValue('甲的新右端');
+    await again.getByRole('button', { name: '取消' }).click(); await expect(again).toHaveCount(0);
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {

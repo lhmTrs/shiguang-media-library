@@ -181,9 +181,12 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(t); }, [undo]);
   const quickRef = useRef<HTMLDivElement>(null);
   // 人物属性：维度配置弹窗；配置保存后递增版本让详情里的属性重新读取。
-  const [attrConfigOpen, setAttrConfigOpen] = useState(false), [attrConfigVersion, setAttrConfigVersion] = useState(0);
+  // attrDialog = the number of the open dimension dialog (0 = closed). Each opening gets a new number, so a late reply
+  // from an older dialog (e.g. another project's save) can only close itself, never the one now on screen.
+  const [attrDialog, setAttrDialog] = useState(0), attrSeq = useRef(0), [attrConfigVersion, setAttrConfigVersion] = useState(0);
+  const openAttrConfig = () => setAttrDialog(++attrSeq.current);
   // The dimension dialog belongs to one project: switching project (from any entry) closes it, so a draft never follows.
-  useEffect(() => { setAttrConfigOpen(false); }, [scope]);
+  useEffect(() => { setAttrDialog(0); }, [scope]);
   // Characters pick like the video page (Finder): a click selects one and shows its detail; ⌘ adds or removes;
   // Shift picks the run from the anchor; dragging on empty space draws a box; ⌘A / ⌘C / Esc; right-click acts on the picks.
   // pickedAssets only holds two or more (a single pick is the open detail). Reference images keep option A (checkbox / ⌘ / Shift).
@@ -920,7 +923,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
               <button role="menuitemradio" aria-checked={layout === 'grid'} onClick={() => { setMenu(''); setLayout('grid'); }}>卡片显示{layout === 'grid' && ' ✓'}</button>
               <button role="menuitemradio" aria-checked={layout === 'list'} onClick={() => { setMenu(''); setLayout('list'); }}>列表显示{layout === 'list' && ' ✓'}</button>
               <button role="menuitem" disabled={!!busy || listLoading} onClick={() => { setMenu(''); setError(''); void loadList().catch(e => setError(e.message)); }}>刷新列表</button>
-              {kind === 'character' && !publicScope && !!scope && <button role="menuitem" onClick={() => { setMenu(''); setAttrConfigOpen(true); }}><SlidersHorizontal size={15}/>人物属性维度…</button>}
+              {kind === 'character' && !publicScope && !!scope && <button role="menuitem" onClick={() => { setMenu(''); openAttrConfig(); }}><SlidersHorizontal size={15}/>人物属性维度…</button>}
               <hr/>
               <button role="menuitem" onClick={() => { setMenu(''); onSettings(); }}>界面设置</button>
             </div>}
@@ -1041,7 +1044,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                 <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || !!draft.archived_at} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||!!draft.archived_at} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
-            {draft.kind === 'character' && owner?.project_kind !== 'public' && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => setAttrConfigOpen(true)} configVersion={attrConfigVersion}/></section>}
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion}/></section>}
             {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={!!draft.archived_at||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头"><AssociatedShots key={draft.id} assetId={draft.id} active={active} request={request} onOpen={onOpenShot}/></section>
           </div>
@@ -1054,7 +1057,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
     </fieldset></div>
     {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
-    {active && attrConfigOpen && scope && !publicScope && <AttributeConfig key={scope} projectId={scope} projectName={scopes.find(s => s.id === scope)?.name ?? ''} request={request} onClose={() => setAttrConfigOpen(false)} onSaved={() => setAttrConfigVersion(v => v + 1)}/>}
+    {active && attrDialog > 0 && scope && !publicScope && (() => { const seq = attrDialog; return <AttributeConfig key={scope + ':' + seq} projectId={scope} projectName={scopes.find(s => s.id === scope)?.name ?? ''} request={request}
+      onClose={() => setAttrDialog(cur => cur === seq ? 0 : cur)} onSaved={c => { if (c.project_id === scopeRef.current) setAttrConfigVersion(v => v + 1); }}/>; })()}
     {active && desktop.action && desktopStatus()}
     {active && revealAsk && desktop.action?.requestId === revealAsk && desktop.action.receipt && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setRevealAsk(null); }}>
       <div className="ca-modal ca-reveal-ask" role="dialog" aria-label="在访达中显示所选图片">
