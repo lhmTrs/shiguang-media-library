@@ -119,7 +119,8 @@ try {
     await pf().getByRole('button', { name: '新建剧', exact: true }).click();
     const d = page.getByRole('dialog', { name: '新建剧' }); await d.getByLabel('剧名').fill('续集'); await d.getByRole('button', { name: '新建剧', exact: true }).click();
     await expect(d).toHaveCount(0);
-    const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem('shiguang.projectFolders.loc') || 'null'));
+    // 目录位置按素材库分键存（shiguang.projectFolders.loc:<库 ID>）。
+    const saved = await page.evaluate(() => { const k = Object.keys(sessionStorage).find(x => x.startsWith('shiguang.projectFolders.loc:')); return k ? JSON.parse(sessionStorage.getItem(k)) : null; });
     assert.equal(saved.level, 'series');
     await page.goto(origin + '/#/all'); await expect(pf()).toHaveCount(0);
     await page.goto(origin + '/#/projects'); await expect(heading('续集')).toBeVisible();

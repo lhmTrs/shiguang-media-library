@@ -16,6 +16,8 @@ export type ProjectFoldersProps = {
   projects: GroupedProject[]; series: Series[]; seriesChanged: () => void;
   activeId: string; select: (id: string) => void; request: ProjectRequest; changed: (id?: string) => void;
   openPage: (page: FolderPage, projectId: string) => void;
+  /** 当前素材库的稳定 ID。目录位置与「刚新建的剧」按库分开存；未知时只放内存、不读不写。 */
+  libraryId?: string;
 };
 type Loc = { level: 'root' } | { level: 'series'; seriesId: string } | { level: 'season'; seriesId: string; seasonId: string };
 type Sort = 'updated' | 'name' | 'created';
@@ -46,27 +48,37 @@ const autoName = (c: Container, p: GroupedProject) => c.season ? `${c.series.nam
 const targetOf = (c: Container): MoveTarget => ({ series_id: c.series.id, season_id: c.season?.id ?? null });
 const FolderIcon = () => <svg className="pf-folder-icon" width="34" height="28" viewBox="0 0 34 28" aria-hidden="true"><path d="M2 5a3 3 0 0 1 3-3h8l3 3h13a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3z"/></svg>;
 
-export function ProjectFolders({ projects, series, seriesChanged, activeId, select, request, changed, openPage }: ProjectFoldersProps) {
+export function ProjectFolders({ projects, series, seriesChanged, activeId, select, request, changed, openPage, libraryId = '' }: ProjectFoldersProps) {
+  const locKey = libraryId ? `${LOC_KEY}:${libraryId}` : '', pendingKey = libraryId ? `${PENDING_KEY}:${libraryId}` : '';
   const api = useMemo(() => seriesApi(request), [request]);
   // 新建剧成功后、列表刷新前：用 POST 返回的剧临时并入目录，并存到 sessionStorage，离开目录页再回来也还在。
-  const [pending, setPendingState] = useState<PendingSeries | null>(() => readSession<PendingSeries | null>(PENDING_KEY, null));
-  const setPending = (p: PendingSeries | null) => { setPendingState(p); if (p) writeSession(PENDING_KEY, p); else { try { sessionStorage.removeItem(PENDING_KEY); } catch { /* 忽略 */ } } };
+  const [pending, setPendingState] = useState<PendingSeries | null>(() => pendingKey ? readSession<PendingSeries | null>(pendingKey, null) : null);
+  const setPending = (p: PendingSeries | null) => { setPendingState(p); if (!pendingKey) return; if (p) writeSession(pendingKey, p); else { try { sessionStorage.removeItem(pendingKey); } catch { /* 忽略 */ } } };
   const pendingLive = pending && Date.now() < pending.until && !series.some(s => s.id === pending.series.id) ? pending : null;
   useEffect(() => {
     if (!pending) return;
     if (series.some(s => s.id === pending.series.id) || Date.now() >= pending.until) { setPending(null); return; }
     const t = setTimeout(() => setPendingState(p => p && { ...p }), pending.until - Date.now() + 10); return () => clearTimeout(t);
   }, [pending, series]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { const reset = () => { setPending(null); setLocState({ level: 'root' }); writeSession(LOC_KEY, { level: 'root' }); }; window.addEventListener('shiguang-library-identity-changed', reset); return () => window.removeEventListener('shiguang-library-identity-changed', reset); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const reset = () => { setPendingState(null); setLocState({ level: 'root' }); }; window.addEventListener('shiguang-library-identity-changed', reset); return () => window.removeEventListener('shiguang-library-identity-changed', reset); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadedFor = useRef(libraryId);
+  useEffect(() => {
+    try { sessionStorage.removeItem(LOC_KEY); sessionStorage.removeItem(PENDING_KEY); } catch { /* 旧版本未分库的记录，丢弃 */ }
+    if (loadedFor.current === libraryId) return;
+    loadedFor.current = libraryId;
+    setLocState(locKey ? readSession<Loc>(locKey, { level: 'root' }) : { level: 'root' });
+    setPendingState(pendingKey ? readSession<PendingSeries | null>(pendingKey, null) : null);
+    setSelected([]); setMenu(null);
+  }, [libraryId]); // eslint-disable-line react-hooks/exhaustive-deps
   const tree = useMemo(() => buildTree(projects, pendingLive ? [...series, pendingLive.series] : series), [projects, series, pendingLive]);
-  const [loc, setLocState] = useState<Loc>(() => readSession<Loc>(LOC_KEY, { level: 'root' }));
+  const [loc, setLocState] = useState<Loc>(() => locKey ? readSession<Loc>(locKey, { level: 'root' }) : { level: 'root' });
   const [sort, setSortState] = useState<Sort>(() => readSession<Sort>(SORT_KEY, 'updated'));
   const [selected, setSelected] = useState<string[]>([]), anchor = useRef<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null), [dialog, setDialog] = useState<Dialog | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [toast, setToast] = useState<Toast | null>(null);
   const [dropKey, setDropKey] = useState('');
   useFeedbackToast(error, { source: '项目管理' });
-  const setLoc = (next: Loc) => { setLocState(next); writeSession(LOC_KEY, next); setSelected([]); anchor.current = null; setMenu(null); };
+  const setLoc = (next: Loc) => { setLocState(next); if (locKey) writeSession(locKey, next); setSelected([]); anchor.current = null; setMenu(null); };
   const setSort = (s: Sort) => { setSortState(s); writeSession(SORT_KEY, s); };
 
   const node = loc.level === 'root' ? undefined : tree.series.find(n => n.series.id === loc.seriesId);

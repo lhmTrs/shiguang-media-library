@@ -1986,7 +1986,7 @@ function App() {
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span><button onClick={refreshProjects}>重试项目目录</button></div>}
           {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
-            request={api} changed={projectsChanged} openPage={openProjectPage}/> :
+            request={api} changed={projectsChanged} openPage={openProjectPage} libraryId={projectLibraryId}/> :
             !directoryError && <div className="empty" role="status">正在读取项目目录…</div>}
         </> : view === "projectUsage" ? <div className="project-manager">
           <header className="project-heading"><h1>素材使用</h1></header>
