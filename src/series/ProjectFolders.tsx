@@ -30,7 +30,10 @@ type Dialog =
   | { type: 'xml' };
 type Toast = { text: string; undo?: string };
 
-const LOC_KEY = 'shiguang.projectFolders.loc', SORT_KEY = 'shiguang.projectFolders.sort', DRAG_TYPE = 'text/x-shiguang-projects';
+const LOC_KEY = 'shiguang.projectFolders.loc', SORT_KEY = 'shiguang.projectFolders.sort', PENDING_KEY = 'shiguang.projectFolders.pendingSeries', DRAG_TYPE = 'text/x-shiguang-projects';
+/** 刚新建、还没出现在剧列表快照里的剧最多临时保留这么久；过期仍不在就当作已删除。 */
+const PENDING_MS = 30000;
+type PendingSeries = { series: Series; until: number };
 const readSession = <T,>(key: string, fallback: T): T => { try { const v = sessionStorage.getItem(key); return v ? JSON.parse(v) as T : fallback; } catch { return fallback; } };
 const writeSession = (key: string, v: unknown) => { try { sessionStorage.setItem(key, JSON.stringify(v)); } catch { /* 隐私模式等：只在内存里 */ } };
 const pages: { page: FolderPage; name: string }[] = [{ page: 'usage', name: '素材使用' }, { page: 'assets', name: '项目资产' }, { page: 'videos', name: '生成视频' }, { page: 'storyboard', name: '分镜' }];
@@ -42,7 +45,17 @@ const FolderIcon = () => <svg className="pf-folder-icon" width="34" height="28" 
 
 export function ProjectFolders({ projects, series, seriesChanged, activeId, select, request, changed, openPage }: ProjectFoldersProps) {
   const api = useMemo(() => seriesApi(request), [request]);
-  const tree = useMemo(() => buildTree(projects, series), [projects, series]);
+  // 新建剧成功后、列表刷新前：用 POST 返回的剧临时并入目录，并存到 sessionStorage，离开目录页再回来也还在。
+  const [pending, setPendingState] = useState<PendingSeries | null>(() => readSession<PendingSeries | null>(PENDING_KEY, null));
+  const setPending = (p: PendingSeries | null) => { setPendingState(p); if (p) writeSession(PENDING_KEY, p); else { try { sessionStorage.removeItem(PENDING_KEY); } catch { /* 忽略 */ } } };
+  const pendingLive = pending && Date.now() < pending.until && !series.some(s => s.id === pending.series.id) ? pending : null;
+  useEffect(() => {
+    if (!pending) return;
+    if (series.some(s => s.id === pending.series.id) || Date.now() >= pending.until) { setPending(null); return; }
+    const t = setTimeout(() => setPendingState(p => p && { ...p }), pending.until - Date.now() + 10); return () => clearTimeout(t);
+  }, [pending, series]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const reset = () => { setPending(null); setLocState({ level: 'root' }); writeSession(LOC_KEY, { level: 'root' }); }; window.addEventListener('shiguang-library-identity-changed', reset); return () => window.removeEventListener('shiguang-library-identity-changed', reset); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const tree = useMemo(() => buildTree(projects, pendingLive ? [...series, pendingLive.series] : series), [projects, series, pendingLive]);
   const [loc, setLocState] = useState<Loc>(() => readSession<Loc>(LOC_KEY, { level: 'root' }));
   const [sort, setSortState] = useState<Sort>(() => readSession<Sort>(SORT_KEY, 'updated'));
   const [selected, setSelected] = useState<string[]>([]), anchor = useRef<string | null>(null);
@@ -55,17 +68,11 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
 
   const node = loc.level === 'root' ? undefined : tree.series.find(n => n.series.id === loc.seriesId);
   const seasonContainer = loc.level === 'season' ? node?.seasons.find(c => c.season?.id === loc.seasonId) : undefined;
-  // 刚新建、还没出现在列表快照里的剧：等它出现（最多 10 秒），期间不把位置当成失效。
-  const awaiting = useRef<{ id: string; until: number } | null>(null), [, recheck] = useState(0);
-  // 当前位置失效（剧或季被删、换了库）就回到上一层。
+  // 当前位置失效（剧或季被删、换了库）就回到上一层。刚新建的剧已并入 tree，不会被误判。
   useEffect(() => {
-    const wait = awaiting.current;
-    if (wait && node?.series.id === wait.id) awaiting.current = null;
-    if (loc.level !== 'root' && !node) {
-      if (wait && wait.id === loc.seriesId && Date.now() < wait.until) { const t = setTimeout(() => recheck(n => n + 1), wait.until - Date.now() + 10); return () => clearTimeout(t); }
-      awaiting.current = null; setLoc({ level: 'root' });
-    } else if (loc.level === 'season' && node && !seasonContainer) setLoc({ level: 'series', seriesId: node.series.id });
-  }); // eslint-disable-line react-hooks/exhaustive-deps
+    if (loc.level !== 'root' && !node) setLoc({ level: 'root' });
+    else if (loc.level === 'season' && node && !seasonContainer) setLoc({ level: 'series', seriesId: node.series.id });
+  }, [loc, node, seasonContainer]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 8000); return () => clearTimeout(t); }, [toast]);
   useEffect(() => { if (!menu) return; const close = () => setMenu(null); window.addEventListener('click', close); window.addEventListener('blur', close); return () => { window.removeEventListener('click', close); window.removeEventListener('blur', close); }; }, [menu]);
 
@@ -155,7 +162,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     void run(async () => { await api.reorderSeason(s, direction, neighbor); seriesChanged(); });
   }
   const deleteProject = (p: GroupedProject) => { if (window.confirm(`删除项目“${p.name}”及其使用记录？不会删除原文件。`)) void run(async () => { await request(`/projects/${p.id}`, {}, 'DELETE'); refresh(''); }); };
-  const deleteSeries = (n: SeriesNode) => { if (window.confirm(`删除剧“${n.series.name}”？只有没有任何集时才能删除。`)) void run(async () => { await api.deleteSeries(n.series); setLoc({ level: 'root' }); seriesChanged(); }); };
+  const deleteSeries = (n: SeriesNode) => { if (window.confirm(`删除剧“${n.series.name}”？只有没有任何集时才能删除。`)) void run(async () => { await api.deleteSeries(n.series); if (pending?.series.id === n.series.id) setPending(null); setLoc({ level: 'root' }); seriesChanged(); }); };
   const deleteSeason = (s: Season) => { if (window.confirm(`删除「${seasonName(s)}」？只有空季才能删除。`)) void run(async () => { await api.deleteSeason(s); seriesChanged(); }); };
   const undo = (id: string) => void run(async () => { await api.undoMove(id); setToast({ text: '已撤销这次移动' }); refresh(); });
   const openMenu = (e: MouseEvent, m: MenuBody) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, ...m }); };
@@ -249,7 +256,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     {toast && <div className="pf-toast" role="status"><span>{toast.text}</span>{toast.undo && <button type="button" disabled={busy} onClick={() => undo(toast.undo!)}>撤销</button>}<button type="button" className="pf-toast-close" aria-label="关闭提示" onClick={() => setToast(null)}><X size={14}/></button></div>}
     {dialog?.type === 'series' && <SeriesDialog series={dialog.series} busy={busy} close={() => setDialog(null)} save={(name, software) => void run(async () => {
       if (dialog.series) { await api.updateSeries(dialog.series, { name, software }); seriesChanged(); setDialog(null); }
-      else { const s = await api.createSeries(name, software); awaiting.current = { id: s.id, until: Date.now() + 10000 }; seriesChanged(); setDialog(null); setLoc({ level: 'series', seriesId: s.id }); }
+      else { const s = await api.createSeries(name, software); setPending({ series: { ...s, seasons: s.seasons ?? [] }, until: Date.now() + PENDING_MS }); setDialog(null); setLoc({ level: 'series', seriesId: s.id }); seriesChanged(); }
     })}/>}
     {dialog?.type === 'season' && <SeasonDialog season={dialog.season} busy={busy} close={() => setDialog(null)} save={(label, no) => void run(async () => { await api.updateSeason(dialog.season, { label, season_no: no }); seriesChanged(); setDialog(null); })}/>}
     {dialog?.type === 'numbers' && <NumbersDialog dialog={dialog} busy={busy} close={() => setDialog(null)} submit={rows => void run(() => move(dialog.target, dialog.targetName, rows))}/>}

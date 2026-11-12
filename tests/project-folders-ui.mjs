@@ -20,14 +20,20 @@ const card = name => pf().getByRole('button', { name: new RegExp('^' + name.repl
 const menu = () => page.getByRole('menu', { name: '操作' });
 const toast = () => page.locator('.pf-toast');
 const rightClick = async name => { await card(name).click({ button: 'right' }); await expect(menu()).toBeVisible(); };
-let delaySeries = false;
+let delaySeries = false, holdSeries = false, releaseSeries = null, cookie, token;
+async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
+  const sessionResponse = await fetch(origin + '/api/session'), session = await sessionResponse.json(); cookie = sessionResponse.headers.get('set-cookie').split(';')[0]; token = session.token;
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); page.on('dialog', d => d.accept());
-  await page.route(url => url.pathname === '/api/project-series', async route => { if (route.request().method() === 'GET' && delaySeries) await new Promise(r => setTimeout(r, 400)); return route.fallback(); });
+  await page.route(url => url.pathname === '/api/project-series', async route => {
+    if (route.request().method() === 'GET' && delaySeries) await new Promise(r => setTimeout(r, 400));
+    if (route.request().method() === 'GET' && holdSeries) await new Promise(r => { const prev = releaseSeries; releaseSeries = () => { prev?.(); r(); }; });
+    return route.fallback();
+  });
   await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
 
   await check('空库：显示新建剧 / 新建项目 / 从 XML 导入', async () => {
@@ -104,6 +110,28 @@ try {
     await card('穿越计 第 3 集').click();
     await pf().getByRole('navigation', { name: '第 3 集的快捷入口' }).getByRole('button', { name: '素材使用' }).click();
     await expect(page).toHaveURL(/#\/project-usage/); await expect(page.getByRole('region', { name: '项目素材篮' }).getByRole('heading', { name: '番外合集', exact: true })).toBeVisible();
+  });
+
+  await check('FE-R2 反例：新建剧后剧列表请求挂起 → 切到「全部素材」再切回「项目」→ 放行请求：仍在新剧里，不用再双击', async () => {
+    await page.goto(origin + '/#/projects'); await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click().catch(() => {});
+    await expect(heading('项目')).toBeVisible();
+    holdSeries = true; releaseSeries = null;
+    await pf().getByRole('button', { name: '新建剧', exact: true }).click();
+    const d = page.getByRole('dialog', { name: '新建剧' }); await d.getByLabel('剧名').fill('续集'); await d.getByRole('button', { name: '新建剧', exact: true }).click();
+    await expect(d).toHaveCount(0);
+    const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem('shiguang.projectFolders.loc') || 'null'));
+    assert.equal(saved.level, 'series');
+    await page.goto(origin + '/#/all'); await expect(pf()).toHaveCount(0);
+    await page.goto(origin + '/#/projects'); await expect(heading('续集')).toBeVisible();
+    holdSeries = false; releaseSeries?.(); releaseSeries = null;
+    await page.waitForTimeout(600); await expect(heading('续集')).toBeVisible();
+    await expect(pf().getByRole('navigation', { name: '位置' })).toContainText('续集');
+  });
+
+  await check('真正被删除的剧仍回退：停在「续集」时它在别处被删，刷新后回到根目录', async () => {
+    const list = await api('/project-series'), target = list.find(x => x.name === '续集');
+    await api(`/project-series/${target.id}`, { expected_revision: target.revision }, 'DELETE');
+    await page.reload(); await expect(heading('项目')).toBeVisible(); await expect(card('打开剧 续集')).toHaveCount(0);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
