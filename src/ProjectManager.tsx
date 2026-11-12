@@ -26,7 +26,7 @@ export function ProjectHistory({ assetId, request, revision = 0 }: { assetId: st
   </section>;
 }
 
-function ProjectEditor({ project, request, close, saved, importXml }: { project: Project | null; request: ProjectRequest; close: () => void; saved: (id: string) => void; importXml?:()=>void }) {
+export function ProjectEditor({ project, request, close, saved, importXml }: { project: Project | null; request: ProjectRequest; close: () => void; saved: (id: string) => void; importXml?:()=>void }) {
   const [name, setName] = useState(project?.name || ""), [software, setSoftware] = useState(project?.software || ""), [note, setNote] = useState(project?.note || "");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   useFeedbackToast(error, {source: '项目管理'});

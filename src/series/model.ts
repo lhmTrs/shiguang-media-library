@@ -3,6 +3,7 @@
 import type { Project, ProjectRequest } from "../ProjectManager";
 
 export type GroupedProject = Project & {
+  created_at?: number; updated_at?: number;
   series_id?: string | null; season_id?: string | null; episode_no?: number | null; membership_revision?: number;
 };
 export type Season = { id: string; series_id: string; season_no: number; label: string | null; revision: number; created_at: number; updated_at: number; next_episode_no: number };
