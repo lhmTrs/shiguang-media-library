@@ -23,6 +23,7 @@ export function projectSeriesRouter(series) {
   router.get(base + "/requests/:requestId", handle(req => series.request(req.params.requestId)));
   router.post(base + "/moves/preview", handle(req => series.previewMove(req.body), true));
   router.post(base + "/moves", handle(req => series.move(req.body), true));
+  router.post(base + "/organize", handle(req => series.organize(req.body), true));
   router.post(base + "/moves/:requestId/undo", handle(req => series.undo(req.params.requestId, req.body), true));
   router.patch(drama, handle(req => series.updateSeries(req.params.seriesId, req.body), true));
   router.delete(drama, handle(req => series.removeSeries(req.params.seriesId, req.body), true));
