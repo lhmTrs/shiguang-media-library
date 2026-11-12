@@ -1,7 +1,7 @@
 import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace } from 'lucide-react';
+import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
 import {imageNamePreset} from '../import-presets.mjs';
@@ -9,6 +9,9 @@ import './asset-library.css';
 import {AssociatedShots} from './AssociatedShots';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
+import {CharacterAttributes} from './CharacterAttributes';
+import {AttributeConfig} from './AttributeConfig';
+import {AttributePopover} from './AttributePopover';
 import {ReferenceImageImport,ReferencePreview} from './ReferenceImageImport';
 import {ProjectSelector} from '../ProjectSelector';
 import {ReferenceImageViewer} from './ReferenceImageViewer';
@@ -164,7 +167,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // crop 面板：source 是这次要提交的裁切来源（拖过 manual，采用建议 auto）；head 是自动框状态；
   // seq 每次请求或拖动都加一，晚于用户操作返回的识别结果按 seq 丢弃。
   // base：打开「调整头像」时的默认图身份与裁切，点「完成」前用最新记录核对，变了就不覆盖。
-  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'multi' | 'pick' | 'crop'; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
+  const [quick, setQuick] = useState<{ id: string; mode: 'menu' | 'multi' | 'pick' | 'crop' | 'attrs' | 'compare'; ids?: string[]; x: number; y: number; crop?: Crop; source?: CropSource; head?: HeadState; seq?: number; base?: CropBase } | null>(null);
   // 详情图片设置里的裁切：只有「重新框到头部」，不在打开时自动改草稿。
   // 当前浮层（菜单 / 面板）的实例：异步打开「调整头像」只在发起它的那个菜单仍然开着时才生效。
   const quickNow = useRef(quick); quickNow.current = quick;
@@ -175,6 +178,8 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   useEffect(() => { detailSeq.current++; setDetailHead(null); }, [imageId, draft?.id]);
   useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(t); }, [undo]);
   const quickRef = useRef<HTMLDivElement>(null);
+  // 人物属性：维度配置弹窗；配置保存后递增版本让详情里的属性重新读取。
+  const [attrConfigOpen, setAttrConfigOpen] = useState(false), [attrConfigVersion, setAttrConfigVersion] = useState(0);
   // Characters pick like the video page (Finder): a click selects one and shows its detail; ⌘ adds or removes;
   // Shift picks the run from the anchor; dragging on empty space draws a box; ⌘A / ⌘C / Esc; right-click acts on the picks.
   // pickedAssets only holds two or more (a single pick is the open detail). Reference images keep option A (checkbox / ⌘ / Shift).
@@ -833,7 +838,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   // Rendered by a plain function (not a nested component) so the crop box keeps its state while dragging.
   function quickPanel(a: Asset) {
     const ref = quickRef, cover = coverOf(a), aspect = a.kind === 'character' ? 3 / 4 : 16 / 10;
-    const width = quick!.mode === 'menu' ? 196 : quick!.mode === 'multi' ? 252 : quick!.mode === 'pick' ? 560 : 540;
+    const width = quick!.mode === 'menu' ? 196 : quick!.mode === 'multi' ? 252 : quick!.mode === 'attrs' ? 480 : quick!.mode === 'compare' ? 520 : quick!.mode === 'pick' ? 560 : 540;
     const left = Math.max(12, Math.min(quick!.x, window.innerWidth - width - 12)), top = Math.max(12, Math.min(quick!.y, window.innerHeight - (quick!.mode === 'menu' || quick!.mode === 'multi' ? 200 : 520)));
     const usable = (a.images ?? []).filter(b => !b.archived_at);
     const groups = a.kind === 'character' ? a.looks.filter(l => !l.archived_at).map(l => ({ key: l.id, title: '造型 · ' + l.name, images: usable.filter(b => b.look_id === l.id) })).filter(g => g.images.length) : [{ key: 'all', title: '参考图', images: usable }];
@@ -841,6 +846,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     if (quick!.mode === 'multi') { const n = pickedAssets.length, over = overPick(n); return <div ref={ref} className="ca-quick ca-quick-menu" role="menu" aria-label={'已选 ' + n + ' 个' + labels[kind] + '的操作'} style={style}>
       <button role="menuitem" disabled={!clipCap.available || desktopBusy || !!over} title={clipCap.reason || over || undefined} onClick={() => { setQuick(null); focusGallery(); void copyFiles('defaults', defaultsItems(pickedAssets)); }}><Copy size={14}/>复制 {n} 张默认图<kbd>⌘C</kbd></button>
       <button role="menuitem" disabled={!revealCap.available || desktopBusy || !!over} title={revealCap.reason || over || undefined} onClick={() => { setQuick(null); focusGallery(); void revealFiles('defaults', defaultsItems(pickedAssets)); }}><FolderOpen size={14}/>在访达中显示 {n} 张</button>
+      {kind === 'character' && !publicScope && <button role="menuitem" disabled={n > 3} title={n > 3 ? '一次最多对比 3 个人物' : undefined} onClick={() => setQuick({ ...quick!, mode: 'compare', ids: [...pickedAssets] })}><Radar size={14}/>对比属性图（{n} 人）{n > 3 && <small>最多 3 人</small>}</button>}
       <hr/>
       <button role="menuitem" disabled><Star size={14}/>换默认图…<small>一次只能换一个</small></button>
       <button role="menuitem" disabled><Maximize2 size={14}/>调整头像…<small>一次只能调一个</small></button>
@@ -849,9 +855,16 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       <button role="menuitem" disabled={!cover} onClick={() => void copyDefault(a)}><Copy size={14}/>复制默认图</button>
       <button role="menuitem" disabled={!usable.length || !!a.archived_at} onClick={() => setQuick({ ...quick!, mode: 'pick' })}><Star size={14}/>换默认图…</button>
       <button role="menuitem" disabled={!cover || !!a.archived_at} onClick={() => void openCrop(a, quick!)}><Maximize2 size={14}/>调整头像…</button>
+      {a.kind === 'character' && !publicScope && <button role="menuitem" onClick={() => setQuick({ ...quick!, mode: 'attrs' })}><Radar size={14}/>查看属性图</button>}
       <hr/>
       <button role="menuitem" onClick={() => { setQuick(null); void openAsset(a.id); }}>打开详情</button>
     </div>;
+    if (quick!.mode === 'attrs' || quick!.mode === 'compare') {
+      const people = quick!.mode === 'attrs' ? [{ id: a.id, name: a.name }] : (quick!.ids ?? []).map(id => rows.find(r => r.id === id)).filter((r): r is Asset => !!r).map(r => ({ id: r.id, name: r.name }));
+      return <div ref={ref} className="ca-quick ca-quick-panel ca-attr-pop" role="dialog" aria-label={quick!.mode === 'attrs' ? a.name + '的属性图' : '属性对比'} style={style}>
+        <AttributePopover projectId={a.project_id} people={people} request={request} onClose={() => setQuick(null)} onEdit={quick!.mode === 'attrs' ? id => { setQuick(null); void openAsset(id).then(() => setTimeout(() => jump('ca-sec-attrs'), 60)); } : undefined}/>
+      </div>;
+    }
     if (quick!.mode === 'pick') return <div ref={ref} className="ca-quick ca-quick-panel" role="dialog" aria-label={'换' + a.name + '的默认图'} style={style}>
       <header><strong>换「{a.name}」的默认图</strong><small>点一张就换，马上生效</small></header>
       <div className="ca-quick-body">{groups.map(g => <section key={g.key} aria-label={g.title}><h4>{g.title}</h4><div className="ca-quick-grid">{g.images.map(b => { const name = b.last_known_name || '参考图片', current = b.id === cover?.id; return <button key={b.id} type="button" className={'ca-quick-thumb' + (current ? ' is-current' : '')} aria-pressed={current} aria-label={(current ? '当前默认图：' : '设为默认：') + name} disabled={current || !!busy} onClick={() => { setQuick(null); void quickSave(a.id, '正在更换默认图…', x => { const img = x.images.find(i => i.id === b.id); if (img) setCover(x, img); }, (saved, before) => { const look = saved.looks.find(l => l.id === saved.default_look_id), was = before.looks.find(l => l.id === before.default_look_id); return '已把「' + a.name + '」的默认图换成「' + name + '」' + (a.kind === 'character' && look && was && look.id !== was.id ? '，默认造型也换成了「' + look.name + '」' : '') + autoNote(before, saved, b.id); }); }}>
@@ -888,6 +901,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
               <button role="menuitemradio" aria-checked={layout === 'grid'} onClick={() => { setMenu(''); setLayout('grid'); }}>卡片显示{layout === 'grid' && ' ✓'}</button>
               <button role="menuitemradio" aria-checked={layout === 'list'} onClick={() => { setMenu(''); setLayout('list'); }}>列表显示{layout === 'list' && ' ✓'}</button>
               <button role="menuitem" disabled={!!busy || listLoading} onClick={() => { setMenu(''); setError(''); void loadList().catch(e => setError(e.message)); }}>刷新列表</button>
+              {kind === 'character' && !publicScope && !!scope && <button role="menuitem" onClick={() => { setMenu(''); setAttrConfigOpen(true); }}><SlidersHorizontal size={15}/>人物属性维度…</button>}
               <hr/>
               <button role="menuitem" onClick={() => { setMenu(''); onSettings(); }}>界面设置</button>
             </div>}
@@ -963,7 +977,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。在右上角“⋯”中选择“恢复”后可继续编辑。</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}
-          <nav className="ca-detail-nav" aria-label="详情分区">{([['ca-sec-info', '资料'], ['ca-sec-refs', draft.kind === 'character' ? '造型与参考图' : '参考图'], ...(draft.kind === 'character' ? [['ca-sec-voice', '语音']] : []), ['ca-sec-shots', '出场镜头']] as [string, string][]).map(([id, l]) => <button type="button" key={id} onClick={() => jump(id)}>{l}</button>)}</nav>
+          <nav className="ca-detail-nav" aria-label="详情分区">{([['ca-sec-info', '资料'], ['ca-sec-refs', draft.kind === 'character' ? '造型与参考图' : '参考图'], ...(draft.kind === 'character' && owner?.project_kind !== 'public' ? [['ca-sec-attrs', '属性']] : []), ...(draft.kind === 'character' ? [['ca-sec-voice', '语音']] : []), ['ca-sec-shots', '出场镜头']] as [string, string][]).map(([id, l]) => <button type="button" key={id} onClick={() => jump(id)}>{l}</button>)}</nav>
           <div className="ca-detail-scroll" ref={detailScroll}>
             <section className="ca-sec" id="ca-sec-info" aria-label="资料">
               <h3>资料</h3>
@@ -1007,6 +1021,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                 <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || !!draft.archived_at} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||!!draft.archived_at} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => setAttrConfigOpen(true)} configVersion={attrConfigVersion}/></section>}
             {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={!!draft.archived_at||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头"><AssociatedShots key={draft.id} assetId={draft.id} active={active} request={request} onOpen={onOpenShot}/></section>
           </div>
@@ -1019,6 +1034,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       </div>
     </fieldset></div>
     {active && !scriptView && quick && (() => { const a = rows.find(r => r.id === quick.id); return a ? quickPanel(a) : null; })()}
+    {active && attrConfigOpen && scope && !publicScope && <AttributeConfig projectId={scope} projectName={scopes.find(s => s.id === scope)?.name ?? ''} request={request} onClose={() => setAttrConfigOpen(false)} onSaved={() => setAttrConfigVersion(v => v + 1)}/>}
     {active && desktop.action && desktopStatus()}
     {active && revealAsk && desktop.action?.requestId === revealAsk && desktop.action.receipt && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setRevealAsk(null); }}>
       <div className="ca-modal ca-reveal-ask" role="dialog" aria-label="在访达中显示所选图片">

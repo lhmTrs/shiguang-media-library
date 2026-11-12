@@ -68,7 +68,7 @@ try {
 
   await check('右键「换默认图」：选另一个造型的图，马上保存，默认造型跟着换；撤销后恢复', async () => {
     await wrap('阿青').click({ button: 'right' });
-    const menu = page.getByRole('menu', { name: '阿青的操作' }); await expect(menu.getByRole('menuitem')).toHaveText(['复制默认图', '换默认图…', '调整头像…', '打开详情']);
+    const menu = page.getByRole('menu', { name: '阿青的操作' }); await expect(menu.getByRole('menuitem')).toHaveText(['复制默认图', '换默认图…', '调整头像…', '查看属性图', '打开详情']);
     await menu.getByRole('menuitem', { name: '换默认图…' }).click();
     const panel = page.getByRole('dialog', { name: '换阿青的默认图' });
     await expect(panel.getByRole('region', { name: '造型 · 泳衣' }).getByRole('button')).toHaveCount(2);
