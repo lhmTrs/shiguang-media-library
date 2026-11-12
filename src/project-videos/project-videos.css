@@ -129,6 +129,10 @@
 .pv-card-entry .pv-card { width: 100%; flex: 1; }
 .pv-workspace .pv-card { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 0; min-width: 0; padding: 0; overflow: hidden; border-radius: 10px; text-align: left; }
 .pv-workspace .pv-card, .pv-workspace .pv-card:hover:not(:disabled), .pv-workspace .pv-card[aria-pressed=true] { color: var(--c-24292c); background: var(--c-fff); }
+.pv-workspace .pv-card.pv-card-empty { align-items: center; justify-content: center; gap: 6px; padding: 16px; aspect-ratio: 16 / 13; text-align: center; }
+.pv-workspace .pv-card.pv-card-empty > svg { color: var(--green); }
+.pv-workspace .pv-card.pv-card-empty strong { font-size: 14px; }
+.pv-workspace .pv-card.pv-card-empty small { color: var(--muted); font-size: 11px; }
 .pv-workspace .pv-card.pv-selected { border-color: var(--green); box-shadow: 0 0 0 2px var(--green); }
 .pv-thumbnail { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16 / 9; background: var(--soft); color: var(--muted); isolation: isolate; }
 .pv-thumbnail img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; background: var(--soft); }
