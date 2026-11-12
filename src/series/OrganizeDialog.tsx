@@ -17,8 +17,10 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
   const [groups, setGroups] = useState<Group[]>(initial), [busy, setBusy] = useState(false), [status, setStatus] = useState<Status>(null);
   /** 已发出、结果不明的请求：固定编号和内容，只能原样查询或重发。 */
   const pending = useRef<OrganizeRequest | null>(null), [unknown, setUnknown] = useState(false);
-  const editGroup = (i: number, change: Partial<Group>) => setGroups(gs => gs.map((g, j) => j === i ? { ...g, ...change, conflict: undefined } : g));
-  const editRow = (i: number, r: number, change: Partial<Row>) => setGroups(gs => gs.map((g, j) => j === i ? { ...g, conflict: undefined, rows: g.rows.map((row, k) => k === r ? { ...row, ...change, conflict: undefined } : row) } : g));
+  // 提交中、或已发出但结果不明时一律锁定：重发必须是原编号、原内容，界面也要一直显示原内容。
+  const locked = busy || unknown;
+  const editGroup = (i: number, change: Partial<Group>) => !locked && setGroups(gs => gs.map((g, j) => j === i ? { ...g, ...change, conflict: undefined } : g));
+  const editRow = (i: number, r: number, change: Partial<Row>) => !locked && setGroups(gs => gs.map((g, j) => j === i ? { ...g, conflict: undefined, rows: g.rows.map((row, k) => k === r ? { ...row, ...change, conflict: undefined } : row) } : g));
 
   // —— 校验：剧名不能空、不能和已有剧或别的新剧重名；同组勾选的集号必须是不重复的正整数 ——
   const existingNames = new Set(series.map(s => s.name.trim().toLowerCase()));
@@ -55,7 +57,7 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
     try {
       const s = await api.requestStatus(req.request_id);
       if (s.found) { succeed(s.result as OrganizeReceipt); return; }
-      setStatus({ tone: 'unknown', text: '已核对：服务端没有收到这次归组，什么都没写。可以用原请求重新提交。' });
+      setStatus({ tone: 'unknown', text: '尚未查到成功回执，结果待核对。可以稍后点「重新核对」，或用原请求重新提交（同一编号不会重复写入）。' });
     } catch { setStatus({ tone: 'unknown', text: '结果待核对：暂时查不到这次归组有没有完成。请稍后点「重新核对」，不要重复整理。' }); }
   }
   async function submit() {
@@ -73,15 +75,15 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
   }
 
   return <Modal label="整理旧项目" close={close} busy={busy}>
-    <form className="pf-organize" onSubmit={e => { e.preventDefault(); if (!invalid && !busy) void submit(); }}>
+    <form className="pf-organize" onSubmit={e => { e.preventDefault(); if ((unknown || !invalid) && !busy) void submit(); }}>
       <div className="modal-body">
         {!groups.length ? <p className="muted pf-hint">没找到能归到同一部剧的项目。项目名结尾带集号（如「某剧_12」「某剧3」）才会被建议；也可以在项目卡片上右键「放进剧…」。</p> : <>
           <p className="muted pf-hint">按项目名找到 {groups.length} 组。核对剧名和集号后一次归组；项目名、素材、分镜、视频都不变。</p>
-          {groups.map((g, i) => <fieldset key={g.key} className="pf-og" disabled={busy || unknown}>
+          {groups.map((g, i) => <fieldset key={g.key} className="pf-og" disabled={locked}>
             <legend className="pf-og-head">
-              {g.existing ? <b>{g.existing.name}</b> : <input aria-label={`${g.name || '新剧'}的剧名`} value={g.name} maxLength={120} onChange={e => editGroup(i, { name: e.target.value })}/>}
+              {g.existing ? <b>{g.existing.name}</b> : <input aria-label={`${g.name || '新剧'}的剧名`} value={g.name} maxLength={120} disabled={locked} onChange={e => editGroup(i, { name: e.target.value })}/>}
               <span className="pf-tag">{g.existing ? '已有剧' : '新建剧'}</span>
-              {g.existing && g.existing.seasons.length > 0 && <label className="pf-og-target">放入<select aria-label={`${g.existing.name}的放入位置`} value={g.container} onChange={e => editGroup(i, { container: e.target.value })}><option value="root">剧里（不进季）</option>{[...g.existing.seasons].sort((a, z) => a.season_no - z.season_no).map(s => <option key={s.id} value={s.id}>{seasonName(s)}</option>)}</select></label>}
+              {g.existing && g.existing.seasons.length > 0 && <label className="pf-og-target">放入<select aria-label={`${g.existing.name}的放入位置`} value={g.container} disabled={locked} onChange={e => editGroup(i, { container: e.target.value })}><option value="root">剧里（不进季）</option>{[...g.existing.seasons].sort((a, z) => a.season_no - z.season_no).map(s => <option key={s.id} value={s.id}>{seasonName(s)}</option>)}</select></label>}
               {(g.conflict || problems[i].group) && <small className="pf-conflict">{g.conflict || problems[i].group}</small>}
             </legend>
             <table><tbody>{g.rows.map((r, k) => { const issue = r.conflict ?? problems[i].rows.get(k); return <tr key={r.project.id} data-conflict={issue ? 'yes' : undefined}>
@@ -98,7 +100,7 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
         {groups.length > 0 && <span className="pf-og-summary">{newCount ? `将新建 ${newCount} 部剧，` : ''}归组 {rowCount} 个项目</span>}
         <button type="button" className="plain" disabled={busy} onClick={close}>{groups.length ? '取消' : '关闭'}</button>
         {unknown && <button type="button" className="plain" disabled={busy} onClick={() => { const req = pending.current; if (req) { setBusy(true); void recheck(req).finally(() => setBusy(false)); } }}>重新核对</button>}
-        {groups.length > 0 && <button className="primary" type="submit" disabled={busy || invalid}><Check size={15}/>{busy ? '归组中…' : unknown ? '用原请求重新提交' : `归组 ${rowCount} 个项目`}</button>}
+        {groups.length > 0 && <button className="primary" type="submit" disabled={busy || (!unknown && invalid)}><Check size={15}/>{busy ? '归组中…' : unknown ? '用原请求重新提交' : `归组 ${rowCount} 个项目`}</button>}
       </div>
     </form>
   </Modal>;

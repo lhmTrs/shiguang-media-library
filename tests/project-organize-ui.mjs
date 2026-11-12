@@ -10,7 +10,7 @@ import { chromium, expect } from '@playwright/test';
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-organize-'));
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
-let logs = '', browser, page, cookie, token, passed = false, organizeMode = 'pass'; const checks = [], errors = [], organizeBodies = [];
+let logs = '', browser, page, cookie, token, passed = false, organizeMode = 'pass', releaseHeld = null; const checks = [], errors = [], organizeBodies = [];
 const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal'), CODEX_HOME: path.join(temp, 'no-codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
@@ -33,11 +33,12 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  // organizeMode：pass 照常；lost-after = 服务端已执行但回应丢失；lost-before = 请求没到服务端。
+  // organizeMode：pass 照常；lost-after = 服务端已执行但回应丢失；lost-before = 客户端失去回应、服务端此时没收到；hold = 挂起直到放行。
   await page.route(url => url.pathname === '/api/project-series/organize', async route => {
     organizeBodies.push(JSON.parse(route.request().postData() || '{}'));
     if (organizeMode === 'lost-after') { organizeMode = 'pass'; await route.fetch(); return route.abort('connectionreset'); }
     if (organizeMode === 'lost-before') { organizeMode = 'pass'; return route.abort('connectionreset'); }
+    if (organizeMode === 'hold') { organizeMode = 'pass'; await new Promise(r => { releaseHeld = r; }); }
     return route.fallback();
   });
   await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
@@ -105,18 +106,45 @@ try {
     assert.equal((await seriesNames()).filter(n => n === '番外篇').length, 1);
   });
 
-  await check('请求没到服务端：核对得知没收到、什么都没写 → 弹窗锁定编辑，「用原请求重新提交」沿用原编号与内容，只写一次', async () => {
+  await check('FE5-R1 反例：提交进行中与结果待核对时，剧名和放入位置都锁住；界面始终显示原内容，重发用原编号原内容、只写一次', async () => {
     for (const name of ['花絮_1', '花絮_2']) await api('/projects', { name });
     await page.reload(); await expect(pf()).toBeVisible();
     await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg().locator('.pf-og')).toHaveCount(1);
+    organizeMode = 'hold'; await submit().click();
+    await expect(dlg().getByRole('button', { name: '归组中…' })).toBeVisible();
+    await expect(dlg().getByLabel('花絮的剧名')).toBeDisabled(); await expect(no('花絮_1')).toBeDisabled();
+    releaseHeld(); releaseHeld = null; await expect(dlg()).toHaveCount(0);
+    assert.equal((await seriesNames()).filter(n => n === '花絮').length, 1);
+    for (const name of ['幕后_1', '幕后_2']) await api('/projects', { name });
+    await page.reload(); await expect(pf()).toBeVisible();
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg().locator('.pf-og')).toHaveCount(1);
     organizeMode = 'lost-before'; await submit().click();
-    await expect(dlg().getByRole('alert')).toContainText('服务端没有收到这次归组'); assert.ok(!(await seriesNames()).includes('花絮'));
-    await expect(dlg().getByLabel('花絮_1的集号')).toBeDisabled();
+    await expect(dlg().getByRole('alert')).toContainText('尚未查到成功回执，结果待核对');
+    const nameBox = dlg().getByLabel('幕后的剧名'); await expect(nameBox).toBeDisabled(); await expect(no('幕后_1')).toBeDisabled();
+    await nameBox.fill('幕后-界面已改', { force: true }).catch(() => {}); await expect(nameBox).toHaveValue('幕后');
     const original = organizeBodies.at(-1);
     await dlg().getByRole('button', { name: '用原请求重新提交' }).click();
     await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 1 部剧、归组 2 个项目');
     assert.deepEqual(organizeBodies.at(-1), original, '重发的编号和内容与原请求一致');
-    assert.equal((await seriesNames()).filter(n => n === '花絮').length, 1);
+    const names = await seriesNames(); assert.equal(names.filter(n => n === '幕后').length, 1); assert.ok(!names.includes('幕后-界面已改'));
+  });
+
+  await check('FE5-R2 反例：回应丢失时查不到回执，不说成“没写”；原请求随后才到达服务端并成功 → 「重新核对」拿到成功回执，放入位置锁住', async () => {
+    await api('/projects', { name: '此恨3' });
+    await page.reload(); await expect(pf()).toBeVisible();
+    await pf().getByRole('button', { name: '整理旧项目' }).click(); await expect(dlg().locator('.pf-og')).toHaveCount(1);
+    await expect(dlg().getByLabel('此恨的放入位置')).toBeEnabled();
+    organizeMode = 'lost-before'; await submit().click();
+    const alert = dlg().getByRole('alert');
+    await expect(alert).toContainText('尚未查到成功回执，结果待核对'); await expect(alert).not.toContainText('什么都没写');
+    await expect(dlg().getByLabel('此恨的放入位置')).toBeDisabled();
+    const original = organizeBodies.at(-1);
+    await api('/project-series/organize', original);
+    const sent = organizeBodies.length;
+    await dlg().getByRole('button', { name: '重新核对' }).click();
+    await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('归组 1 个项目');
+    assert.equal(organizeBodies.length, sent, '核对不应再发归组请求');
+    const p = (await api('/projects')).find(x => x.name === '此恨3'); assert.ok(p.series_id); assert.equal(p.episode_no, 3);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
