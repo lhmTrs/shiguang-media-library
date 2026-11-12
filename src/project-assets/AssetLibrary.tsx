@@ -1,7 +1,7 @@
 import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal } from 'lucide-react';
+import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
 import {imageNamePreset} from '../import-presets.mjs';
@@ -45,6 +45,8 @@ const date = (v: number) => new Date(v).toLocaleString('zh-CN');
 const preview = (b: Binding) => '/api/project-assets/bindings/' + b.id + '/preview';
 const bindingSrc = (b: Binding) => b.revision ? preview(b) : '/api/project-assets/media/' + b.media_asset_id + '/preview';
 const empty = (s: string) => <div className="ca-empty">{s}</div>;
+/** How long a reference-tile click waits before opening 图片设置, so a second click can still become a double click. */
+const TILE_OPEN_DELAY = 400;
 const imageFile = (f: File) => /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?|avif)$/i.test(f.name);
 function Field({ label, value, onChange, long = false, placeholder, rows = 4 }: { label: string; value: string; onChange: (v: string) => void; long?: boolean; placeholder?: string; rows?: number }) {
   return <label className="ca-field"><span>{label}</span>{long
@@ -210,6 +212,20 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, [pickedAssets.length, pickedImages.length, !!quick, !!imageId, !!modal]);
   const modalScroll = useRef<HTMLDivElement>(null);
+  // Reference tiles: a click opens 图片设置 and a double click opens the large view. The settings dialog covers the
+  // tile, so it opens after a short wait; a second click within it becomes the double click. Keyboard (detail 0) opens at once.
+  const tileTimer = useRef<number>();
+  /** Drop a queued 图片设置 that has not opened yet (double click, multi-select, switching look/character, leaving the page). */
+  const cancelTileOpen = () => { if (tileTimer.current) { clearTimeout(tileTimer.current); tileTimer.current = undefined; } };
+  const tileClick = (id: string, detail: number) => {
+    cancelTileOpen();
+    if (detail === 0) { setImageId(id); return; }
+    tileTimer.current = window.setTimeout(() => { tileTimer.current = undefined; setImageId(id); }, TILE_OPEN_DELAY);
+  };
+  useEffect(() => cancelTileOpen, []);
+  useEffect(cancelTileOpen, [draft?.id, lookId, active, scriptView]);
+  // The script view covers the gallery: no image settings stay open (or reopen) across it.
+  useEffect(() => { if (scriptView) setImageId(null); }, [scriptView]);
   const revealingRef=useRef(new Set<string>()),[revealing,setRevealing]=useState<string[]>([]);
   async function revealImage(b:Binding){
     if(revealingRef.current.has(b.id))return;
@@ -549,6 +565,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
   const pickableImage = (b: Binding) => draft?.kind === 'character' && !b.archived_at && !!b.revision;
   function pickImage(b: Binding, shift: boolean) {
+    cancelTileOpen();
     if (!pickableImage(b)) { setNotice(b.archived_at ? '已归档的图片不能选' : '这张图片还没保存，保存后才能复制'); return; }
     const order = images.filter(pickableImage).map(i => i.id);
     setPickedImages(list => pickRange(list, order, b.id, shift, lastPick.current.images)); lastPick.current.images = b.id;
@@ -1010,9 +1027,10 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
                   {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
                 </div>}
                 <div className={'ca-image-grid-v2' + (pickedImages.length ? ' is-picking' : '')} role="list" aria-label={'参考图片，共 ' + images.length + ' 张'}>{images.map(b => { const h = health.find(h => h.id === b.id), name = b.last_known_name || '参考图片', locked = imageLocked(b); const tilePicked = pickedImages.includes(b.id); return <div role="listitem" key={b.id} className={'ca-tile' + (b.archived_at ? ' archived' : '') + (b.id === representative ? ' is-cover' : '') + (tilePicked ? ' is-picked' : '')} draggable={!locked} onDragStart={e => { if (locked) return; drag.current = b.id; e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => { drag.current = null; }} onDragOver={e => { if (drag.current) e.preventDefault(); }} onDrop={e => { if (!drag.current) return; e.preventDefault(); e.stopPropagation(); if (!locked) moveImage(drag.current, 0, b.id); drag.current = null; }}>
-                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (draft.kind === 'character' && (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey)) { pickImage(b, e.shiftKey); return; } setImageId(b.id); }} onDoubleClick={() => setImageViewer({ src: bindingSrc(b), name })}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
+                  <button type="button" className="ca-tile-open" aria-label={'设置参考图片：' + name} aria-haspopup="dialog" title="单击设置 · 双击放大" onClick={e => { if (draft.kind === 'character' && (pickedImages.length || e.metaKey || e.ctrlKey || e.shiftKey)) { pickImage(b, e.shiftKey); return; } tileClick(b.id, e.detail); }} onDoubleClick={() => { cancelTileOpen(); setImageViewer({ src: bindingSrc(b), name }); }}>{h && h.state !== 'available' ? <span className="ca-tile-state">{h.label}</span> : <ReferencePreview src={bindingSrc(b)} alt={name}/>}</button>
                   {draft.kind === 'character' && <button type="button" role="checkbox" className="ca-tile-pick" aria-checked={tilePicked} aria-label={'选择 ' + name} disabled={!pickableImage(b)} title={pickableImage(b) ? '选择（按住 ⌘ 或 Shift 点图片也可以）' : b.archived_at ? '已归档的图片不能选' : '保存后才能选'} onClick={e => pickImage(b, e.shiftKey)}>{tilePicked ? '✓' : ''}</button>}
                   <span className="ca-tile-badge">{b.id === representative ? '代表图' : b.archived_at ? '已归档' : (b.reference_type || '补充参考')}</span>
+                  {(!h || h.state === 'available') && <button type="button" className="ca-tile-zoom" aria-label={'放大查看：' + name} title="放大查看" onClick={() => { cancelTileOpen(); setImageViewer({ src: bindingSrc(b), name }); }}><ZoomIn size={14}/></button>}
                   {b.id !== representative && !b.archived_at && !locked && !draft.archived_at && (!h || h.state === 'available') && <button type="button" className="ca-tile-default" aria-label={'设为代表图：' + name}
                     onClick={() => { if (dirty) { edit(x => setDefault(x, b.id)); setNotice('已设为代表图；还有其他未保存的修改，点下方「保存」后一起生效'); return; }
                       void quickSave(draft.id, '正在设置代表图…', x => { if (x.kind === 'character') { const l = x.looks.find(l => l.id === b.look_id); if (l) l.default_image_id = b.id; } else x.default_image_id = b.id; }, (saved, before) => '已把「' + name + '」设为代表图' + autoNote(before, saved, b.id)); }}><Star size={12}/>设为代表图</button>}
@@ -1049,7 +1067,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     </div>}
     {active && undo && <div className="ca-undo-toast" role="status"><span>{undo.text}</span><button type="button" disabled={!!busy} onClick={() => { const u = undo; if (undoBlocked(u.id)) { setError('这个' + labels[draftRef.current!.kind] + '有未保存的修改，请先保存或放弃修改，再撤销'); return; } setUndo(null); void undoQuick(u); }}>撤销</button><button type="button" className="ca-undo-close" aria-label="关闭提示" onClick={() => setUndo(null)}><X size={13}/></button></div>}
     {active && !scriptView && imageViewer && <ReferenceImageViewer src={imageViewer.src} name={imageViewer.name} onClose={() => setImageViewer(null)}/>}
-    {draft && dialogImage && !imageViewer && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
+    {draft && dialogImage && !imageViewer && !scriptView && active && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setImageId(null); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setImageId(null); } }}>
       <div className="ca-modal ca-image-dialog" role="dialog" aria-modal="true" aria-label={'参考图片设置：' + (dialogImage.last_known_name || '参考图片')}>
         <div className="ca-image-dialog-visual">
           {dialogHealth && dialogHealth.state !== 'available' ? <span className="ca-tile-state">{dialogHealth.label}</span> : cropOpen ? <CropBox src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'} crop={dialogImage.crop} aspect={cropAspect} disabled={imageLocked(dialogImage)} onChange={(c: Crop) => dragDetail(dialogImage.id, () => c)}/> : <ReferencePreview src={bindingSrc(dialogImage)} alt={dialogImage.last_known_name || '参考图片'}/>}

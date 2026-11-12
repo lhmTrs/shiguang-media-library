@@ -589,6 +589,8 @@
 .ca-v2 .ca-quick-cover.is-landscape{width:180px;aspect-ratio:16/10}
 .ca-v2 .ca-tile-default{position:absolute;left:8px;bottom:30px;z-index:2;display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px;border:0;border-radius:7px;background:color-mix(in srgb,var(--c-fff) 94%,transparent);box-shadow:0 2px 8px color-mix(in srgb,var(--c-24292c) 18%,transparent);color:var(--green);font-size:11px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .12s;cursor:pointer}
 .ca-v2 .ca-tile:hover .ca-tile-default,.ca-v2 .ca-tile:focus-within .ca-tile-default{opacity:1;pointer-events:auto}
+.ca-v2 .ca-tile-zoom{position:absolute;right:8px;bottom:30px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;min-height:0;padding:0;border:0;border-radius:7px;background:color-mix(in srgb,var(--c-fff) 90%,transparent);color:var(--c-24292c);box-shadow:0 1px 4px color-mix(in srgb,var(--c-24292c) 18%,transparent);cursor:zoom-in}
+.ca-v2 .ca-tile-zoom:hover{color:var(--green)}
 .ca-v2 .ca-undo-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 16px;border-radius:10px;background:var(--c-24292c);color:var(--c-fff);box-shadow:0 10px 28px color-mix(in srgb,var(--c-24292c) 30%,transparent)}
 .ca-v2 .ca-undo-toast button{border:0;background:transparent;color:var(--c-fff);font-weight:600;cursor:pointer;text-decoration:underline}
 .ca-v2 .ca-undo-toast .ca-undo-close{text-decoration:none;opacity:.7;display:inline-flex}
