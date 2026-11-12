@@ -68,6 +68,24 @@ try {
     await shot('people-one');
   });
 
+  await check('FE2-R3 反例：已有 1 个人物 → 场景请求挂起 → 立即回人物且人物请求挂起：显示加载、不报「还没有」、筛选保留 → 放行后人物恢复', async () => {
+    const hold = { scene: false, character: false }, release = {};
+    const handler = async route => {
+      const kind = new URL(route.request().url()).searchParams.get('kind');
+      if (route.request().method() === 'GET' && hold[kind]) await new Promise(r => { release[kind] = r; });
+      return route.fallback();
+    };
+    await page.route(url => url.pathname === '/api/project-assets/assets', handler);
+    await expect(assets().locator('.ca-card-wrap')).toHaveCount(1);
+    hold.scene = true; await assets().getByRole('tab', { name: '场景', exact: true }).click(); await expect.poll(() => !!release.scene).toBe(true);
+    hold.character = true; await assets().getByRole('tab', { name: '人物', exact: true }).click(); await expect.poll(() => !!release.character).toBe(true);
+    await expect(assets().getByText('正在加载当前项目的人物…')).toBeVisible();
+    await expect(addCard()).not.toContainText('还没有'); await expect(assets().getByRole('group', { name: '筛选' })).toBeVisible();
+    release.scene(); release.character();
+    await expect(assets().locator('.ca-card-wrap')).toHaveCount(1); await expect(addCard()).toHaveText('新建人物');
+    await page.unroute(url => url.pathname === '/api/project-assets/assets', handler);
+  });
+
   await check('生成视频·项目为空：收起搜索、采用筛选和「0 / 0 个视频」；网格里一张「还没有生成视频」卡，点它打开导入', async () => {
     await page.goto(origin + '/#/project-videos'); await expect(videos()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(project.id);
     const card = videos().locator('.pv-card-empty'); await expect(card).toContainText('还没有生成视频'); await expect(card).toContainText('拖入视频或点击导入');
