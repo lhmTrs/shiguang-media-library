@@ -38,6 +38,17 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   }));
   route('get','/projects/:id/script',req=>scripts.get(req.params.id));
   route('put','/projects/:id/script',req=>scripts.put(req.params.id,req.body));
+  const attributes = store.attributes;
+  const configPath = '/projects/:id/attribute-config';
+  const scorePath = '/assets/:id/attributes';
+  route('get', configPath, req => attributes.getConfig(req.params.id));
+  route('put', configPath, req => attributes.putConfig(req.params.id, req.body));
+  route('post', configPath + '/removal-preview', req => attributes.removalPreview(req.params.id, req.body));
+  route('post', configPath + '/initialize', req => attributes.putConfig(req.params.id, req.body, 'agent'));
+  route('get', scorePath, req => attributes.getScores(req.params.id));
+  route('patch', scorePath, req => attributes.patchScores(req.params.id, req.body));
+  route('get', '/projects/:id/attributes', req => attributes.compare(req.params.id, req.query.asset_ids));
+  route('post', '/projects/:id/attribute-scores', req => attributes.scoreBatch(req.params.id, req.body));
   route('get', '/scopes', () => store.scopes());
   route('get', '/assets', req => store.list(req.query));
   route('post', '/assets', req => store.create(req.body));
@@ -74,6 +85,6 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('get', '/backup', () => store.backup());
   route('post', '/restore', req => store.restore(req.body));
   router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
-  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(error.current_revision ? { current_revision: error.current_revision } : {}) }); });
+  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}) }); });
   return router;
 }
