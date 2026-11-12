@@ -7,6 +7,7 @@ import os from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
@@ -70,7 +71,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   await work().getByRole('button', { name: '项目根目录', exact: true }).click(); await expect(cards()).toHaveCount(3);
 
   await check('旧的“已完成”记录仍在，入口和横幅按实际 2 个待升级重新出现', async () => {

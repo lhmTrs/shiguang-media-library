@@ -32,6 +32,7 @@ import {
   X,
   Download,
   FilePenLine,
+  Layers,
   FolderInput,
   Trash2,
   Tag,
@@ -57,7 +58,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import "./style.css";
-import {ProjectSelector} from "./ProjectSelector";
 import {useLibraryStats} from "./useLibraryStats";
 import {hostReads,hostBusyMessage} from "./host-read";
 import {BackgroundReadStatus} from "./BackgroundReadStatus";
@@ -89,7 +89,12 @@ import { QuickTagDialog } from "./QuickTagDialog";
 import { MissingCleanupDialog, type CleanupResult } from "./MissingCleanupDialog";
 import { readMergePairs } from "./AssetMergeDialog";
 import { OfflineRepairDialog } from "./OfflineRepairDialog";
-import { ProjectManager, ProjectHistory, type Project } from "./ProjectManager";
+import { ProjectHistory } from "./ProjectManager";
+import { AgentShare } from "./AgentShare";
+import { ProjectUsage } from "./ProjectUsage";
+import { ProjectFolders, type FolderPage } from "./series/ProjectFolders";
+import { ProjectPathBar } from "./series/ProjectPathBar";
+import type { GroupedProject, Series } from "./series/model";
 import { NavigationSettings } from "./NavigationSettings";
 import { ToolbarPopover } from "./ToolbarPopover";
 import { FolderBrowser } from "./FolderBrowser";
@@ -111,10 +116,11 @@ import { ProjectAssetWorkspace } from "./ProjectAssetWorkspace";
 import { readStoryboardAppearance, storyboardAppearanceKey } from "./storyboard/preferences";
 import type {ShotFocus} from "./storyboard/shot-navigation";
 import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, readGroups, groupDefaults, navigationGroupsKey, readLayouts, defaultLayout, readSearchPreferences, readVolume, saveStored, removeStored } from "./browser-preferences";
+import { clearProjectLocations, emptyProjectLocation, readProjectLocation, recentProjectLimit, saveProjectLocation } from "./browser-preferences";
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
-  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
+  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
 
@@ -244,6 +250,14 @@ let token = "";
 type LocalSession = { token: string; app: string; instanceId: string; trashAvailable: boolean; folderPickerAvailable?: boolean };
 let localSession: LocalSession | null = null;
 let sessionEstablishing: Promise<LocalSession> | null = null;
+let libraryIdentityChanged = false;
+function libraryIdentityError() {
+  if (!libraryIdentityChanged) {
+    libraryIdentityChanged = true;
+    window.dispatchEvent(new Event('shiguang-library-identity-changed'));
+  }
+  return Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED', status: 409 });
+}
 async function establishLocalSession(force = false): Promise<LocalSession> {
   if (sessionEstablishing) return sessionEstablishing;
   if (!force && localSession && token) return localSession;
@@ -252,7 +266,7 @@ async function establishLocalSession(force = false): Promise<LocalSession> {
     if (!response.ok) throw Error('无法建立本机会话，请检查素材管理器服务后重试');
     const next = await response.json() as LocalSession;
     if (next.app !== 'shiguang-local-media' || typeof next.token !== 'string' || !next.token || typeof next.instanceId !== 'string') throw Error('本机服务身份无法确认，请检查地址后刷新页面');
-    if (localSession && next.instanceId !== localSession.instanceId) {window.dispatchEvent(new Event('shiguang-library-identity-changed'));throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });}
+    if (localSession && next.instanceId !== localSession.instanceId) throw libraryIdentityError();
     localSession = next; token = next.token; return next;
   })();
   try { return await sessionEstablishing; }
@@ -262,17 +276,26 @@ async function readLibraryIdentity(){return(await establishLocalSession(true)).i
 async function api<T = unknown>(url: string, body?: unknown, method?: string, options?: { signal?: AbortSignal }): Promise<T> {
   const verb = (method || (body ? 'POST' : 'GET')).toUpperCase();
   if (url === '/session' && verb === 'GET') return await establishLocalSession() as T;
+  const projectRequest = /^\/(?:projects|project-series)(?:[/?]|$)/.test(url);
+  if (projectRequest && libraryIdentityChanged) throw libraryIdentityError();
   const expectedInstance = (await establishLocalSession()).instanceId;
   const assertCurrent = async () => {
-    if (await readLibraryIdentity() !== expectedInstance) throw Object.assign(Error('素材库实例已变化，请刷新页面并核对当前素材库后继续'), { code: 'LOCAL_INSTANCE_CHANGED' });
+    if (await readLibraryIdentity() !== expectedInstance) throw libraryIdentityError();
   };
   const perform = async (recovered = false): Promise<T> => {
     const sentToken = token, headers: Record<string, string> = {};
     const binary = body instanceof Blob;
     if (body) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
     if (verb !== 'GET') headers['X-Local-Token'] = sentToken;
+    if (projectRequest) {
+      if (libraryIdentityChanged) throw libraryIdentityError();
+      headers['X-Shiguang-Library-Id'] = expectedInstance;
+    }
     const response = await hostReads.fetch('/api' + url, { method: verb, headers, body: binary ? body : body ? JSON.stringify(body) : undefined, signal: options?.signal }, assertCurrent);
     const result = await response.json();
+    if (projectRequest && (verb === 'GET' && libraryIdentityChanged || response.status === 409 && result.code === 'LOCAL_INSTANCE_CHANGED')) {
+      throw libraryIdentityError();
+    }
     // Only these exact local middleware refusals prove the handler never ran.
     // Never replay a generation or another business write after re-establishing a session.
     const localRefusal = !result.code && (response.status === 401 && result.error === '本机会话失效，请刷新页面' || response.status === 403 && result.error === '本机会话校验失败');
@@ -283,7 +306,7 @@ async function api<T = unknown>(url: string, body?: unknown, method?: string, op
     }
     if (!response.ok) throw Object.assign(Error(hostBusyMessage(result.code,result.error || '请求失败')), {
       diagnostic: result.diagnostic, code: result.code, kind: result.kind, status: response.status, accepted:result.accepted,
-      retryAfterMs: result.retryAfterMs, requestId: result.requestId,
+      retryAfterMs: result.retryAfterMs, requestId: result.requestId, details: result.details,
     });
     if (verb !== 'GET') clearTagFacetCache();
     return result;
@@ -623,6 +646,8 @@ function App() {
   const [projectAssetFocus,setProjectAssetFocus]=useState({id:"",request:0});
   const [generationFocus,setGenerationFocus]=useState<GenerationFocus|null>(null);
   const [projectVideoBusy,setProjectVideoBusy]=useState(false);
+  const [projectUsageBusy, setProjectUsageBusy] = useState(false);
+  useEffect(() => { if (view !== "projectUsage") setProjectUsageBusy(false); }, [view]);
   const [storyboardShotFocus,setStoryboardShotFocus]=useState<ShotFocus|null>(null),[storyboardDirty,setStoryboardDirty]=useState(false);
   const [projectAssetSelectorHost, setProjectAssetSelectorHost] = useState<HTMLElement | null>(null);
   useEffect(()=>{const host=projectAssetSelectorHost;if(!host)return;const cancel=()=>cancelCodexNavigation();host.addEventListener('change',cancel,true);return()=>host.removeEventListener('change',cancel,true);},[projectAssetSelectorHost,cancelCodexNavigation]);
@@ -636,7 +661,7 @@ function App() {
       if(detail.taskId!==task.taskId||detail.projectId!==task.projectId)throw Error('分镜任务目标不符，未跳转');
       await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
       if(storyboardDirty&&activeProject!==detail.projectId&&!confirm('当前分镜有未保存草稿，切换后保留在原项目。继续查看目标任务？'))throw Error('已取消跳转，原分镜草稿保留');
-      setActiveProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
+      activateProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
     }
     if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
     if(!promptWorkspace.current)throw Error('工作台暂未就绪，请重试');
@@ -676,27 +701,134 @@ function App() {
   useEffect(() => { try { if (memory.navigation) localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed, memory.navigation]);
   useEffect(() => { try { localStorage.setItem("shiguang.hiddenNav", JSON.stringify(hiddenNav)); } catch {} }, [hiddenNav]);
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
-  const [projects, setProjects] = useState<Project[]>([]), [projectRevision, setProjectRevision] = useState(0);
+  const [projects, setProjects] = useState<GroupedProject[]>([]), [projectRevision, setProjectRevision] = useState(0);
+  const [projectDirectory, setProjectDirectory] = useState<{ projects: GroupedProject[]; series: Series[] } | null>(null);
+  const [directoryError, setDirectoryError] = useState("");
+  const projectReadVersion = useRef(0);
   const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
   useFeedbackToast(projectsError, {source: '素材管理'});
-  const [activeProject, setActiveProject] = useState(() => { try { return localStorage.getItem("shiguang.activeProject") || ""; } catch { return ""; } });
+  const [activeProject, setActiveProject] = useState("");
+  const [projectLibraryId, setProjectLibraryId] = useState("");
+  const projectLibrary = useRef("");
+  const [projectLocation, setProjectLocation] = useState(emptyProjectLocation);
+  const pendingProjectVisit = useRef("");
   const [projectMembers, setProjectMembers] = useState<{ asset_id: string; status: string }[]>([]);
   const [projectUsageCounts,setProjectUsageCounts] = useState<Record<string,number>>({});
   useEffect(()=>{let live=true;if(ready)void api<{asset_id:string;n:number}[]>("/projects/usage-counts").then(rows=>{if(live)setProjectUsageCounts(Object.fromEntries(rows.map(row=>[row.asset_id,Number(row.n)])));}).catch(()=>{});return()=>{live=false;};},[ready,projectRevision]);
-  useEffect(() => { try { localStorage.setItem("shiguang.activeProject", activeProject); } catch {} }, [activeProject]);
   useEffect(() => {
-    if (!ready) return;
-    let live = true;
+    const changed = () => {
+      projectReadVersion.current++;
+      cancelCodexNavigation();
+      pendingProjectVisit.current = "";
+      projectLibrary.current = "";
+      setProjectLibraryId("");
+      setProjects([]);
+      setProjectsKnown(false);
+      setProjectDirectory(null);
+      setActiveProject("");
+      setProjectLocation(emptyProjectLocation);
+      setDirectoryError("素材库已变化，请刷新页面后重新读取项目");
+      setProjectsError("素材库已变化，请刷新页面后重新读取项目");
+    };
+    window.addEventListener("shiguang-library-identity-changed", changed);
+    return () => window.removeEventListener("shiguang-library-identity-changed", changed);
+  }, [cancelCodexNavigation]);
+  useEffect(() => {
+    if (!projectsKnown) return;
+    const byId = new Map(projects.map(project => [project.id, project]));
+    const visited = pendingProjectVisit.current === activeProject ? byId.get(activeProject) : undefined;
+    if (visited) pendingProjectVisit.current = "";
+    setProjectLocation(previous => {
+      const recent = previous.recent.filter(id => byId.has(id) && id !== visited?.id);
+      const lastInContainer = Object.fromEntries(Object.entries(previous.lastInContainer).filter(([key, id]) => {
+        const project = byId.get(id);
+        return project?.series_id && (key === "series:" + project.series_id ||
+          key === (project.season_id ?? "root:" + project.series_id));
+      }));
+      if (visited?.series_id) {
+        lastInContainer["series:" + visited.series_id] = visited.id;
+        lastInContainer[visited.season_id ?? "root:" + visited.series_id] = visited.id;
+      }
+      if (visited) recent.unshift(visited.id);
+      return {
+        projectId: visited?.id ?? (byId.has(previous.projectId) ? previous.projectId : ""),
+        recent: recent.slice(0, recentProjectLimit),
+        lastInContainer,
+      };
+    });
+  }, [activeProject, projects, projectsKnown]);
+  useEffect(() => {
+    if (!memory.location) clearProjectLocations();
+    else if (projectLibraryId && projectsKnown) saveProjectLocation(projectLibraryId, projectLocation);
+  }, [memory.location, projectLibraryId, projectLocation, projectsKnown]);
+  useEffect(() => {
+    if (!ready || !projectLibraryId) return;
+    const controller = new AbortController();
+    const version = projectReadVersion.current;
+    const live = () => !controller.signal.aborted && version === projectReadVersion.current;
     setProjectsError('');
-    api<Project[]>("/projects").then(rows => { if (live) { setProjects(rows); setProjectsKnown(true); setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || ""); } }).catch(e => { if (live) setProjectsError(e.message||'项目列表读取失败'); });
-    return () => { live = false; };
-  }, [ready, projectRevision]);
+    setDirectoryError('');
+    const options = { signal: controller.signal };
+    const projectRead = api<GroupedProject[]>("/projects", undefined, undefined, options);
+    const directoryRead = api<Series[]>("/project-series", undefined, undefined, options);
+    void projectRead.then(rows => {
+      if (!live()) return;
+      setProjects(rows);
+      setProjectsKnown(true);
+      setActiveProject(id => rows.some(p => p.id === id) ? id : rows[0]?.id || "");
+    }).catch(error => { if (live()) setProjectsError(error.message || "项目列表读取失败"); });
+    void Promise.all([projectRead, directoryRead]).then(([projects, series]) => {
+      if (live()) setProjectDirectory({ projects, series });
+    }).catch(error => { if (live()) setDirectoryError(error.message || "项目目录读取失败"); });
+    return () => controller.abort();
+  }, [ready, projectLibraryId, projectRevision]);
   useEffect(() => {
     let live = true; setProjectMembers([]);
     if (ready && activeProject) api<typeof projectMembers>(`/projects/${activeProject}/members`).then(rows => { if (live) setProjectMembers(rows); }).catch(e => { if (live) fail(e); });
     return () => { live = false; };
   }, [ready, activeProject, projectRevision]);
-  function projectsChanged(id?: string) { if (id !== undefined) setActiveProject(id); setProjectRevision(n => n + 1); }
+  function refreshProjects() {
+    if (!projectLibrary.current) return;
+    projectReadVersion.current++;
+    setProjectRevision(n => n + 1);
+  }
+  function projectChangeAllowed(id: string) {
+    if (!projectLibrary.current) return false;
+    if (id === activeProject) return true;
+    if (busy || projectVideoBusy || projectUsageBusy) {
+      setNotice("请等待当前项目的操作完成，再切换项目");
+      return false;
+    }
+    return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
+  }
+  function activateProject(id: string) {
+    if (!projectLibrary.current || id === activeProject) return;
+    pendingProjectVisit.current = id;
+    if (!id) setProjectLocation(previous => ({ ...previous, projectId: "" }));
+    setChecked(new Set());
+    setMediaPreview(null);
+    if (view === "projectUsage") pauseAudition();
+    setActiveProject(id);
+  }
+  function selectKnownProject(id: string) {
+    if ((id && !projects.some(project => project.id === id)) || !projectChangeAllowed(id)) return false;
+    cancelCodexNavigation();
+    activateProject(id);
+    return true;
+  }
+  function projectsChanged(id?: string) {
+    if (id && id !== activeProject && projectChangeAllowed(id)) {
+      cancelCodexNavigation();
+      activateProject(id);
+    }
+    refreshProjects();
+  }
+  function openProjectPage(page: FolderPage, projectId: string) {
+    if (!projectId || !selectKnownProject(projectId)) return;
+    const routes = { usage: "projectUsage", assets: "projectAssets", videos: "projectVideos", storyboard: "storyboard" };
+    if (page === "assets") setProjectAssetFocus(previous => ({ id: projectId, request: previous.request + 1 }));
+    navigate(routes[page]);
+  }
   async function addToProject(ids: string[]) {
     if (!activeProject) { navigate("projects"); setNotice("请先选择或新建一个项目"); return; }
     const result = await api<{ added: number; alreadyAdded: number }>(`/projects/${activeProject}/items`, { ids });
@@ -1030,7 +1162,7 @@ function App() {
   const facetQuery = assetParams(1).toString();
   useEffect(() => {
     let live = true;
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
     const timer = setTimeout(() => {
       void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
         if (live) setFilterTags(result.items);
@@ -1063,7 +1195,7 @@ function App() {
    */
   async function refresh(opts: { silent?: boolean; stats?: boolean } = {}) {
     if(opts.stats!==false)void globalStats.refresh();
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
     if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
     browseRead.current?.abort();
     const controller = new AbortController(); browseRead.current = controller;
@@ -1176,12 +1308,19 @@ function App() {
   }
   useEffect(() => {
     let current=true;setSessionError('');
-    api<{ token: string; trashAvailable: boolean; folderPickerAvailable?: boolean }>("/session")
+    api<LocalSession>("/session")
       .then((s) => {
-        if(!current)return;
+        if (!current || libraryIdentityChanged) return;
         token = s.token;
         setTrashAvailable(s.trashAvailable);
         setFolderPickerAvailable(s.folderPickerAvailable !== false);
+        if (projectLibrary.current !== s.instanceId) {
+          const location = readMemory().location ? readProjectLocation(s.instanceId) : emptyProjectLocation;
+          projectLibrary.current = s.instanceId;
+          setProjectLocation(location);
+          setActiveProject(location.projectId);
+          setProjectLibraryId(s.instanceId);
+        }
         setReady(true);
       })
       .catch(e=>{if(current)setSessionError(e instanceof Error?e.message:'素材库连接未能建立');});
@@ -1337,7 +1476,7 @@ function App() {
       setCaptureUnknown(saved?.captureUnknown || false);
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(v)) pauseAudition();
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
     viewRef.current = v;
     setView(v);
     setRootMenuOpen(false);
@@ -1365,6 +1504,9 @@ function App() {
     setExpandedNavGroups({ ...groupDefaults }); setNavCollapsed(false); setLayoutPreferences({}); setLayout(defaultLayout(view));
     setSearchMode('all'); setNameOnly(false); setAdvancedFilters(false); setVolume(.7);
     setSort('revealCount'); setSeriesMode(true); setPageSize(60); setCompactActions(true); setDetailsHidden(false); setDetailsWidth(340);
+    pendingProjectVisit.current = "";
+    clearProjectLocations();
+    setProjectLocation(emptyProjectLocation);
     // 剧本正文宽度（ProjectScript）：清掉记忆，并通知已打开的剧本页回到「适中」（剧本组件可能尚未挂载）。
     removeStored('shiguang.scriptWidth.v1'); window.dispatchEvent(new Event('shiguang-browser-preferences-reset'));
     setNotice('导航与浏览偏好已恢复默认，模板、项目和素材数据保留');
@@ -1431,7 +1573,7 @@ function App() {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > length + 0.01 || end - start < 0.05) return;
     setInPoint(start); setOutPoint(Math.min(length, end));
   }
-  const libraryView = !["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
+  const libraryView = !["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
   const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
@@ -1610,8 +1752,9 @@ function App() {
         });
       });
   }
+  const currentProject = projects.find(project => project.id === activeProject);
   const title =
-    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
@@ -1641,6 +1784,7 @@ function App() {
     ["sfx", "音效", AudioLines],
     ["music", "音乐", Music2],
     ["projects", "项目", FolderKanban],
+    ["projectUsage", "素材使用", Layers],
     ["projectAssets", "项目资产", Users],
     ["projectVideos", "生成视频", Film],
     ["storyboard", "分镜设计", Clapperboard],
@@ -1744,7 +1888,7 @@ function App() {
                   className={view === value ? "nav-item selected" : "nav-item"} onClick={() => navigate(value)}>
                   <Icon size={19} aria-hidden="true"/>
                   <span>{itemLabel}</span>
-                  {!["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
+                  {!["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
                 </button>)}
               </div>
             </section>;
@@ -1809,15 +1953,22 @@ function App() {
             onClick={() => setMobileNav(!mobileNav)}
           />
           <div className="breadcrumb">
-            {["projects", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
+            {["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
           </div>
           <BackgroundReadStatus/>
           <div className="topbar-actions">
-          {["projectAssets","storyboard","promptTemplates"].includes(view)?<div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/>:<div className="topbar-project-slot"><ProjectSelector projects={projects} value={activeProject} disabled={busy||projectVideoBusy} label="当前项目" onChange={id=>{cancelCodexNavigation();setActiveProject(id);}}/></div>}
+          {["projectAssets", "storyboard", "promptTemplates"].includes(view) ?
+            <div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/> :
+            <div className="topbar-project-slot">
+              <ProjectPathBar projects={projectDirectory?.projects ?? projects} series={projectDirectory?.series ?? []}
+                value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
+                disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
+                onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
+            </div>}
           <CodexTaskEntry controller={codexTasks}/>
           <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
-            if(projectId){if(storyboardDirty&&activeProject!==projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
+            if(projectId){if(!projectChangeAllowed(projectId))return;activateProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
             else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
           }}/>
           <div className="file-check-entry">
@@ -1845,12 +1996,31 @@ function App() {
           <AccountEntry auth={cloudAuth} onLogin={openLogin} onWorkspace={openWorkspace} onNotice={setNotice} />
           </div>
         </header>
-        {projectsError&&["projects","storyboard","promptTemplates"].includes(view)&&<div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={()=>setProjectRevision(n=>n+1)}>重试项目列表</button></div>}
-        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={setActiveProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(storyboardDirty&&activeProject!==target.projectId&&!confirm('当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？'))return;setActiveProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
-        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
-        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={setActiveProject} onStoryboard={()=>navigate("storyboard")}/>
-        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={setActiveProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
-        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" && !projectsKnown ? <div className="empty" role="status">{projectsError?"项目列表未能读取，请重试":"正在读取项目…"}</div> : view === "projects" ? <ProjectManager projects={projects} activeId={activeProject} select={setActiveProject} request={api} revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id} isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}/> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
+        {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
+        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={activateProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!projectChangeAllowed(target.projectId))return;activateProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
+        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={activateProject} onStoryboard={()=>navigate("storyboard")}/>
+        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
+        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
+          {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
+          {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
+            seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
+            request={api} changed={projectsChanged} openPage={openProjectPage} libraryId={projectLibraryId}/> :
+            !directoryError && <div className="empty" role="status">正在读取项目目录…</div>}
+        </> : view === "projectUsage" ? <div className="project-manager">
+          <header className="project-heading"><h1>素材使用</h1></header>
+          <section className="project-content" aria-label="项目素材篮">
+            {currentProject ? <ProjectUsage key={currentProject.id} project={currentProject} request={api}
+              revision={projectRevision + editRevision} changed={projectsChanged} play={play} playingId={playing?.id}
+              isPlaying={isPlaying} edit={openAssetEditor} stopAudio={pauseAudition} browseLibrary={() => navigate("all")}
+              onBusyChange={setProjectUsageBusy}
+              headerActions={<AgentShare projectId={currentProject.id} projectName={currentProject.name} disabled={projectUsageBusy}/>}/> :
+              projectsKnown ? <div className="project-items-empty project-unselected">
+                <FolderKanban size={32} strokeWidth={1.5}/><h2>选择一个项目</h2>
+                <button className="plain" onClick={() => navigate("projects")}>去项目页选择</button>
+              </div> : !projectsError && <div className="empty" role="status">正在读取项目…</div>}
+          </section>
+        </div> : view === "duplicates" ? <DuplicateAudioManager request={api} play={play} edit={openAssetEditor} playingId={playing?.id} isPlaying={isPlaying} trash={trashAsset} canTrash={trashAvailable && !busy} revision={editRevision} changed={() => void refreshRef.current().catch(fail)} stopAudio={pauseAudition} runTask={runWith} cleared={ids => { const removed = new Set(ids); setSelected(prev => prev && removed.has(prev.id) ? null : prev); setPlaying(prev => prev && removed.has(prev.id) ? null : prev); setEditRevision(n => n + 1); }}/> : view === "tagManagement" ? (
           <TagManager
             trash={trashAsset}
             canTrash={trashAvailable && !busy}

@@ -11,6 +11,7 @@ import http from 'node:http';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import express from 'express';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 import { fixture, imported, replaceBytes } from './helpers/project-video-desktop-fixture.mjs';
 import { projectVideoRouter } from '../server/project-videos/router.mjs';
@@ -63,7 +64,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   await expect(cards()).toHaveCount(4);
   const appIds = await cards().evaluateAll(list => list.map(el => el.dataset.videoId));
 

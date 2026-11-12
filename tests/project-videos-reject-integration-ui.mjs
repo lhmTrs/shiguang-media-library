@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 import { fixture, imported, initialize, bind } from './helpers/project-video-desktop-fixture.mjs';
 import { projectVideoRouter } from '../server/project-videos/router.mjs';
@@ -73,7 +74,7 @@ try {
   const last = s => posts.filter(p => p.suffix === s).at(-1)?.body;
   const count = s => posts.filter(p => p.suffix === s).length;
 
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   await expect(card(v[0].id)).toBeVisible();
 
   await check('设置收纳处的执行 POST 未到后台：原请求只读查询为 unknown / OPERATION_NOT_STARTED，不报“已准备”，不重发、不创建或改动', async () => {

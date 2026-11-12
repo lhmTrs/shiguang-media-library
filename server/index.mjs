@@ -38,6 +38,7 @@ import { MissingFiles } from "./missing-files.mjs";
 import { RootRemoval } from "./root-removal.mjs";
 import { DuplicateAudio } from "./duplicate-audio.mjs";
 import { Projects } from "./projects.mjs";
+import { projectSeriesRouter } from "./project-series/router.mjs";
 import { projectAgentGuide } from "./project-agent-guide.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
 import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
@@ -458,6 +459,10 @@ app.use("/api", (req, res, next) => {
     return res.status(401).json({ error: "本机会话失效，请刷新页面" });
   if (req.method !== "GET" && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
+  // A different tab can establish a valid cookie while this page still belongs to its old library.
+  const expectedLibrary = req.get("X-Shiguang-Library-Id");
+  if (expectedLibrary !== undefined && expectedLibrary !== mysqlStorage.sourceId)
+    return res.status(409).json({ error: "素材库实例已变化，请刷新页面并核对当前素材库后继续", code: "LOCAL_INSTANCE_CHANGED" });
   if (identityChanging && !(req.method === "GET" && req.path === "/cloud-auth/status")) return res.status(423).json({ error: "IDENTITY_CHANGING", code: "IDENTITY_CHANGING" });
   // The same gate includes synchronous API handlers while registration/maintenance
   // owns an awaited operation; response closure never releases that ownership.
@@ -819,6 +824,7 @@ app.post("/api/asset-metadata-registration/commands/:id/abort", fieldRegistratio
 app.post("/api/asset-fingerprints", (req, res) => res.status(202).json(assetFingerprints.start(req.body)));
 app.get("/api/asset-fingerprints/:id", (req, res) => res.json(assetFingerprints.get(req.params.id)));
 app.post("/api/asset-fingerprints/:id/cancel", (req, res) => res.json(assetFingerprints.cancel(req.params.id)));
+app.use("/api", projectSeriesRouter(projects.series));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
 app.get("/api/projects/usage-counts", (req,res) => res.json(lib.db.prepare("SELECT asset_id,COUNT(*) n FROM project_assets WHERE status='used' GROUP BY asset_id").all()));
 app.post("/api/projects/timeline-import/preview", (req,res) => res.json(projects.imports.preview(null,req.body,req.headers.cookie)));

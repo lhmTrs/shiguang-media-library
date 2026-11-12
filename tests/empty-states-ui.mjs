@@ -5,6 +5,7 @@ import os from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -87,7 +88,7 @@ try {
   });
 
   await check('生成视频·项目为空：收起搜索、采用筛选和「0 / 0 个视频」；网格里一张「还没有生成视频」卡，点它打开导入', async () => {
-    await page.goto(origin + '/#/project-videos'); await expect(videos()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(project.id);
+    await page.goto(origin + '/#/project-videos'); await expect(videos()).toBeVisible(); await selectProjectInBar(page, project.id);
     const card = videos().locator('.pv-card-empty'); await expect(card).toContainText('还没有生成视频'); await expect(card).toContainText('拖入视频或点击导入');
     await expect(videos().getByLabel('搜索视频')).toHaveCount(0); await expect(videos().getByRole('group', { name: '按采用状态筛选' })).toHaveCount(0);
     await expect(videos().locator('.pv-library-head')).toHaveCount(0); await expect(videos().locator('.pv-empty')).toHaveCount(0);
@@ -102,7 +103,7 @@ try {
       if (res.ok()) data.legacyUpgrade = { count: 1, completed: false };
       await route.fulfill({ response: res, json: data });
     });
-    await page.goto(origin + '/#/project-videos'); await page.reload(); await expect(videos()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(project.id);
+    await page.goto(origin + '/#/project-videos'); await page.reload(); await expect(videos()).toBeVisible(); await selectProjectInBar(page, project.id);
     await expect(videos().locator('.pv-empty')).toContainText('当前目录还没有视频');
     await expect(videos().locator('.pv-card-empty')).toHaveCount(0);
     await expect(videos().getByLabel('搜索视频')).toBeVisible(); await expect(videos().getByRole('group', { name: '按采用状态筛选' })).toBeVisible(); await expect(videos().locator('.pv-library-head')).toBeVisible();

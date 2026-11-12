@@ -12,6 +12,7 @@ import http from 'node:http';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import express from 'express';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 import { fixture, imported, initialize, bind, replaceBytes, appendXmp } from './helpers/project-video-desktop-fixture.mjs';
 import { projectVideoRouter } from '../server/project-videos/router.mjs';
@@ -87,7 +88,7 @@ try {
   const refreshListMenu = async () => { await work().getByRole('button', { name: '更多视频操作' }).click(); await page.getByRole('menuitem', { name: /刷新视频资料/ }).click(); };
   const postsFor = (id, s) => posts.filter(p => p.suffix === `/videos/${id}${s}`).length;
 
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   await expect(card(fx[0].id)).toContainText(/内容已变化|待核验/);
   const fxNames = Object.fromEntries((await f.catalog.list(f.project.id, { folderId: 'all' })).videos.map(v => [v.id, v.name || v.fileName]));
 
@@ -197,8 +198,8 @@ try {
     await openChange(fx[8].id); await modal().getByRole('button', { name: '不再使用…' }).click(); await modal().getByLabel(KEEP).check();
     fake202 = '/remove'; await modal().getByRole('button', { name: /^移除记录/ }).click();
     await expect(modal()).toContainText('结果待核对', { timeout: 10000 }); const requestId = posts.filter(p => p.suffix.endsWith('/remove')).at(-1).body.requestId;
-    await page.locator('.topbar-project-slot select').selectOption(otherId); await expect(modal()).toHaveCount(0);
-    await page.locator('.topbar-project-slot select').selectOption(projectId);
+    await selectProjectInBar(page, otherId, { programmatic: true }); await expect(modal()).toHaveCount(0);
+    await selectProjectInBar(page, projectId, { programmatic: true });
     await expect(modal()).toContainText('结果待核对'); await expect(modal()).toContainText(requestId);
     await closeX(); await expect(banner()).toContainText(requestId);
     await banner().getByRole('button', { name: '打开' }).click(); await modal().getByRole('button', { name: '查询原请求' }).click();
