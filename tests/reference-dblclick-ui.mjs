@@ -48,7 +48,7 @@ try {
   await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
 
   for (const [tab, name] of [['人物', '阿青'], ['场景', '海边']]) {
-    await check(tab + '：双击参考图打开大图，不弹「图片设置」；单击稍后打开「图片设置」；回车立即打开', async () => {
+    await check(tab + '：双击参考图打开大图，不弹「图片设置」；单击稍后打开「图片设置」；回车立即打开；间隔约 0.32 秒的双击和放大镜都能放大', async () => {
       await work().getByRole('tab', { name: new RegExp('^' + tab) }).click(); await wrap(name).locator('.ca-card').click();
       const tile = work().locator('.ca-tile-open').first(); await expect(tile).toBeVisible();
       await tile.dblclick(); await expect(viewer()).toBeVisible(); await page.waitForTimeout(400); await expect(settingsOpen()).toHaveCount(0);
@@ -57,8 +57,25 @@ try {
       await settingsOpen().click(); await expect(settingsOpen()).toHaveCount(0);
       await tile.focus(); await page.keyboard.press('Enter'); await expect(settingsOpen()).toBeVisible({ timeout: 200 });
       await settingsOpen().click(); await expect(settingsOpen()).toHaveCount(0);
+      // FE1-R1: a slower but normal double click (≈320 ms between the clicks) still opens the large view.
+      const box = await tile.boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 3;
+      await page.mouse.click(x, y); await page.waitForTimeout(320); await page.mouse.click(x, y, { clickCount: 2 });
+      await expect(viewer()).toBeVisible(); await page.waitForTimeout(500); await expect(settingsOpen()).toHaveCount(0);
+      await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
+      // The always-visible magnifier opens the large view at once, without 图片设置.
+      await work().getByRole('button', { name: '放大查看：' + name + '.png' }).click(); await expect(viewer()).toBeVisible(); await page.waitForTimeout(500); await expect(settingsOpen()).toHaveCount(0);
+      await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
     });
   }
+
+  await check('FE1-R2 反例：单击参考图后立刻 Shift 点进入多选，排队的「图片设置」被取消，图片已选中', async () => {
+    await work().getByRole('tab', { name: /^人物/ }).click(); await wrap('阿青').locator('.ca-card').click();
+    const tile = work().locator('.ca-tile-open').first(); await expect(tile).toBeVisible();
+    await tile.click(); await tile.click({ modifiers: ['Shift'], delay: 0 });
+    await expect(work().getByRole('toolbar', { name: '已选参考图操作' })).toContainText('已选 1 张');
+    await page.waitForTimeout(700); await expect(settingsOpen()).toHaveCount(0);
+    await page.keyboard.press('Escape');
+  });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
