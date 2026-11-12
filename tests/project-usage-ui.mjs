@@ -1,4 +1,4 @@
-// 项目素材账本（ProjectUsage）拆分后的回归：真实本地服务 + 合成图片库；不接入真实素材库。
+// 素材使用页（ProjectUsage，#/project-usage）回归：从目录页集卡的「素材使用」进入。真实本地服务 + 合成图片库；不接入真实素材库。
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,7 +19,13 @@ async function api(p, body, method) { const response = await fetch(origin + '/ap
 async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
 const ledger = () => page.getByRole('region', { name: '项目素材篮' });
 const rows = () => ledger().locator('.project-item');
-const openProject = async name => { await page.getByRole('complementary', { name: '项目列表' }).getByRole('button', { name: new RegExp('^' + name) }).click(); await expect(ledger().getByRole('heading', { name, exact: true })).toBeVisible(); };
+const folders = () => page.locator('.pf');
+const openProject = async name => {
+  await page.goto(origin + '/#/projects'); await expect(folders()).toBeVisible();
+  await folders().getByRole('button', { name: new RegExp('^' + name) }).first().click();
+  await folders().getByRole('navigation', { name: name + '的快捷入口' }).getByRole('button', { name: '素材使用' }).click();
+  await expect(page).toHaveURL(/#\/project-usage/); await expect(ledger().getByRole('heading', { name, exact: true })).toBeVisible();
+};
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -34,13 +40,13 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1480, height: 1000 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); page.on('dialog', d => d.accept());
-  await page.goto(origin + '/#/projects'); await expect(page.getByRole('complementary', { name: '项目列表' })).toBeVisible();
+  await page.goto(origin + '/#/projects'); await expect(page.locator('.pf')).toBeVisible();
 
-  await check('打开甲项目：候选 2 条、照片筛选计数 2、标题区有导入 / 添加 / 分享 / 编辑 / 删除', async () => {
+  await check('从目录的集卡进入甲的素材使用：候选 2 条、照片筛选计数 2、标题区有导入 / 添加 / 分享给 Agent', async () => {
     await openProject('甲项目');
     await expect(rows()).toHaveCount(2); await expect(ledger().getByRole('tab', { name: /^候选素材 2/ })).toBeVisible();
     await expect(ledger().getByRole('button', { name: '筛选项目照片' })).toContainText('2');
-    for (const name of ['导入达芬奇时间线', '编辑当前项目', '删除当前项目']) await expect(ledger().getByRole('button', { name, exact: true })).toBeVisible();
+    for (const name of ['导入达芬奇时间线', '添加素材']) await expect(ledger().getByRole('button', { name, exact: true })).toBeVisible();
     await expect(ledger().getByRole('button', { name: /分享给 Agent/ })).toBeVisible();
   });
 
@@ -69,10 +75,13 @@ try {
     await expect(rows()).toHaveCount(0); await expect(ledger().getByRole('tab', { name: /^候选素材 0/ })).toBeVisible();
   });
 
-  await check('编辑项目：从标题区打开编辑框并保存新名字', async () => {
-    await ledger().getByRole('button', { name: '编辑当前项目' }).click();
+  await check('编辑项目移到目录：右键乙项目卡片「改名」，保存后卡片和素材使用标题都用新名字', async () => {
+    await page.goto(origin + '/#/projects'); await expect(folders()).toBeVisible();
+    await folders().getByRole('button', { name: /^乙项目/ }).first().click({ button: 'right' });
+    await page.getByRole('menu', { name: '操作' }).getByRole('menuitem', { name: '改名' }).click();
     const editor = page.getByRole('dialog', { name: '编辑项目' }); await editor.getByLabel('项目名称').fill('乙项目改名'); await editor.getByRole('button', { name: '保存项目' }).click();
-    await expect(ledger().getByRole('heading', { name: '乙项目改名', exact: true })).toBeVisible();
+    await expect(folders().getByRole('button', { name: /^乙项目改名/ })).toBeVisible();
+    await openProject('乙项目改名');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

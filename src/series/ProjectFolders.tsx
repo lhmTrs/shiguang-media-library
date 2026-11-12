@@ -5,6 +5,7 @@ import { useFeedbackToast } from '../global-feedback';
 import { ProjectEditor, type ProjectRequest } from '../ProjectManager';
 import { TimelineImportDialog } from '../TimelineImportDialog';
 import { softwareNames } from '../ProjectUsage';
+import { AgentShare } from '../AgentShare';
 import { buildTree, errorText, seasonName, seriesApi, type Container, type GroupedProject, type MoveConflict, type MoveItem, type MoveTarget, type Season, type Series, type SeriesNode } from './model';
 
 // 目录式项目页（SERIES-P1，原型 ⑤⑥⑦⑨）：根目录 = 剧文件夹 + 未分组项目；剧里先季后散放集；季里是集。
@@ -54,11 +55,17 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
 
   const node = loc.level === 'root' ? undefined : tree.series.find(n => n.series.id === loc.seriesId);
   const seasonContainer = loc.level === 'season' ? node?.seasons.find(c => c.season?.id === loc.seasonId) : undefined;
+  // 刚新建、还没出现在列表快照里的剧：等它出现（最多 10 秒），期间不把位置当成失效。
+  const awaiting = useRef<{ id: string; until: number } | null>(null), [, recheck] = useState(0);
   // 当前位置失效（剧或季被删、换了库）就回到上一层。
   useEffect(() => {
-    if (loc.level !== 'root' && !node) setLoc({ level: 'root' });
-    else if (loc.level === 'season' && node && !seasonContainer) setLoc({ level: 'series', seriesId: node.series.id });
-  }, [loc, node, seasonContainer]); // eslint-disable-line react-hooks/exhaustive-deps
+    const wait = awaiting.current;
+    if (wait && node?.series.id === wait.id) awaiting.current = null;
+    if (loc.level !== 'root' && !node) {
+      if (wait && wait.id === loc.seriesId && Date.now() < wait.until) { const t = setTimeout(() => recheck(n => n + 1), wait.until - Date.now() + 10); return () => clearTimeout(t); }
+      awaiting.current = null; setLoc({ level: 'root' });
+    } else if (loc.level === 'season' && node && !seasonContainer) setLoc({ level: 'series', seriesId: node.series.id });
+  }); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 8000); return () => clearTimeout(t); }, [toast]);
   useEffect(() => { if (!menu) return; const close = () => setMenu(null); window.addEventListener('click', close); window.addEventListener('blur', close); return () => { window.removeEventListener('click', close); window.removeEventListener('blur', close); }; }, [menu]);
 
@@ -164,7 +171,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
         <small>素材 候选 {p.candidates} · 已使用 {p.used}</small>
         {!c && <span className="pf-tag">{softwareNames[p.software] || '其他'}</span>}
       </button>
-      {current && <nav className="pf-links" aria-label={`${title}的快捷入口`}>{pages.map(x => <button type="button" key={x.page} onClick={() => openPage(x.page, p.id)}>{x.name}</button>)}</nav>}
+      {current && <nav className="pf-links" aria-label={`${title}的快捷入口`}>{pages.map(x => <button type="button" key={x.page} onClick={() => openPage(x.page, p.id)}>{x.name}</button>)}<AgentShare projectId={p.id} projectName={p.name} disabled={busy}/></nav>}
     </div>;
   };
   const containerLabel = (c: Container) => c.season ? `${c.series.name} ${seasonName(c.season)}` : c.series.name;
@@ -242,7 +249,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     {toast && <div className="pf-toast" role="status"><span>{toast.text}</span>{toast.undo && <button type="button" disabled={busy} onClick={() => undo(toast.undo!)}>撤销</button>}<button type="button" className="pf-toast-close" aria-label="关闭提示" onClick={() => setToast(null)}><X size={14}/></button></div>}
     {dialog?.type === 'series' && <SeriesDialog series={dialog.series} busy={busy} close={() => setDialog(null)} save={(name, software) => void run(async () => {
       if (dialog.series) { await api.updateSeries(dialog.series, { name, software }); seriesChanged(); setDialog(null); }
-      else { const s = await api.createSeries(name, software); seriesChanged(); setDialog(null); setLoc({ level: 'series', seriesId: s.id }); }
+      else { const s = await api.createSeries(name, software); awaiting.current = { id: s.id, until: Date.now() + 10000 }; seriesChanged(); setDialog(null); setLoc({ level: 'series', seriesId: s.id }); }
     })}/>}
     {dialog?.type === 'season' && <SeasonDialog season={dialog.season} busy={busy} close={() => setDialog(null)} save={(label, no) => void run(async () => { await api.updateSeason(dialog.season, { label, season_no: no }); seriesChanged(); setDialog(null); })}/>}
     {dialog?.type === 'numbers' && <NumbersDialog dialog={dialog} busy={busy} close={() => setDialog(null)} submit={rows => void run(() => move(dialog.target, dialog.targetName, rows))}/>}

@@ -97,19 +97,24 @@ try {
     });
   });
   await page.goto(origin + '/#/projects');
-  const project = page.getByRole('complementary', { name: '项目列表' });
-  const actions = page.locator('.project-title-actions');
+  // 分享入口在目录页当前集卡的快捷入口里（SERIES-P1 拆页后）。
+  const folders = page.locator('.pf');
+  const cardOf = name => folders.getByRole('button', { name: new RegExp('^' + name + '(（当前项目）)?$') });
+  const linksOf = name => folders.getByRole('navigation', { name: name + '的快捷入口' });
   const share = scope => scope.getByRole('button', { name: '分享给 Agent', exact: true });
   const copyLink = scope => scope.getByRole('button', { name: '复制接入链接', exact: true });
-  await project.getByTitle(a.name, { exact: true }).click();
-  await share(actions).click();
-  await copyLink(actions).click();
-  await expect(actions.getByRole('textbox', { name: '接入链接' })).toHaveValue(origin + guidePath(a.id));
-  await project.getByTitle(b.name, { exact: true }).click();
-  await expect(copyLink(actions)).toHaveCount(0);
-  await share(actions).click();
-  await actions.getByRole('button', { name: '复制 Markdown 说明', exact: true }).click();
-  await expect(actions.getByRole('textbox', { name: 'Markdown 说明' })).toHaveValue(markdown);
+  await cardOf(a.name).click();
+  await share(linksOf(a.name)).click();
+  await copyLink(linksOf(a.name)).click();
+  await expect(linksOf(a.name).getByRole('textbox', { name: '接入链接' })).toHaveValue(origin + guidePath(a.id));
+  // 窄屏下分享面板会盖住相邻卡片：先 Esc 关掉面板，再切到乙。
+  await page.keyboard.press('Escape'); await expect(linksOf(a.name).getByRole('textbox', { name: '接入链接' })).toHaveCount(0);
+  await cardOf(b.name).click();
+  await expect(linksOf(a.name)).toHaveCount(0);
+  await expect(copyLink(linksOf(b.name))).toHaveCount(0);
+  await share(linksOf(b.name)).click();
+  await linksOf(b.name).getByRole('button', { name: '复制 Markdown 说明', exact: true }).click();
+  await expect(linksOf(b.name).getByRole('textbox', { name: 'Markdown 说明' })).toHaveValue(markdown);
   console.log('PASS 窄屏切换项目后复制内容对应当前项目，剪贴板失败可手动复制');
 
   await page.goto(origin + '/#/storyboards');
