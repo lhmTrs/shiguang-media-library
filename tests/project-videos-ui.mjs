@@ -6,6 +6,7 @@ import os from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -55,7 +56,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.method() === 'PUT' && r.url().includes('/project-videos/') && r.url().endsWith('/content')) count.content++; });
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   assert.equal(await work().locator('select[aria-label="生成视频所属项目"]').count(), 0, '页内不再重复项目选择');
   await expect(card('清晨远景.mp4')).toBeVisible();
 

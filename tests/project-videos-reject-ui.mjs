@@ -8,6 +8,7 @@ import os from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -132,7 +133,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await installMocks();
-  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await page.locator('.topbar-project-slot select').selectOption(projectId);
+  await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
   await expect(card(A)).toBeVisible();
 
   await check('没有收纳处：文件夹栏末尾有“废片 0”入口，废片视图说明尚未设置；同名文件夹不被自动当作收纳处', async () => {

@@ -125,7 +125,7 @@ export function ProjectPathBar({ projects, series, value, recent, lastInContaine
       <div className="ppb-list" role="listbox" id={listId} aria-label="选项">
         {options.map(o => { const group = o.group && o.group !== lastGroup ? o.group : ''; if (o.group) lastGroup = o.group; const active = !!o.projectId && !o.disabled && enabled[cursor]?.key === o.key; return <div key={o.key}>
           {group && <div className="ppb-group" role="presentation">{group}</div>}
-          <div className="ppb-option" role="option" id={'ppb-opt-' + o.key} aria-selected={!!o.current} aria-disabled={o.disabled || !o.projectId || undefined} data-active={active || undefined} data-current={o.current || undefined}
+          <div className="ppb-option" role="option" id={'ppb-opt-' + o.key} data-target-project={o.projectId} aria-selected={!!o.current} aria-disabled={o.disabled || !o.projectId || undefined} data-active={active || undefined} data-current={o.current || undefined}
             onPointerDown={e => e.preventDefault()} onClick={() => { if (!o.disabled) choose(o.projectId); }}>{o.label}{o.current && <span className="ppb-check" aria-hidden="true">✓</span>}</div>
         </div>; })}
         {!options.length && <div className="ppb-empty" role="status">{query ? '没有匹配的项' : '暂无项目'}</div>}
