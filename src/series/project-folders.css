@@ -10,29 +10,50 @@
 .pf-crumbs b { color: var(--c-24292c); padding: 3px 6px; }
 .pf-body { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
 .pf-section { margin: 14px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
-.pf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; outline: none; }
-.pf-card { position: relative; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); box-shadow: 0 1px 2px rgba(20, 40, 30, .04); min-width: 0; }
-.pf-card-main { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px 16px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 10px; min-width: 0; width: 100%; box-sizing: border-box; }
-.pf-card-main b { font-size: 14px; display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; align-items: start; outline: none; }
+/* R1/R4：所有卡片同高；每种状态只用一种手段（悬停=底色、按下=下沉、焦点=蓝环、当前=绿框、多选=浅绿底+勾、放置=绿底+后果、刚完成=橙色闪框） */
+.pf-card { position: relative; height: 64px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); min-width: 0; transition: background-color .1s, border-color .1s, transform .1s, box-shadow .2s; }
+.pf-card-main { display: flex; align-items: center; gap: 12px; width: 100%; height: 100%; box-sizing: border-box; padding: 0 14px; border: 0; border-radius: 9px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.pf-episode .pf-card-main { flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; padding-right: 30px; }
+.pf-card-main b { font-size: 14px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-card-main small { font-size: 12px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pf-card-main:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-.pf-folder-icon path { fill: var(--soft); stroke: var(--green); stroke-width: 1.5; }
-.pf-folder[data-drop=over] { border-color: var(--green); background: var(--soft); box-shadow: 0 0 0 2px var(--green); }
-.pf-episode[data-selected] { border-color: var(--green); background: var(--soft); }
-.pf-episode[data-current] { border-color: var(--green); box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 22%, transparent); }
-.pf-current { font-size: 10px; font-weight: 700; color: var(--c-fff); background: var(--green); border-radius: 4px; padding: 1px 6px; }
-.pf-origin { font-style: normal; }
-.pf-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--soft); color: var(--c-24292c); }
-.pf-links { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--line); }
-.pf-links button { border: 0; border-radius: 6px; background: var(--soft); color: var(--green); font: 12px inherit; padding: 4px 8px; cursor: pointer; }
-.pf-add { align-items: center; justify-content: center; gap: 4px; padding: 14px; color: var(--green); font: 600 13px inherit; cursor: pointer; min-height: 96px; }
-.pf-add small { font-weight: 400; font-size: 11px; color: var(--muted); }
+.pf-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.pf-folder-icon { flex: none; }
+.pf-folder-icon path { fill: var(--soft); stroke: var(--green); stroke-width: 2; }
+.pf-chev { flex: none; color: var(--green); opacity: 0; transform: translateX(-3px); transition: opacity .1s, transform .1s; }
+.pf-more { position: absolute; right: 9px; top: 8px; color: var(--muted); opacity: 0; pointer-events: none; transition: opacity .1s; }
+/* 悬停 */
+.pf-card:hover:not(:disabled) { border-color: #9fb8aa; background: #f6faf7; }
+.pf-card:hover .pf-chev, .pf-card-main:focus-visible .pf-chev { opacity: 1; transform: none; }
+.pf-card:hover .pf-more { opacity: 1; }
+/* 按下 */
+.pf-card:has(.pf-card-main:active), .pf-add:active { border-color: #7fa392; background: #e9f2ec; transform: translateY(1px); }
+/* 键盘焦点：蓝色外环，只在键盘操作时 */
+.pf-card-main:focus-visible { outline: 2px solid #2f6fb3; outline-offset: 3px; }
+/* 当前项目：绿色实线边框 */
+.pf-episode[data-current] { border: 1.5px solid var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 14%, transparent); }
+/* 多选：浅绿底 + 小勾，不动边框 */
+.pf-episode[data-selected] { background: #eef6f1; }
+.pf-tick { position: absolute; left: -7px; top: -7px; width: 18px; height: 18px; border-radius: 50%; background: var(--green); color: var(--c-fff); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px var(--c-fff); pointer-events: none; }
+/* 放置目标：绿底 + 副标题写后果 */
+.pf-folder[data-drop=over] { border-color: var(--green); background: #dcebe2; box-shadow: 0 0 0 2px var(--green); }
+.pf-folder[data-drop=over] small { color: var(--green); font-weight: 600; }
+/* 刚完成：橙色闪框约 1 秒 */
+.pf-card[data-flash] { animation: pf-flash 1.2s ease-out; }
+@keyframes pf-flash { 0%, 60% { border-color: #c8642a; box-shadow: 0 0 0 4px #fbe6d8; } 100% { box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .pf-card, .pf-chev { transition: none; } .pf-card:has(.pf-card-main:active) { transform: none; } }
+/* 新建卡：虚线、同高 */
+.pf-add { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; border-style: dashed; color: var(--green); font: 600 13px inherit; cursor: pointer; }
 .pf-add:disabled { opacity: .6; cursor: default; }
+.pf-menu .pf-kbd { display: inline; margin-left: auto; padding-left: 12px; font-size: 11px; color: var(--muted); }
+.pf-share .agent-share { margin-top: 8px; }
 .pf-menu { position: fixed; z-index: 40; min-width: 200px; padding: 5px 0; background: var(--c-fff); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 10px 26px rgba(20, 40, 30, .16); display: flex; flex-direction: column; }
-.pf-menu button { border: 0; background: transparent; text-align: left; padding: 7px 14px; font: 13px inherit; color: inherit; cursor: pointer; }
+.pf-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 7px 14px; font: 13px inherit; color: inherit; cursor: pointer; }
 .pf-menu button:hover:not(:disabled) { background: var(--soft); }
 .pf-menu button:disabled { color: var(--muted); cursor: default; }
-.pf-menu button small { display: block; font-size: 11px; color: var(--muted); }
+.pf-menu button { flex-wrap: wrap; }
+.pf-menu button small { font-size: 11px; color: var(--muted); }
+.pf-menu button small:not(.pf-kbd) { flex-basis: 100%; }
 .pf-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 .pf-menu .pf-danger:not(:disabled) { color: #a33a2a; }
 .pf-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 45; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 9px; background: #24292c; color: #fff; font-size: 12px; box-shadow: 0 8px 22px rgba(0, 0, 0, .2); }

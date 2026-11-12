@@ -22,8 +22,7 @@ const rows = () => ledger().locator('.project-item');
 const folders = () => page.locator('.pf');
 const openProject = async name => {
   await page.goto(origin + '/#/projects'); await expect(folders()).toBeVisible();
-  await folders().getByRole('button', { name: new RegExp('^' + name) }).first().click();
-  await folders().getByRole('navigation', { name: name + '的快捷入口' }).getByRole('button', { name: '素材使用' }).click();
+  await folders().getByRole('button', { name: new RegExp('^' + name) }).first().dblclick();
   await expect(page).toHaveURL(/#\/project-usage/); await expect(ledger().getByRole('heading', { name, exact: true })).toBeVisible();
 };
 
