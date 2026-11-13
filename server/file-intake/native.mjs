@@ -23,19 +23,32 @@ const installError=(cause,fallback)=>({
 });
 async function workflowDigest(workflowPath){
   const contents=path.join(workflowPath,'Contents');
-  const resources=await fs.lstat(path.join(contents,'Resources'));
-  if(!resources.isDirectory())return null;
+  const directories=[workflowPath,contents,path.join(contents,'Resources')];
+  const before=[];
+  for(const directory of directories){
+    const stat=await fs.lstat(directory);
+    if(!stat.isDirectory())return null;
+    before.push(identity(stat));
+  }
+  if(await fs.realpath(contents)!==contents||await fs.realpath(directories[2])!==directories[2])return null;
   const digest=createHash('sha256');
   for(const name of ['Info.plist','Resources/document.wflow']){
-    const handle=await fs.open(path.join(contents,name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    const file=path.join(contents,name);
+    const handle=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try{
       const stat=await handle.stat();
       if(!stat.isFile()||stat.size===0||stat.size>1024*1024)return null;
       const bytes=Buffer.alloc(stat.size+1);
       const {bytesRead}=await handle.read(bytes,0,bytes.length,0);
-      if(bytesRead!==stat.size)return null;
+      const current=await fs.lstat(file);
+      if(bytesRead!==stat.size||!current.isFile()||!sameEntry(identity(stat),identity(current))||
+        current.size!==stat.size||current.mtimeMs!==stat.mtimeMs||current.ctimeMs!==stat.ctimeMs)return null;
       digest.update(name).update('\0').update(bytes.subarray(0,bytesRead));
     }finally{await handle.close();}
+  }
+  for(const [index,directory] of directories.entries()){
+    const stat=await fs.lstat(directory);
+    if(!stat.isDirectory()||!sameEntry(before[index],identity(stat)))return null;
   }
   return digest.digest('hex');
 }
@@ -130,6 +143,8 @@ export class IntakeNative {
         if(!owned||!sameEntry(owned.identity,entry.identity))return false;
         if(!entry.digest)return null;
         if(await workflowDigest(target)!==entry.digest)return false;
+        const verified=await this.ownedWorkflow(target);
+        if(!verified||!sameEntry(verified.identity,entry.identity))return false;
       }
       return true;
     }catch(cause){return ['ENOENT','ENOTDIR','ELOOP','INTAKE_INSTALL_CONFLICT'].includes(cause.code)?false:null;}
