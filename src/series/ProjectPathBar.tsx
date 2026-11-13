@@ -101,7 +101,7 @@ export function ProjectPathBar({ projects, series, value, recent, lastInContaine
   useEffect(() => { root.current?.querySelector<HTMLElement>('.ppb-option[data-active]')?.scrollIntoView?.({ block: 'nearest' }); }, [cursor, open]);
 
   const segment = (seg: Segment, text: string, title?: string) =>
-    <button type="button" className="ppb-seg" ref={el => { triggers.current[seg] = el; }} aria-haspopup="dialog" aria-expanded={open === seg} title={title ?? text} disabled={disabled}
+    <button type="button" className="ppb-seg" data-segment={seg} ref={el => { triggers.current[seg] = el; }} aria-haspopup="dialog" aria-expanded={open === seg} title={title ?? text} disabled={disabled}
       onClick={() => setOpen(o => o === seg ? null : seg)}><span>{text}</span><ChevronDown size={12} aria-hidden="true"/></button>;
   const placeholder = { series: '搜索全部：剧名、季、集号、项目名', season: '搜索季', episode: '输入集号或名字，如 12' }[open ?? 'series'];
   let lastGroup = '';
