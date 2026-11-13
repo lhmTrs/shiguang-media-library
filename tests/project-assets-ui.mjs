@@ -5,7 +5,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
-import { selectProjectInBar, showPublicAssets } from './helpers/path-bar.mjs';
+import { selectProjectInBar, showPublicAssets, projectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(process.env.CREATIVE_TEST_PROJECT_ROOT || path.resolve(import.meta.dirname, '..')), evidence = path.resolve(process.env.CREATIVE_TEST_EVIDENCE || 'collab/results/PROJECT-ASSET-LIBRARY-20261104/browser');
 await fs.mkdir(evidence, { recursive: true });
@@ -55,12 +55,15 @@ try {
  let original;
  await check('跨项目复制可改名，默认关系保留，副本独立', async () => {
   original = (await api('/project-assets/assets?project_id=' + a.id)).items[0];
-  await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(b.id); await dialog().getByLabel('复制后人物名称').fill('陈川乙'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('陈川乙');
+  await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(b.id); await dialog().getByLabel('复制后人物名称').fill('陈川乙'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0);
+  // 顶栏统一：复制到别的项目不替用户切项目，留在原处提示；从顶栏切过去再打开副本
+  await expect(work()).toContainText('在顶部切到该项目即可查看'); await expect(projectInBar(page)).toHaveAttribute('data-project', a.id); await expect(nameInput()).toHaveValue('陈川');
+  await selectProjectInBar(page, b.id); await work().locator('.ca-card').filter({ hasText: '陈川乙' }).click(); await expect(nameInput()).toHaveValue('陈川乙');
   const copy = (await api('/project-assets/assets?project_id=' + b.id)).items[0]; assert.notEqual(copy.id, original.id); assert.equal(copy.images[0].media_asset_id, original.images[0].media_asset_id); assert.equal(copy.looks.length, 2); assert.equal(copy.source.asset_id, original.id);
   await work().getByLabel('人物名称').fill('副本独立修改'); await save(); assert.equal((await api('/project-assets/assets/' + original.id)).name, '陈川');
  });
  await check('公共人物创建和复制、名称冲突明确可见', async () => {
-  const scopes = (await api('/project-assets/scopes')).items, pub = scopes.find(p => p.project_kind === 'public'); await showPublicAssets(page); await create('公共角色'); await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(a.id); await dialog().getByLabel('复制后人物名称').fill('陈川'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(work().getByRole('alert').first()).toContainText('同名'); await dialog().getByLabel('复制后人物名称').fill('公共角色副本'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('公共角色副本');
+  const scopes = (await api('/project-assets/scopes')).items, pub = scopes.find(p => p.project_kind === 'public'); await selectProjectInBar(page, a.id); await showPublicAssets(page); // 当前项目是甲：复制到甲时在页内打开副本 await create('公共角色'); await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(a.id); await dialog().getByLabel('复制后人物名称').fill('陈川'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(work().getByRole('alert').first()).toContainText('同名'); await dialog().getByLabel('复制后人物名称').fill('公共角色副本'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('公共角色副本');
  });
  await check('两个编辑版本发生冲突时保留本地输入', async () => {
   const current = (await api('/project-assets/assets?project_id=' + a.id)).items.find(a => a.name === '公共角色副本'); const changed = await api('/project-assets/assets/' + current.id, { asset: { ...current, base_info: '后台新版本' }, expected_revision: current.revision }, 'PUT');

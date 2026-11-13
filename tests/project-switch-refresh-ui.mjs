@@ -157,7 +157,7 @@ try {
     const dialog = page.getByRole('dialog', { name: '复制人物' });
     await dialog.getByLabel('目标项目').selectOption(b.id); await dialog.getByLabel('复制后人物名称').fill('公共人物乙');
     await dialog.getByRole('button', { name: '确认复制', exact: true }).click();
-    await expect(dialog).toHaveCount(0); await expect(projectInBar(page)).toHaveAttribute('data-project', b.id); await settled(['公共人物乙', '乙人物']);
+    await expect(dialog).toHaveCount(0); await selectProjectInBar(page, b.id); await settled(['公共人物乙', '乙人物']); await list().locator('.ca-card').filter({ hasText: '公共人物乙' }).click();
     await expect(work().getByRole('heading', { name: '公共人物乙', exact: true })).toBeVisible();
     await work().getByRole('button', { name: '归档', exact: true }).click();
     await expect(work().getByRole('button', { name: '恢复', exact: true })).toBeVisible(); await settled(['乙人物']);
