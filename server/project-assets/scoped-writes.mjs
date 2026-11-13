@@ -450,7 +450,24 @@ export class ScopedAssetWrites {
     return this.mutation(type, id, 'override:' + assetId, input, scope => {
       const item = this.reads.detailInTransaction(scope, assetId);
       if (!['season', 'episode'].includes(type) || item.owner.type !== 'series' || item.asset.archived_at) throw readOnly();
-      const { field, action } = input;
+      const { field, action, source_project_id, source_context_token } = input;
+      // A season edit opened from an episode is tied to that episode's membership.
+      // mutation() already holds the directory lock while these scopes are read.
+      if (Object.hasOwn(input, 'source_project_id') || Object.hasOwn(input, 'source_context_token')) {
+        if (type !== 'season' || !idOK(source_project_id) || typeof source_context_token !== 'string') {
+          throw invalid('本季设置缺少有效的来源集');
+        }
+        let source;
+        try {
+          source = this.scope('episode', source_project_id);
+        } catch (error) {
+          if (error.status !== 404) throw error;
+        }
+        if (source?.season_id !== id || source.series_id !== scope.series_id) {
+          throw conflict('ASSET_SCOPE_CHANGED', '来源集已离开这一季，请重新读取');
+        }
+        this.reads.assertContextToken(source, source_context_token);
+      }
       if (!isRecord(field) || !['set', 'inherit'].includes(action) || (action === 'set') !== Object.hasOwn(input, 'value')) {
         throw invalid('覆盖操作无效');
       }

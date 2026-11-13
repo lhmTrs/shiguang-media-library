@@ -47,3 +47,38 @@ test('集内上传共享图片进入剧目录，仍需另行确认绑定，换�
     items:[{project_id:episode.id,expected_revision:scope.membership_revision,episode_no:1}]});
   await assert.rejects(f.imports.upload(waiting.id, Readable.from([png])), {code:'ASSET_SCOPE_CHANGED'});
 });
+
+test('全剧本地参考图使用剧 ID 和令牌，登记后通过全剧保存绑定', async t => {
+  const f = await fixture(t);
+  const directory = f.lib.projectSeries;
+  const series = directory.createSeries({ request_id: randomUUID(), name: '合成全剧' });
+  const episode = directory.createEpisode(series.id, {
+    request_id: randomUUID(), season_id: null, expected_episode_no: 1,
+  }).project;
+  const context = f.store.scoped.list('series', series.id).context_token;
+  const { asset } = f.store.scopedWrites.create('series', series.id, {
+    request_id: randomUUID(), context_token: context, kind: 'scene', name: '共享场景', on_shared: 'reject',
+  });
+  const input = {
+    requestId: randomUUID(), assetId: asset.id, projectId: series.id, lookId: null,
+    fileName: '全剧参考.png', bytes: png.length, series_context_token: context,
+  };
+  await assert.rejects(f.imports.start({
+    ...input, series_context_token: f.store.scoped.assetContext(episode.id).context_token,
+  }), { code: 'ASSET_SCOPE_CHANGED' });
+  const session = await f.imports.start(input);
+  const uploaded = await f.imports.upload(session.id, Readable.from([png]));
+  assert.equal(uploaded.status, 'ready');
+  assert.equal(f.imports.dto(f.imports.get(input.requestId)).mediaAssetId, uploaded.mediaAssetId);
+  const media = f.lib.asset(uploaded.mediaAssetId);
+  assert.equal(path.basename(path.dirname(media.path)), series.name + '--' + series.id);
+  assert.deepEqual(await fs.readFile(media.path), png);
+  assert.equal(f.store.scoped.detail('series', series.id, asset.id).asset.images.length, 0);
+  addImage(asset, uploaded.mediaAssetId);
+  const saved = await f.store.scopedWrites.save('series', series.id, asset.id, {
+    request_id: randomUUID(), context_token: context, expected_revision: asset.revision, asset,
+  });
+  const inherited = f.store.scoped.detail('episode', episode.id, asset.id);
+  assert.equal(inherited.asset.images[0].id, saved.asset.images[0].id);
+  assert.equal(inherited.effective.default_images.null.value, saved.asset.images[0].id);
+});

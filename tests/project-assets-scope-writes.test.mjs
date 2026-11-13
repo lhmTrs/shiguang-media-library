@@ -44,6 +44,56 @@ test('季设定列表仅列本季直接覆盖，保留实际父值和修订号',
   }), { code: 'ASSET_STALE' });
 });
 
+test('集入口打开季设置后换季，旧保存不会改原季，原成功回执仍可查询', async t => {
+  const f = await fixture(t), { asset, context_token } = f.create('character', '共享人物');
+  const first = addLook(asset, '日常'), second = addLook(asset, '节日');
+  await f.writes.save('series', f.series.id, asset.id, {
+    request_id: randomUUID(), context_token, expected_revision: asset.revision, asset,
+  });
+  const newSeason = f.directory.createSeason(f.series.id, { request_id: randomUUID() });
+  const source = f.scoped.assetContext(f.episode.id);
+  const oldSeason = f.scoped.detail('season', f.season.id, asset.id);
+  const input = {
+    request_id: randomUUID(),
+    context_token: oldSeason.context_token,
+    write_token: oldSeason.effective.default_look.write_token,
+    source_project_id: f.episode.id,
+    source_context_token: source.context_token,
+    field: { key: 'default_look' },
+    action: 'set',
+    value: second.id,
+  };
+  const writeOld = data => f.writes.setOverride('season', f.season.id, asset.id, data);
+  assert.throws(() => writeOld({ ...input, source_context_token: undefined }), { status: 422 });
+  const saved = writeOld(input);
+  assert.equal(saved.effective.default_look.value, second.id);
+
+  const pending = {
+    ...input, request_id: randomUUID(), value: first.id,
+    write_token: saved.effective.default_look.write_token,
+  };
+  f.directory.move({
+    request_id: randomUUID(), target: { series_id: f.series.id, season_id: newSeason.id },
+    items: [{ project_id: f.episode.id, expected_revision: source.membership_revision, episode_no: 1 }],
+  });
+  assert.throws(() => writeOld(pending), { code: 'ASSET_SCOPE_CHANGED' });
+  assert.equal(f.scoped.detail('season', f.season.id, asset.id).effective.default_look.value, second.id);
+  assert.equal(f.scoped.detail('season', newSeason.id, asset.id).effective.default_look.value, first.id);
+  assert.deepEqual(f.writes.request(pending.request_id), { found: false });
+  assert.deepEqual(f.writes.request(input.request_id), { found: true, result: saved });
+  assert.deepEqual(writeOld(input), saved);
+
+  const target = f.scoped.detail('season', newSeason.id, asset.id);
+  const newInput = {
+    ...input, request_id: randomUUID(),
+    context_token: target.context_token, write_token: target.effective.default_look.write_token,
+  };
+  const writeNew = data => f.writes.setOverride('season', newSeason.id, asset.id, data);
+  assert.throws(() => writeNew(newInput), { code: 'ASSET_SCOPE_CHANGED' });
+  const newSource = f.scoped.assetContext(f.episode.id);
+  assert.equal(writeNew({ ...newInput, source_context_token: newSource.context_token }).effective.default_look.value, second.id);
+});
+
 test('评分拒绝共享场景；已移出该剧的集不能再从旧请求取回共享资料', async t => {
   const f = await fixture(t), scene = f.create('scene', '共享场景');
   const dimensions = f.scoped.attributeConfig('series', f.series.id).dimensions;
