@@ -195,3 +195,32 @@
 .fi-simple .fi-single-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px}
 .fi-root.fi-simple .fi-single-actions>button{min-height:30px;padding:0 14px;font-size:12px}
 @media(max-width:520px){.fi-simple .fi-single-side{flex-direction:column;align-items:center}.fi-simple .fi-single-side .fi-thumb-large{width:min(300px,100%)}.fi-simple .fi-single-info{max-width:100%}}
+/* 访达入口安装反馈（INSTALL-FEEDBACK）：状态在按钮正下方；顶栏入口按钮上的安装标记 */
+.fi-root .fi-install>button{display:inline-flex;align-items:center;gap:7px}
+.fi-root .fi-install .fi-spinner,.fi-root .fi-install-chip .fi-spinner{width:11px;height:11px;border-radius:50%;border:2px solid var(--fi-line);border-top-color:var(--fi-accent);animation:fi-spin .8s linear infinite;flex:none;box-sizing:border-box;display:inline-block}
+.fi-install-state{display:flex;gap:9px;align-items:flex-start;margin-top:10px;padding:10px 12px;border:1px solid var(--fi-line);border-radius:9px;background:var(--fi-soft);color:var(--fi-text);font-size:12px;line-height:1.7}
+.fi-install-state>svg,.fi-install-state>.fi-spinner{margin-top:3px;flex:none}
+.fi-install-state b{font-size:13px;font-weight:600}
+.fi-install-state b small{font-weight:400;color:var(--fi-muted);margin-left:4px}
+.fi-install-state p{margin:2px 0 0;color:var(--fi-text)}
+.fi-install-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fi-install-body>button{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;margin-top:4px}
+.fi-install-state.is-ok{border-color:color-mix(in srgb,var(--fi-accent) 35%,var(--fi-line));background:color-mix(in srgb,var(--fi-accent) 8%,var(--fi-bg))}
+.fi-install-state.is-ok>svg{color:var(--fi-accent)}
+.fi-install-state.is-bad{border-color:color-mix(in srgb,var(--fi-danger) 40%,var(--fi-line));background:color-mix(in srgb,var(--fi-danger) 7%,var(--fi-bg))}
+.fi-install-state.is-bad>svg{color:color-mix(in srgb,var(--fi-danger) 75%,var(--fi-text))}
+.fi-install-hint{color:var(--fi-muted)!important}
+.fi-install-hint.is-bad{color:color-mix(in srgb,var(--fi-danger) 75%,var(--fi-text))!important}
+.fi-install-steps{list-style:none;margin:4px 0 2px;padding:0;display:flex;flex-direction:column;gap:5px}
+.fi-install-steps li{display:flex;align-items:center;gap:8px;color:var(--fi-muted)}
+.fi-install-steps li[data-state=done],.fi-install-steps li[data-state=active]{color:var(--fi-text)}
+.fi-install-steps li[data-state=active]>span:last-child{font-weight:600}
+.fi-install-steps li>svg{width:15px;height:15px;padding:1px;box-sizing:border-box;border-radius:50%;background:var(--fi-accent);color:var(--fi-bg);flex:none}
+.fi-install-steps li>i{width:15px;height:15px;box-sizing:border-box;border-radius:50%;border:1.5px solid var(--fi-line);flex:none}
+.fi-install-steps li>.fi-spinner{width:15px;height:15px}
+.fi-install-steps small{color:var(--fi-muted);font-weight:400}
+.fi-install-chip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;margin-left:2px}
+.fi-install-chip.is-ok{background:color-mix(in srgb,var(--fi-accent) 14%,var(--fi-bg));color:var(--fi-accent)}
+.fi-install-chip.is-bad{background:color-mix(in srgb,var(--fi-danger) 12%,var(--fi-bg));color:color-mix(in srgb,var(--fi-danger) 75%,var(--fi-text))}
+@media (prefers-reduced-motion:reduce){.fi-root .fi-install .fi-spinner,.fi-root .fi-install-chip .fi-spinner{animation:none;border-top-color:var(--fi-accent)}}
+.fi-install-steps small,.fi-install-state b small{display:inline}
