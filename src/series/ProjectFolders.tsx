@@ -15,7 +15,7 @@ import { buildTree, errorText, seasonName, seriesApi, type Container, type Group
 export type FolderPage = 'usage' | 'assets' | 'videos' | 'storyboard';
 export type ProjectFoldersProps = {
   projects: GroupedProject[]; series: Series[]; seriesChanged: () => void;
-  activeId: string; select: (id: string) => void; request: ProjectRequest; changed: (id?: string) => void;
+  activeId: string; select: (id: string) => boolean | void; request: ProjectRequest; changed: (id?: string) => void;
   openPage: (page: FolderPage, projectId: string) => void;
   /** 当前素材库的稳定 ID。目录位置与「刚新建的剧」按库分开存；未知时只放内存、不读不写。 */
   libraryId?: string;
@@ -72,7 +72,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   useEffect(() => {
     try { sessionStorage.removeItem(LOC_KEY); sessionStorage.removeItem(PENDING_KEY); } catch { /* 旧版本未分库的记录，丢弃 */ }
     if (loadedFor.current === libraryId) return;
-    loadedFor.current = libraryId; locatedFor.current = ''; // 换库：按新库的当前项目重新定位
+    loadedFor.current = libraryId; locatedFor.current = ''; selfSelect.current = ''; // 换库：按新库的当前项目重新定位，旧标记作废
     setLocState(locKey ? readSession<Loc>(locKey, { level: 'root' }) : { level: 'root' });
     setPendingState(pendingKey ? readSession<PendingSeries | null>(pendingKey, null) : null);
     setSelected([]); setMenu(null);
@@ -113,7 +113,8 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const locatedFor = useRef('');
   // 本页里点卡片 / 新建集换的当前项目：卡片就在眼前，不跳不闪。顶栏或别处换的：同层也要闪一下并滚到它（可能在屏外）
   const selfSelect = useRef('');
-  const selectHere = (id: string) => { selfSelect.current = id; select(id); };
+  // 只为宿主接受了的切换留标记：取消未保存提示（返回 false）时清掉，否则下一次顶栏切到同一项目会被误当成页内点选
+  const selectHere = (id: string) => { selfSelect.current = id; if (select(id) === false) selfSelect.current = ''; };
   useEffect(() => {
     if (!activeId || locatedFor.current === activeId) return;
     const p = projects.find(x => x.id === activeId); if (!p) return; // 列表还没到：等数据到了再定位

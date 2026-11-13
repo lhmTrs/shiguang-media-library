@@ -42,6 +42,7 @@ try {
   const long = await api('/project-series', { name: '长剧', software: 'jianying', request_id: rid() });
   const lq = await api(`/project-series/${long.id}/seasons`, { request_id: rid() });
   const longEps = []; for (let i = 1; i <= 32; i++) longEps.push((await api(`/project-series/${long.id}/episodes`, { season_id: lq.id, expected_episode_no: i, request_id: rid() })).project);
+  await api('/project-assets/assets', { project_id: longEps[0].id, kind: 'character', name: '草稿人物' }); // 用来制造未保存修改
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -91,6 +92,21 @@ try {
     await page.waitForTimeout(1500);
     await epButton(/^长剧 第 1 季 第 31 集$/).click(); await expect(epButton(/^长剧 第 1 季 第 31 集（当前项目）$/)).toBeVisible();
     await expect(pf().locator('.pf-card[data-flash]')).toHaveCount(0); await expect(title()).toHaveText('第 1 季');
+  });
+
+  await check('反例：页内点卡片被「未保存修改」提示取消 → 再从顶栏切到同一集并确认：仍滚到它并闪一下', async () => {
+    await goTo(longEps[0].id, '长剧 1 1'); await nav('项目资产');
+    const work = page.getByRole('region', { name: '项目资产库' }); await work.locator('.ca-card').filter({ hasText: '草稿人物' }).first().click();
+    await work.getByLabel('基础信息', { exact: true }).fill('还没保存'); await expect(work.getByRole('button', { name: '保存资料', exact: true })).toBeEnabled();
+    await nav('项目'); await expect(title()).toHaveText('第 1 季');
+    page.once('dialog', d => d.dismiss()); await epButton(/^长剧 第 1 季 第 32 集$/).click(); // 页内点选，被取消
+    await expect(page.locator('.ppb').first()).toHaveAttribute('data-project', longEps[0].id);
+    await pf().evaluate(el => { let n = el; while (n && n !== document.body) { if (n.scrollHeight > n.clientHeight) n.scrollTop = 0; n = n.parentElement; } window.scrollTo(0, 0); });
+    await expect(epButton(/^长剧 第 1 季 第 32 集$/)).not.toBeInViewport(); await page.waitForTimeout(1500);
+    page.once('dialog', d => d.accept()); await goTo(longEps[31].id, '长剧 1 32'); // 顶栏切到同一集，确认
+    await expect(title()).toHaveText('第 1 季');
+    await expect(epButton(/^长剧 第 1 季 第 32 集（当前项目）$/)).toBeInViewport({ timeout: 2500 });
+    await expect(pf().locator('.pf-card[data-current][data-flash]')).toHaveCount(1);
   });
 
   if (errors.length) throw Error('页面不应出现脚本错误：' + errors.join(' / '));
