@@ -42,6 +42,16 @@ export function SeriesAlignment({ request, seriesId, seriesName, active, onAlign
     if (!preview || pendingRef.current) return; const next = { ...changed, [c.item_id]: c }; setChanged(next);
     await loadPreview(mergeChoices(preview, next), '', true); // 每次改选都重新预览，以服务端回显和新凭证为准
   }
+  const lost = () => Object.assign(Error('网络中断，暂时确认不了是否已统一。原请求已保留：稍后点「核对上次结果」会按原请求号查询，不会重复执行。'), { code: 'OUTCOME_UNKNOWN' });
+  /** 结果不明的原请求：按原请求号查回执；查到就用原结果，确定没有才用原编号、原内容重发。
+   *  查询失败、或重发的回应又丢了，都仍是「结果不明」——保留原剧、原请求号和原选项，绝不换新编号。 */
+  async function settle(target: string, body: Pending['body']) {
+    const r = await api.requestStatus(body.request_id).catch(() => null);
+    if (r?.found && r.result) return r.result;
+    if (!r) throw lost();
+    try { return await api.confirm(target, body); }
+    catch (e) { if (outcomeUnknown(e)) throw lost(); throw e; }
+  }
   async function confirm() {
     const held = pendingRef.current;
     if (busy || (!held && (unchecked || !preview?.ready || !preview.preview_token))) return;
@@ -49,12 +59,10 @@ export function SeriesAlignment({ request, seriesId, seriesName, active, onAlign
     setPending({ seriesId: target, body }); setBusy('正在统一…'); setError('');
     try {
       let receipt;
-      try { receipt = await api.confirm(target, body); }
-      catch (e) {
-        if (!outcomeUnknown(e)) throw e;
-        const r = await api.requestStatus(body.request_id).catch(() => null);
-        if (r?.found && r.result) receipt = r.result; else if (r && !r.found) receipt = await api.confirm(target, body);
-        else throw Object.assign(Error('网络中断，暂时确认不了是否已统一。请稍后重新打开这个提示核对，不会重复执行。'), { code: 'OUTCOME_UNKNOWN' });
+      if (held) receipt = await settle(target, body); // 已发出过：先按原号查，查不到才原样重发
+      else {
+        try { receipt = await api.confirm(target, body); }
+        catch (e) { if (!outcomeUnknown(e)) throw e; receipt = await settle(target, body); }
       }
       setPending(null);
       setDone(`已统一：${receipt.episodes_updated} 集改用全剧的维度，${receipt.scores_remapped} 格分数已对应过去${receipt.scores_retained_in_history ? `，${receipt.scores_retained_in_history} 格保留在历史里` : ''}。`);

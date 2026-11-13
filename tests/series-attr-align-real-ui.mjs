@@ -23,10 +23,11 @@ const nav = name => page.getByRole('navigation', { name: '主导航' }).getByRol
 const work = () => page.getByRole('region', { name: '项目资产库' });
 const pf = () => page.locator('.pf');
 const scopeSwitch = () => work().getByRole('group', { name: '看哪里的资产' });
+const openProjectsAt = async (id, card) => { await selectProjectInBar(page, id); await expect(page.locator('.ppb').first()).toHaveAttribute('data-project', id); await nav('项目'); await expect(card()).toBeVisible(); };
 const toRoot = async () => { await pf().waitFor(); const up = pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }); if (await up.count()) await up.click(); };
 const dlgCfg = () => page.getByRole('dialog', { name: '人物属性维度' });
 const saveCfg = () => dlgCfg().locator('footer .ca-primary');
-let confirms = 0, dropPreview = false;
+const confirmIds = [], confirmPlan = []; let dropPreview = false;
 const config = id => api('/project-assets/projects/' + encodeURIComponent(id) + '/attribute-config');
 
 try {
@@ -61,7 +62,14 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  page.on('request', r => { if (/\/attribute-alignment\/confirm$/.test(new URL(r.url()).pathname)) confirms++; });
+  page.on('request', r => { if (/\/attribute-alignment\/confirm$/.test(new URL(r.url()).pathname)) confirmIds.push(r.postDataJSON().request_id); });
+  // confirmPlan：'abort' 请求不到服务端；'drop' 请求真实写入、只丢掉浏览器收到的回应
+  await page.route(u => /\/attribute-alignment\/confirm$/.test(new URL(u).pathname), async route => {
+    const mode = confirmPlan.shift();
+    if (mode === 'abort') return route.abort('connectionreset');
+    if (mode === 'drop') { await route.fetch(); return route.abort('connectionreset'); }
+    return route.continue();
+  });
   await page.route(u => /\/attribute-alignment\/preview$/.test(new URL(u).pathname), route => { if (dropPreview) { dropPreview = false; return route.abort('connectionreset'); } return route.continue(); });
   page.on('response', r => { const p = new URL(r.url()).pathname; if (/attribute|project-series/.test(p) && r.status() >= 500) failures.push(r.status() + ' ' + p); });
   await page.goto(origin + '/#/all'); await expect(page.locator('.ppb').first()).toHaveAttribute('data-project', /./);
@@ -87,7 +95,7 @@ try {
     await api('/project-series/moves', { target: { series_id: S.id, season_id: q.id }, items: [{ project_id: eps[0].id, expected_revision: (await member(eps[0].id)).membership_revision, episode_no: 1 }], request_id: rid() });
   });
 
-  await check('A2+R2 真实：「名望」默认保留为旧评分；改成「加到全剧」时重新预览断网 → 不能确认、零提交；重新核对后按新选项统一', async () => {
+  await check('A2+R2 真实：改选预览断网 → 不能确认、零提交；重新核对后确认，首发未达 → 查无回执 → 原样重发写入但回应再丢 → 保留原请求锁定 → 按原号查回原结果', async () => {
     await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
     await work().locator('.aa-banner').getByRole('button', { name: '查看并统一' }).click();
     const dlg = page.getByRole('dialog', { name: '统一「穿越计」的人物属性维度' });
@@ -95,9 +103,18 @@ try {
     await expect(dlg.getByRole('radio', { name: /保留为旧评分/ })).toBeChecked();
     dropPreview = true; await dlg.getByRole('radio', { name: /加到全剧/ }).check();
     await expect(dlg.getByRole('alert')).toContainText('还没核对成功'); await expect(dlg.getByRole('radio', { name: /加到全剧/ })).toBeChecked();
-    await expect(dlg.getByRole('button', { name: '确认统一' })).toBeDisabled(); assert.equal(confirms, 0, '核对失败时不应提交');
+    await expect(dlg.getByRole('button', { name: '确认统一' })).toBeDisabled(); assert.equal(confirmIds.length, 0, '核对失败时不应提交');
     await dlg.getByRole('button', { name: '重新核对' }).click(); await expect(dlg.getByRole('button', { name: '重新核对' })).toHaveCount(0);
-    await dlg.getByRole('button', { name: '确认统一' }).click(); await expect(dlg).toHaveCount(0); assert.equal(confirms, 1);
+    // 第一次确认没到服务端 → 查无回执 → 原样重发且真实写入、回应又丢 → 保留原请求并锁定 → 按原号查回原结果，不换新编号
+    confirmPlan.push('abort', 'drop');
+    await dlg.getByRole('button', { name: '确认统一' }).click();
+    await expect(dlg.getByRole('alert')).toContainText('原请求已保留');
+    await expect(dlg.getByRole('button', { name: '核对上次结果' })).toBeEnabled(); await expect(dlg.getByRole('button', { name: '确认统一' })).toHaveCount(0);
+    await expect(dlg.getByRole('radio', { name: /加到全剧/ })).toBeChecked(); await expect(dlg.getByRole('radio', { name: /加到全剧/ })).toBeDisabled();
+    assert.equal(confirmIds.length, 2); assert.equal(confirmIds[1], confirmIds[0], '重发应沿用原请求号');
+    assert.equal((await api('/project-series/requests/' + confirmIds[0])).found, true, '原样重发已真实写入');
+    await dlg.getByRole('button', { name: '核对上次结果' }).click(); await expect(dlg).toHaveCount(0);
+    assert.equal(confirmIds.length, 2, '查到原回执后不应再发确认，更不应换新编号');
     await expect(work().locator('.aa-banner')).toHaveCount(0); await expect(work()).toContainText('已统一');
     for (const e of eps) { const c = await config(e.id); assert.equal(c.config_scope, 'series'); assert.equal(c.alignment_status, 'aligned'); }
     assert.ok((await seriesConfig(S.id)).dimensions.some(d => d.name === '名望'), '按屏幕上的「加到全剧」执行，全剧应有名望');
@@ -141,7 +158,7 @@ try {
   });
 
   await check('A3 真实：把独立项目放进已统一的剧，全剧维度已改过 → 先弹维度对应（默认保留为旧评分），确认后移动；提示改用这部剧的维度且没有撤销', async () => {
-    await nav('项目'); await toRoot();
+    await openProjectsAt(solo.id, () => pf().getByRole('button', { name: /^独立短片/ }).first()); // 等首次自动定位完成再操作
     await pf().getByRole('button', { name: /^独立短片/ }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '放进剧…' }).click();
     await page.getByRole('dialog', { name: '移到…' }).getByRole('button', { name: '移动' }).click();
     await page.getByRole('dialog').filter({ has: page.getByRole('button', { name: '保存' }) }).getByRole('button', { name: '保存' }).click();
@@ -152,6 +169,7 @@ try {
   });
 
   await check('A3 真实：把一集移出剧，复制一份全剧维度作为它自己的', async () => {
+    // 仍在项目页、首次定位早已完成：从根进剧、进季
     await toRoot(); await pf().getByRole('button', { name: '打开剧 穿越计' }).click(); await pf().getByRole('button', { name: /^打开 第 1 季/ }).click();
     await pf().getByRole('button', { name: /第 2 集/ }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '移到…' }).click();
     const d = page.getByRole('dialog', { name: '移到…' }); await d.getByLabel('目标位置').selectOption('out'); await d.getByRole('button', { name: '移动' }).click();
@@ -168,7 +186,8 @@ try {
   });
 
   await check('R6 真实：独立项目放进还没统一维度的剧 → 说明先统一，不开集号冲突窗口，归属不变', async () => {
-    await toRoot(); await pf().getByRole('button', { name: /^外来片/ }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '放进剧…' }).click();
+    await openProjectsAt(stray.id, () => pf().getByRole('button', { name: /^外来片/ }).first());
+    await pf().getByRole('button', { name: /^外来片/ }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '放进剧…' }).click();
     const to = page.getByRole('dialog', { name: '移到…' }); await to.getByLabel('目标位置').selectOption({ label: '旧剧乙（剧里，不进季）' }); await to.getByRole('button', { name: '移动' }).click();
     const nums = page.getByRole('dialog', { name: '确认集号' }); await nums.getByRole('button', { name: '保存' }).click();
     await expect(page.getByText('「旧剧乙」的人物属性维度还没统一，这次没有移动').first()).toBeVisible();
