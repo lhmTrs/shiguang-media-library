@@ -11,11 +11,22 @@ export const allocatedId = key => {
   return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');
 };
 
+function assertNoInheritedCharacter(owner, projectId, name) {
+  const inherited = owner.assets.scopedWrites?.checkNames('episode', projectId, { kind: 'character', name });
+  if (inherited?.status === 'inherit_shared') {
+    throw error('SHARED_ASSET_EXISTS', '本剧已有同名共享人物，请在本集项目资产中确认追加图片');
+  }
+  if (inherited?.status === 'conflict') {
+    throw error('IMAGE_TARGET_CONFLICT', '同名人物不唯一，请先核对本集与全剧资料');
+  }
+}
+
 // A proposal is read-only. In particular this never creates a character/look,
 // and an archived name is not an implicit request to restore its old identity.
 export function imageProposal(owner,projectId,name,lookName) {
   owner.project(projectId,true);
   const characterName=label(name,'人物名称'), requestedLook=label(lookName,'造型名称');
+  assertNoInheritedCharacter(owner,projectId,characterName);
   const rows=owner.db.prepare('SELECT id FROM creative_assets WHERE project_id=? AND kind=? AND name_key=? AND archived_at=0').all(projectId,'character',nameKey(characterName));
   if(rows.length>1) throw error('IMAGE_TARGET_CONFLICT','同名人物不唯一，请明确选择编号');
   const a=rows[0] && owner.assets.get(rows[0].id);
@@ -58,6 +69,7 @@ export function imageGuard(owner,target,{lock=false}={}) {
   }
   const p=d.imageProposal, ids=target.imageIds;
   owner.project(p.projectId,true);
+  assertNoInheritedCharacter(owner,p.projectId,p.characterName);
   const row=owner.db.prepare('SELECT * FROM creative_assets WHERE id=?'+(lock?owner.assets.lock():'' )).get(ids.characterId);
   const a=row && owner.assets.get(ids.characterId);
   const own=a && owner.groupOwns(target.requestGroupId,a);

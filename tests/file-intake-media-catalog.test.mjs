@@ -43,6 +43,23 @@ async function start(f,d,{target,bound}={},fileName='test.png',bytes=png,request
   return {target,bound,input,upload:()=>bound.upload(d.projectId||'',requestId,Readable.from([bytes]))};
 }
 async function proposal(f,name='合成人物',look='日常') {return (await f.managed.imageProposal(f.project.id,name,look)).destination;}
+
+test('Finder confirms an episode-local image target and refuses a newly inherited namesake before registration', async t => {
+  const f = await fixture(t);
+  const dir = f.projects.series;
+  const series = dir.createSeries({ name: '合成剧', request_id: randomUUID() });
+  const { project: episode } = dir.createEpisode(series.id, { season_id: null, expected_episode_no: 1, request_id: randomUUID() });
+  const name = '合成同名人物';
+  const stale = (await f.managed.imageProposal(episode.id, name, '日常')).destination;
+  const context_token = f.assets.scoped.scope('series', series.id).context_token;
+  await f.assets.scopedWrites.create('series', series.id, {
+    request_id: randomUUID(), context_token, kind: 'character', name, on_shared: 'reject',
+  });
+  await assert.rejects(f.managed.imageProposal(episode.id, name, '日常'), { code: 'SHARED_ASSET_EXISTS' });
+  await assert.rejects(f.managed.prepare(stale), { code: 'SHARED_ASSET_EXISTS' });
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM assets').get().n, 0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM creative_assets WHERE project_id=?').get(episode.id).n, 0);
+});
 async function withSyncHook(hook,run) {
   const open=fs.open,handles=[];
   fs.open=async function(file,...args) {

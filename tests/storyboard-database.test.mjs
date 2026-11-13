@@ -51,12 +51,13 @@ test('归档0/时间戳唯一、同名多归档、活动冲突恢复、旧schema
  let b=await f.store.create({project_id:f.a.id,kind:'character',name:'同名'});b=f.store.archive(b.id,true,b.revision);assert.ok(b.archived_at>a.archived_at);
  const c=await f.store.create({project_id:f.a.id,kind:'character',name:'同名'});assert.equal(c.archived_at,0);assert.throws(()=>f.store.archive(a.id,false,a.revision),/名称已存在/);
  // Reproduce the previous nullable column + three-column unique constraint.
- const columns=f.db.prepare('PRAGMA table_info(creative_assets)').all().map(c=>c.name);
+ const columns=f.db.prepare('PRAGMA table_info(creative_assets)').all().map(c=>c.name).filter(name=>!['owner_type','owner_id'].includes(name));
+ f.db.prepare('DELETE FROM creative_asset_versions WHERE asset_id<>?').run(c.id);
  f.db.prepare('DELETE FROM creative_assets WHERE id<>?').run(c.id); f.db.exec('ALTER TABLE creative_assets RENAME TO legacy_assets');
- const sql=f.db.prepare("SELECT sql FROM sqlite_master WHERE name='legacy_assets'").get().sql.replace('legacy_assets','creative_assets').replace(/archived_at` INTEGER NOT NULL DEFAULT 0/,'archived_at` INTEGER').replace('UNIQUE(project_id,kind,name_key,archived_at)','UNIQUE(project_id,kind,name_key)');f.db.exec(sql);
+ const sql=f.db.prepare("SELECT sql FROM sqlite_master WHERE name='legacy_assets'").get().sql.replace('legacy_assets','creative_assets').replace(/,`owner_type` TEXT NOT NULL,`owner_id` TEXT NOT NULL/,'').replace(/archived_at` INTEGER NOT NULL DEFAULT 0/,'archived_at` INTEGER').replace('CONSTRAINT creative_assets_name_owner UNIQUE(owner_type,owner_id,kind,name_key,archived_at)','UNIQUE(project_id,kind,name_key)');f.db.exec(sql);
  f.db.exec(`INSERT INTO creative_assets(${columns.join(',')}) SELECT ${columns.map(k=>k==='archived_at'?'NULL':k).join(',')} FROM legacy_assets`);
  f.db.exec('DROP TABLE legacy_assets');f.db.prepare('UPDATE creative_schema SET version=1').run();
- new ProjectAssets(f.lib).init();assert.equal(f.db.prepare('SELECT version FROM creative_schema').get().version,2);assert.equal(f.db.prepare('PRAGMA table_info(creative_assets)').all().find(c=>c.name==='archived_at').notnull,1);
+ new ProjectAssets(f.lib).init();assert.equal(f.db.prepare('SELECT version FROM creative_schema').get().version,3);assert.equal(f.db.prepare('PRAGMA table_info(creative_assets)').all().find(c=>c.name==='archived_at').notnull,1);
  assert.ok((await fs.readdir(f.dir+'/backups')).some(n=>n.startsWith('creative-before-v2-')));
  }finally{await f.close();}
 });
@@ -83,6 +84,11 @@ test('归档同名不恢复；无对白清单人物仍保护；直接篡改归�
 });
 test('同一毫秒多次归档仍唯一，旧版资产备份可验证转换',async t=>{
  const f=await creativeFixture();try{const now=Date.now();t.mock.method(Date,'now',()=>now);let a=await f.store.create({project_id:f.a.id,kind:'character',name:'重复名'});a=f.store.archive(a.id,true,a.revision);let b=await f.store.create({project_id:f.a.id,kind:'character',name:'重复名'});b=f.store.archive(b.id,true,b.revision);assert.equal(a.archived_at,now);assert.equal(b.archived_at,now+1);
- const backup=f.store.backup();backup.schema_version=1;backup.tables.creative_schema[0].version=1;backup.checksum=digest({tables:backup.tables,projects:backup.projects});const converted=f.store.validateBackup(backup);assert.equal(converted.schema_version,2);assert.equal(converted.tables.creative_schema[0].version,2);
+ const backup=f.store.backup();backup.schema_version=1;backup.tables.creative_schema[0].version=1;
+ for(const name of ['creative_asset_overrides','creative_asset_override_clocks','creative_asset_scope_requests','series_attribute_configs','series_character_attributes'])delete backup.tables[name];
+ for(const asset of backup.tables.creative_assets){delete asset.owner_type;delete asset.owner_id;}
+ backup.checksum=digest({tables:backup.tables,projects:backup.projects});const converted=f.store.validateBackup(backup);
+ assert.equal(converted.schema_version,3);assert.equal(converted.tables.creative_schema[0].version,3);
+ assert.equal(converted.tables.creative_assets.find(row=>row.id===a.id).owner_id,f.a.id);
  }finally{await f.close();}
 });

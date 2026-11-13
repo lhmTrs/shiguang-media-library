@@ -112,7 +112,7 @@ import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemp
 import {CodexTaskEntry,useCodexTasks} from './CodexTaskDrawer';
 import {ConciergeWorkspace} from './concierge';
 import type {CodexTask} from './codex-task-types';
-import { ProjectAssetWorkspace } from "./ProjectAssetWorkspace";
+import { ProjectAssetWorkspace, type SeasonSettingsFocus } from "./ProjectAssetWorkspace";
 import { readStoryboardAppearance, storyboardAppearanceKey } from "./storyboard/preferences";
 import type {ShotFocus} from "./storyboard/shot-navigation";
 import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, readGroups, groupDefaults, navigationGroupsKey, readLayouts, defaultLayout, readSearchPreferences, readVolume, saveStored, removeStored } from "./browser-preferences";
@@ -644,6 +644,9 @@ function App() {
   const playerRef = useRef<HTMLDivElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const [projectAssetFocus,setProjectAssetFocus]=useState({id:"",request:0});
+  const [seasonSettingsFocus, setSeasonSettingsFocus] = useState<SeasonSettingsFocus & { projectId: string }>();
+  const seasonSettingsSequence = useRef(0);
+  const selectSeasonSettingsProject = useRef<(id: string) => boolean>(() => false);
   const [generationFocus,setGenerationFocus]=useState<GenerationFocus|null>(null);
   const [projectVideoBusy,setProjectVideoBusy]=useState(false);
   const [projectUsageBusy, setProjectUsageBusy] = useState(false);
@@ -728,6 +731,7 @@ function App() {
       setProjects([]);
       setProjectsKnown(false);
       setProjectDirectory(null);
+      setSeasonSettingsFocus(undefined);
       setActiveProject("");
       setProjectLocation(emptyProjectLocation);
       setDirectoryError("素材库已变化，请刷新页面后重新读取项目");
@@ -812,6 +816,7 @@ function App() {
     setChecked(new Set());
     setMediaPreview(null);
     if (view === "projectUsage") pauseAudition();
+    setSeasonSettingsFocus(undefined);
     setActiveProject(id);
   }
   function selectKnownProject(id: string) {
@@ -841,6 +846,34 @@ function App() {
     if (page === "assets") setProjectAssetFocus(previous => ({ id: projectId, request: previous.request + 1 }));
     navigate(routes[page]);
   }
+  selectSeasonSettingsProject.current = selectKnownProject;
+  async function openSeasonSettings(seasonId: string, projectId: string, signal: AbortSignal) {
+    if (signal.aborted || !projectLibrary.current || !seasonId || !projectId) return;
+    const libraryId = projectLibrary.current;
+    const ticket = ++codexNavigation.current;
+    const isCurrent = () => !signal.aborted && ticket === codexNavigation.current && projectLibrary.current === libraryId;
+    try {
+      const context = await api<{ project: { id: string }; season: { id: string } | null }>(
+        `/projects/${encodeURIComponent(projectId)}/asset-context`, undefined, undefined, { signal },
+      );
+      if (!isCurrent()) return;
+      if (context?.project?.id !== projectId || context.season?.id !== seasonId) {
+        refreshProjects();
+        setNotice("这一集的所属季已变化，请从项目目录重新打开本季设定");
+        return;
+      }
+      if (!selectSeasonSettingsProject.current(projectId)) return;
+      navigate("projectAssets");
+      setSeasonSettingsFocus({ seasonId, projectId, request: ++seasonSettingsSequence.current });
+    } catch (error) {
+      if (!isCurrent()) return;
+      const detail = error as { status?: number; message?: string };
+      if (detail.status === 404) refreshProjects();
+      setNotice(detail.status === 404 ? "找不到这一集，请从项目目录重新选择" : detail.message || "未能核对本季，请重试");
+    }
+  }
+  const projectFolderSeasonActions = { onOpenSeasonSettings: openSeasonSettings };
+
   async function addToProject(ids: string[]) {
     if (!activeProject) { navigate("projects"); setNotice("请先选择或新建一个项目"); return; }
     const result = await api<{ added: number; alreadyAdded: number }>(`/projects/${activeProject}/items`, { ids });
@@ -1489,6 +1522,7 @@ function App() {
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
     if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
+    if (v !== "projectAssets") setSeasonSettingsFocus(undefined);
     viewRef.current = v;
     setView(v);
     setRootMenuOpen(false);
@@ -2007,13 +2041,13 @@ function App() {
           </div>
         </header>
         {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
-        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <ProjectAssetWorkspace focusProject={projectAssetFocus} openSeasonSettings={seasonSettingsFocus?.projectId === activeProject ? seasonSettingsFocus : undefined} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} onTaskViewing={codexTasks.viewed}/>
         <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
-          {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
+          {projectDirectory ? <ProjectFolders {...projectFolderSeasonActions} projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
             request={api} changed={projectsChanged} openPage={openProjectPage} libraryId={projectLibraryId}/> :
             !directoryError && <div className="empty" role="status">正在读取项目目录…</div>}

@@ -10,7 +10,7 @@ export function projectSeriesRouter(series) {
       }
       res.json(action(req));
     } catch (error) {
-      if (!(error instanceof SeriesError)) return next(error);
+      if (!(error instanceof SeriesError) && !['ASSET_IN_USE', 'ASSET_SCOPE_CHANGED', 'ASSET_NAME_CONFLICT'].includes(error.code)) return next(error);
       return res.status(error.status).json({ error: error.message, code: error.code, details: error.details });
     }
   };

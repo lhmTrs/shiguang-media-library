@@ -3,14 +3,18 @@ import { Radar, Pencil, SlidersHorizontal } from 'lucide-react';
 import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { useFeedbackToast } from '../global-feedback';
 import { AttributeRadar } from './AttributeRadar';
+import { scopedWrite } from './scoped';
 import { type AssetAttributes, type AttrConfig, SINGLE_COLOR, attrApi, clampScore, errCode, readConsistent, scoreValue, signed, sourceSummary, tierText } from './attributes';
 
 const when = (t: number) => new Date(t).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 
 /** 详情栏「属性」：雷达图 + 编辑。属性是独立资源（不走资料保存），有自己的版本号。 */
-export function CharacterAttributes({ assetId, projectId, name, request, active, readOnly, onOpenConfig, configVersion }: {
-  assetId: string; projectId: string; name: string; request: PromptRequest; active: boolean; readOnly: boolean; onOpenConfig: () => void; configVersion: number;
+/** 第二期 P2a：全剧视图里共享人物的评分按剧作用域读写（合同 v1 评分补充）。不传则沿用项目评分接口。 */
+export type SeriesAttrScope = { base: string; contextToken: string };
+export function CharacterAttributes({ assetId, projectId, name, request, active, readOnly, onOpenConfig, configVersion, seriesScope }: {
+  assetId: string; projectId: string; name: string; request: PromptRequest; active: boolean; readOnly: boolean; onOpenConfig: () => void; configVersion: number; seriesScope?: SeriesAttrScope;
 }) {
+  const scopedUrl = seriesScope ? '/project-assets' + seriesScope.base : '';
   const [config, setConfig] = useState<AttrConfig | null>(null), [attrs, setAttrs] = useState<AssetAttributes | null>(null);
   const [state, setState] = useState<'loading' | 'ok' | 'error'>('loading'), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [draft, setDraft] = useState<Record<string, number | null> | null>(null), [saving, setSaving] = useState(false);
@@ -22,9 +26,12 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
   async function load(keepDraft = false) {
     const t = ++ticket.current; setState(s => keepDraft ? s : 'loading');
     try {
-      const [c, a] = await readConsistent(() => Promise.all([attrApi.config(request, projectId), attrApi.get(request, assetId)]));
+      const [c, a] = await readConsistent(() => Promise.all(scopedUrl
+        ? [request<AttrConfig>(scopedUrl + '/attribute-config'), request<AssetAttributes>(scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes')]
+        : [attrApi.config(request, projectId), attrApi.get(request, assetId)]));
       if (t !== ticket.current) return;
-      if (a.asset_id !== assetId || a.project_id !== projectId || c.project_id !== projectId) throw Error('属性返回的人物或项目不一致，没有显示');
+      const owner = (x: object) => (x as { series_id?: string }).series_id;
+      if (scopedUrl ? a.asset_id !== assetId || !owner(a) || owner(a) !== owner(c) : a.asset_id !== assetId || a.project_id !== projectId || c.project_id !== projectId) throw Error('属性返回的人物或' + (scopedUrl ? '剧' : '项目') + '不一致，没有显示');
       setConfig(c); setAttrs(a); setState('ok');
       if (keepDraft) {
         const live = new Set(c.dimensions.map(d => d.id)), gone = (config?.dimensions ?? []).filter(d => edited.has(d.id) && !live.has(d.id)).map(d => '「' + d.name + '」');
@@ -35,7 +42,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
       }
     } catch (e) { if (t === ticket.current) { setState('error'); setError((e as Error).message || '属性读取失败'); } }
   }
-  useEffect(() => { setDraft(null); setNotice(''); void load(); return () => { ticket.current++; }; }, [assetId, projectId, configVersion]);
+  useEffect(() => { setDraft(null); setNotice(''); void load(); return () => { ticket.current++; }; }, [assetId, projectId, configVersion, scopedUrl]);
 
   const dims = config?.dimensions ?? [];
   const startEdit = () => { if (!attrs) return; setNotice(''); setEdited(new Set()); setDraft(Object.fromEntries(dims.map(d => [d.id, scoreValue(attrs.scores[d.id])]))); };
@@ -46,12 +53,16 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
     if (!config || !attrs || !changes.length || saving) return;
     setSaving(true); setError('');
     try {
-      const next = await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes });
+      const next = scopedUrl
+        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
+        : await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes });
       if (next.asset_id !== assetId) throw Error('保存回执不属于当前人物，请重新打开后核对');
       setAttrs(next); setDraft(null); setEdited(new Set()); setNotice('属性已保存');
     } catch (e) {
       const code = errCode(e);
-      if (code === 'ATTRIBUTE_STALE' || code === 'CONFIG_STALE') { setError(code === 'CONFIG_STALE' ? '属性维度刚被修改，已重新读取；你的改动还在，请核对后再保存' : '这个人物的属性刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
+      if (code === 'ASSET_SCOPE_CHANGED') { setError('这部剧的归组刚变了，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
+      else if (code === 'ASSET_STALE') { setError('全剧评分或维度刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
+      else if (code === 'ATTRIBUTE_STALE' || code === 'CONFIG_STALE') { setError(code === 'CONFIG_STALE' ? '属性维度刚被修改，已重新读取；你的改动还在，请核对后再保存' : '这个人物的属性刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
       else setError((e as Error).message || '保存失败，改动仍保留');
     } finally { setSaving(false); }
   }
@@ -63,7 +74,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
       {src && <span className="ca-attrs-source">{src.label}{src.at ? ' · ' + when(src.at) : ''}</span>}
       <span className="ca-grow"/>
       {!draft && <button type="button" disabled={state !== 'ok' || readOnly} title={readOnly ? '已归档的人物不能改属性' : undefined} onClick={startEdit}><Pencil size={14}/>编辑</button>}
-      <button type="button" onClick={onOpenConfig}><SlidersHorizontal size={14}/>维度设置…</button>
+      {!seriesScope && <button type="button" onClick={onOpenConfig}><SlidersHorizontal size={14}/>维度设置…</button>}
     </div>
     {state === 'loading' && <p className="ca-muted">正在读取属性…</p>}
     {state === 'error' && <p className="ca-muted">属性没有读到。<button type="button" className="ca-link-button" onClick={() => void load()}>重新读取</button></p>}

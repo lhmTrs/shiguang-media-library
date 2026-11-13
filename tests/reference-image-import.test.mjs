@@ -16,3 +16,69 @@ test('并发重复request编号在首次await前固定目标，不得被另一�
 test('取消仅结束请求并保留暂存，已完成原图和关联均不改写',async t=>{const f=await fixture(t),r=await upload(f),d=await upload(f);const stage=f.imports.get(d.id).stage;const cancelled=await f.imports.cancel(d.id);assert.equal(cancelled.status,'cancelled');assert.ok((await fs.stat(stage)).isFile());assert.deepEqual(await fs.readFile(f.lib.asset(r.mediaAssetId).path),png);assert.equal((await f.imports.cancel(r.id)).status,'ready');assert.deepEqual(await fs.readFile(f.lib.asset(r.mediaAssetId).path),png);});
 test('校验后原图改变，返回的预览仍是已校验快照',async t=>{const f=await fixture(t),r=await upload(f),file=f.lib.asset(r.mediaAssetId).path;const {Writable}=await import('node:stream'),{writeFileSync}=await import('node:fs'),{streamImage}=await import('../server/project-assets/image-import.mjs');const chunks=[],response=new Writable({write(c,_e,next){chunks.push(Buffer.from(c));next();}});response.set=()=>writeFileSync(file,Buffer.alloc(png.length,3));await streamImage(file,(await imageDigest(file)).hash,response);assert.deepEqual(Buffer.concat(chunks),png);assert.notDeepEqual(await fs.readFile(file),png);});
 test('发布子进程启动时原目录换链，不向替换目录发布原图正文',async t=>{const f=await fixture(t),input=args(f),s=await f.imports.start(input),cp=await import('node:child_process'),module=await import('node:module'),sync=await import('node:fs');const original=cp.default.spawn,outside=path.join(f.dir,'outside');await fs.mkdir(outside);let swapped=false;cp.default.spawn=function(...args){if(String(args[1]?.[0]||'').endsWith('image-publish-worker.mjs')&&!swapped){swapped=true;const target=f.imports.get(s.id).state.target;sync.renameSync(target,target+'-held');sync.symlinkSync(outside,target);}return original.apply(this,args);};module.syncBuiltinESMExports();try{await assert.rejects(f.imports.upload(s.id,Readable.from([png])),/变化|正常完成/);assert.equal(swapped,true);assert.deepEqual(await fs.readdir(outside),[]);}finally{cp.default.spawn=original;module.syncBuiltinESMExports();}});
+
+test('集内上传共享图片进入剧目录，仍需另行确认绑定，换季后的旧确认不能继续', async t => {
+  const f = await fixture(t), series = f.lib.projectSeries;
+  const drama = series.createSeries({name:'合成图片全剧', request_id:randomUUID()});
+  const season = series.createSeason(drama.id, {request_id:randomUUID()});
+  const episode = series.createEpisode(drama.id, {season_id:null, expected_episode_no:1, request_id:randomUUID()}).project;
+  const context = f.store.scoped.list('series', drama.id).context_token;
+  const scope = f.store.scoped.assetContext(episode.id);
+  const {asset} = f.store.scopedWrites.create('series', drama.id, {
+    kind:'character', name:'合成共享人物', on_shared:'reject', request_id:randomUUID(), context_token:context,
+  });
+  const look = addLook(asset);
+  await f.store.scopedWrites.save('series', drama.id, asset.id, {
+    request_id:randomUUID(), context_token:context, expected_revision:asset.revision, asset,
+  });
+  const start = {
+    requestId:randomUUID(), assetId:asset.id, projectId:episode.id, lookId:look.id,
+    fileName:'共享参考.png', bytes:png.length, append_context_token:scope.context_token,
+  };
+  await assert.rejects(f.imports.start({...start, append_context_token:context}), {code:'ASSET_SCOPE_CHANGED'});
+  const selected = await f.imports.start(start);
+  const ready = await f.imports.upload(selected.id, Readable.from([png]));
+  assert.equal(ready.status, 'ready');
+  assert.equal(f.store.get(asset.id).images.length, 0);
+  assert.equal(path.basename(path.dirname(f.lib.asset(ready.mediaAssetId).path)), '合成图片全剧--'+drama.id);
+  assert.equal(f.imports.dto(f.imports.get(selected.id)).mediaAssetId, ready.mediaAssetId);
+  const waiting = await f.imports.start({...start, requestId:randomUUID(), fileName:'另一张.png'});
+  series.move({request_id:randomUUID(), target:{series_id:drama.id,season_id:season.id},
+    items:[{project_id:episode.id,expected_revision:scope.membership_revision,episode_no:1}]});
+  await assert.rejects(f.imports.upload(waiting.id, Readable.from([png])), {code:'ASSET_SCOPE_CHANGED'});
+});
+
+test('全剧本地参考图使用剧 ID 和令牌，登记后通过全剧保存绑定', async t => {
+  const f = await fixture(t);
+  const directory = f.lib.projectSeries;
+  const series = directory.createSeries({ request_id: randomUUID(), name: '合成全剧' });
+  const episode = directory.createEpisode(series.id, {
+    request_id: randomUUID(), season_id: null, expected_episode_no: 1,
+  }).project;
+  const context = f.store.scoped.list('series', series.id).context_token;
+  const { asset } = f.store.scopedWrites.create('series', series.id, {
+    request_id: randomUUID(), context_token: context, kind: 'scene', name: '共享场景', on_shared: 'reject',
+  });
+  const input = {
+    requestId: randomUUID(), assetId: asset.id, projectId: series.id, lookId: null,
+    fileName: '全剧参考.png', bytes: png.length, series_context_token: context,
+  };
+  await assert.rejects(f.imports.start({
+    ...input, series_context_token: f.store.scoped.assetContext(episode.id).context_token,
+  }), { code: 'ASSET_SCOPE_CHANGED' });
+  const session = await f.imports.start(input);
+  const uploaded = await f.imports.upload(session.id, Readable.from([png]));
+  assert.equal(uploaded.status, 'ready');
+  assert.equal(f.imports.dto(f.imports.get(input.requestId)).mediaAssetId, uploaded.mediaAssetId);
+  const media = f.lib.asset(uploaded.mediaAssetId);
+  assert.equal(path.basename(path.dirname(media.path)), series.name + '--' + series.id);
+  assert.deepEqual(await fs.readFile(media.path), png);
+  assert.equal(f.store.scoped.detail('series', series.id, asset.id).asset.images.length, 0);
+  addImage(asset, uploaded.mediaAssetId);
+  const saved = await f.store.scopedWrites.save('series', series.id, asset.id, {
+    request_id: randomUUID(), context_token: context, expected_revision: asset.revision, asset,
+  });
+  const inherited = f.store.scoped.detail('episode', episode.id, asset.id);
+  assert.equal(inherited.asset.images[0].id, saved.asset.images[0].id);
+  assert.equal(inherited.effective.default_images.null.value, saved.asset.images[0].id);
+});
