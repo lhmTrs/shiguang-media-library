@@ -66,7 +66,15 @@ export class ScopedAssetWrites {
 
   assertMembershipChange({ project_id, before, after }) {
     if (before.series_id === after.series_id) return;
-    if (before.series_id !== null) this.assertNoOverrides('episode', project_id);
+    if (before.series_id !== null) {
+      const storyboard = this.assets.storyboards?.head(project_id);
+      const links = storyboard ? this.assets.storyboards.linked(storyboard)
+        .filter(row => row.owner_type === 'series' && row.owner_id === before.series_id) : [];
+      if (links.length) throw conflict('ASSET_IN_USE', '该集分镜仍引用原剧共享资产，请先处理分镜素材清单', {
+        assets: links.map(row => ({ id: row.id, kind: row.kind, name: row.name })),
+      });
+      this.assertNoOverrides('episode', project_id);
+    }
     if (after.series_id === null) return;
     const names = this.db.prepare(`SELECT a.id asset_id,s.id shared_asset_id,a.kind,a.name
       FROM creative_assets a JOIN creative_assets s ON s.kind=a.kind AND s.name_key=a.name_key
@@ -79,9 +87,19 @@ export class ScopedAssetWrites {
     if (!idOK(id)) throw invalid('请求编号无效');
     const row = this.db.prepare('SELECT * FROM creative_asset_scope_requests WHERE id=?').get(id.toLowerCase());
     if (!row) return { found: false };
-    try { this.reads.scope(row.scope_type, row.scope_id); }
-    catch (error) { if (error.status === 404) return { found: false }; throw error; }
-    return { found: true, result: JSON.parse(row.result_json) };
+    try {
+      const scope = this.scope(row.scope_type, row.scope_id);
+      return { found: true, result: this.visibleReceipt(scope, row) };
+    } catch (error) {
+      if (error.status === 404) return { found: false };
+      throw error;
+    }
+  }
+
+  visibleReceipt(scope, row) {
+    const result = JSON.parse(row.result_json);
+    if (result.asset?.id) this.reads.detailInTransaction(scope, result.asset.id);
+    return result;
   }
 
   receipt(type, id, operation, input) {
@@ -90,7 +108,7 @@ export class ScopedAssetWrites {
     const hash = digest({ type, id, operation, input });
     const prior = this.db.prepare('SELECT * FROM creative_asset_scope_requests WHERE id=?').get(requestId);
     if (prior && prior.request_hash !== hash) throw conflict('REQUEST_ID_CONFLICT', '请求编号已用于其他操作');
-    return { requestId, hash, prior: prior ? JSON.parse(prior.result_json) : null };
+    return { requestId, hash, prior };
   }
 
   mutation(type, id, operation, input, apply) {
@@ -99,7 +117,7 @@ export class ScopedAssetWrites {
       lockSeriesDirectory(this.db);
       const scope = this.scope(type, id);
       const { requestId, hash, prior } = this.receipt(type, id, operation, input);
-      if (prior) return prior;
+      if (prior) return this.visibleReceipt(scope, prior);
       this.reads.assertContextToken(scope, input.context_token);
       const result = { ...apply(scope), request_id: requestId };
       const now = Date.now();
@@ -178,7 +196,7 @@ export class ScopedAssetWrites {
     const operation = 'save:' + assetId;
     const scope = this.scope(type, id);
     const { prior } = this.receipt(type, id, operation, input);
-    if (prior) return prior;
+    if (prior) return this.visibleReceipt(scope, prior);
     this.reads.assertContextToken(scope, input.context_token);
     const old = this.writableBase(scope, assetId, input);
     const next = input.asset;
@@ -231,6 +249,7 @@ export class ScopedAssetWrites {
     return this.mutation(type, id, 'scores:' + assetId, input, scope => {
       this.lockProjects(scope);
       const item = this.reads.detailInTransaction(scope, assetId);
+      if (item.asset.kind !== 'character') throw fault('人物不存在', 404);
       if (item.asset.archived_at || item.owner.type !== 'series') throw readOnly();
       const current = this.seriesScores(id, assetId);
       if (current.config_revision !== input.expected_config_revision ||

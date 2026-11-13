@@ -51,6 +51,7 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('post', '/projects/:id/attribute-scores', req => attributes.scoreBatch(req.params.id, req.body));
   const scoped = '/scopes/:scopeType/:scopeId';
   route('get', scoped + '/assets', req => store.scoped.list(req.params.scopeType, req.params.scopeId, req.query));
+  route('get', scoped + '/overrides', req => store.scoped.seasonOverrides(req.params.scopeType, req.params.scopeId, req.query));
   route('get', scoped + '/assets/:assetId', req => store.scoped.detail(req.params.scopeType, req.params.scopeId, req.params.assetId));
   const scopeWrite = (method, suffix, action) =>
     route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));

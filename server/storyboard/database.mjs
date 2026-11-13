@@ -32,7 +32,7 @@ export class StoryboardDatabase {
   }
   read(projectId) { this.project(projectId); const row=this.head(projectId); if(!row) throw fault('此项目尚未初始化分镜',404); return this.hydrate(row); }
   assetShots(assetId) {
-    const asset=this.assets.head(assetId),row=this.head(asset.project_id);
+    const asset=this.assets.head(assetId),row=asset.project_id===null?null:this.head(asset.project_id);
     const result={projectId:asset.project_id,documentId:row?.id??null,documentTitle:row?.title??'',revision:row?.revision??null,initialized:!!row,listed:false,items:[]};
     if(!row)return result;
     const project=JSON.parse(row.document_json);if(!project.asset_manifest?.[asset.kind]?.some(a=>a.id===asset.id))return result;
@@ -50,46 +50,72 @@ export class StoryboardDatabase {
     return result;
   }
   list() { return this.db.prepare('SELECT d.id,d.project_id,d.title,d.revision,d.updated_at,p.name project_name FROM storyboard_documents d JOIN media_projects p ON p.id=d.project_id ORDER BY d.updated_at DESC').all(); }
+  activeAssets(projectId) {
+    const seriesId = this.lib.projectSeries?.membership(projectId).series_id ?? null;
+    return this.db.prepare(`SELECT * FROM creative_assets WHERE archived_at=0 AND
+      ((owner_type='project' AND project_id=?) OR (owner_type='series' AND owner_id=?))
+      ORDER BY id`).all(projectId, seriesId);
+  }
+  canUseAsset(projectId, asset) {
+    if (asset.owner_type === 'project') return asset.project_id === projectId;
+    return asset.owner_type === 'series' && this.lib.projectSeries?.membership(projectId).series_id === asset.owner_id;
+  }
   plan(projectId, parsed) {
-    const current=this.head(projectId), existing=new Map(this.db.prepare('SELECT * FROM creative_assets WHERE project_id=? AND archived_at=0').all(projectId).map(a=>[a.kind+':'+a.name_key,a]));
-    const assets=parsed.manifest.map(e=>{const old=existing.get(e.kind+':'+e.name_key); return {kind:e.kind,name:e.name,action:old?'reuse':'create',id:old?.id??null,has_description:!!old && !!JSON.parse(old.data_json).base_info};});
+    const current = this.head(projectId), existing = new Map();
+    for (const row of this.activeAssets(projectId)) {
+      const key = row.kind + ':' + row.name_key;
+      if (!existing.has(key)) existing.set(key, []);
+      existing.get(key).push(row);
+    }
+    const assets = parsed.manifest.map(entry => {
+      const matches = existing.get(entry.kind + ':' + entry.name_key) ?? [];
+      if (matches.length > 1) throw fault('分镜清单存在同名资产，请先处理归属冲突', 409, {
+        code: 'ASSET_NAME_CONFLICT', details: { kind: entry.kind, name: entry.name, asset_ids: matches.map(row => row.id) },
+      });
+      const old = matches[0];
+      return { kind: entry.kind, name: entry.name, action: old ? 'reuse' : 'create',
+        id: old?.id ?? null, has_description: !!old && !!JSON.parse(old.data_json).base_info };
+    });
     const retained=new Set(assets.map(a=>a.id).filter(Boolean));
     return {project_id:projectId,project_name:this.project(projectId).name,expected_revision:current?.revision??null,replacing:!!current,...parsed.summary,assets,unlinked:current?this.linked(current).filter(a=>!retained.has(a.id)).length:0,warnings:parsed.warnings};
   }
   preview(projectId,input) { this.project(projectId); const parsed=parseInitialization(input.source,{filename:input.filename,timing:input.timing}); return this.plan(projectId,parsed); }
   initialize(projectId,input) {
+    return this.tx(()=>{
+      this.assets.lockDirectory();
+      return this.initializeInTransaction(projectId,input);
+    });
+  }
+  initializeInTransaction(projectId,input) {
     if(!idOK(input.request_id)) throw fault('初始化请求编号无效');
     const sourceHash=digest(input.source), requestHash=digest({projectId,sourceHash,expected_revision:input.expected_revision,filename:input.filename??'',timing:input.timing??'duration'});
     const parsed=parseInitialization(input.source,{filename:input.filename,timing:input.timing});
-    return this.tx(()=>{
-      this.assets.lockDirectory();
-      this.project(projectId,true);this.generationLocks?.assertWritable(projectId);
-      const done=this.db.prepare('SELECT * FROM storyboard_import_requests WHERE id=?').get(input.request_id);
-      if(done) { if(done.request_hash!==requestHash || done.project_id!==projectId) throw fault('初始化请求编号已用于其他内容',409); return {...this.read(projectId),receipt:JSON.parse(done.result_json),repeated:true}; }
-      const old=this.head(projectId); this.expected(old,input.expected_revision);
-      const plan=this.plan(projectId,parsed), map=new Map(), now=Math.max(Date.now(),(old?.updated_at??0)+1), documentId=old?.id??randomUUID();
-      for (const e of parsed.manifest) {
-        let a=this.db.prepare('SELECT id FROM creative_assets WHERE project_id=? AND kind=? AND name_key=? AND archived_at=0').get(projectId,e.kind,e.name_key);
-        if(!a) {
-          const fresh=blankAsset(projectId,e.kind,e.name), d=e.detail;
-          fresh.base_info=typeof d.base_info==='string'?d.base_info:[d.age??d['年龄'],d.role??d['身份'],d.description??d['描述']??d['说明']].filter(v=>v!==undefined&&v!=='').join('；');
-          fresh.performance_info=String(d.performance_info??d['人物特点']??(e.kind==='character'?d.description:'')??'');
-          fresh.details={source:e.source,...(e.kind==='character'?{age:d.age??d['年龄']??'',role:d.role??d['身份']??''}:{})};
-          a=this.assets.write(normalize(fresh),null,'分镜初始化创建资产');
-        }
-        map.set(e.kind+':'+e.name_key,a.id);
+    this.project(projectId,true);this.generationLocks?.assertWritable(projectId);
+    const done=this.db.prepare('SELECT * FROM storyboard_import_requests WHERE id=?').get(input.request_id);
+    if(done) { if(done.request_hash!==requestHash || done.project_id!==projectId) throw fault('初始化请求编号已用于其他内容',409); return {...this.read(projectId),receipt:JSON.parse(done.result_json),repeated:true}; }
+    const old=this.head(projectId); this.expected(old,input.expected_revision);
+    const plan=this.plan(projectId,parsed), map=new Map(), now=Math.max(Date.now(),(old?.updated_at??0)+1), documentId=old?.id??randomUUID();
+    for (const [index, e] of parsed.manifest.entries()) {
+      let a=plan.assets[index].id ? { id: plan.assets[index].id } : null;
+      if(!a) {
+        const fresh=blankAsset(projectId,e.kind,e.name), d=e.detail;
+        fresh.base_info=typeof d.base_info==='string'?d.base_info:[d.age??d['年龄'],d.role??d['身份'],d.description??d['描述']??d['说明']].filter(v=>v!==undefined&&v!=='').join('；');
+        fresh.performance_info=String(d.performance_info??d['人物特点']??(e.kind==='character'?d.description:'')??'');
+        fresh.details={source:e.source,...(e.kind==='character'?{age:d.age??d['年龄']??'',role:d.role??d['身份']??''}:{})};
+        a=this.assets.write(normalize(fresh),null,'分镜初始化创建资产');
       }
-      const p=bindInitialization(parsed,map,documentId); p.document_id=documentId; p.bound_project_id=projectId; p.revision=(old?.revision??0)+1;
-      p.legacy_media_project_id=input.source.schema_version==='1.0.0' ? input.source.legacy_media_project_id ?? input.source.project_id : null;
-      const values=[p.title,canonical(p),p.revision,now,input.filename??'分镜.json',sourceHash,now];
-      if(old) this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,initialized_at=?,source_filename=?,source_hash=?,updated_at=? WHERE id=?').run(...values,documentId);
-      else this.db.prepare('INSERT INTO storyboard_documents(title,document_json,revision,initialized_at,source_filename,source_hash,updated_at,id,project_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(...values,documentId,projectId,now);
-      this.db.prepare('DELETE FROM storyboard_asset_links WHERE document_id=?').run(documentId);
-      for(const assetId of map.values()) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),documentId,assetId,now,now);
-      const receipt={request_id:input.request_id,document_id:documentId,project_id:projectId,revision:p.revision,initialized_at:now,summary:parsed.summary,created:plan.assets.filter(a=>a.action==='create').length,reused:plan.assets.filter(a=>a.action==='reuse').length,unlinked:plan.unlinked};
-      this.db.prepare('INSERT INTO storyboard_import_requests VALUES(?,?,?,?,?,?,?,?,?)').run(input.request_id,projectId,documentId,requestHash,sourceHash,input.expected_revision,canonical(receipt),now,now);
-      return {...this.read(projectId),receipt,repeated:false};
-    });
+      map.set(e.kind+':'+e.name_key,a.id);
+    }
+    const p=bindInitialization(parsed,map,documentId); p.document_id=documentId; p.bound_project_id=projectId; p.revision=(old?.revision??0)+1;
+    p.legacy_media_project_id=input.source.schema_version==='1.0.0' ? input.source.legacy_media_project_id ?? input.source.project_id : null;
+    const values=[p.title,canonical(p),p.revision,now,input.filename??'分镜.json',sourceHash,now];
+    if(old) this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,initialized_at=?,source_filename=?,source_hash=?,updated_at=? WHERE id=?').run(...values,documentId);
+    else this.db.prepare('INSERT INTO storyboard_documents(title,document_json,revision,initialized_at,source_filename,source_hash,updated_at,id,project_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(...values,documentId,projectId,now);
+    this.db.prepare('DELETE FROM storyboard_asset_links WHERE document_id=?').run(documentId);
+    for(const assetId of map.values()) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),documentId,assetId,now,now);
+    const receipt={request_id:input.request_id,document_id:documentId,project_id:projectId,revision:p.revision,initialized_at:now,summary:parsed.summary,created:plan.assets.filter(a=>a.action==='create').length,reused:plan.assets.filter(a=>a.action==='reuse').length,unlinked:plan.unlinked};
+    this.db.prepare('INSERT INTO storyboard_import_requests VALUES(?,?,?,?,?,?,?,?,?)').run(input.request_id,projectId,documentId,requestHash,sourceHash,input.expected_revision,canonical(receipt),now,now);
+    return {...this.read(projectId),receipt,repeated:false};
   }
   request(projectId,id) { this.project(projectId); if(!idOK(id)) throw fault('请求编号无效'); const row=this.db.prepare('SELECT result_json FROM storyboard_import_requests WHERE id=? AND project_id=?').get(id,projectId); return row?{completed:true,receipt:JSON.parse(row.result_json)}:{completed:false}; }
   save(projectId,input) {
@@ -105,7 +131,7 @@ export class StoryboardDatabase {
       for(const kind of ['character','scene','prop']) {
         if(!Array.isArray(p.asset_manifest?.[kind])) throw fault('清单缺少'+kind);
         for(const e of p.asset_manifest[kind]) {
-          const a=this.assets.head(e.id); if(a.project_id!==projectId||a.kind!==kind||a.archived_at!==0) throw fault('清单只能关联当前项目的未归档同类资产');
+          const a=this.assets.head(e.id); if(!this.canUseAsset(projectId,a)||a.kind!==kind||a.archived_at!==0) throw fault('清单只能关联当前项目的未归档同类资产');
           if(ids.includes(e.id)) throw fault('清单资产重复'); ids.push(e.id);
         }
       }
@@ -142,6 +168,7 @@ export class StoryboardDatabase {
         if(row.updated_at<row.created_at) throw fault('备份时间无效');
       }
     }
+    const seriesByEpisode = new Map((creative.project_series?.project_series_members ?? []).map(row => [row.id, row.series_id]));
     const tables=input.tables,docs=new Map(),projectIds=new Set();
     if(tables.storyboard_schema.length!==1||tables.storyboard_schema[0].id!=='storyboard'||tables.storyboard_schema[0].version!==1) throw fault('备份分镜 schema 无效');
     const manifests=new Map();
@@ -151,7 +178,7 @@ export class StoryboardDatabase {
       let p;try{p=JSON.parse(d.document_json);}catch{throw fault('备份分镜 JSON 无效');}
       if(p.project_id!==d.id||p.document_id!==d.id||p.bound_project_id!==d.project_id||p.revision!==d.revision||M.validateProject(p).length||p.generation_batches.length||p.generation_runs.length) throw fault('备份分镜内容无效');
       const ids=new Set();
-      for(const kind of ['character','scene','prop']) {if(!Array.isArray(p.asset_manifest?.[kind]))throw fault('备份清单缺失');for(const e of p.asset_manifest[kind]){const a=assets.get(e.id);if(!a||a.project_id!==d.project_id||a.kind!==kind||a.archived_at!==0||ids.has(a.id))throw fault('备份清单关联无效');ids.add(a.id);}}
+      for(const kind of ['character','scene','prop']) {if(!Array.isArray(p.asset_manifest?.[kind]))throw fault('备份清单缺失');for(const e of p.asset_manifest[kind]){const a=assets.get(e.id);if(!a||!(a.owner_type==='project'&&a.project_id===d.project_id||a.owner_type==='series'&&a.owner_id===seriesByEpisode.get(d.project_id))||a.kind!==kind||a.archived_at!==0||ids.has(a.id))throw fault('备份清单关联无效');ids.add(a.id);}}
       if(canonical(p.characters.map(c=>c.id).sort())!==canonical(p.asset_manifest.character.map(c=>c.id).sort()))throw fault('备份人物清单不一致');
       manifests.set(d.id,ids);
     }

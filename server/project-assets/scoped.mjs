@@ -180,6 +180,38 @@ export class ScopedProjectAssets {
     });
   }
 
+  seasonOverrides(type, id, query = {}) {
+    return this.#snapshot(() => {
+      const scope = this.scope(type, id);
+      if (scope.type !== 'season') throw notFound();
+      const kind = query.kind;
+      if (kind !== undefined && !KINDS.includes(kind)) throw fault('资产类型无效', 422, { code: 'INVALID_ASSET_KIND' });
+      const page = positiveInt(query.page, 1, 100000), size = positiveInt(query.size, 40, 100);
+      const rows = this.db.prepare(`SELECT o.asset_id,o.field_key FROM creative_asset_overrides o
+        JOIN creative_assets a ON a.id=o.asset_id
+        WHERE o.scope_type='season' AND o.scope_id=? AND a.owner_type='series'
+          AND a.owner_id=? AND a.archived_at=0${kind ? ' AND a.kind=?' : ''}
+        ORDER BY a.name,a.id,o.field_key`).all(scope.id, scope.series_id, ...(kind ? [kind] : []));
+      const byAsset = new Map(), items = [];
+      for (const row of rows) {
+        if (!byAsset.has(row.asset_id)) byAsset.set(row.asset_id, this.detailInTransaction(scope, row.asset_id));
+        const { asset, effective } = byAsset.get(row.asset_id);
+        const [key, lookId] = row.field_key.split(':');
+        const resolved = key === 'default_look' ? effective.default_look :
+          key === 'default_image' ? effective.default_images[lookId ?? 'null'] : null;
+        if (resolved?.override) {
+          const field = key === 'default_image' ? { key, look_id: lookId ?? null } : { key };
+          items.push({ asset: { id: asset.id, name: asset.name, kind: asset.kind }, field, ...resolved });
+        }
+      }
+      const offset = (page - 1) * size;
+      return {
+        scope: { type: scope.type, id: scope.id }, context_token: scope.context_token,
+        total: items.length, page, items: items.slice(offset, offset + size),
+      };
+    });
+  }
+
   detail(type, id, assetId) {
     return this.#snapshot(() => this.detailInTransaction(this.scope(type, id), assetId));
   }
