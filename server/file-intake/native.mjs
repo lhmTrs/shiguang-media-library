@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {constants} from 'node:fs';
+import {constants,lstatSync,realpathSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash,randomUUID} from 'node:crypto';
-import {error,privateDirectory,uuid} from './files.mjs';
+import {error,privateDirectory,same,stamp,uuid} from './files.mjs';
 const run=promisify(execFile);
 const serviceTitle='收纳素材到拾光', legacyTitle='收纳视频到拾光';
 const mediaKinds=['photo','video','audio'], fileTypes=['public.image','public.movie','public.audio'];
@@ -21,7 +21,7 @@ const installError=(cause,fallback)=>({
   code:/^[A-Z_]{1,64}$/.test(cause?.code??'')?cause.code:'INTAKE_INSTALL_FAILED',
   message:cause?.status&&cause.message?cause.message:fallback,
 });
-async function workflowDigest(workflowPath){
+async function workflowDigest(workflowPath,expectedIdentity){
   const contents=path.join(workflowPath,'Contents');
   const directories=[workflowPath,contents,path.join(contents,'Resources')];
   const before=[];
@@ -30,9 +30,11 @@ async function workflowDigest(workflowPath){
     if(!stat.isDirectory())return null;
     before.push(identity(stat));
   }
+  if(!sameEntry(expectedIdentity,before[0]))return null;
   if(await fs.realpath(contents)!==contents||await fs.realpath(directories[2])!==directories[2])return null;
   const digest=createHash('sha256');
-  for(const name of ['Info.plist','Resources/document.wflow']){
+  const files=[];
+  for(const name of ['Info.plist','Resources/document.wflow','shiguang-install.json']){
     const file=path.join(contents,name);
     const handle=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try{
@@ -40,15 +42,19 @@ async function workflowDigest(workflowPath){
       if(!stat.isFile()||stat.size===0||stat.size>1024*1024)return null;
       const bytes=Buffer.alloc(stat.size+1);
       const {bytesRead}=await handle.read(bytes,0,bytes.length,0);
-      const current=await fs.lstat(file);
-      if(bytesRead!==stat.size||!current.isFile()||!sameEntry(identity(stat),identity(current))||
-        current.size!==stat.size||current.mtimeMs!==stat.mtimeMs||current.ctimeMs!==stat.ctimeMs)return null;
+      if(bytesRead!==stat.size)return null;
+      files.push([file,stamp(stat)]);
       digest.update(name).update('\0').update(bytes.subarray(0,bytesRead));
     }finally{await handle.close();}
   }
+  // Validate both file snapshots together after all reads and handle closes.
+  for(const [file,original] of files){
+    const current=lstatSync(file);
+    if(!current.isFile()||!same(original,stamp(current)))return null;
+  }
   for(const [index,directory] of directories.entries()){
-    const stat=await fs.lstat(directory);
-    if(!stat.isDirectory()||!sameEntry(before[index],identity(stat)))return null;
+    const stat=lstatSync(directory);
+    if(!stat.isDirectory()||!sameEntry(before[index],identity(stat))||realpathSync(directory)!==directory)return null;
   }
   return digest.digest('hex');
 }
@@ -142,9 +148,7 @@ export class IntakeNative {
         const owned=await this.ownedWorkflow(target);
         if(!owned||!sameEntry(owned.identity,entry.identity))return false;
         if(!entry.digest)return null;
-        if(await workflowDigest(target)!==entry.digest)return false;
-        const verified=await this.ownedWorkflow(target);
-        if(!verified||!sameEntry(verified.identity,entry.identity))return false;
+        if(await workflowDigest(target,owned.identity)!==entry.digest)return false;
       }
       return true;
     }catch(cause){return ['ENOENT','ENOTDIR','ELOOP','INTAKE_INSTALL_CONFLICT'].includes(cause.code)?false:null;}
@@ -216,7 +220,7 @@ export class IntakeNative {
         const result=await this.performInstall({
           recordPrevious:async workflows=>{
             previous=await Promise.all(workflows.map(async({target,identity})=>({
-              slot:target===this.target?'current':'legacy',identity,digest:await workflowDigest(target).catch(()=>null),
+              slot:target===this.target?'current':'legacy',identity,digest:await workflowDigest(target,identity).catch(()=>null),
             })));
             await this.saveInstallJob(job,previous);
           },
