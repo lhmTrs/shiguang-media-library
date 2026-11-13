@@ -22,13 +22,30 @@ const shotUnion=(adoption,sourceIds)=>{
  return [...shots.values()];
 };
 const exactShotIds=(actual,shots)=>Array.isArray(actual)&&actual.length===shots.length&&new Set(actual).size===actual.length&&shots.every(s=>actual.includes(s.id));
+const abandonedCode = 'OPERATION_ABANDONED';
+const abandonedMessage = '已放下原移动请求，请重新核对';
 
 export class ProjectVideoFileOperations {
  constructor(catalog,{trash}={}) {this.catalog=catalog;this.trash=trash||(async(file)=>{if(!catalog.lib.trashBin)fail('TRASH_UNAVAILABLE','系统废纸篓不可用，未执行永久删除',409);const {stdout}=await run(catalog.lib.trashBin,[file],{timeout:30000});const target=JSON.parse(stdout);if(typeof target!=='string'||!path.isAbsolute(target)||!/(^|\/)\.Trash(es)?\//.test(target))fail('TRASH_UNSETTLED','废纸篓结果尚未核清，请核对原操作',409);return target;});this.active=new Set();}
  get db(){return this.catalog.db;}
- row(id,requestId){if(!idOK(requestId))fail('INVALID_REQUEST_ID','文件操作编号无效');const r=this.db.prepare('SELECT * FROM project_video_operations WHERE id=? AND project_id=?').get(requestId,id);if(!r)fail('OPERATION_NOT_FOUND','未找到原文件操作',404);const data=JSON.parse(r.data_json);if(data.namespace==='video-desktop-v1')fail('OPERATION_NOT_FOUND','此编号属于视频桌面任务，请查询原桌面操作',404);return data;}
+ readOperation(id, requestId) {
+  if (!idOK(requestId)) fail('INVALID_REQUEST_ID', '文件操作编号无效');
+  const row = this.db.prepare('SELECT data_json FROM project_video_operations WHERE id=? AND project_id=?').get(requestId, id);
+  if (!row) fail('OPERATION_NOT_FOUND', '未找到原文件操作', 404);
+  const data = JSON.parse(row.data_json);
+  if (data.namespace === 'video-desktop-v1') fail('OPERATION_NOT_FOUND', '此编号属于视频桌面任务，请查询原桌面操作', 404);
+  return { data, stored: row.data_json };
+ }
+ row(id,requestId){return this.readOperation(id,requestId).data;}
  save(id,requestId,data){this.db.prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=?').run(canonical(data),Date.now(),requestId,id);}
+ replacePreview(id, requestId, stored, data) {
+  // Both execution and abandonment replace the same durable preview exactly once.
+  const result = this.db.prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=? AND data_json=?')
+   .run(canonical(data), Date.now(), requestId, id, stored);
+  return result.changes === 1;
+ }
  dto(requestId,s){
+  if (s.status === 'cancelled') return {requestId, status:'cancelled', phase:'preview', errorCode:abandonedCode, canRecover:false};
   const notStarted=s.input?.kind==='move-videos'&&s.status==='preview',status=notStarted||s.status==='running'&&!this.active.has(requestId)?'unknown':s.status;
   return{requestId,status,description:s.description,error:notStarted?'当前只有预览，执行尚未确认，请核对原请求；视频未报告移动完成':s.error,...(notStarted?{phase:'preview',errorCode:'OPERATION_NOT_STARTED'}:{}),folderId:s.resultFolderId,rolesRevision:s.roles?.revision,unboundShotIds:s.unboundShotIds||[],...(s.input?.kind==='move-videos'?{items:this.items(s,status)}:{}),canRecover:!notStarted&&s.kind!=='create-folder'&&(['unknown','failed'].includes(status))};
  }
@@ -42,7 +59,12 @@ export class ProjectVideoFileOperations {
   if(!idOK(input.requestId))fail('INVALID_REQUEST_ID','文件操作编号无效');
   if(input.kind!=='delete-folder'&&input.mode!==undefined)fail('INVALID_OPERATION','移动和重命名不能附带删除方式');
   const args=digest(input),old=this.db.prepare('SELECT * FROM project_video_operations WHERE id=?').get(input.requestId);
-  if(old){const data=JSON.parse(old.data_json);if(old.project_id!==id||data.args!==args)fail('REQUEST_ID_CONFLICT','操作编号已用于其他输入',409);return data.plan;}
+  if (old) {
+   const data = JSON.parse(old.data_json);
+   if (old.project_id !== id || data.args !== args) fail('REQUEST_ID_CONFLICT', '操作编号已用于其他输入', 409);
+   if (data.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
+   return data.plan;
+  }
   const folders=this.catalog.folders,rows=folders.rows(id),roles=this.roleSnapshot(id);
   const batch=input.kind==='move-videos',videoMove=batch||input.kind==='move-video',explicitUnbind=input.unbindAdoptions===true;
   if(batch&&(!Array.isArray(input.sourceIds)||input.sourceIds.length<1||input.sourceIds.length>50||input.sourceIds.some(x=>!idOK(x))||new Set(input.sourceIds).size!==input.sourceIds.length))fail('INVALID_SOURCE_IDS','请选择1至50个不重复的视频');
@@ -122,8 +144,46 @@ export class ProjectVideoFileOperations {
   const now=Date.now();this.db.prepare('INSERT INTO project_video_operations VALUES(?,?,?,?,?)').run(input.requestId,id,canonical(data),now,now);return plan;
  }
  async guard(id,s){this.catalog.project(id,true);if(s.input.kind!=='delete-folder'&&s.input.mode!==undefined)fail('INVALID_OPERATION','移动和重命名不能附带删除方式');this.checkRoles(id,s);if(s.roles?.rejectFolderId)await this.catalog.folders.resolve(id,s.roles.rejectFolderId,{write:true});if(digest(this.catalog.folders.rows(id))!==s.folderStamp)fail('FOLDER_CONFLICT','目录资料在确认后变化，请重新预览',409);for(const p of s.parents){const st=await exists(p.path);if(!st||!st.isDirectory()||st.isSymbolicLink()||!sameFolder(folderIdentity(st),p.identity)||await fs.realpath(p.path)!==p.path)fail('TARGET_CHANGED','目录位置在确认后变化，请重新预览',409);}for(const old of s.sourceRows){const current=this.catalog.assertBindableForMove(id,old.id);if(current.path!==old.path||!equal(current.identity,old.identity)||(this.catalog.metadata(id,current).row?.revision||0)!==old.revision)fail('VIDEO_CONFLICT','视频资料在确认后变化，请重新预览',409);}if(this.catalog.adoption(id).stamp!==s.adoptionStamp)fail('ADOPTION_CHANGED','采用镜号在确认后变化，请重新确认受影响镜号',409);if(s.folderId)this.catalog.folders.busy(id,s.source,s.input.requestId);for(const m of s.moves){this.catalog.folders.busyOperations(id,m.source,s.input.requestId);if(m.target)this.catalog.folders.busyOperations(id,m.target,s.input.requestId);}await this.unchanged(s.nodes);}
- async execute(id,input){const s=this.row(id,input.requestId);if(s.status!=='preview')return this.dto(input.requestId,s);if(input.previewHash!==s.plan.previewHash||!s.plan.ready)fail('PREVIEW_REQUIRED','请先处理全部冲突并确认当前预览',409);if(s.strictUnbind&&(input.confirmUnbind!==true||!exactShotIds(input.confirmedUnbindShotIds,s.plan.affectedShots)))fail('UNBIND_CONFIRMATION_REQUIRED','请完整确认本批视频及覆盖目标影响的全部镜号',409);if(s.plan.affectedShots.length&&input.confirmUnbind!==true)fail('UNBIND_CONFIRMATION_REQUIRED','此视频仍被镜号采用，覆盖或删除会解除关联，请确认',409);if(this.active.has(input.requestId))return this.dto(input.requestId,s);this.active.add(input.requestId);s.status='running';s.instance=this.catalog.instance;this.save(id,input.requestId,s);
-  const work=this.catalog.withActivity(()=>this.catalog.media.track(()=>this.catalog.serial(()=>this.perform(id,input.requestId,s))));work.catch(()=>{}).finally(()=>this.active.delete(input.requestId));return this.dto(input.requestId,s);
+ abandon(id, requestId) {
+  this.catalog.project(id, true);
+  const {data, stored} = this.readOperation(id, requestId);
+  if (data.input?.kind !== 'move-videos' || data.input.unbindAdoptions === true) {
+   fail('INVALID_OPERATION', '只有普通批量移动可以放下原请求', 409);
+  }
+  if (data.status !== 'preview') return this.dto(requestId, data);
+  const cancelled = {...data, status:'cancelled'};
+  if (this.replacePreview(id, requestId, stored, cancelled)) return this.dto(requestId, cancelled);
+  return this.dto(requestId, this.row(id, requestId));
+ }
+ async execute(id, input) {
+  const {requestId} = input;
+  const {data, stored} = this.readOperation(id, requestId);
+  if (data.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
+  if (data.status !== 'preview') return this.dto(requestId, data);
+  if (input.previewHash !== data.plan.previewHash || !data.plan.ready) {
+   fail('PREVIEW_REQUIRED', '请先处理全部冲突并确认当前预览', 409);
+  }
+  if (data.strictUnbind && (input.confirmUnbind !== true || !exactShotIds(input.confirmedUnbindShotIds, data.plan.affectedShots))) {
+   fail('UNBIND_CONFIRMATION_REQUIRED', '请完整确认本批视频及覆盖目标影响的全部镜号', 409);
+  }
+  if (data.plan.affectedShots.length && input.confirmUnbind !== true) {
+   fail('UNBIND_CONFIRMATION_REQUIRED', '此视频仍被镜号采用，覆盖或删除会解除关联，请确认', 409);
+  }
+  const running = {...data, status:'running', instance:this.catalog.instance};
+  if (!this.replacePreview(id, requestId, stored, running)) {
+   const current = this.row(id, requestId);
+   if (current.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
+   return this.dto(requestId, current);
+  }
+  this.active.add(requestId);
+  try {
+   const work = this.catalog.withActivity(() => this.catalog.media.track(() => this.catalog.serial(() => this.perform(id, requestId, running))));
+   work.finally(() => this.active.delete(requestId)).catch(() => {});
+  } catch (error) {
+   this.active.delete(requestId);
+   throw error;
+  }
+  return this.dto(requestId, running);
  }
  async step(id,requestId,s,source,target,kind='move'){const original=s.nodes.find(n=>n.path===source);if(!original)fail('FILE_OPERATION_CONFLICT','原操作未包含此来源',409);await this.unchanged(s.nodes.filter(n=>within(source,n.path)));s.steps.push({source,target,kind,status:'planned',identity:original.identity,itemId:s.currentItemId});this.save(id,requestId,s);const step=s.steps.at(-1);if(kind==='trash'){step.target=await this.trash(source);step.status='moved';this.save(id,requestId,s);return;}
   const st=await fs.lstat(source);if(!equal(stamp(st),original.identity))fail('SOURCE_CHANGED','原文件在执行前已变化，未移动',409);if(st.isSymbolicLink()||await fs.realpath(path.dirname(source))!==path.dirname(source)||await fs.realpath(path.dirname(target))!==path.dirname(target))fail('TARGET_CHANGED','文件位置在操作时变化',409);
@@ -174,5 +234,21 @@ export class ProjectVideoFileOperations {
   const repair=[];for(const old of s.sourceRows){const current=this.catalog.videos.source(id,old.id);if(current.path!==old.path||(this.catalog.metadata(id,current).row?.revision||0)!==old.revision)fail('RECOVERY_CONFLICT','视频记录已被后续修改，未覆盖资料',409);const st=await exists(old.path);if(!st||String(st.dev)!==old.identity.dev||String(st.ino)!==old.identity.ino||st.size!==old.identity.size||st.mtimeMs!==old.identity.mtimeMs)fail('RECOVERY_CONFLICT','原视频尚未回到可确认的位置',409);repair.push({current,identity:stamp(st)});}
   const repairedFolders=[];for(const row of s.folderRows){const file=path.join(s.root,...row.relativePath.split('/'));if(this.mapped(s,file)!==file||file===s.source&&s.sourceDirectoryRemoved){const st=await fs.lstat(file);if(!st.isDirectory()||st.isSymbolicLink())fail('RECOVERY_CONFLICT','原目录尚未恢复',409);repairedFolders.push({row,identity:folderIdentity(st)});}}this.catalog.videos.tx(()=>{for(const item of repair)this.catalog.relocateRecord(id,item.current,item.current.path,item.identity);for(const item of repairedFolders)this.catalog.folders.write(id,item.row.id,this.catalog.folders.data(item.row,{identity:item.identity}));});
  }
- async recover(id,requestId,input){if(input.action!=='rollback')fail('INVALID_RECOVERY','请选择回退原操作');return this.catalog.serial(async()=>{const s=this.row(id,requestId);if(this.active.has(requestId))fail('OPERATION_BUSY','原操作仍在执行',409);if(s.status==='ready')return this.dto(requestId,s);await this.rollback(id,requestId,s);s.status='failed';s.error='已回退原文件操作，请核对后重新整理';this.save(id,requestId,s);return this.dto(requestId,s);});}
+ async recover(id, requestId, input) {
+  if (input.action !== 'rollback') fail('INVALID_RECOVERY', '请选择回退原操作');
+  return this.catalog.serial(async () => {
+   const data = this.row(id, requestId);
+   if (data.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
+   if (this.active.has(requestId)) fail('OPERATION_BUSY', '原操作仍在执行', 409);
+   if (data.status === 'ready') return this.dto(requestId, data);
+   if (data.input?.kind === 'move-videos' && data.status === 'preview') {
+    fail('OPERATION_NOT_STARTED', '当前只有预览，没有需要回退的文件操作', 409);
+   }
+   await this.rollback(id, requestId, data);
+   data.status = 'failed';
+   data.error = '已回退原文件操作，请核对后重新整理';
+   this.save(id, requestId, data);
+   return this.dto(requestId, data);
+  });
+ }
 }
