@@ -125,9 +125,14 @@ export class ScopedAssetWrites {
   }
 
   visibleReceipt(scope, row) {
-    const result = JSON.parse(row.result_json);
+    const { _receipt_scope, ...result } = JSON.parse(row.result_json);
     if (result.asset?.id) this.reads.detailInTransaction(scope, result.asset.id);
-    if (scope.type === 'episode' && result.context_token) this.reads.assertContextToken(scope, result.context_token);
+    if (scope.type === 'episode') {
+      if (_receipt_scope && _receipt_scope !== scope.receipt_scope) {
+        throw conflict('ASSET_SCOPE_CHANGED', '资产作用域已变化，请重新读取');
+      }
+      if (!_receipt_scope && result.context_token) this.reads.assertContextToken(scope, result.context_token);
+    }
     return result;
   }
 
@@ -153,7 +158,7 @@ export class ScopedAssetWrites {
       const result = { ...apply({ ...scope, operation_at: now }), request_id: requestId };
       this.db.prepare(`INSERT INTO creative_asset_scope_requests
         (id,scope_type,scope_id,request_hash,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
-        .run(requestId, type, id, hash, canonical(result), now, now);
+        .run(requestId, type, id, hash, canonical({ ...result, _receipt_scope: scope.receipt_scope }), now, now);
       beforeCommit?.();
       return result;
     });

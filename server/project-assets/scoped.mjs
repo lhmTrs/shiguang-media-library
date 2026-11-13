@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { DEFAULT_DIMENSIONS, dimensionDTO, isRecord, isRevision, isScore } from '../project-attributes/model.mjs';
-import { canonical, fault, idOK } from './model.mjs';
+import { canonical, digest, fault, idOK } from './model.mjs';
 
 const KINDS = ['character', 'scene', 'prop'];
 const FLAGS = ['edit_base', 'create_override', 'append', 'promote', 'archive'];
@@ -103,15 +103,16 @@ export class ScopedProjectAssets {
     }
     const scopeId = (project ?? season ?? series).id;
     const membershipRevision = Number(membership?.revision ?? 0);
-    const context_token = this.#token('context', [
+    const context = [
       type, scopeId, series?.id ?? null, season?.id ?? null, membershipRevision,
       Number(series?.revision ?? 0), Number(season?.revision ?? 0),
-    ]);
+    ];
+    const context_token = this.#token('context', context);
     return {
       type, id: scopeId, project: named(project), series: named(series),
       season: season ? { id: season.id, name: season.label?.trim() || `第 ${season.season_no} 季` } : null,
       series_id: series?.id ?? null, season_id: season?.id ?? null,
-      membership_revision: membershipRevision, context_token,
+      membership_revision: membershipRevision, context_token, receipt_scope: digest(context),
     };
   }
 

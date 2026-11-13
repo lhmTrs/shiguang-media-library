@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { StoryboardDatabase } from '../server/storyboard/database.mjs';
+import { ProjectAssets } from '../server/project-assets/store.mjs';
 import { addImage, addLook, creativeFixture } from './helpers/creative-fixture.mjs';
 import { emptyShot } from '../server/storyboard/shared/model.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
@@ -137,11 +138,15 @@ test('同剧换季后旧请求回执不返回旧季覆盖和令牌', async t => 
   const { asset } = f.create('scene', '共享场景');
   const context = f.scoped.assetContext(f.episode.id);
   const input = { request_id: randomUUID(), context_token: context.context_token, name: asset.name, kind: asset.kind, on_shared: 'reuse' };
-  f.writes.create('episode', f.episode.id, input);
+  const result = f.writes.create('episode', f.episode.id, input);
+  const reopened = new ProjectAssets(f.lib).init();
+  assert.notEqual(reopened.scoped.assetContext(f.episode.id).context_token, input.context_token);
+  assert.deepEqual(reopened.scopedWrites.request(input.request_id), { found: true, result });
+  assert.deepEqual(reopened.scopedWrites.create('episode', f.episode.id, input), result);
   f.directory.move({ request_id: randomUUID(), target: { series_id: f.series.id, season_id: null },
     items: [{ project_id: f.episode.id, expected_revision: context.membership_revision }] });
-  assert.throws(() => f.writes.request(input.request_id), { code: 'ASSET_SCOPE_CHANGED' });
-  assert.throws(() => f.writes.create('episode', f.episode.id, input), { code: 'ASSET_SCOPE_CHANGED' });
+  assert.throws(() => reopened.scopedWrites.request(input.request_id), { code: 'ASSET_SCOPE_CHANGED' });
+  assert.throws(() => reopened.scopedWrites.create('episode', f.episode.id, input), { code: 'ASSET_SCOPE_CHANGED' });
 });
 
 test('删除后同毫秒重建的覆盖拒绝旧令牌', async t => {
