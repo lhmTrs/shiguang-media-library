@@ -244,7 +244,9 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   }
   const dirty = !!draft && JSON.stringify(draft) !== base, dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const lastActiveProject = useRef(activeProject);
-  const scopeRef = useRef(scope); scopeRef.current = scope; const scopeBaseRef = useRef('');
+  const scopeRef = useRef(scope); scopeRef.current = scope; const scopeBaseRef = useRef(''); const listTokenRef = useRef<{ base: string; token: string } | null>(null);
+  /** 当前作用域列表返回的 context_token；作用域变了就不用旧的。 */
+  const scopeToken = () => listTokenRef.current && listTokenRef.current.base === scopeBaseRef.current ? listTokenRef.current.token : undefined;
   const healthGeneration = useRef(0);
   const generation = useRef(0), drag = useRef<string | null>(null), draftIdRef = useRef(draft?.id); draftIdRef.current = draft?.id;
   const draftRef = useRef(draft); draftRef.current = draft;
@@ -357,6 +359,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
         const result = await api<ScopedList<Asset>>(scopeBase + '/assets?' + params);
         if (ticket !== generation.current || scopeRef.current !== scope || listContextRef.current !== context) return;
         setMetas(old => { const next = { ...old }; for (const { asset, ...meta } of result.items) next[asset.id] = meta; return next; });
+        listTokenRef.current = { base: scopeBase, token: result.context_token }; // 同作用域列表的令牌：新建等写入要用它（合同 v1）
         setRows(result.items.map(i => i.asset)); setTotal(result.total); setListOk({ key, total: result.total });
         return;
       }
@@ -488,7 +491,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
         if (c.status === 'existing_local') throw Error('本集已有同名的「' + name + '」，请换个名字');
         if (c.status === 'conflict') throw Error('和' + (c.conflicts ?? []).map(x => '「' + (x.scope_name ? x.scope_name + ' · ' : '') + x.name + '」').join('、') + '同名冲突，请换个名字');
       }
-      const r = await api<(ScopedItem<Asset> & { reused?: boolean }) | ({ id: string; reused?: boolean })>(base + '/assets', { request_id: crypto.randomUUID(), context_token: assetCtx?.context_token, kind, name, on_shared: onShared }, 'POST');
+      const r = await api<(ScopedItem<Asset> & { reused?: boolean }) | ({ id: string; reused?: boolean })>(base + '/assets', { request_id: crypto.randomUUID(), context_token: scopeToken() ?? assetCtx?.context_token, kind, name, on_shared: onShared }, 'POST');
       setModal(null); setArchived(false); setQ(''); await loadList();
       const id = 'asset' in r && r.asset ? r.asset.id : (r as { id: string }).id;
       if ('asset' in r && r.asset) { const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } })); }
@@ -500,14 +503,14 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   const appendHandlers: AppendHandlers = {
     preview: async name => {
       const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) throw Error('没有打开的人物');
-      try { return await api<AppendPreview>(base + '/assets/' + d.id + '/append/preview', { context_token: metas[d.id]?.context_token ?? assetCtx?.context_token, item: { type: 'look', name } }, 'POST'); }
+      try { return await api<AppendPreview>(base + '/assets/' + d.id + '/append/preview', { context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, item: { type: 'look', name } }, 'POST'); }
       catch (e: any) { setError(e.message || '预览失败'); throw e; }
     },
     confirm: async (token, allowSeriesDefault) => {
       const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
       await run('正在新增造型…', async () => {
         try {
-          const r = await api<ScopedItem<Asset>>(base + '/assets/' + d.id + '/append', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? assetCtx?.context_token, preview_token: token, ...(allowSeriesDefault ? { allow_series_default: true } : {}) }, 'POST');
+          const r = await api<ScopedItem<Asset>>(base + '/assets/' + d.id + '/append', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, preview_token: token, ...(allowSeriesDefault ? { allow_series_default: true } : {}) }, 'POST');
           const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
           if (draftRef.current?.id === asset.id) install(withEffective(asset, meta));
           await loadList(); setNotice('已新增造型，已加到全剧并记下来源是本集');
@@ -524,14 +527,14 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   async function previewArchive(target: { type: 'asset' | 'look' | 'image'; id: string }, label: string, replacement: string | null = null) {
     const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
     await run('正在核对归档影响…', async () => {
-      const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/archive-impact', { context_token: metas[d.id]?.context_token ?? assetCtx?.context_token, target, ...(replacement ? { replacement_id: replacement } : {}) }, 'POST');
+      const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/archive-impact', { context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, target, ...(replacement ? { replacement_id: replacement } : {}) }, 'POST');
       setImpactState({ kind: 'archive', assetId: d.id, target, replacement, data, label });
     });
   }
   async function previewPromotion() {
     const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
     await run('正在核对提升影响…', async () => {
-      const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/promotion/preview', { context_token: metas[d.id]?.context_token ?? assetCtx?.context_token }, 'POST');
+      const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/promotion/preview', { context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token }, 'POST');
       setImpactState({ kind: 'promotion', assetId: d.id, replacement: null, data, label: '「' + d.name + '」' });
     });
   }
@@ -539,7 +542,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     const st = impactState, base = scopeBaseRef.current; if (!st || !base) return;
     await run(st.kind === 'archive' ? '正在归档…' : '正在提升到全剧…', async () => {
       try {
-        await api(base + '/assets/' + st.assetId + (st.kind === 'archive' ? '/archive' : '/promotion'), { request_id: crypto.randomUUID(), context_token: metas[st.assetId]?.context_token ?? assetCtx?.context_token, preview_token: st.data.preview_token }, 'POST');
+        await api(base + '/assets/' + st.assetId + (st.kind === 'archive' ? '/archive' : '/promotion'), { request_id: crypto.randomUUID(), context_token: metas[st.assetId]?.context_token ?? scopeToken() ?? assetCtx?.context_token, preview_token: st.data.preview_token }, 'POST');
       } catch (e: any) {
         if (e.code === 'ASSET_IMPACT_CHANGED' || e.code === 'ASSET_STALE') { setImpactState(null); if (st.kind === 'archive' && st.target) void previewArchive(st.target, st.label, st.replacement); else void previewPromotion(); throw Error('影响范围刚变了，已重新预览，请核对后再确认'); }
         throw e;
@@ -554,7 +557,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   async function appendImagePick(m: { id: string; name: string }) {
     const d = draftRef.current, base = scopeBaseRef.current, lookIdFor = modal?.append?.lookId ?? null; if (!d || !base) return;
     await run('正在核验图片…', async () => {
-      const ctxToken = metas[d.id]?.context_token ?? assetCtx?.context_token;
+      const ctxToken = metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token;
       const receipt = await api<{ media_receipt_id: string; file_name?: string; preview_url?: string; expires_at?: number }>(base + '/assets/' + d.id + '/append/media-receipt', { context_token: ctxToken, look_id: lookIdFor, media_asset_id: m.id }, 'POST');
       const preview = await api<AppendPreview>(base + '/assets/' + d.id + '/append/preview', { context_token: ctxToken, item: { type: 'image', look_id: lookIdFor, media_receipt_id: receipt.media_receipt_id } }, 'POST');
       setModal({ type: 'append-image', preview, fileName: receipt.file_name || m.name, previewUrl: receipt.preview_url, lookId: lookIdFor, allow: false });
@@ -565,7 +568,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
     await run(action === 'set' ? '正在保存本集设置…' : '正在恢复上层…', async () => {
       try {
-        const r = await api<ScopedItem<Asset>>(base + '/assets/' + d.id + '/overrides', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? assetCtx?.context_token, write_token: writeToken, field, action, ...(action === 'set' ? { value } : {}) }, 'PATCH');
+        const r = await api<ScopedItem<Asset>>(base + '/assets/' + d.id + '/overrides', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, write_token: writeToken, field, action, ...(action === 'set' ? { value } : {}) }, 'PATCH');
         const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
         if (draftRef.current?.id === asset.id) install(withEffective(asset, meta));
         await loadList(); setNotice(action === 'set' ? '已保存本集设置，只影响这一集' : field.key === 'attribute_score' ? '已恢复全剧评分' : '已恢复上层设置');
@@ -583,7 +586,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   /** 整份保存：作用域模式带 request_id 与 context_token 写 <scope>/assets/:id，以服务端读回为准。 */
   async function writeAsset(id: string, asset: Asset, expected: number): Promise<Asset> {
     const base = scopeBaseRef.current; if (!base) return api<Asset>('/assets/' + id, { asset, expected_revision: expected }, 'PUT');
-    const r = await api<ScopedItem<Asset> | Asset>(base + '/assets/' + id, { request_id: crypto.randomUUID(), context_token: metas[id]?.context_token ?? assetCtx?.context_token, expected_revision: expected, asset }, 'PUT');
+    const r = await api<ScopedItem<Asset> | Asset>(base + '/assets/' + id, { request_id: crypto.randomUUID(), context_token: metas[id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, expected_revision: expected, asset }, 'PUT');
     if ('asset' in r && r.asset) { const { asset: saved, ...meta } = r; setMetas(old => ({ ...old, [saved.id]: { ...old[saved.id], ...meta } })); return saved; }
     return r as Asset;
   }
@@ -1278,7 +1281,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
                 <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
-            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? scopeToken() ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
             {draft.kind === 'character' && !!scopeBase && draftOwner?.type === 'series' && !seriesView && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><h3>属性</h3><p className="ca-muted">这是全剧共享的人物：评分在上方「本集设置」里按维度覆盖，没有覆盖的维度沿用全剧。</p></section>}
             {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头">{!!scopeBase && seriesView && draftOwner?.type === 'series' ? <p className="ca-muted">全剧没有单集的镜号列表：切到某一集，可以看这个人物在那一集的出场镜头。</p> : <AssociatedShots key={draft.id + (inheritedHere ? ':ep' : '')} assetId={draft.id} active={active} request={request} onOpen={onOpenShot} basePath={inheritedHere ? '/project-assets' + scopeBase : undefined}/>}</section>
