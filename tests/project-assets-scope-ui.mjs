@@ -46,7 +46,7 @@ async function routeScoped(route) {
   if (fake.mode === 'missing') return route.fulfill({ status: 404, json: { error: '旧版后端没有这个接口' } });
   if (fake.mode === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><body>旧版后端把未知路径交给前端页面</body></html>' });
   const ctxMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-context$/);
-  if (ctxMatch) { const c = fake.ctx[ctxMatch[1]]; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
+  if (ctxMatch) { if (fake.ctxGate) await fake.ctxGate; const c = fake.ctx[ctxMatch[1]]; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
   // 第 3 步：同名检查、按作用域新建、集内追加造型
   const scopeOf = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/(names\/check|assets)$/);
   if (scopeOf && route.request().method() === 'POST') {
@@ -470,6 +470,16 @@ try {
     const rc = fake.writes.filter(w => w.path.endsWith('/append/media-receipt')).at(-1); assert.equal(rc.body.media_asset_id, 'media-up-' + fake.uploads.length); assert.equal(rc.body.look_id, 'look-b');
     await confirm.getByRole('button', { name: '确认追加' }).click(); await expect(confirm).toHaveCount(0);
     assert.equal(fake.writes.filter(w => w.path.endsWith('/append')).at(-1).path, `/api/project-assets/scopes/episode/${eps[0].id}/assets/${lisi.id}/append`);
+  });
+
+  await check('返工·季菜单跳转核对中点面包屑返回：迟到的响应不再切到资产页', async () => {
+    await nav('项目'); await page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first().click();
+    let release; fake.ctxGate = new Promise(r => release = r);
+    await page.locator('.pf-card.pf-folder').filter({ hasText: '第 1 季' }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '本季设定…' }).click();
+    await page.getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目', exact: true }).click();
+    fake.ctxGate = null; release(); await page.waitForTimeout(1200);
+    await expect(seasonDlg()).toHaveCount(0); await expect(page.getByRole('region', { name: '项目资产库' })).toBeHidden();
+    await expect(page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first()).toBeVisible();
   });
 
   await check('返工·项目目录季菜单「本季设定…」：打开资产页的本季设定，写入带来源集', async () => {

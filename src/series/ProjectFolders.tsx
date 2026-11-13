@@ -20,7 +20,7 @@ export type ProjectFoldersProps = {
   /** 当前素材库的稳定 ID。目录位置与「刚新建的剧」按库分开存；未知时只放内存、不读不写。 */
   libraryId?: string;
   /** 第二期 P2a：季的「本季设定…」。宿主核对归组、走切项目保护后打开资产页的本季设定；不传则不显示。 */
-  onOpenSeasonSettings?: (seasonId: string, projectId: string) => void;
+  onOpenSeasonSettings?: (seasonId: string, projectId: string, signal: AbortSignal) => void;
 };
 type Loc = { level: 'root' } | { level: 'series'; seriesId: string } | { level: 'season'; seriesId: string; seasonId: string };
 type Sort = 'updated' | 'name' | 'created';
@@ -93,6 +93,15 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const setSort = (s: Sort) => { setSortState(s); writeSession(SORT_KEY, s); };
 
   const node = loc.level === 'root' ? undefined : tree.series.find(n => n.series.id === loc.seriesId);
+  // 季菜单跳转在宿主核对归组期间可被取消：再发一次、换目录（面包屑 / 进子目录）、换库或离开本页都作废旧跳转，迟到的响应不再切集
+  const seasonJump = useRef<AbortController | null>(null);
+  const cancelSeasonJump = () => { seasonJump.current?.abort(); seasonJump.current = null; };
+  useEffect(() => cancelSeasonJump, []);
+  useEffect(() => { cancelSeasonJump(); }, [JSON.stringify(loc), libraryId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const openSeasonSettings = (seasonId: string, projectId: string) => {
+    if (!onOpenSeasonSettings) return; cancelSeasonJump();
+    const jump = new AbortController(); seasonJump.current = jump; onOpenSeasonSettings(seasonId, projectId, jump.signal);
+  };
   const seasonContainer = loc.level === 'season' ? node?.seasons.find(c => c.season?.id === loc.seasonId) : undefined;
   // 当前位置失效（剧或季被删、换了库）就回到上一层。刚新建的剧已并入 tree，不会被误判。
   useEffect(() => {
@@ -297,7 +306,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
         {onOpenSeasonSettings && (() => {
           // 本季设定从这一季的某一集打开：优先当前项目（若就在这一季），否则用这一季第一集；空季没有集可借，先禁用并说明
           const eps = list[i]?.episodes ?? [], via = eps.find(p => p.id === activeId) ?? [...eps].sort((a, b) => (a.episode_no ?? 0) - (b.episode_no ?? 0))[0];
-          return <button role="menuitem" disabled={busy || !via} title={via ? undefined : '这一季还没有集：先新建一集，再设置本季'} onClick={() => { if (!via) return; setMenu(null); onOpenSeasonSettings(menu.season.id, via.id); }}>本季设定…{!via && <small>需先有一集</small>}</button>;
+          return <button role="menuitem" disabled={busy || !via} title={via ? undefined : '这一季还没有集：先新建一集，再设置本季'} onClick={() => { if (!via) return; setMenu(null); openSeasonSettings(menu.season.id, via.id); }}>本季设定…{!via && <small>需先有一集</small>}</button>;
         })()}
         <button role="menuitem" disabled={busy} onClick={() => { setMenu(null); setDialog({ type: 'season', season: menu.season }); }}>改名 / 改季号…</button>
         <button role="menuitem" className="pf-danger" disabled={busy || (list[i]?.episodes.length ?? 0) > 0} title={(list[i]?.episodes.length ?? 0) > 0 ? '只有空季可以删除' : undefined} onClick={() => deleteSeason(menu.season)}>删除空季</button>
