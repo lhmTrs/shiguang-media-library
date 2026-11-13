@@ -79,6 +79,26 @@ test('generation freezes only the episode’s visible assets and effective selec
   assert.equal(generation.assetSnapshot(f.a.id).scopedAssets, undefined);
 });
 
+test('backup keeps the historical owner when an asset’s promotion source episode is removed', async t => {
+  const f = await fixture(t);
+  const draft = await local(f, f.ep.id, '可提升人物');
+  const context_token = f.store.scoped.assetContext(f.ep.id).context_token;
+  const { preview_token } = f.store.scopedImpact.previewPromotion('episode', f.ep.id, draft.id, { context_token });
+  f.store.scopedImpact.commitPromotion('episode', f.ep.id, draft.id, {
+    request_id: randomUUID(), context_token, preview_token,
+  });
+  f.projects.remove(f.ep.id);
+  const backup = f.store.backup();
+  assert.doesNotThrow(() => f.store.validateBackup(backup));
+  const restored = await creativeFixture();
+  t.after(restored.close);
+  restored.projects.remove(restored.a.id);
+  restored.projects.remove(restored.b.id);
+  await restored.store.restore(backup);
+  assert.equal(restored.store.version(draft.id, draft.revision).project_id, f.ep.id);
+  assert.equal(restored.store.get(draft.id).owner_id, f.series.id);
+});
+
 test('context and scoped reads keep sibling, standalone, other series and public owners isolated', async t => {
   const f = await fixture(t);
   const { scoped, ep, peer, rootEpisode, series, season, other, otherEpisode, publicId } = f;

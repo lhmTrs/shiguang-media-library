@@ -337,7 +337,9 @@ export class ProjectAssets {
     const versionKeys = new Set();
     for (const v of t.creative_asset_versions) {
       const a = assets.get(v.asset_id), s = parse(v.snapshot), key = v.asset_id + '/' + v.version;
-      if (!a || versionKeys.has(key) || v.version < 1 || v.version > a.revision || s.id !== a.id || s.project_id !== null && !projectIds.has(s.project_id) || s.project_id === null && !seriesIds.has(s.owner_id) || s.revision !== v.version || v.created_at !== v.updated_at) throw fault('备份版本引用无效');
+      if (!a || versionKeys.has(key) || v.version < 1 || v.version > a.revision || s?.id !== a.id || s.revision !== v.version || v.created_at !== v.updated_at) throw fault('备份版本引用无效');
+      // Only the live owner is a foreign reference. An old revision can record
+      // an episode that has since been removed after promoting this asset.
       if (v.version === a.revision && (s.project_id !== a.project_id ||
           (s.owner_type ?? 'project') !== a.owner_type || (s.owner_id ?? s.project_id) !== a.owner_id)) {
         throw fault('备份当前版本的资产归属不一致');
