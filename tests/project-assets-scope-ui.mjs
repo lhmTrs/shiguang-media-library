@@ -46,7 +46,9 @@ async function routeScoped(route) {
   if (fake.mode === 'missing') return route.fulfill({ status: 404, json: { error: '旧版后端没有这个接口' } });
   if (fake.mode === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><body>旧版后端把未知路径交给前端页面</body></html>' });
   const ctxMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-context$/);
-  if (ctxMatch) { if (fake.ctxGate) await fake.ctxGate; const c = fake.ctx[ctxMatch[1]]; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
+  if (ctxMatch) { const c = fake.ctx[ctxMatch[1]] && structuredClone(fake.ctx[ctxMatch[1]]); // 按请求发出时的归组回应（模拟服务端当时生成的结果）
+    if (fake.ctxGateOnce) { const g = fake.ctxGateOnce; fake.ctxGateOnce = null; await g; }
+    if (fake.ctxGate) await fake.ctxGate; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
   // 第 3 步：同名检查、按作用域新建、集内追加造型
   const scopeOf = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/(names\/check|assets)$/);
   if (scopeOf && route.request().method() === 'POST') {
@@ -531,6 +533,22 @@ try {
     await expect(dlg).toContainText('1 个人物有分数（其中 1 个已归档）'); await dlg.getByRole('button', { name: '确认删除并保存' }).click(); await expect(dlg).toHaveCount(0);
     const save = fake.writes.filter(w => w.method === 'PATCH' && w.path.endsWith('/attribute-config')).at(-1); assert.equal(save.body.removal_confirmation?.token, 'a'.repeat(64));
     fake.archivedOnly = false; await scopeSwitch().getByRole('button').first().click(); await expect(list()).toHaveAttribute('aria-busy', 'false');
+  });
+
+
+  await check('返工3·同一集换季：页面已显示新季后，旧季回应晚到不回退显示、不打开旧季', async () => {
+    const before = fake.ctx[eps[0].id], rev = before.membership_revision;
+    let release; fake.ctxGateOnce = new Promise(r => release = r);
+    await work().getByRole('button', { name: '第 1 季设定' }).click(); // 这次读到的是甲季（旧版本），回应被扣住
+    fake.ctx[eps[0].id] = { ...before, season: { id: 'season-2', name: '第 2 季' }, membership_revision: rev + 1, context_token: 'ctx-moved-2' };
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await expect(work().getByRole('button', { name: '第 2 季设定' })).toBeVisible();
+    release(); await page.waitForTimeout(1500);
+    await expect(work().getByRole('button', { name: '第 2 季设定' })).toBeVisible(); await expect(seasonDlg()).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: /本季设定$/ })).toHaveCount(0);
+    fake.ctx[eps[0].id] = { ...before, membership_revision: rev + 2 }; await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(work().getByRole('button', { name: '第 1 季设定' })).toBeVisible();
+    // 正常点击仍能打开
+    await work().getByRole('button', { name: '第 1 季设定' }).click(); await expect(seasonDlg()).toBeVisible(); await seasonDlg().getByRole('button', { name: '关闭' }).click();
   });
 
   await check('返工·季菜单跳转核对中点面包屑返回：迟到的响应不再切到资产页', async () => {

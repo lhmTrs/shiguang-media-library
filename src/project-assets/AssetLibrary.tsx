@@ -326,19 +326,27 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   // 归组（剧 / 季）随时可能在别处被改（另一窗口移集、换季）：刷新列表、回到窗口、写入遇 ASSET_SCOPE_CHANGED 时都重读；
   // 只采用最新一次请求的结果。返回读到的归组，供「本季设定」打开前确认当前季。
   const ctxSeq = useRef(0), activeProjectRef = useRef(activeProject); activeProjectRef.current = activeProject;
+  // 归组新旧的唯一判定：同一集只采用 membership_revision 不比已采用的更旧的结果。后台重读与「本季设定」打开都经过这里，
+  // 谁的请求先发、谁的回应后到都不影响：旧版本的回应既不改页面显示的归属，也不能打开旧季。
+  const ctxRef = useRef<AssetContext | null>(null);
+  function adoptContext(c: AssetContext | null): boolean {
+    const cur = ctxRef.current;
+    if (c && cur && cur.project.id === c.project.id && Number(cur.membership_revision) > Number(c.membership_revision)) return false;
+    ctxRef.current = c; setAssetCtx(c); return true;
+  }
   async function fetchContext(): Promise<AssetContext | null> {
     const project = activeProjectRef.current, seq = ++ctxSeq.current;
-    if (!project) { setAssetCtx(null); return null; }
+    if (!project) { adoptContext(null); return null; }
     try {
       const c = await request<AssetContext>('/projects/' + encodeURIComponent(project) + '/asset-context');
       if (seq !== ctxSeq.current || project !== activeProjectRef.current) return null;
-      const next = c?.project?.id === project ? c : null; setAssetCtx(next); return next;
+      const next = c?.project?.id === project ? c : null; if (!adoptContext(next)) return ctxRef.current; return next;
     } catch (e: any) {
       if (seq !== ctxSeq.current) return null;
-      setAssetCtx(null); if (!contextUnavailable(e)) setError('读取项目所属的剧和季失败：' + (e.message || '请稍后重试')); return null;
+      adoptContext(null); if (!contextUnavailable(e)) setError('读取项目所属的剧和季失败：' + (e.message || '请稍后重试')); return null;
     }
   }
-  useEffect(() => { if (!active || !activeProject) { ctxSeq.current++; setAssetCtx(null); return; } void fetchContext(); return () => { ctxSeq.current++; }; }, [active, activeProject]);
+  useEffect(() => { if (!active || !activeProject) { ctxSeq.current++; adoptContext(null); return; } void fetchContext(); return () => { ctxSeq.current++; }; }, [active, activeProject]);
   useEffect(() => {
     if (!active) return; const again = () => { if (!document.hidden) void fetchContext(); };
     document.addEventListener('visibilitychange', again); window.addEventListener('focus', again);
@@ -581,7 +589,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     try { c = await request<AssetContext>('/projects/' + encodeURIComponent(project) + '/asset-context'); }
     catch (e: any) { if (!stale()) setError('读取这一集所属的季失败：' + (e.message || '请稍后重试')); return; }
     if (stale() || c?.project?.id !== project) return;
-    ctxSeq.current++; setAssetCtx(c); // 这次读到的归组最新：作废更早发出的重读
+    // 页面已经采用了更新的归组（例如回到窗口时读到这集已换季）：这次的旧结果作废，不改显示、不打开旧季
+    if (!adoptContext(c)) { setNotice('这一集的所属季刚变了，没有打开旧的本季设定；请按现在的季重新打开'); return; }
     if (expectSeasonId && c.season?.id !== expectSeasonId) { setNotice('这一集的所属季已变化，没有打开本季设定；请从项目目录重新打开'); return; }
     if (!c.season || !c.series) { setNotice('这一集现在不属于任何季，没有本季设定'); return; }
     // 记下打开时的来源集和它的归组令牌：季写入时一起提交，服务端在写事务里核对这集仍在这一季
