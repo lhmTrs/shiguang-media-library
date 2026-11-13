@@ -60,14 +60,21 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   scopeWrite('post', '/assets', (type, id, req) => writes.create(type, id, req.body));
   scopeWrite('put', '/assets/:assetId', (type, id, req) => writes.save(type, id, req.params.assetId, req.body));
   scopeWrite('patch', '/assets/:assetId/overrides', (type, id, req) => writes.setOverride(type, id, req.params.assetId, req.body));
+  const append = store.scopedAppend;
+  scopeWrite('post', '/assets/:assetId/append/media-receipt', (type, id, req) => append.mediaReceipt(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/append/preview', (type, id, req) => append.preview(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/append', (type, id, req) => append.commit(type, id, req.params.assetId, req.body));
   scopeWrite('get', '/attribute-config', (type, id, req) => store.scoped.attributeConfig(type, id, req.query.asset_id));
+  scopeWrite('patch', '/attribute-config', (type, id, req) => writes.patchConfig(type, id, req.body));
+  scopeWrite('post', '/attribute-config/removal-preview', (type, id, req) => writes.configRemovalPreview(type, id, req.body));
+  scopeWrite('post', '/attribute-scores', (type, id, req) => writes.scoreBatch(type, id, req.body));
   scopeWrite('get', '/assets/:assetId/attributes', (type, id, req) => store.scoped.attributeScores(type, id, req.params.assetId));
   scopeWrite('patch', '/assets/:assetId/attributes', (type, id, req) => writes.patchScores(type, id, req.params.assetId, req.body));
   route('get', '/scoped-requests/:requestId', req => writes.request(req.params.requestId));
   route('get', '/scopes', () => store.scopes());
   route('get', '/assets', req => store.list(req.query));
   route('post', '/assets', req => store.create(req.body));
-  route('get', '/assets/:id', req => store.get(req.params.id));
+  route('get', '/assets/:id', req => store.localAsset(store.get(req.params.id)));
   router.get('/assets/:id/voice/:voiceId',asyncRoute(async(req,res)=>{const result=await store.voices.preview(store.get(req.params.id),req.params.voiceId);res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});res.type(result.mime).send(result.bytes);}));
   route('put', '/assets/:id', async req => {
     const previous=store.get(req.params.id),saved=await store.save(req.params.id, req.body.asset, req.body.expected_revision);

@@ -247,11 +247,18 @@ export class ReferenceImageImports{
   async register(s,file,d){
     await this.pictures.current(s.state);this.guard(s);const current=await fs.lstat(file);
     if(identity(current)!==identity(d.stat))throw fault('图片已变化，未登记到资料',409);
-    const db=this.lib.db,old=db.prepare('SELECT * FROM assets WHERE path=?').get(file);
-    if(old&&(old.trashed||old.kind!=='photo'||old.root_id!==s.state.root.id))throw fault('已有素材记录状态不同，请核对素材库；文件已保留',409);
-    const mediaId=old?.id||randomUUID();
-    if(!old){const ids=indexFileIdentity(current);db.prepare('INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mediaId,s.state.root.id,file,path.basename(file),path.extname(file).slice(1).toLowerCase(),'photo',current.size,current.mtimeMs,current.birthtimeMs||current.mtimeMs,'','','参考图片导入',0,ids.dev,ids.ino,d.hash);}
-    this.lib.directoryClassification?.sync(s.state.root.id,mediaId);
+    const db=this.lib.db;
+    const register = () => {
+      if (s.target.seriesId) this.store.lockDirectory();
+      this.guard(s);
+      const old=db.prepare('SELECT * FROM assets WHERE path=?').get(file);
+      if(old&&(old.trashed||old.kind!=='photo'||old.root_id!==s.state.root.id))throw fault('已有素材记录状态不同，请核对素材库；文件已保留',409);
+      const mediaId=old?.id||randomUUID();
+      if(!old){const ids=indexFileIdentity(current);db.prepare('INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mediaId,s.state.root.id,file,path.basename(file),path.extname(file).slice(1).toLowerCase(),'photo',current.size,current.mtimeMs,current.birthtimeMs||current.mtimeMs,'','','参考图片导入',0,ids.dev,ids.ino,d.hash);}
+      this.lib.directoryClassification?.sync(s.state.root.id,mediaId);
+      return mediaId;
+    };
+    const mediaId = s.target.seriesId ? this.store.tx(register) : register();
     s.mediaId=mediaId;s.finalName=path.basename(file);s.status='ready';s.error=null;
     // No pathname-based deletion: completed files and private receive caches are retained.
     return this.dto(s);

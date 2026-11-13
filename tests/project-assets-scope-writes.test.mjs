@@ -82,3 +82,59 @@ test('分镜初始化在同剧复用共享人物 ID，备份保留引用，引�
   await restored.restore(board.backup());
   assert.equal(restored.read(f.episode.id).project.characters[0].id, shared.asset.id);
 });
+
+test('删除后同毫秒重建的覆盖拒绝旧令牌', async t => {
+  const f = await fixture(t), { asset, context_token } = f.create('character', '共享造型');
+  addLook(asset, '日常');
+  const second = addLook(asset, '节日');
+  await f.writes.save('series', f.series.id, asset.id, {
+    request_id: randomUUID(), context_token, expected_revision: asset.revision, asset,
+  });
+  const now = Date.now;
+  Date.now = () => 200;
+  try {
+    const set = (action, detail) => f.writes.setOverride('episode', f.episode.id, asset.id, {
+      request_id: randomUUID(), context_token: detail.context_token,
+      write_token: detail.effective.default_look.write_token, field: { key: 'default_look' }, action,
+      ...(action === 'set' && {value: second.id}),
+    });
+    const first = set('set', f.scoped.detail('episode', f.episode.id, asset.id));
+    const reverted = set('inherit', first);
+    const recreated = set('set', reverted);
+    assert.notEqual(first.effective.default_look.write_token, recreated.effective.default_look.write_token);
+    assert.throws(() => set('inherit', first), { code: 'ASSET_STALE' });
+  } finally {
+    Date.now = now;
+  }
+});
+
+test('全剧维度移除需要核对剧级评分与本集覆盖，AI 保留人工分', async t => {
+  const f = await fixture(t), { asset, context_token } = f.create('character', '人物评分');
+  const config = f.scoped.attributeConfig('series', f.series.id);
+  const axis = config.dimensions[0].id;
+  const manual = f.writes.patchScores('series', f.series.id, asset.id, {
+    request_id: randomUUID(), context_token, expected_config_revision:0, expected_attribute_revision:0,
+    changes:[{dimension_id:axis, value:0}],
+  });
+  const ai = f.writes.scoreBatch('series', f.series.id, {
+    request_id: randomUUID(), context_token, config_revision:0,
+    scores:[{asset_id:asset.id, dimension_id:axis, value:30, reason:'合成依据'}],
+  });
+  assert.equal(manual.scores[axis].value, 0);
+  assert.equal(ai.skipped[0].code, 'MANUAL_PRESERVED');
+  const detail = f.scoped.detail('episode', f.episode.id, asset.id);
+  f.writes.setOverride('episode', f.episode.id, asset.id, {
+    request_id:randomUUID(), context_token:detail.context_token, write_token:detail.effective.attribute_scores[axis].write_token,
+    action:'set', field:{key:'attribute_score', dimension_id:axis}, value:{value:null},
+  });
+  const edit = { request_id:randomUUID(), context_token, expected_revision:0, dimensions:config.dimensions.slice(1) };
+  assert.throws(() => f.writes.patchConfig('series', f.series.id, edit), {code:'DIMENSION_REMOVAL_CONFIRM'});
+  const preview = f.writes.configRemovalPreview('series', f.series.id, {context_token, expected_revision:0, remove:[axis]});
+  assert.equal(preview.affected[0].episode_overrides, 1);
+  assert.equal(preview.affected[0].scored_assets, 1);
+  const saved = f.writes.patchConfig('series', f.series.id, {...edit, removal_confirmation:{token:preview.token}});
+  assert.equal(saved.revision, 1);
+  assert.equal(f.scoped.detail('episode', f.episode.id, asset.id).effective.attribute_scores[axis], undefined);
+  assert.deepEqual(f.scoped.attributeScores('series', f.series.id, asset.id).scores, {});
+  f.store.validateBackup(f.store.backup());
+});

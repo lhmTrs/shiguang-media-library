@@ -1,6 +1,7 @@
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, text } from './model.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
-import { DEFAULT_DIMENSIONS, isRecord, isRevision, scoreChanges } from '../project-attributes/model.mjs';
+import { DEFAULT_DIMENSIONS, dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from '../project-attributes/model.mjs';
 
 const conflict = (code, message, details) => fault(message, 409, { code, details });
 const readOnly = () => fault('请在允许编辑的作用域操作', 403, { code: 'ASSET_SCOPE_READ_ONLY' });
@@ -15,6 +16,7 @@ function nameInput(input) {
 }
 
 export class ScopedAssetWrites {
+  #configKey = randomBytes(32);
   constructor(assets) {
     this.assets = assets;
   }
@@ -119,8 +121,9 @@ export class ScopedAssetWrites {
       const { requestId, hash, prior } = this.receipt(type, id, operation, input);
       if (prior) return this.visibleReceipt(scope, prior);
       this.reads.assertContextToken(scope, input.context_token);
-      const result = { ...apply(scope), request_id: requestId };
-      const now = Date.now();
+      const last = this.db.prepare('SELECT MAX(updated_at) latest FROM creative_asset_scope_requests').get().latest;
+      const now = Math.max(Date.now(), Number(last ?? 0) + 1);
+      const result = { ...apply({ ...scope, operation_at: now }), request_id: requestId };
       this.db.prepare(`INSERT INTO creative_asset_scope_requests
         (id,scope_type,scope_id,request_hash,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
         .run(requestId, type, id, hash, canonical(result), now, now);
@@ -260,15 +263,153 @@ export class ScopedAssetWrites {
         if (!valid.has(change.dimension_id)) throw invalid('评分维度已不存在');
         current.scores[change.dimension_id] = { value: change.value, source: 'manual', reason: null, updated_at: now };
       }
-      if (current.attribute_revision === 0) {
-        this.db.prepare('INSERT INTO series_character_attributes (id,series_id,revision,data_json,created_at,updated_at) VALUES(?,?,1,?,?,?)')
-          .run(assetId, id, canonical(current.scores), now, now);
-      } else {
-        this.db.prepare('UPDATE series_character_attributes SET revision=?,data_json=?,updated_at=? WHERE id=? AND series_id=?')
-          .run(current.attribute_revision + 1, canonical(current.scores), now, assetId, id);
-      }
+      this.writeScores(id, assetId, current, now);
       current.attribute_revision++;
       return current;
+    });
+  }
+
+  writeScores(seriesId, assetId, current, now) {
+    if (current.attribute_revision === 0) {
+      this.db.prepare('INSERT INTO series_character_attributes (id,series_id,revision,data_json,created_at,updated_at) VALUES(?,?,1,?,?,?)')
+        .run(assetId, seriesId, canonical(current.scores), now, now);
+    } else {
+      this.db.prepare('UPDATE series_character_attributes SET revision=?,data_json=?,updated_at=? WHERE id=? AND series_id=?')
+        .run(current.attribute_revision + 1, canonical(current.scores), now, assetId, seriesId);
+    }
+  }
+
+  configImpact(config, remove) {
+    const dimensions = new Map(config.dimensions.map(dimension => [dimension.id, dimension]));
+    const affected = new Map(remove.map(id => {
+      if (!dimensions.has(id)) throw invalid('要删除的维度已不存在');
+      return [id, { dimension_id: id, name: dimensions.get(id).name, scored_assets: 0, archived_scored_assets: 0, episode_overrides: 0 }];
+    }));
+    const rows = this.db.prepare(`SELECT s.id,s.revision,s.data_json,a.archived_at FROM series_character_attributes s
+      JOIN creative_assets a ON a.id=s.id WHERE s.series_id=? ORDER BY s.id`).all(config.series_id)
+      .map(row => ({ ...row, scores: JSON.parse(row.data_json) }));
+    const overlays = this.db.prepare(`SELECT o.id,o.field_key,o.value_json,o.revision,o.updated_at FROM creative_asset_overrides o
+      JOIN creative_assets a ON a.id=o.asset_id
+      WHERE a.owner_type='series' AND a.owner_id=? AND o.scope_type='episode' AND o.field_key LIKE 'attribute_score:%'
+      ORDER BY o.id`).all(config.series_id);
+    const records = rows.filter(row => remove.some(id => {
+      // Count every removed axis, including explicit unscored values.
+      return Object.hasOwn(row.scores, id);
+    }));
+    for (const row of records) for (const id of remove) if (Object.hasOwn(row.scores, id)) {
+      affected.get(id)[row.archived_at ? 'archived_scored_assets' : 'scored_assets']++;
+    }
+    const overrides = overlays.filter(row => affected.has(row.field_key.slice('attribute_score:'.length)));
+    for (const row of overrides) affected.get(row.field_key.slice('attribute_score:'.length)).episode_overrides++;
+    const token = createHmac('sha256', this.#configKey)
+      .update(canonical([config.series_id, config.revision, remove, records, overrides])).digest('hex');
+    const scored = new Set([...rows.flatMap(row => Object.keys(row.scores)),
+      ...overlays.map(row => row.field_key.slice('attribute_score:'.length))]);
+    return { token, records, overrides, scored, affected: [...affected.values()] };
+  }
+
+  configRemovalPreview(type, id, input) {
+    if (type !== 'series') throw readOnly();
+    const remove = distinctIds(input?.remove, 8, '待删除维度').sort();
+    return this.assets.tx(() => {
+      this.assets.lockDirectory();
+      const scope = this.scope(type, id);
+      this.reads.assertContextToken(scope, input.context_token);
+      const config = this.seriesConfig(id);
+      if (config.revision !== input.expected_revision) throw stale();
+      const { token, affected } = this.configImpact(config, remove);
+      return { token, config_revision: config.revision, affected };
+    });
+  }
+
+  patchConfig(type, id, input) {
+    if (type !== 'series') throw readOnly();
+    const proposed = dimensionsInput(input?.dimensions);
+    if (!isRevision(input.expected_revision)) throw invalid('配置修订号无效');
+    const keep = input.preserve_scored_axes ?? [];
+    const preserve = new Set(Array.isArray(keep) && keep.length === 0 ? [] : distinctIds(keep, 8, '确认保持评分含义的维度'));
+    const confirmation = input.removal_confirmation;
+    if (confirmation !== undefined && (!isRecord(confirmation) || !/^[a-f0-9]{64}$/.test(confirmation.token))) {
+      throw invalid('删除确认凭证无效');
+    }
+    return this.mutation(type, id, 'attribute-config', input, scope => {
+      this.lockProjects(scope);
+      const config = this.seriesConfig(id);
+      if (config.revision !== input.expected_revision) throw stale();
+      const previous = new Map(config.dimensions.map(dimension => [dimension.id, dimension]));
+      const retained = new Set(proposed.map(dimension => dimension.id));
+      const remove = [...previous.keys()].filter(axis => !retained.has(axis)).sort();
+      const impact = this.configImpact(config, remove);
+      if (confirmation && (!remove.length || !timingSafeEqual(Buffer.from(confirmation.token, 'hex'), Buffer.from(impact.token, 'hex')))) {
+        throw conflict('REMOVAL_PREVIEW_STALE', '删除影响已变化，请重新核对');
+      }
+      if (!confirmation && (impact.records.length || impact.overrides.length)) {
+        throw conflict('DIMENSION_REMOVAL_CONFIRM', '请先核对删除维度的影响');
+      }
+      const dimensions = proposed.map(dimension => {
+        if (dimension.id === null) return { ...dimension, id: randomUUID() };
+        const old = previous.get(dimension.id);
+        if (!old) throw invalid('维度编号已退役或不属于当前配置，新维度请使用 null');
+        if (nameKey(dimension.positive_label) === nameKey(old.negative_label) &&
+            nameKey(dimension.negative_label) === nameKey(old.positive_label)) {
+          throw invalid('对调维度两端时，请以新维度替换，避免旧分数含义反转');
+        }
+        const next = dimension.tier_labels === undefined && old.tier_labels ? { ...dimension, tier_labels: old.tier_labels } : dimension;
+        if (impact.scored.has(next.id) && !preserve.has(next.id) && canonical(dimensionDTO(old)) !== canonical(dimensionDTO(next))) {
+          throw conflict('AXIS_MEANING_CONFIRM', '请确认已有评分的含义和正负方向不变，或换用新维度');
+        }
+        return next;
+      });
+      const now = Date.now();
+      for (const row of impact.records) {
+        for (const axis of remove) delete row.scores[axis];
+        this.writeScores(id, row.id, { attribute_revision: row.revision, scores: row.scores }, now);
+      }
+      for (const row of impact.overrides) this.db.prepare('DELETE FROM creative_asset_overrides WHERE id=?').run(row.id);
+      const data = { source: 'user', updated_at: now, dimensions }, revision = config.revision + 1;
+      if (config.revision === 0) {
+        this.db.prepare('INSERT INTO series_attribute_configs (id,revision,data_json,created_at,updated_at) VALUES(?,?,?,?,?)')
+          .run(id, revision, canonical(data), now, now);
+      } else {
+        this.db.prepare('UPDATE series_attribute_configs SET revision=?,data_json=?,updated_at=? WHERE id=?')
+          .run(revision, canonical(data), now, id);
+      }
+      return this.assets.attributes.configDTO({ series_id: id, revision, ...data });
+    });
+  }
+
+  scoreBatch(type, id, input) {
+    if (type !== 'series') throw readOnly();
+    const scores = scoreChanges(input?.scores, true);
+    if (!isRevision(input.config_revision)) throw invalid('评分配置修订号无效');
+    return this.mutation(type, id, 'attribute-scores', input, scope => {
+      this.lockProjects(scope);
+      const config = this.seriesConfig(id);
+      if (config.revision !== input.config_revision) throw stale();
+      const valid = new Set(config.dimensions.map(dimension => dimension.id));
+      const records = new Map(), dirty = new Set();
+      const result = { config_revision: config.revision, applied: 0, skipped: [] };
+      const now = Date.now();
+      for (const { asset_id, dimension_id, value, reason } of scores) {
+        if (!records.has(asset_id)) {
+          const asset = this.db.prepare(`SELECT id FROM creative_assets WHERE id=? AND owner_type='series'
+            AND owner_id=? AND kind='character' AND archived_at=0`).get(asset_id, id);
+          records.set(asset_id, asset ? this.seriesScores(id, asset.id) : null);
+        }
+        const record = records.get(asset_id);
+        let code;
+        if (!record) code = 'ASSET_UNAVAILABLE';
+        else if (!valid.has(dimension_id)) code = 'DIMENSION_UNAVAILABLE';
+        else if (record.scores[dimension_id]?.source === 'manual') code = 'MANUAL_PRESERVED';
+        if (code) result.skipped.push({ asset_id, dimension_id, code });
+        else {
+          record.scores[dimension_id] = { value, source: 'ai', reason, updated_at: now };
+          dirty.add(asset_id);
+          result.applied++;
+        }
+      }
+      for (const assetId of dirty) this.writeScores(id, assetId, records.get(assetId), now);
+      return result;
     });
   }
 
@@ -310,9 +451,9 @@ export class ScopedAssetWrites {
       const row = this.db.prepare('SELECT revision,updated_at FROM creative_asset_overrides WHERE id=?').get(rowId);
       if (action === 'inherit') this.db.prepare('DELETE FROM creative_asset_overrides WHERE id=?').run(rowId);
       else if (row) this.db.prepare('UPDATE creative_asset_overrides SET value_json=?,revision=?,updated_at=? WHERE id=?')
-        .run(canonical(value), row.revision + 1, Math.max(Date.now(), row.updated_at + 1), rowId);
+        .run(canonical(value), row.revision + 1, Math.max(scope.operation_at, row.updated_at + 1), rowId);
       else {
-        const now = Date.now();
+        const now = scope.operation_at;
         this.db.prepare(`INSERT INTO creative_asset_overrides
           (id,scope_type,scope_id,asset_id,field_key,value_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`)
           .run(rowId, type, id, assetId, fieldKey, canonical(value), now, now);

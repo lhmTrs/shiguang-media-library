@@ -120,6 +120,7 @@ export class StoryboardDatabase {
   request(projectId,id) { this.project(projectId); if(!idOK(id)) throw fault('请求编号无效'); const row=this.db.prepare('SELECT result_json FROM storyboard_import_requests WHERE id=? AND project_id=?').get(id,projectId); return row?{completed:true,receipt:JSON.parse(row.result_json)}:{completed:false}; }
   save(projectId,input) {
     return this.tx(()=>{
+      this.assets.lockDirectory();
       this.project(projectId,true);this.generationLocks?.assertWritable(projectId); const old=this.head(projectId); if(!old) throw fault('请先用完整 JSON 初始化分镜',404);
       this.expected(old,input.expected_revision);
       const p=M.normalizeProject(input.project), previous=JSON.parse(old.document_json);

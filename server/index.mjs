@@ -448,7 +448,7 @@ app.get("/api/projects/:id/agent-guide", asyncRoute(async (req, res) => {
     throw error;
   }
   if (target.project_kind !== "normal") return res.status(404).json({ error: "未找到可分享的项目" });
-  res.type("text/markdown").send(projectAgentGuide({ project: target, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
+  res.type("text/markdown").send(projectAgentGuide({ project: { ...target, ...projects.series.membership(target.id) }, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
 }));
 app.use("/api", (req, res, next) => {
   const cookie = req.headers.cookie?.match(

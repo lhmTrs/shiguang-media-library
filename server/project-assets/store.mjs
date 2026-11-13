@@ -11,6 +11,7 @@ import {CharacterVoiceFiles} from './voices.mjs';
 import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 import { ScopedProjectAssets } from './scoped.mjs';
 import { ScopedAssetWrites } from './scoped-writes.mjs';
+import { ScopedAssetAppend } from './scoped-append.mjs';
 import { validateScopedAssetBackup } from './scoped-backup.mjs';
 
 const parse = value => JSON.parse(value);
@@ -52,7 +53,8 @@ export class ProjectAssets {
     this.lib.creativeAssetStore = this;
     this.scoped ??= new ScopedProjectAssets(this);
     this.scopedWrites ??= new ScopedAssetWrites(this);
-    this.scoped.setWriteCapabilities({ edit_base: true, create_override: true });
+    this.scopedAppend ??= new ScopedAssetAppend(this);
+    this.scoped.setWriteCapabilities({ edit_base: true, create_override: true, append: true });
     return this;
   }
   lockDirectory() { if (this.lib.projectSeries) lockSeriesDirectory(this.db); }
@@ -337,6 +339,10 @@ export class ProjectAssets {
     for (const v of t.creative_asset_versions) {
       const a = assets.get(v.asset_id), s = parse(v.snapshot), key = v.asset_id + '/' + v.version;
       if (!a || versionKeys.has(key) || v.version < 1 || v.version > a.revision || s.id !== a.id || s.project_id !== null && !projectIds.has(s.project_id) || s.project_id === null && !seriesIds.has(s.owner_id) || s.revision !== v.version || v.created_at !== v.updated_at) throw fault('备份版本引用无效');
+      if (v.version === a.revision && (s.project_id !== a.project_id ||
+          (s.owner_type ?? 'project') !== a.owner_type || (s.owner_id ?? s.project_id) !== a.owner_id)) {
+        throw fault('备份当前版本的资产归属不一致');
+      }
       normalize(s); versionKeys.add(key);
     }
     for (const a of assets.values()) if (!versionKeys.has(a.id + '/' + a.revision)) throw fault('备份缺少当前版本');
@@ -383,6 +389,13 @@ export class ProjectAssets {
         }
       }
       if (Object.hasOwn(input, 'project_series')) restoreSeriesBackup(this.db, input.project_series);
+      if (this.lib.projectSeries) {
+        const nameConflict = this.db.prepare(`SELECT a.id asset_id,s.id shared_asset_id
+          FROM creative_assets a JOIN project_series_members m ON m.id=a.owner_id
+          JOIN creative_assets s ON s.owner_type='series' AND s.owner_id=m.series_id AND s.kind=a.kind AND s.name_key=a.name_key
+          WHERE a.owner_type='project' AND a.archived_at=0 AND s.archived_at=0 LIMIT 1`).get();
+        if (nameConflict) throw fault('备份恢复会造成继承链同名资产，未覆盖', 409, { code: 'ASSET_NAME_CONFLICT', details: nameConflict });
+      }
       for (const row of input.tables.creative_assets) {
         const a = this.get(row.id);
         if (a.project_id === null) this.lib.projectSeries.series(a.owner_id);
