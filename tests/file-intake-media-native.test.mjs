@@ -118,6 +118,117 @@ test('photo and audio hashes still use a held descriptor, NOFOLLOW and NONBLOCK 
   }
 });
 
+test('first fingerprint refreshes ctime once before the read and saves the full digest with that identity',async t=>{
+  const f=await fixture(t),bytes=Buffer.alloc(2*1024*1024+17,0x42);
+  bytes[bytes.length-1]=0x24;
+  const source=await f.file('first.mp4',bytes);
+  await fs.chmod(source,0o600);
+  const h=await f.receipts.handoff([source],{deferFingerprint:true}),old=h.files[0];
+  await fs.chmod(source,0o640);
+  const refreshed=stamp(await fs.lstat(source));
+  assert.notEqual(refreshed.ctimeMs,old.identity.ctimeMs);
+  assert.deepEqual({...refreshed,ctimeMs:old.identity.ctimeMs},old.identity);
+  await assert.rejects(selectionHash(old),{code:'INTAKE_SOURCE_CHANGED'});
+  await f.receipts.prepareHandoff(h.id);
+  const ready=await f.receipts.read('handoffs',h.id);
+  assert.equal(ready.preparation,'ready');
+  assert.deepEqual(ready.files[0],{...old,identity:refreshed,selectionSha256:createHash('sha256').update(bytes).digest('hex')});
+  assert.deepEqual(await revalidateSelection(ready.files[0]),refreshed);
+});
+
+test('first fingerprint rejects same-size changed mtime, same bytes at a replacement inode, and a symlink',async t=>{
+  const f=await fixture(t);
+  for(const change of ['mtime','inode','symlink']){
+    const source=await f.file(change+'.mp4','before');
+    await fs.utimes(source,1700000000,1700000000);
+    const h=await f.receipts.handoff([source],{deferFingerprint:true});
+    if(change==='mtime'){
+      await fs.writeFile(source,'after!');
+      await fs.utimes(source,1700000001,1700000001);
+    }else{
+      await fs.rename(source,source+'.kept');
+      if(change==='inode'){
+        await fs.copyFile(source+'.kept',source);
+        await fs.utimes(source,1700000000,1700000000);
+      }else await fs.symlink(source+'.kept',source);
+    }
+    await assert.rejects(f.receipts.prepareHandoff(h.id),{code:'INTAKE_SOURCE_CHANGED'});
+    const failed=await f.receipts.read('handoffs',h.id);
+    assert.equal(failed.preparation,'failed');
+    assert.deepEqual(failed.files,h.files);
+    assert.deepEqual(failed.preparationDiagnostic,{reason:'source-changed',code:'INTAKE_SOURCE_CHANGED',stage:'fingerprint',fileId:h.files[0].id,fileName:h.files[0].name});
+  }
+});
+
+test('a same-size rewrite with restored mtime during the first read is rejected without retry',async t=>{
+  const f=await fixture(t),source=await f.file('read-race.mp4',Buffer.alloc(2*1024*1024,0x42));
+  await fs.utimes(source,1700000000,1700000000);
+  const h=await f.receipts.handoff([source],{deferFingerprint:true}),old=h.files[0];
+  await fs.chmod(source,0o640);
+  const beforeRead=stamp(await fs.lstat(source));
+  assert.notEqual(beforeRead.ctimeMs,old.identity.ctimeMs);
+  const open=fs.open;let opens=0;
+  t.mock.method(fs,'open',async(p,...args)=>{
+    const handle=await open(p,...args);
+    if(p===source){
+      opens++;
+      const read=handle.read.bind(handle);
+      handle.read=async(...args)=>{
+        const result=await read(...args);
+        if(args[3]===0){
+          await fs.writeFile(source,Buffer.alloc(old.bytes,0x24));
+          await fs.utimes(source,1700000000,1700000000);
+        }
+        return result;
+      };
+    }
+    return handle;
+  });
+  await assert.rejects(f.receipts.prepareHandoff(h.id),{code:'INTAKE_SOURCE_CHANGED'});
+  const afterRead=stamp(await fs.lstat(source));
+  assert.notEqual(afterRead.ctimeMs,beforeRead.ctimeMs);
+  assert.deepEqual({...afterRead,ctimeMs:beforeRead.ctimeMs},beforeRead);
+  assert.equal(opens,1);
+  const failed=await f.receipts.read('handoffs',h.id);
+  assert.equal(failed.preparation,'failed');
+  assert.deepEqual(failed.files,h.files);
+});
+
+test('handoff persists safe missing, permission, cancelled and unknown reasons without exposing private diagnostics in the DTO',async t=>{
+  const f=await fixture(t);
+  const context=Object.assign(Object.create(FileIntake.prototype),{receipts:f.receipts,batches:new Map(),projects:{list:()=>[]},canTrash:false});
+  for(const [reason,code,word] of [['missing','ENOENT','找不到'],['permission','EACCES','没有权限'],['cancelled',null,'已取消'],['unknown',null,'未完成']]){
+    const source=await f.file('private-'+reason+'.mp4'),h=await f.receipts.handoff([source],{deferFingerprint:true});
+    const signal=reason==='cancelled'?AbortSignal.abort():undefined;
+    if(reason==='missing')await fs.unlink(source);
+    const open=fs.open;
+    const mock=t.mock.method(fs,'open',async(p,...args)=>{
+      if(p===source&&['permission','unknown'].includes(reason)){
+        throw Object.assign(new Error('raw exception '+source),{code:code??source});
+      }
+      return open(p,...args);
+    });
+    try {await assert.rejects(f.receipts.prepareHandoff(h.id,{signal}),e=>{
+      assert.ok(e.message.includes(word));
+      assert.ok(!e.message.includes(source));
+      if(reason==='cancelled')assert.equal(e.name,'AbortError');
+      else if(code)assert.equal(e.code,code);
+      return true;
+    });}finally{mock.mock.restore();}
+    const failed=await f.receipts.read('handoffs',h.id);
+    assert.equal(failed.preparation,'failed');
+    assert.ok(failed.preparationError.includes(word));
+    assert.deepEqual(failed.preparationDiagnostic,{reason,code,stage:'fingerprint',fileId:h.files[0].id,fileName:h.files[0].name});
+    const dto=await context.handoff(h.id);
+    assert.equal(dto.preparationError,failed.preparationError);
+    assert.equal(dto.preparationDiagnostic,undefined);
+    assert.ok(!JSON.stringify(failed.preparationDiagnostic).includes(source));
+  }
+  const legacy={id:crypto.randomUUID(),files:[],preparation:'failed',preparationError:'原文件核验未完成，未开始收纳；请从访达重新选择。'};
+  await f.receipts.write('handoffs',legacy.id,legacy);
+  assert.equal((await context.handoff(legacy.id)).preparationError,legacy.preparationError);
+});
+
 test('changed source bytes or replaced parent directory never acquire ready media proofs',async t=>{
   const f=await fixture(t),photo=await f.file('photo.heic'),audio=await f.file('sound.flac');
   const changed=await f.receipts.handoff([photo,audio],{deferFingerprint:true});

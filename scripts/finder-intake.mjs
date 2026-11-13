@@ -4,8 +4,22 @@ import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {constants} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 import {Receipts,error} from '../server/file-intake/files.mjs';
 const run=promisify(execFile);
+const fallbackMessage='无法读取所选素材或准备本机窗口，请在拾光文件任务中重新安装右键入口';
+
+async function logPreparationFailure(receipts,failure,handoffId) {
+  const {reason,code,stage,fileId}=failure.diagnostic??{reason:'unknown',code:null,stage:'prepare-handoff'};
+  const line='[finder-intake] '+JSON.stringify({handoffId,stage,reason,code,fileId,receiptDiagnostic:failure.receiptDiagnostic})
+    +' '+(failure.diagnostic?failure.message:fallbackMessage);
+  console.error(line);
+  // Automator may discard stderr. Keep one small, private log per failed
+  // selection and leave the filename details in the private receipt only.
+  const log=path.join(receipts.base,'handoffs',(handoffId??randomUUID())+'.failure.log');
+  try {await fs.writeFile(log,line+'\n',{flag:constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,mode:0o600});}
+  catch {console.error('[finder-intake] '+JSON.stringify({handoffId,stage:'write-diagnostic-log',reason:'无法保存核验日志'}));}
+}
 
 export async function readConfig(file) {
   const h=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
@@ -28,8 +42,14 @@ export async function running(dataDir) {
 }
 export async function intake(config,files,{onWindow}={}) {
   const c=await readConfig(config),receipts=await new Receipts(c.dataDir).init();
-  const handoff=await receipts.handoff(files,{deferFingerprint:true}),controller=new AbortController();
-  const preparation=receipts.prepareHandoff(handoff.id,{signal:controller.signal}).catch(()=>{});
+  let handoff;
+  try {handoff=await receipts.handoff(files,{deferFingerprint:true});}
+  catch(e){if(e.diagnostic)await logPreparationFailure(receipts,e);throw e;}
+  const controller=new AbortController();
+  const preparation=receipts.prepareHandoff(handoff.id,{signal:controller.signal}).catch(e=>{
+    if(e.diagnostic?.reason==='cancelled'&&controller.signal.aborted&&!e.receiptDiagnostic)return;
+    return logPreparationFailure(receipts,e,handoff.id);
+  });
   try {
   let current=await running(c.dataDir);
   if(!current) {
@@ -57,8 +77,9 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const [, , flag,config,separator,...files]=process.argv;
   if(flag!=='--config'||separator!=='--')throw Error('请从访达右键入口使用收纳素材');
   try {await intake(config,files);}catch(e) {
-    console.error('收纳未开始：'+(e.status?e.message:'无法读取所选素材或准备本机窗口，请在拾光文件任务中重新安装右键入口'));
-    try {const c=await readConfig(config);await run(c.helper,['--error',e.message],{maxBuffer:8192});}catch{}
+    const message=(e.diagnostic||e.status)?e.message:fallbackMessage;
+    if(!e.diagnostic)console.error('收纳未开始：'+message);
+    try {const c=await readConfig(config);await run(c.helper,['--error',message],{maxBuffer:8192});}catch{}
     process.exitCode=1;
   }
 }
