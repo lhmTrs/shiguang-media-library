@@ -8,11 +8,11 @@ import { randomUUID } from 'node:crypto';
 import { chromium, expect } from '@playwright/test';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
 import { selectProjectInBar, showPublicAssets, projectInBar } from './helpers/path-bar.mjs';
+import { builtDist, evidenceDir } from './helpers/artifacts.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
-const evidence = path.resolve(process.env.PROJECT_SWITCH_EVIDENCE || 'collab/results/PROJECT-SWITCH-REFRESH-20261104/browser-' + Date.now());
-const dist = path.resolve(process.env.PROJECT_SWITCH_DIST || path.join(root, 'dist'));
-await fs.mkdir(evidence, { recursive: false });
+const evidence = evidenceDir('project-switch', process.env.PROJECT_SWITCH_EVIDENCE);
+const dist = builtDist(root, process.env.PROJECT_SWITCH_DIST);
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'project-switch-ui-'));
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
 const port = socket.address().port; await new Promise(r => socket.close(r));
@@ -32,7 +32,9 @@ async function api(url, body, method) {
 }
 async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
 const work = () => page.getByRole('region', { name: '项目资产库' });
-const list = () => work().getByRole('complementary', { name: '当前项目资产列表' });
+const list = () => work().locator('section.ca-gallery');
+// 归档 / 恢复现在在资料详情右上角的「资料操作」菜单里
+async function detailAction(name) { await work().getByRole('button', { name: '资料操作', exact: true }).click(); return work().getByRole('menuitem', { name, exact: true }); }
 const cards = () => list().locator('.ca-card strong');
 async function settled(names) { await expect(list()).toHaveAttribute('aria-busy', 'false'); await expect(cards()).toHaveText(names); }
 async function nav(name) { await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true }).click(); }
@@ -80,21 +82,21 @@ try {
 
   await check('切换普通/公共项目立即清空旧列表和详情，保留各项目分类偏好', async () => {
     await list().locator('.ca-card').filter({ hasText: '甲人物' }).click();
-    await expect(work().getByRole('heading', { name: '甲人物', exact: true })).toBeVisible();
+    await expect(work().locator('.ca-name-input')).toHaveValue('甲人物');
     await work().getByLabel('搜索资产').fill('甲人物'); await settled(['甲人物']);
     const delayed = await holdResponse(url => url.pathname === '/api/project-assets/assets' && url.searchParams.get('project_id') === b.id);
     await selectProjectInBar(page, b.id); await delayed.captured;
     await expect(list()).toHaveAttribute('aria-busy', 'true'); await expect(cards()).toHaveCount(0);
     await expect(work().getByLabel('搜索资产')).toHaveValue('');
-    await expect(work().getByRole('heading', { name: '甲人物', exact: true })).toHaveCount(0);
+    await expect(work().locator('.ca-name-input')).toHaveCount(0);
     await expect(list().getByRole('status')).toContainText('正在加载'); await delayed.release(); await settled(['乙人物']);
     await showPublicAssets(page); await settled(['公共人物']);
-    await expect(work().getByRole('tab', { name: '场景', exact: true })).toBeDisabled();
+    await expect(work().getByRole('tab',{name:/^场景/})).toBeDisabled();
     await selectProjectInBar(page, a.id); await settled(['甲人物']);
-    await work().getByRole('tab', { name: '场景', exact: true }).click(); await settled(['甲场景']);
+    await work().getByRole('tab',{name:/^场景/}).click(); await settled(['甲场景']);
     await selectProjectInBar(page, b.id); await settled(['乙人物']);
     await selectProjectInBar(page, a.id); await settled(['甲场景']);
-    await work().getByRole('tab', { name: '人物', exact: true }).click(); await settled(['甲人物']);
+    await work().getByRole('tab',{name:/^人物/}).click(); await settled(['甲人物']);
   });
 
   await check('连续切换时，旧项目延迟成功/失败均不能覆盖当前项目', async () => {
@@ -114,15 +116,15 @@ try {
   });
 
   await check('从分镜返回时重新读取新增资产及当前详情的清单保护', async () => {
-    await list().locator('.ca-card').filter({ hasText: '甲人物' }).click(); await expect(work().getByRole('button', { name: '归档', exact: true })).toBeEnabled();
+    await list().locator('.ca-card').filter({ hasText: '甲人物' }).click(); await expect(await detailAction('归档')).toBeEnabled(); await page.keyboard.press('Escape');
     await nav('分镜设计');
     const source = syntheticSource(); source.characters[0].name = '甲人物'; source.asset_manifest.character[0].name = '甲人物';
     await api('/storyboard/projects/' + a.id + '/initialize', { source, expected_revision: null, request_id: randomUUID() });
     await nav('项目资产');
     await expect.poll(async () => (await cards().allTextContents()).sort()).toEqual(['不出场人物', '甲人物'].sort());
-    await expect(work().getByRole('heading', { name: '甲人物', exact: true })).toBeVisible();
-    await expect(work().getByRole('button', { name: '归档', exact: true })).toBeDisabled();
-    await expect(work()).toContainText('已关联当前项目分镜素材清单');
+    await expect(work().locator('.ca-name-input')).toHaveValue('甲人物');
+    // 被分镜清单引用的资料：归档项不可用，并说明原因（原先的「已关联当前项目分镜素材清单」提示已并入这里）
+    const archive = await detailAction('归档'); await expect(archive).toBeDisabled(); await expect(archive).toHaveAttribute('title', /属于当前分镜清单/); await page.keyboard.press('Escape');
   });
 
   await check('未保存资料跨栏目保留，取消切换保留原项目，确认后才切换', async () => {
@@ -136,7 +138,7 @@ try {
   });
 
   await check('外层项目切换同步资源，重新进入时的旧详情响应不能覆盖已保存资料', async () => {
-    await nav('项目'); await page.getByRole('combobox', { name: '当前项目', exact: true }).selectOption(a.id);
+    await nav('项目'); await selectProjectInBar(page, a.id);
     await nav('项目资产'); await expect(projectInBar(page)).toHaveAttribute('data-project', a.id);
     await expect(list()).toHaveAttribute('aria-busy', 'false');
     await list().locator('.ca-card').filter({ hasText: '甲人物' }).click(); await nav('分镜设计');
@@ -152,17 +154,17 @@ try {
     await page.screenshot({ path: path.join(evidence, 'project-assets.png'), fullPage: true });
   });
   await check('公共人物复制后项目、列表和详情一致，归档/恢复后重新读取', async () => {
-    await showPublicAssets(page); await settled(['公共人物']); await list().locator('.ca-card').click();
-    await work().getByRole('button', { name: '复制到项目', exact: true }).click();
+    await showPublicAssets(page); await settled(['公共人物']); await list().locator('.ca-card:not(.ca-card-add)').click();
+    await (await detailAction('复制到其他项目')).click();
     const dialog = page.getByRole('dialog', { name: '复制人物' });
     await dialog.getByLabel('目标项目').selectOption(b.id); await dialog.getByLabel('复制后人物名称').fill('公共人物乙');
     await dialog.getByRole('button', { name: '确认复制', exact: true }).click();
     await expect(dialog).toHaveCount(0); await selectProjectInBar(page, b.id); await settled(['公共人物乙', '乙人物']); await list().locator('.ca-card').filter({ hasText: '公共人物乙' }).click();
-    await expect(work().getByRole('heading', { name: '公共人物乙', exact: true })).toBeVisible();
-    await work().getByRole('button', { name: '归档', exact: true }).click();
-    await expect(work().getByRole('button', { name: '恢复', exact: true })).toBeVisible(); await settled(['乙人物']);
+    await expect(work().locator('.ca-name-input')).toHaveValue('公共人物乙');
+    await (await detailAction('归档')).click();
+    await expect(work().locator('.ca-archive-note')).toBeVisible(); await settled(['乙人物']);
     await expect(work().getByLabel('人物名称')).toBeDisabled();
-    await work().getByRole('button', { name: '恢复', exact: true }).click(); await settled(['公共人物乙', '乙人物']);
+    await (await detailAction('恢复')).click(); await settled(['公共人物乙', '乙人物']);
     await expect(work().getByLabel('人物名称')).toBeEnabled(); await expect(work().getByRole('alert')).toHaveCount(0);
   });
   assert.deepEqual(errors, []); assert.deepEqual(external, []); passed = true;

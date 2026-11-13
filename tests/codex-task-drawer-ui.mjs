@@ -11,9 +11,10 @@ import {chromium,expect} from '@playwright/test';
 import {fixture,inputs} from './helpers/prompt-lifecycle.mjs';
 import {syntheticSource} from './helpers/storyboard-fixture.mjs';
 import Database from 'better-sqlite3';
-import { projectInBar } from './helpers/path-bar.mjs';
-const root=path.resolve(import.meta.dirname,'..'),evidence=path.resolve(process.env.CODEX_TASK_EVIDENCE||path.join(root,'collab/results/CODEX-TASK-DRAWER-20261104/frontend/browser-'+Date.now())),dist=path.resolve(process.env.CODEX_TASK_DIST||path.join(root,'collab/results/CODEX-TASK-DRAWER-20261104/frontend/dist'));
-await fs.mkdir(evidence,{recursive:true});const temp=await fs.mkdtemp(path.join(os.tmpdir(),'codex-task-drawer-'));
+import { projectInBar, selectProjectInBar } from './helpers/path-bar.mjs';
+import { builtDist, evidenceDir } from './helpers/artifacts.mjs';
+const root=path.resolve(import.meta.dirname,'..'),evidence=evidenceDir('codex-task-drawer',process.env.CODEX_TASK_EVIDENCE),dist=builtDist(root,process.env.CODEX_TASK_DIST);
+const temp=await fs.mkdtemp(path.join(os.tmpdir(),'codex-task-drawer-'));
 const mock=path.join(temp,'fake-codex'),trace=path.join(temp,'rpc.jsonl');
 const originalPeer=await fs.readFile(path.join(root,'tests/helpers/fake-codex.mjs'),'utf8');
 const peer=originalPeer.replace("if(text.includes('慢速停止测试')){later(10000,()=>finish(threadId,turnId));return;}","if(text.includes('慢速停止测试')){let pulse=0;const timer=setInterval(()=>notify('item/agentMessage/delta',{itemId:turnId+'-text',delta:' 合成进度'+(++pulse)}),1000);timers.push(timer);later(180000,()=>finish(threadId,turnId));return;}");
@@ -30,7 +31,12 @@ async function check(name,fn){await fn();checks.push(name);console.log('PASS '+n
 const calls=async method=>(await fs.readFile(trace,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter(c=>c.method===method).length;
 const taskButton=()=>page.locator('.library-topbar .codex-tasks-entry');
 const drawer=()=>page.getByRole('complementary',{name:'Codex 全局任务'});
-async function showDrawer(tab){if(!await drawer().isVisible())await taskButton().click();if(tab)await drawer().getByRole('button',{name:tab,exact:true}).click();}
+async function showDrawer(tab){if(!await drawer().isVisible()){/* 预期中的失败提示会叠在顶栏右上角、盖住 Codex 按钮：先逐条关掉 */await dismissNotices();await taskButton().click();/* 任务列表现在在「自由管家」面板的「任务」栏目里 */const tasks=page.getByRole('tablist',{name:'自由管家栏目'}).getByRole('tab',{name:/^任务/});if(await tasks.count())await tasks.click();await expect(drawer()).toBeVisible();}if(tab)await drawer().getByRole('button',{name:tab,exact:true}).click();}
+// Codex 任务结束提示现在走右上角「全局操作提示」
+const taskNotices=()=>page.getByRole('region',{name:'全局操作提示'}).getByText(/^Codex：/);
+async function dismissNotices(){const close=page.getByRole('region',{name:'全局操作提示'}).getByRole('button',{name:'关闭此提示'});for(let i=0;i<10&&await close.count();i++){/* 提示可能正在自动消失 */await close.first().dispatchEvent('click',undefined,{timeout:1000}).catch(()=>{});await page.waitForTimeout(150);}}
+/** 点「重新读取」并等这次刷新被界面处理完：请求已发出 → 读取期间按钮不可用 → 处理结束按钮恢复 → 再等两帧让提示渲染出来。 */
+async function refreshTasks(){const button=drawer().getByRole('button',{name:'重新读取',exact:true});const sent=page.waitForRequest(r=>r.method()==='GET'&&new URL(r.url()).pathname==='/api/prompt-codex/tasks');await button.click();await sent;await expect(button).toBeEnabled();await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));}
 const card=id=>drawer().locator('[data-task-id="'+id+'"]');
 const chat=()=>page.getByRole('region',{name:'Codex 图文对话'});
 async function jump(id,tab){await showDrawer(tab);await card(id).locator('.codex-task-main').click();await expect(page.locator('[data-turn-id="'+id+'"]')).toBeVisible();await expect(drawer()).toBeHidden();}
@@ -68,9 +74,9 @@ try{
  context.on('request',r=>{const u=new URL(r.url());if(/^https?:$/.test(u.protocol)&&u.origin!==origin)external.push(u.origin+u.pathname);});
  page=await context.newPage();page.setDefaultTimeout(8000);page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/projects');
  await check('Three real concurrent tasks, same titles across templates, global count, non-modal close/focus and navigation never sends/stops',async()=>{
-  await expect(taskButton()).toContainText('生成中 3');await page.getByRole('combobox',{name:'当前项目',exact:true}).selectOption(projectA.id);
+  await expect(taskButton()).toContainText('生成中 3');await selectProjectInBar(page, projectA.id);
   await showDrawer('进行中');await expect(drawer().locator('.codex-task-card')).toHaveCount(3);await expect(card(c.id)).toContainText('合成项目乙');
-  await expect(page.locator('.toast').filter({hasText:'Codex：'})).toHaveCount(0);
+  await expect(taskNotices()).toHaveCount(0);
   await page.keyboard.press('Escape');await expect(drawer()).toBeHidden();await expect(taskButton()).toBeFocused();const count=await calls('turn/start');await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'项目资产',exact:true}).click();await expect(taskButton()).toContainText('生成中 3');assert.equal(await calls('turn/start'),count);assert.equal(await calls('turn/interrupt'),0);
  });
  await check('Exact old turn / cross-template navigation, one 4s highlight, progress never steals scroll, global image project unchanged',async()=>{
@@ -98,7 +104,7 @@ try{
   await showDrawer('进行中');await card(b.id).getByRole('button',{name:'停止',exact:true}).click();const dialog=page.getByRole('dialog',{name:'确认停止影响范围'});await expect(dialog).toContainText(c.id);await dialog.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await calls('turn/interrupt'),0);await expect(page.locator('.codex-chat [data-conversation-id="'+ca.id+'"]')).toHaveClass('selected');
   await card(b.id).getByRole('button',{name:'停止',exact:true}).click();const extra=await conversation(templateB,true);await start(extra,projectB);await dialog.getByRole('button',{name:'确认停止并允许中断这些任务'}).click();await expect(dialog).toBeHidden();await expect(drawer()).toContainText(/范围|变化|重新/);assert.equal(await calls('turn/interrupt'),0);assert.equal((await api('/prompt-codex/tasks')).activeCount,4);
   await drawer().getByRole('button',{name:'重新读取',exact:true}).click();await card(b.id).getByRole('button',{name:'停止',exact:true}).click();await dialog.getByRole('button',{name:'确认停止并允许中断这些任务'}).click();await expect.poll(async()=>(await api('/prompt-codex/conversations/'+cb.id)).turns[0].error_code).toBe('USER_STOPPED');await expect(taskButton()).toContainText('生成中 3');
-  await expect(page.locator('.toast').filter({hasText:'Codex：'})).toHaveCount(1);await page.waitForTimeout(4200);await drawer().getByRole('button',{name:'重新读取',exact:true}).click();await expect(page.locator('.toast').filter({hasText:'Codex：'})).toHaveCount(0);await drawer().getByRole('button',{name:'已结束',exact:true}).click();await expect(card(b.id)).toContainText('用户已停止');
+  await expect(taskNotices()).toHaveCount(1);/* 提示并入全局操作提示，自动消失时间随类型不同：手动关掉后再重新读取，确认不会重复提示 */await dismissNotices();await refreshTasks();/* 当场计数：toHaveCount(0) 会自动重试，等重复提示自动消失后反而通过 */assert.equal(await taskNotices().count(),0,'重新读取不应再发同一条提示');await drawer().getByRole('button',{name:'已结束',exact:true}).click();await expect(card(b.id)).toContainText('用户已停止');
  });
  await check('Conversation stop also uses scope confirmation, not legacy bypass',async()=>{
   await page.keyboard.press('Escape');await showDrawer('进行中');await card(a.id).locator('.codex-task-main').click();await chat().getByRole('button',{name:'停止生成',exact:true}).click();const dialog=page.getByRole('dialog',{name:'确认停止影响范围'});await expect(dialog).toBeVisible();await dialog.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await calls('turn/interrupt'),1);
@@ -118,7 +124,7 @@ try{
   const endpoint=origin+'/api/storyboard/projects/'+projectA.id;await page.route(endpoint,route=>route.request().method()==='PUT'?route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'合成分镜保存失败'})}):route.continue());await board.getByTestId('detail-action').fill('未保存的分镜草稿');await jump(c.id,'进行中');await expect(projectInBar(page)).toHaveAttribute('data-project', projectA.id);await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'分镜设计',exact:true}).click();await expect(board.getByTestId('detail-action')).toHaveValue('未保存的分镜草稿');await page.unroute(endpoint);
  });
  await check('Currently visible terminal turn does not notify again and reading never repeats generation',async()=>{
-  await jump(a.id,'进行中');await page.waitForTimeout(600);const starts=await calls('turn/start');const scope=await api('/prompt-codex/tasks/'+a.id+'/stop-impact');await api('/prompt-codex/tasks/'+a.id+'/stop',{impactToken:scope.impactToken,confirmSharedClose:scope.requiresConfirmation});await expect(taskButton()).toContainText('生成中 2');assert.equal((await api('/prompt-codex/tasks')).items.some(t=>t.taskId===a.id),false);await expect(page.locator('.toast').filter({hasText:'Codex：'})).toHaveCount(0);await showDrawer('已结束');await expect(card(a.id)).toContainText('状态已从原对话核对');await drawer().getByRole('button',{name:'重新读取',exact:true}).click();await expect(page.locator('.toast').filter({hasText:'Codex：'})).toHaveCount(0);assert.equal(await calls('turn/start'),starts);
+  await jump(a.id,'进行中');await page.waitForTimeout(600);const starts=await calls('turn/start');const scope=await api('/prompt-codex/tasks/'+a.id+'/stop-impact');await api('/prompt-codex/tasks/'+a.id+'/stop',{impactToken:scope.impactToken,confirmSharedClose:scope.requiresConfirmation});await expect(taskButton()).toContainText('生成中 2');assert.equal((await api('/prompt-codex/tasks')).items.some(t=>t.taskId===a.id),false);await expect(taskNotices()).toHaveCount(0);await showDrawer('已结束');await expect(card(a.id)).toContainText('状态已从原对话核对');await refreshTasks();/* 当场计数：toHaveCount(0) 会自动重试，等重复提示自动消失后反而通过 */assert.equal(await taskNotices().count(),0,'重新读取不应再发同一条提示');assert.equal(await calls('turn/start'),starts);
  });
  await check('An aged task missing from page one stays pending on failed exact read, then resolves without generation replay',async()=>{
   await page.route(origin+'/api/prompt-codex/conversations/'+cc.id,route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'合成原轮核对失败'})}));const starts=await calls('turn/start'),scope=await api('/prompt-codex/tasks/'+c.id+'/stop-impact');await api('/prompt-codex/tasks/'+c.id+'/stop',{impactToken:scope.impactToken,confirmSharedClose:scope.requiresConfirmation});await expect.poll(async()=>(await api('/prompt-codex/tasks')).activeCount).toBe(1);await showDrawer('待处理');await drawer().getByRole('button',{name:'重新读取',exact:true}).click();await expect(card(c.id)).toContainText('状态待确认');await expect(card(c.id)).toContainText('合成原轮核对失败');await page.unroute(origin+'/api/prompt-codex/conversations/'+cc.id);await drawer().getByRole('button',{name:'重新读取',exact:true}).click();await drawer().getByRole('button',{name:'已结束',exact:true}).click();await expect(card(c.id)).toContainText('用户已停止');assert.equal(await calls('turn/start'),starts);
