@@ -8,7 +8,7 @@ import './file-intake.css';
 
 type Uncertain = {itemId: string; status: IntakeItem['status']};
 // 访达入口安装反馈（INSTALL-FEEDBACK）：状态显示在按钮正下方；>3 秒展开真实阶段和已用时间；>2 分钟提示可能卡在编译器。
-const SLOW_MS = 3000, STUCK_MS = 120000, RECENT_MS = 10 * 60 * 1000;
+const SLOW_MS = 3000, STUCK_MS = 120000, RECENT_MS = 10 * 60 * 1000, VERIFY_READ_MS = 3000, VERIFY_TOTAL_MS = 12000;
 const STEPS: {stage: InstallJob['stage']; label: string}[] = [{stage: 'checking', label: '检查系统和旧入口'}, {stage: 'preparing-window', label: '准备窗口组件'}, {stage: 'writing', label: '写入右键入口'}, {stage: 'done', label: '完成'}];
 const running = (job: InstallJob | null | undefined) => !!job && job.stage !== 'done' && job.stage !== 'failed';
 const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒'; };
@@ -153,14 +153,19 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
       else { trustFrom.current = readSeq.current + 1; setVerifying(true); void verifyAttempt(); }
     } finally {if (alive.current) setStarting(false);}
   }
-  /** 安装请求结果未知：有界地读原安装状态，认出这次的新任务就接上进度或结果；读不到才说明可以重试。 */
+  /** 安装请求结果未知：在时间上限内读原安装状态（每次读取最多 3 秒、整体最多 12 秒），认出这次的新任务就接上进度或结果；
+   *  到期仍未确认就结束转圈、说明未确认并允许重试。之后正常状态读数若认出这次的任务，仍以实际进度为准（acceptJob 会清掉提示）。 */
   async function verifyAttempt() {
-    for (let i = 0; i < 6 && alive.current; i++) {
+    const deadline = Date.now() + VERIFY_TOTAL_MS;
+    for (let i = 0; i < 6 && alive.current && Date.now() < deadline; i++) {
       if (isNewForAttempt(jobRef.current)) return;
-      const seq = ++readSeq.current;
-      try {const value = await api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job'); if (!alive.current) return; if (isNewForAttempt(value.job)) {acceptJob(value.job, seq); return;}}
-      catch { /* 核对本身失败就继续下一次 */ }
-      await new Promise(r => setTimeout(r, 1000));
+      const seq = ++readSeq.current, controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.max(0, Math.min(VERIFY_READ_MS, deadline - Date.now())));
+      try {const value = await api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job', undefined, undefined, {signal: controller.signal}); if (!alive.current) return; if (isNewForAttempt(value.job)) {acceptJob(value.job, seq); return;}}
+      catch { /* 超时或读取失败：继续下一次，直到时间上限 */ }
+      finally {clearTimeout(timer);}
+      const rest = deadline - Date.now(); if (rest <= 0) break;
+      await new Promise(r => setTimeout(r, Math.min(1000, rest)));
     }
     if (!alive.current || isNewForAttempt(jobRef.current)) return;
     setVerifying(false); setInstallError({kind: 'unknown', message: '没有确认到这次安装已经开始。可以重试；上一次的安装结果不会被当成这次。'});

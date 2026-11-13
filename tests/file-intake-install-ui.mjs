@@ -210,6 +210,17 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     await expect(installButton()).toBeEnabled();
   });
 
+  await check('回应丢失后首次核对读取一直挂住：到时间上限结束转圈、说明未确认并允许重试', async () => {
+    fresh(); await reload(); await open();
+    fixture.post = 'drop-before'; const hung = holdNext('/install/job'); // 第一次核对 GET 到达后既不返回也不断开
+    const started = Date.now(); await installButton().click();
+    await expect(state()).toContainText('正在核对这次安装是否已开始'); await hung.seen;
+    await expect(state()).toContainText('没有确认这次安装', {timeout: 16000}); await expect(installButton()).toBeEnabled();
+    const took = Date.now() - started; assert.ok(took < 15000, '核对应在时间上限内结束，实际 ' + took + 'ms');
+    assert.deepEqual(posts, ['/install/job'], '核对期间不重复发起安装');
+    hung.release();
+  });
+
   await check('窄屏与深色主题：安装状态不溢出', async () => {
     fresh(); fixture.status.installJob = {id: 'job-narrow', stage: 'preparing-window', window: 'compiling', startedAt: Date.now() - 9000, finishedAt: null, message: null, error: null, previousKept: null};
     await page.setViewportSize({width: 390, height: 844}); await reload(); await page.evaluate(() => document.documentElement.dataset.theme = 'midnight'); await open();
