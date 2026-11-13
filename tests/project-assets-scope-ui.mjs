@@ -552,7 +552,7 @@ try {
   });
 
   await check('返工·季菜单跳转核对中点面包屑返回：迟到的响应不再切到资产页', async () => {
-    await nav('项目'); await page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first().click();
+    await nav('项目'); { const up = page.locator('.pf').getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }); await page.locator('.pf').waitFor(); if (await up.count()) await up.click(); } /* 项目页会进到当前集那一层，先回最外层（已在最外层时没有面包屑） */ await page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first().click();
     let release; fake.ctxGate = new Promise(r => release = r);
     await page.locator('.pf-card.pf-folder').filter({ hasText: '第 1 季' }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '本季设定…' }).click();
     await page.getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目', exact: true }).click();
@@ -562,7 +562,7 @@ try {
   });
 
   await check('返工·项目目录季菜单「本季设定…」：打开资产页的本季设定，写入带来源集', async () => {
-    await nav('项目'); await page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first().click();
+    await nav('项目'); { const up = page.locator('.pf').getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }); await page.locator('.pf').waitFor(); if (await up.count()) await up.click(); } /* 项目页会进到当前集那一层，先回最外层（已在最外层时没有面包屑） */ await page.locator('.pf-card.pf-folder').filter({ hasText: '穿越计' }).first().click();
     await page.locator('.pf-card.pf-folder').filter({ hasText: '第 1 季' }).first().click({ button: 'right' });
     await page.getByRole('menuitem', { name: '本季设定…' }).click();
     await expect(seasonDlg()).toBeVisible(); await expect(page.getByRole('region', { name: '项目资产库' })).toBeVisible();
