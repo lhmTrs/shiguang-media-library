@@ -224,3 +224,5 @@
 .fi-install-chip.is-bad{background:color-mix(in srgb,var(--fi-danger) 12%,var(--fi-bg));color:color-mix(in srgb,var(--fi-danger) 75%,var(--fi-text))}
 @media (prefers-reduced-motion:reduce){.fi-root .fi-install .fi-spinner,.fi-root .fi-install-chip .fi-spinner{animation:none;border-top-color:var(--fi-accent)}}
 .fi-install-steps small,.fi-install-state b small{display:inline}
+/* 完成态：阶段列表下方的「还差一步」 */
+.fi-install-next{margin-top:4px!important;padding:7px 10px;border-radius:7px;border:1px solid color-mix(in srgb,var(--fi-accent) 30%,var(--fi-line));background:var(--fi-bg)}

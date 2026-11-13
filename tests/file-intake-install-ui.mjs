@@ -67,6 +67,10 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     fresh(); await reload(); await open();
     await installButton().click();
     await expect(state()).toContainText('已安装 · 刚刚'); await expect(state()).toContainText('启用“收纳素材到拾光”');
+    // 设计稿 I4：完成后四个阶段全部打勾，窗口组件已有时写「已有，跳过」，最后一步是「已安装 · 刚刚」
+    const doneSteps = state().locator('.fi-install-steps li'); await expect(doneSteps).toHaveCount(4);
+    for (let i = 0; i < 4; i++) await expect(doneSteps.nth(i)).toHaveAttribute('data-state', 'done');
+    await expect(doneSteps.nth(1)).toContainText('准备窗口组件 · 已有，跳过'); await expect(doneSteps.nth(3)).toHaveText('已安装 · 刚刚');
     await expect(installButton()).toHaveText('重新安装访达入口'); await expect(installButton()).toBeEnabled();
     // 抽屉顶部不再出现安装进度那一行
     await expect(drawer().locator('.fi-drawer-body > p[role=status]')).toHaveCount(0);

@@ -188,9 +188,10 @@ function InstallState({job, starting, error, now, settings, onSettings}: {job: I
   const when = job.finishedAt ?? job.startedAt;
   if (job.stage === 'done') {
     if (now - when > RECENT_MS) return null;
-    return <div className="fi-install-state is-ok" role="status"><Check size={15}/><div className="fi-install-body">
-      <b>已安装 · {ago(when, now)}{job.window === 'skipped' ? <small>（窗口组件已有，未重新编译）</small> : null}</b>
-      <p>{job.message || '还差一步：在系统设置中启用拾光的快速操作。'}</p>
+    // 设计稿 I4：完成后四个阶段全部打勾，最后一步写「已安装 · 时间」，下面是还差的一步和设置按钮
+    return <div className="fi-install-state is-ok" role="status"><div className="fi-install-body">
+      <ol className="fi-install-steps">{STEPS.map(x => <li key={x.stage} data-state="done"><Check size={12}/><span>{x.stage === 'done' ? <b>已安装 · {ago(when, now)}</b> : x.label}{x.stage === 'preparing-window' && job.window === 'skipped' ? <small> · 已有，跳过</small> : x.stage === 'preparing-window' && job.window === 'compiling' ? <small> · 已在本机编译</small> : null}</span></li>)}</ol>
+      <p className="fi-install-next">{job.message || '还差一步：在系统设置中启用拾光的快速操作。'}</p>
       <button type="button" disabled={settings.state === 'opening'} onClick={onSettings}><Settings size={14}/>{settings.state === 'opening' ? '正在打开…' : '打开系统设置'}</button>
       {settings.state === 'opened' && <p className="fi-install-hint">已打开系统设置{settings.target === 'services' ? '的「服务」' : '的「键盘」'}。{settings.target === 'services' ? '' : '请点「键盘快捷键…」→「服务」，'}按上面的说明勾选。勾选需要你在设置里完成，这里检测不到。</p>}
       {settings.state === 'error' && <p className="fi-install-hint is-bad" role="alert">没有打开系统设置：{settings.message}</p>}
