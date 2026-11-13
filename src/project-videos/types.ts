@@ -173,4 +173,6 @@ export type OperationReceipt = {requestId: string; status: 'running' | 'ready' |
   /** move-videos：逐项结果；执行中各项都是 not-run（后端不给逐项进度）。 */
   items?: { sourceId: string; name?: string; status: BatchItemStatus; unboundShotIds?: string[]; error?: string }[];
   /** 只有预览、执行没有登记：status=unknown, phase=preview, errorCode=OPERATION_NOT_STARTED。 */
-  phase?: 'preview' | 'execution'; errorCode?: string};
+  phase?: 'preview' | 'execution'; errorCode?: string;
+  /** 服务端判断能否回滚（只有它说能才给回滚入口）。 */
+  canRecover?: boolean};

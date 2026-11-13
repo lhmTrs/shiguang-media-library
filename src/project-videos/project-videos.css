@@ -412,3 +412,4 @@
 .pv-session > .pv-task.pv-op-background { display: flex; align-items: center; gap: 12px; }
 .pv-op-background p { flex: 1; min-width: 0; }
 .pv-op-background button { flex: none; }
+.pv-op-poll-note { color: var(--pv-warn); }

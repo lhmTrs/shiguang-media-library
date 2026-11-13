@@ -40,7 +40,7 @@ const folderCard = name => work().locator('.pv-folder-card').filter({ hasText: n
 const chipBar = () => work().getByRole('navigation', { name: /视频文件夹/ });
 const where = async () => Object.fromEntries((await api(pv('?folderId=all'))).videos.map(v => [v.id, v.folderId]));
 const pickMany = async ids => { await card(ids[0]).click(); for (const id of ids.slice(1)) await card(id).click({ modifiers: ['Meta'] }); };
-const hold = { running: false };
+const hold = { running: false, failGetOnce: false, dropPost: false }; let gets = 0;
 const shot = async name => { const dir = process.env.CREATIVE_TEST_EVIDENCE; if (!dir) return; await fs.mkdir(dir, { recursive: true }); await page.screenshot({ path: path.join(dir, name + '.png') }); };
 
 try {
@@ -59,11 +59,15 @@ try {
   page.on('request', r => { const u = new URL(r.url()); if (r.method() === 'POST' && u.pathname.startsWith(opBase)) posts.push({ path: u.pathname, body: r.postDataJSON() }); });
   // 执行中：把执行回执和轮询都说成 running（真实移动已完成），放行后轮询读到真实 ready
   await page.route(u => new URL(u).pathname.startsWith(opBase + '/'), async route => {
-    if (!hold.running || route.request().method() !== 'GET') return route.fallback();
+    if (route.request().method() !== 'GET') return route.fallback();
+    gets++; if (hold.failGetOnce) { hold.failGetOnce = false; return route.abort('connectionreset'); } // 只断一次，之后网络正常
+    if (!hold.running) return route.fallback();
     const id = new URL(route.request().url()).pathname.split('/').pop(); return route.fulfill({ json: { requestId: id, status: 'running', description: '移动 2 个视频', items: [] } });
   });
   await page.route(u => new URL(u).pathname === opBase, async route => {
-    if (!hold.running || route.request().method() !== 'POST') return route.fallback();
+    if (route.request().method() !== 'POST') return route.fallback();
+    if (hold.dropPost) { hold.dropPost = false; return route.abort('connectionreset'); } // 执行请求没到后台：服务端只有预览
+    if (!hold.running && !hold.postRunning) return route.fallback();
     const res = await route.fetch(); const data = await res.json(); return route.fulfill({ json: { ...data, status: 'running', items: (data.items || []).map(x => ({ ...x, status: 'not-run' })) } });
   });
   await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
@@ -120,6 +124,37 @@ try {
     await bar.getByRole('button', { name: '查看进度' }).click(); await expect(modal()).toContainText('正在移动…'); await modal().getByRole('button', { name: '在后台继续' }).click();
     hold.running = false; await expect(bar).toHaveCount(0, { timeout: 10000 });
     const at = await where(); assert.deepEqual({ C: at[C], E: at[E] }, { C: F2, E: F2 });
+  });
+
+
+  await check('反例 R1：执行中第一次进度查询断网：不卡在「正在移动」，自动再查原编号读到完成，执行只发一次', async () => {
+    await chipBar().getByRole('button', { name: '第二场' }).click(); await expect(card(C)).toBeVisible();
+    hold.postRunning = true; hold.failGetOnce = true; gets = 0; posts.length = 0;
+    await pickMany([C, E]); await work().getByRole('toolbar', { name: '已选视频操作' }).getByRole('button', { name: '移动到…' }).click();
+    await modal().getByLabel('目标文件夹').selectOption('root'); await modal().getByRole('button', { name: '核对 2 个视频的移动影响' }).click();
+    await modal().getByRole('button', { name: '确认移动 2 个' }).click(); hold.postRunning = false;
+    await expect(modal()).toContainText('已移动 2 个到「项目根目录」', { timeout: 15000 });
+    assert.ok(gets >= 2, '断网后应再查原编号'); assert.equal(posts.filter(p => p.path === opBase).length, 1, '执行不应重发');
+    await modal().getByRole('button', { name: '留在这里' }).click(); await expect(work().locator('.pv-op-background')).toHaveCount(0);
+  });
+
+  await check('反例 R2：执行请求没到后台：查询读到「尚未开始」即结束，不给回滚，可重新核对，也能开始新的移动', async () => {
+    await chipBar().getByRole('button', { name: '第一场' }).click(); await expect(card(A)).toBeVisible();
+    hold.dropPost = true; posts.length = 0;
+    await pickMany([A, B]); await work().getByRole('toolbar', { name: '已选视频操作' }).getByRole('button', { name: '移动到…' }).click();
+    await modal().getByLabel('目标文件夹').selectOption(F2); await modal().getByRole('button', { name: '核对 2 个视频的移动影响' }).click();
+    await modal().getByRole('button', { name: '确认移动 2 个' }).click(); await expect(modal()).toContainText('结果待核对');
+    await expect(modal().getByRole('button', { name: '恢复原操作（回滚）' })).toHaveCount(0); // 服务端还没说能回滚
+    await modal().getByRole('button', { name: '查询原文件夹操作' }).click();
+    await expect(modal()).toContainText('尚未开始'); await expect(modal()).toContainText('没有执行，文件没有改动');
+    await expect(modal().getByRole('button', { name: '恢复原操作（回滚）' })).toHaveCount(0);
+    await modal().getByRole('button', { name: '重新核对' }).click(); await expect(modal().getByRole('button', { name: '核对 2 个视频的移动影响' })).toBeEnabled();
+    await modal().getByRole('button', { name: '取消' }).click(); await expect(work().locator('.pv-op-background')).toHaveCount(0);
+    const at = await where(); assert.deepEqual({ A: at[A], B: at[B] }, { A: F1, B: F1 });
+    // 没有锁住：可以马上开始新的移动
+    await card(A).click(); await card(A).dragTo(chipBar().getByRole('button', { name: '第二场' }));
+    await expect(modal()).toContainText('移动视频'); await expect(modal().getByRole('button', { name: '核对操作影响' })).toBeEnabled(); // 弹出的是新的移动，不是被拦下
+    await modal().getByRole('button', { name: '取消' }).click();
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
