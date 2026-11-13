@@ -8,7 +8,12 @@ import type { PromptRequest } from '../PromptTemplateWorkspace';
  */
 
 export type AttrDimension = { id: string; name: string; negative_label: string; positive_label: string; neutral_label: string; tier_labels?: string[]; criterion?: string };
-export type AttrConfig = { project_id: string; revision: number; source: 'default' | 'user' | 'agent'; updated_at: number | null; dimensions: AttrDimension[] };
+export type AttrConfig = { project_id: string; revision: number; source: 'default' | 'user' | 'agent'; updated_at: number | null; dimensions: AttrDimension[] } & EffectiveFields;
+/**
+ * 维度剧内统一（合同 v1 · A1）：生效配置的附加字段。旧后端不返回，前端按「独立项目」处理。
+ * config_scope 'series' 表示这一集已统一，维度只在全剧改；config_token 随项目评分写入回传。
+ */
+export type EffectiveFields = { series_id?: string | null; config_scope?: 'project' | 'series'; alignment_status?: 'standalone' | 'pending' | 'aligned'; config_editable?: boolean; config_token?: string };
 export type AttrScore = { value: number | null; source: 'manual' | 'ai'; reason: string | null; updated_at: number };
 export type AssetAttributes = { asset_id: string; project_id: string; config_revision: number; attribute_revision: number; scores: Record<string, AttrScore> };
 export type RemovalPreview = { token: string; config_revision: number; affected: { dimension_id: string; name: string; scored_assets: number; archived_scored_assets: number }[] };
@@ -44,7 +49,7 @@ export const attrApi = {
   removalPreview: (request: PromptRequest, projectId: string, body: { expected_revision: number; remove: string[] }) =>
     request<RemovalPreview>(base(projectId) + '/attribute-config/removal-preview', body, 'POST'),
   get: (request: PromptRequest, assetId: string) => request<AssetAttributes>('/project-assets/assets/' + encodeURIComponent(assetId) + '/attributes'),
-  patch: (request: PromptRequest, assetId: string, body: { project_id: string; expected_config_revision: number; expected_attribute_revision: number; changes: { dimension_id: string; value: number | null }[] }) =>
+  patch: (request: PromptRequest, assetId: string, body: { project_id: string; expected_config_revision: number; expected_attribute_revision: number; changes: { dimension_id: string; value: number | null }[]; config_token?: string }) =>
     request<AssetAttributes>('/project-assets/assets/' + encodeURIComponent(assetId) + '/attributes', body, 'PATCH'),
   compare: (request: PromptRequest, projectId: string, ids: string[]) =>
     request<{ config_revision: number; items: { asset_id: string; attribute_revision: number; scores: Record<string, AttrScore> }[] }>(base(projectId) + '/attributes?' + new URLSearchParams({ asset_ids: ids.join(',') })),

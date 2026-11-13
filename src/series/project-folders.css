@@ -91,3 +91,8 @@
 .pf-warn { display: block; font-size: 11px; color: color-mix(in srgb, #b8770f 65%, var(--c-24292c)); margin-top: 2px; }
 .pf-og-summary { margin-right: auto; font-size: 12px; color: var(--muted); }
 .pf-unknown { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; background: color-mix(in srgb, #e8a33a 14%, var(--c-fff)); color: color-mix(in srgb, #8a5a12 55%, var(--c-24292c)); font-size: 12px; line-height: 1.7; }
+
+/* 维度对应（合同 v1 · A3） */
+.pf-modal:has(.pf-attr-map) { width: min(680px, 92vw); }
+.pf-attr-map { display: grid; gap: 12px; max-height: 62vh; overflow: auto; }
+.pf-attr-group { display: grid; gap: 10px; }

@@ -10,6 +10,7 @@ import {contextUnavailable, ownerLabel, scopePath, scopedWrite, type AssetContex
 import {ScopeOverrides, withEffective, type AppendHandlers, type AppendPreview, type OverrideField, type ScoreDimension} from './ScopeOverrides';
 import {ImpactPreview, type ImpactPreviewData} from './ImpactPreview';
 import {SeasonSettings} from './SeasonSettings';
+import {SeriesAlignment} from './SeriesAlignment';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -357,13 +358,22 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   useEffect(() => { if (!assetCtx?.series) setSeriesView(false); }, [assetCtx?.series?.id]);
   // 维度对话框按视图区分本集 / 全剧配置：切视图就关掉，草稿不会跟到另一层
   useEffect(() => { setAttrDialog(0); }, [seriesView]);
+  // 集里的维度已由全剧统一（合同 v1 · A1）：「去全剧设置」切到全剧视图后再打开全剧的维度设置
+  const attrAfterSeries = useRef(false);
+  useEffect(() => { if (seriesView && attrAfterSeries.current) { attrAfterSeries.current = false; openAttrConfig(); } }, [seriesView]); // eslint-disable-line react-hooks/exhaustive-deps
+  function goSeriesAttrConfig() {
+    setAttrDialog(0); if (!assetCtx?.series) return;
+    if (seriesView) { openAttrConfig(); return; }
+    attrAfterSeries.current = true; if (!showSeries(true)) attrAfterSeries.current = false;
+  }
   /** 页内「第 N 集 ｜ 全剧」切换：走同一套离开确认，只改资产页看的层级。 */
-  function showSeries(on: boolean) {
-    if (on === seriesView && !publicScope) return;
-    if (busy || modal || dropJob || !canLeave()) return;
+  function showSeries(on: boolean): boolean {
+    if (on === seriesView && !publicScope) return true;
+    if (busy || modal || dropJob || !canLeave()) return false;
     if (publicScope) applyScope(activeProject);
     selectionGeneration.current++; generation.current++; setDetailLoading(false);
     setDraft(null); setBase(''); setRows([]); setTotal(0); setPage(1); setQ(''); setPickedAssets([]); setSeriesView(on);
+    return true;
   }
   /** 页内「本集 ｜ 公共人物库」切换：走同一套离开确认，只改资产页范围，不改全局当前项目。 */
   function showPublic(on: boolean) {
@@ -1267,6 +1277,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
         </div>}
       </div>
       {!publicScope && seriesView && assetCtx?.series && <p className="ca-public-note ca-series-note" role="note"><Layers size={13} aria-hidden="true"/>正在看「{assetCtx.series.name}」全剧的资产：这里的改动影响所有没有单独覆盖的集。顶栏的当前项目没有变，点「{currentScope?.name ?? '当前集'}」回到它的资产。只在某一集的资产不在这里显示。</p>}
+      {!publicScope && seriesView && assetCtx?.series && <SeriesAlignment request={request} seriesId={assetCtx.series.id} seriesName={assetCtx.series.name} active={active} onAligned={() => setAttrConfigVersion(v => v + 1)}/>}
       {publicScope && <p className="ca-public-note" role="note"><Globe2 size={13} aria-hidden="true"/>正在看公共人物库：这里的人物所有项目都能复制使用。顶栏的当前项目没有变{currentScope ? <>，点「{currentScope.name}」回到它的资产</> : null}。</p>}
       <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++; setDetailLoading(false);setModal(null);setScriptView(true);}}>剧本</button></div>
     </header>
@@ -1406,7 +1417,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       const seq = attrDialog, ser = seriesView && scopeBase && assetCtx?.series ? assetCtx.series : null;
       // 全剧视图改的是全剧维度（<series>/attribute-config），不能落到本集的配置上
       return <AttributeConfig key={(ser ? 'series:' + ser.id : scope) + ':' + seq} projectId={ser ? ser.id : scope} projectName={ser ? '全剧「' + ser.name + '」' : scopes.find(s => s.id === scope)?.name ?? ''} request={request}
-        series={ser ? { base: scopeBase, token: () => scopeToken() ?? assetCtx?.context_token } : undefined}
+        series={ser ? { base: scopeBase, token: () => scopeToken() ?? assetCtx?.context_token } : undefined} onGoSeries={!ser && assetCtx?.series ? goSeriesAttrConfig : undefined}
         onClose={() => setAttrDialog(cur => cur === seq ? 0 : cur)} onSaved={c => { if (ser || c.project_id === scopeRef.current) setAttrConfigVersion(v => v + 1); }}/>; })()}
     {active && desktop.action && desktopStatus()}
     {active && revealAsk && desktop.action?.requestId === revealAsk && desktop.action.receipt && <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setRevealAsk(null); }}>

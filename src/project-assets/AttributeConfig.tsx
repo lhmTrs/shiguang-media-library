@@ -75,8 +75,10 @@ function applyMerge(m: Merge): Row[] {
 /** 全剧视图：维度配置读写走 <series>/attribute-config（PATCH 带 request_id / context_token），projectId 传全剧编号。 */
 export type SeriesConfigScope = { base: string; token: () => string | undefined };
 type SeriesImpact = RemovalPreview['affected'][number] & { episode_overrides?: number };
-export function AttributeConfig({ projectId, projectName, request, onClose, onSaved, series }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void; series?: SeriesConfigScope }) {
-  const asProject = (c: AttrConfig & { series_id?: string }): AttrConfig => series ? { ...c, project_id: c.series_id ?? '' } : c;
+export function AttributeConfig({ projectId, projectName, request, onClose, onSaved, series, onGoSeries }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void; series?: SeriesConfigScope;
+  /** 这一集已统一到全剧：带用户去全剧视图的维度设置（合同 v1 · A1 / SERIES_MANAGED）。 */ onGoSeries?: () => void }) {
+  const [managed, setManaged] = useState(false);
+  const asProject = (c: AttrConfig): AttrConfig => series ? { ...c, project_id: c.series_id ?? '' } : c;
   const api = series ? {
     config: async () => asProject(await request<AttrConfig>('/project-assets' + series.base + '/attribute-config')),
     saveConfig: async (body: Parameters<typeof attrApi.saveConfig>[2]) => asProject(await scopedWrite<AttrConfig>(request, '/project-assets' + series.base + '/attribute-config', { ...body, request_id: crypto.randomUUID(), context_token: series.token() }, 'PATCH', '/project-assets')),
@@ -100,7 +102,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   // Every draft edit bumps the generation; any response that started on an older generation is dropped.
   const generation = useRef(0);
   async function load() {
-    try { const c = await api.config(); if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
+    try { const c = await api.config(); if (!series && c.config_scope === 'series') { setManaged(true); return; } if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
     catch (e) { setError((e as Error).message || '维度配置读取失败'); }
   }
   useEffect(() => { void load(); }, [projectId]);
@@ -167,6 +169,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       await toFinal(removed, [], [], '', gen);
     } catch (e) {
       const code = errCode(e);
+      if (code === 'SERIES_MANAGED') { setManaged(true); return; }
       if (code === 'CONFIG_STALE') { try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
       else if ((code === 'REMOVAL_PREVIEW_STALE' || code === 'DIMENSION_REMOVAL_CONFIRM') && review?.stage === 'final') {
         try { await toFinal(review.set, review.preserve, review.meaning, '删除影响刚变了（下面是最新人数），请重新确认'); } catch (e2) { setReview(null); setError((e2 as Error).message || '请再点一次保存'); }
@@ -187,6 +190,13 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     setNote(['已和最新配置合并：保留了你的改动和别处的修改', ...m.notes].join('；') + '。请核对后再保存');
   }
 
+  if (managed) return <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
+    <div className="ca-modal ca-attr-config ca-attr-managed" role="dialog" aria-modal="true" aria-label="人物属性维度">
+      <header><div><h2>人物属性维度 · {projectName}</h2></div><button type="button" className="ca-icon-button" aria-label="关闭维度设置" onClick={onClose}><X size={17}/></button></header>
+      <div className="ca-modal-content"><p>这一集的维度由全剧统一设置，各集共用，所以不能在这里改。要增删或改名维度，请到全剧视图设置；本集人物的分数仍在本集打。</p></div>
+      <footer><button type="button" onClick={onClose}>关闭</button>{onGoSeries && <button type="button" className="ca-primary" autoFocus onClick={onGoSeries}>去全剧设置</button>}</footer>
+    </div>
+  </div>;
   const choose = (id: string, v: 'text' | 'meaning') => setReview(r => r && r.stage === 'choose' ? { ...r, choice: { ...r.choice, [id]: v } } : r);
   return <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !saving) onClose(); }} onKeyDown={e => { if (e.key === 'Escape' && !saving) { e.stopPropagation(); onClose(); } }}>
     <div className="ca-modal ca-attr-config" ref={dialog} role="dialog" aria-modal="true" aria-label="人物属性维度">

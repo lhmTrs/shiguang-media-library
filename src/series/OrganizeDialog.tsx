@@ -2,7 +2,8 @@ import { useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { Modal } from './Modal';
 import { suggestGroups } from './organize';
-import { errorText, newRequestId, seasonName, type GroupedProject, type OrganizeConflict, type OrganizeReceipt, type OrganizeRequest, type Series, type seriesApi } from './model';
+import { errorText, newRequestId, seasonName, type AttributeGroupChoice, type AttributePlan, type GroupedProject, type OrganizeConflict, type OrganizeReceipt, type OrganizeRequest, type Series, type seriesApi } from './model';
+import { AttributePlanEditor, needsAttributeReview } from './AttributePlanEditor';
 
 // 「整理旧项目」（原型 ④）：按名字规律建议归组，用户核对剧名、放入位置、集号后一次提交。
 // 提交是一次 POST /project-series/organize：服务端在一个事务里建剧、核对、落全部归属，任一失败整批回退。
@@ -60,15 +61,40 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
       setStatus({ tone: 'unknown', text: '尚未查到成功回执，结果待核对。可以稍后点「重新核对」，或用原请求重新提交（同一编号不会重复写入）。' });
     } catch { setStatus({ tone: 'unknown', text: '结果待核对：暂时查不到这次归组有没有完成。请稍后点「重新核对」，不要重复整理。' }); }
   }
+  // 维度剧内统一（合同 v1 · A3）：新提交先预览维度计划；有要你决定的项（新剧基准、维度对应）就先核对，再带凭证提交。
+  const [attr, setAttr] = useState<{ plan: AttributePlan; ready: boolean } | null>(null);
   async function submit() {
-    const req = pending.current ?? build(); pending.current = req;
+    if (pending.current) { await send(pending.current); return; }
+    let plan = attr?.plan;
+    if (!attr) {
+      setBusy(true); setStatus(null);
+      try {
+        const pv = await api.previewOrganize(build().groups);
+        if (pv.conflicts?.length) { markConflicts(pv.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); return; }
+        if (pv.attribute_plan && needsAttributeReview(pv.attribute_plan, pv.ready)) { setAttr({ plan: pv.attribute_plan, ready: pv.ready }); return; }
+        plan = pv.attribute_plan;
+      } catch (e) {
+        const st = (e as { status?: number }).status;
+        // 旧后端没有整理预览（404 / 405，或把未知路径交给网页本身、没有状态码）：照原流程提交；
+        // 新后端在需要核对维度时会以 ATTRIBUTE_PREVIEW_REQUIRED 拒绝，不会因为跳过预览而写错
+        if (st && st !== 404 && st !== 405) { setStatus({ tone: 'error', text: errorText(e) + '（整批都没有写入）' }); return; }
+      } finally { setBusy(false); }
+    }
+    await send({ ...build(), ...(plan ? { attribute_preview_token: plan.preview_token, attribute_choices: plan.choices } : {}) });
+  }
+  const rePreviewAttr = (choices: AttributeGroupChoice[]) => { setBusy(true); setStatus(null);
+    void api.previewOrganize(build().groups, choices).then(pv => { if (pv.attribute_plan) setAttr({ plan: pv.attribute_plan, ready: pv.ready }); })
+      .catch(e => setStatus({ tone: 'error', text: errorText(e) })).finally(() => setBusy(false)); };
+  async function send(req: OrganizeRequest & { attribute_preview_token?: string; attribute_choices?: AttributeGroupChoice[] }) {
+    pending.current = req;
     setBusy(true); setStatus(null);
     try { succeed(await api.organize(req)); }
     catch (e) {
       const err = e as { status?: number; code?: string; details?: { conflicts?: OrganizeConflict[] } };
       if (err.status && err.status < 500) {
         pending.current = null; setUnknown(false);
-        if (err.code === 'SERIES_ORGANIZE_CONFLICT' && err.details?.conflicts?.length) { markConflicts(err.details.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); }
+        if (err.code === 'SERIES_ORGANIZE_CONFLICT' && err.details?.conflicts?.length) { setAttr(null); markConflicts(err.details.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); }
+        else if (err.code === 'ATTRIBUTE_ALIGNMENT_STALE' || err.code === 'ATTRIBUTE_PREVIEW_REQUIRED') { setAttr(null); setStatus({ tone: 'error', text: errorText(e) + '（整批都没有写入，请再点一次归组重新核对）' }); }
         else setStatus({ tone: 'error', text: errorText(e) + '（整批都没有写入）' });
       } else { setUnknown(true); await recheck(req); }
     } finally { setBusy(false); }
@@ -77,7 +103,10 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
   return <Modal label="整理旧项目" close={close} busy={busy}>
     <form className="pf-organize" onSubmit={e => { e.preventDefault(); if ((unknown || !invalid) && !busy) void submit(); }}>
       <div className="modal-body">
-        {!groups.length ? <p className="muted pf-hint">没找到能归到同一部剧的项目。项目名结尾带集号（如「某剧_12」「某剧3」）才会被建议；也可以在项目卡片上右键「放进剧…」。</p> : <>
+        {attr ? <>
+          <p className="muted pf-hint">归组后，这些集改用所在剧的人物属性维度。核对下面的维度对应后再归组：</p>
+          <AttributePlanEditor plan={attr.plan} busy={busy} nameOf={id => ungrouped.find(p => p.id === id)?.name ?? '某一集'} groupLabel={id => { const g = groups.find(x => x.key === id); return g?.existing?.name ?? (g?.name.trim() || '新剧'); }} onChoices={rePreviewAttr}/>
+        </> : !groups.length ? <p className="muted pf-hint">没找到能归到同一部剧的项目。项目名结尾带集号（如「某剧_12」「某剧3」）才会被建议；也可以在项目卡片上右键「放进剧…」。</p> : <>
           <p className="muted pf-hint">按项目名找到 {groups.length} 组。核对剧名和集号后一次归组；项目名、素材、分镜、视频都不变。</p>
           {groups.map((g, i) => <fieldset key={g.key} className="pf-og" disabled={locked}>
             <legend className="pf-og-head">
@@ -98,9 +127,10 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
       </div>
       <div className="modal-footer">
         {groups.length > 0 && <span className="pf-og-summary">{newCount ? `将新建 ${newCount} 部剧，` : ''}归组 {rowCount} 个项目</span>}
+        {attr && !unknown && <button type="button" className="plain" disabled={busy} onClick={() => setAttr(null)}>返回修改</button>}
         <button type="button" className="plain" disabled={busy} onClick={close}>{groups.length ? '取消' : '关闭'}</button>
         {unknown && <button type="button" className="plain" disabled={busy} onClick={() => { const req = pending.current; if (req) { setBusy(true); void recheck(req).finally(() => setBusy(false)); } }}>重新核对</button>}
-        {groups.length > 0 && <button className="primary" type="submit" disabled={busy || (!unknown && invalid)}><Check size={15}/>{busy ? '归组中…' : unknown ? '用原请求重新提交' : `归组 ${rowCount} 个项目`}</button>}
+        {groups.length > 0 && <button className="primary" type="submit" disabled={busy || (!unknown && (invalid || !!attr && !attr.ready))}><Check size={15}/>{busy ? '归组中…' : unknown ? '用原请求重新提交' : `归组 ${rowCount} 个项目`}</button>}
       </div>
     </form>
   </Modal>;

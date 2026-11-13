@@ -1,0 +1,21 @@
+/* 维度对应（合同 v1 · A2 / A3）：资产页的一键统一浮窗和项目页的归组 / 挪集弹窗共用 */
+.aa-decisions { display: grid; gap: 12px; font-size: 13px; }
+.aa-decisions section { border: 1px solid var(--line, #dfe3e1); border-radius: 10px; padding: 10px 14px; display: grid; gap: 8px; }
+.aa-decisions section > b { font-size: 13px; }
+.aa-ok { background: color-mix(in srgb, var(--green, #1f6b4f) 7%, transparent); border-color: color-mix(in srgb, var(--green, #1f6b4f) 22%, transparent) !important; }
+.aa-todo { background: color-mix(in srgb, #b26b00 7%, transparent); border-color: color-mix(in srgb, #b26b00 28%, transparent) !important; }
+.aa-decisions ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.aa-decisions li { display: flex; justify-content: space-between; gap: 12px; }
+.aa-decisions li > span:last-child { color: var(--muted, #5f6b66); text-align: right; }
+.aa-ok-tag { color: var(--green, #1f6b4f) !important; font-weight: 600; }
+.aa-item { border: 0; border-top: 1px solid color-mix(in srgb, #b26b00 18%, transparent); margin: 0; padding: 8px 0 0; display: grid; gap: 6px; min-width: 0; }
+.aa-item legend { font-weight: 600; padding: 0; }
+.aa-reason { margin: 0; color: #8a4b00; }
+.aa-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.aa-actions label { display: inline-flex; gap: 6px; align-items: center; }
+.aa-map { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.aa-map select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line, #dfe3e1); border-radius: 6px; max-width: 280px; }
+.aa-hint { color: var(--muted, #5f6b66); }
+.aa-banner { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 10px 14px; border: 1px solid color-mix(in srgb, #b26b00 30%, transparent); border-radius: 10px; background: color-mix(in srgb, #b26b00 7%, transparent); font-size: 13px; }
+.aa-banner span { flex: 1; min-width: 0; }
+.aa-after { margin: 0; line-height: 1.7; color: var(--muted, #3c4642); font-size: 13px; }

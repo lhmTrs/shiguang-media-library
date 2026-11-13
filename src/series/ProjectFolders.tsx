@@ -8,7 +8,8 @@ import { softwareNames } from '../ProjectUsage';
 import { AgentShare } from '../AgentShare';
 import { Modal } from './Modal';
 import { OrganizeDialog } from './OrganizeDialog';
-import { buildTree, errorText, seasonName, seriesApi, type Container, type GroupedProject, type MoveConflict, type MoveItem, type MoveTarget, type Season, type Series, type SeriesNode } from './model';
+import { buildTree, errorText, seasonName, seriesApi, type AttributeGroupChoice, type AttributePlan, type Container, type GroupedProject, type MoveConflict, type MoveItem, type MoveReceipt, type MoveTarget, type Season, type Series, type SeriesNode } from './model'
+import { AttributePlanEditor, needsAttributeReview } from './AttributePlanEditor';;
 
 // 目录式项目页（SERIES-P1，原型 ⑤⑥⑦⑨；改版 R1/R2/R4）：根目录 = 剧文件夹 + 未分组项目；剧里先季后散放集；季里是集。
 // 卡片一律矮卡片；剧 / 季单击进入；集单击选中、双击打开素材使用、右键打开其他页面与整理操作。
@@ -36,7 +37,8 @@ type Dialog =
   | { type: 'project'; project: GroupedProject | null }
   | { type: 'xml' }
   | { type: 'organize' }
-  | { type: 'share'; project: GroupedProject };
+  | { type: 'share'; project: GroupedProject }
+  | { type: 'attrMap'; target: MoveTarget; targetName: string; rows: { project: GroupedProject; episode_no?: number }[]; items: MoveItem[]; plan: AttributePlan; ready: boolean };
 type Toast = { text: string; undo?: string };
 
 const LOC_KEY = 'shiguang.projectFolders.loc', SORT_KEY = 'shiguang.projectFolders.sort', PENDING_KEY = 'shiguang.projectFolders.pendingSeries', DRAG_TYPE = 'text/x-shiguang-projects';
@@ -155,17 +157,32 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   }
 
   // —— 移动：拖进文件夹、移到…、改集号 ——
+  // 维度剧内统一（合同 v1 · A3）：跨剧（放进剧、移出剧、剧之间）先预览维度计划；有要你决定的项才弹「维度对应」，
+  // 否则带凭证直接移动。同剧换季、改集号不涉及维度，照旧。改了维度归属的移动不能一键撤销。
   async function move(target: MoveTarget, targetName: string, rows: { project: GroupedProject; episode_no?: number }[]) {
     const items: MoveItem[] = rows.map(r => ({ project_id: r.project.id, expected_revision: r.project.membership_revision ?? 0, ...(r.episode_no != null && target.series_id ? { episode_no: r.episode_no } : {}) }));
+    let attribute: { token: string; choices: AttributeGroupChoice[] } | undefined, plan: AttributePlan | undefined;
     try {
-      const receipt = await api.move(target, items);
-      setDialog(null); setSelected([]); refresh(); flashCards(target.season_id ? [target.season_id] : target.series_id ? ['series:' + target.series_id] : rows.map(r => r.project.id));
-      setToast({ text: target.series_id ? `已把 ${rows.length} 集移到「${targetName}」` : `已把 ${rows.length} 个项目移出剧`, undo: receipt.can_undo ? receipt.request_id : undefined });
+      if (rows.some(r => (r.project.series_id ?? null) !== target.series_id)) {
+        const pv = await api.previewMove(target, items);
+        if (pv.conflicts?.length) { setDialog({ type: 'numbers', target, targetName, conflicts: pv.conflicts, rows: rows.map(r => ({ project: r.project, episode_no: r.episode_no ?? r.project.episode_no ?? 1 })) }); return; }
+        plan = pv.attribute_plan;
+        if (plan && needsAttributeReview(plan, pv.ready)) { setDialog({ type: 'attrMap', target, targetName, rows, items, plan, ready: pv.ready }); return; }
+        if (plan) attribute = { token: plan.preview_token, choices: plan.choices };
+      }
+      finishMove(await api.move(target, items, undefined, attribute), target, targetName, rows.length, plan);
     } catch (e) {
       const conflicts = (e as { details?: { conflicts?: MoveConflict[] } }).details?.conflicts;
       if (!conflicts?.length) throw e;
       setDialog({ type: 'numbers', target, targetName, conflicts, rows: rows.map(r => ({ project: r.project, episode_no: r.episode_no ?? r.project.episode_no ?? 1 })) });
     }
+  }
+  function finishMove(receipt: MoveReceipt, target: MoveTarget, targetName: string, count: number, plan?: AttributePlan) {
+    setDialog(null); setSelected([]); refresh(); flashCards(target.season_id ? [target.season_id] : target.series_id ? ['series:' + target.series_id] : receipt.changes.map(c => c.project_id));
+    const modes = new Set((plan?.groups ?? []).map(g => g.mode));
+    const attrNote = modes.has('map_to_series') ? '，人物属性维度已改用这部剧的' : modes.has('copy_to_standalone') ? '，已复制一份全剧维度给移出的集' : '';
+    const noUndo = !receipt.can_undo && receipt.undo_disabled_reason === 'ATTRIBUTE_CONFIGURATION_CHANGED' ? '（改了维度，不能一键撤销，可以再挪回来）' : '';
+    setToast({ text: (target.series_id ? `已把 ${count} 集移到「${targetName}」` : `已把 ${count} 个项目移出剧`) + attrNote + noUndo, undo: receipt.can_undo ? receipt.request_id : undefined });
   }
   function startMove(target: MoveTarget, targetName: string, container: Container | null, ids: string[]) {
     const rows = ids.map(id => projects.find(p => p.id === id)).filter((p): p is GroupedProject => !!p)
@@ -343,6 +360,9 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
       else { const s = await api.createSeries(name, software); setPending({ series: { ...s, seasons: s.seasons ?? [] }, until: Date.now() + PENDING_MS }); setDialog(null); setLoc({ level: 'series', seriesId: s.id }); seriesChanged(); }
     })}/>}
     {dialog?.type === 'season' && <SeasonDialog season={dialog.season} busy={busy} close={() => setDialog(null)} save={(label, no) => void run(async () => { await api.updateSeason(dialog.season, { label, season_no: no }); seriesChanged(); setDialog(null); })}/>}
+    {dialog?.type === 'attrMap' && <AttributeMapDialog dialog={dialog} busy={busy} close={() => setDialog(null)}
+      rePreview={choices => void run(async () => { const pv = await api.previewMove(dialog.target, dialog.items, choices); if (pv.attribute_plan) setDialog({ ...dialog, plan: pv.attribute_plan, ready: pv.ready }); })}
+      confirm={() => void run(async () => finishMove(await api.move(dialog.target, dialog.items, undefined, { token: dialog.plan.preview_token, choices: dialog.plan.choices }), dialog.target, dialog.targetName, dialog.rows.length, dialog.plan))}/>}
     {dialog?.type === 'numbers' && <NumbersDialog dialog={dialog} busy={busy} close={() => setDialog(null)} submit={rows => void run(() => move(dialog.target, dialog.targetName, rows))}/>}
     {dialog?.type === 'moveTo' && <MoveToDialog tree={tree.series} busy={busy} close={() => setDialog(null)} pick={(target, name, container) => { const ids = dialog.ids; setDialog(null); startMove(target, name, container, ids); }}/>}
     {dialog?.type === 'episodeName' && <NameDialog expected={dialog.expected} busy={busy} close={() => setDialog(null)} save={name => createEpisode(dialog.node, dialog.container, name)}/>}
@@ -421,5 +441,20 @@ function NameDialog({ expected, busy, close, save }: { expected: number; busy: b
       <fieldset className="modal-body" disabled={busy}><label className="field">换一个项目名<input aria-label="新项目名" required maxLength={120} value={name} onChange={e => setName(e.target.value)}/></label><p className="muted pf-hint">项目名全库不能重复；集的位置不受影响。</p></fieldset>
       <div className="modal-footer"><button type="button" className="plain" disabled={busy} onClick={close}>取消</button><button className="primary" type="submit" disabled={busy || !name.trim()}><Check size={15}/>新建</button></div>
     </form>
+  </Modal>;
+}
+
+/** 归组 / 挪集时的维度对应（设计稿 A3）。改选项就带着完整选择重新预览，以服务端回显和新凭证为准。 */
+function AttributeMapDialog({ dialog, busy, close, rePreview, confirm }: {
+  dialog: Extract<Dialog, { type: 'attrMap' }>; busy: boolean; close: () => void; rePreview: (choices: AttributeGroupChoice[]) => void; confirm: () => void;
+}) {
+  const label = dialog.target.series_id ? `把 ${dialog.rows.length} 集放进「${dialog.targetName}」` : `把 ${dialog.rows.length} 集移出剧`;
+  return <Modal label={label} close={close} busy={busy}>
+    <div className="modal-body">
+      <p className="muted">{dialog.target.series_id ? '放进剧后，这些集改用这部剧的人物属性维度。下面是它们原来的维度怎么对应过去：' : '移出后，这些集会有自己独立的一套维度。'}</p>
+      <AttributePlanEditor plan={dialog.plan} busy={busy} nameOf={id => dialog.rows.find(r => r.project.id === id)?.project.name ?? '某一集'} onChoices={rePreview}/>
+    </div>
+    <div className="modal-footer"><button type="button" className="plain" disabled={busy} onClick={close}>取消</button>
+      <button type="button" className="primary" disabled={busy || !dialog.ready} onClick={confirm}>{dialog.target.series_id ? '确认放进剧' : '确认移出'}</button></div>
   </Modal>;
 }
