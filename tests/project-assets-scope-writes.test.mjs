@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { StoryboardDatabase } from '../server/storyboard/database.mjs';
-import { addLook, creativeFixture } from './helpers/creative-fixture.mjs';
+import { addImage, addLook, creativeFixture } from './helpers/creative-fixture.mjs';
+import { emptyShot } from '../server/storyboard/shared/model.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
 
 async function fixture(t) {
@@ -83,6 +84,64 @@ test('分镜初始化在同剧复用共享人物 ID，备份保留引用，引�
   const restored = new StoryboardDatabase(target.lib, target.store).init();
   await restored.restore(board.backup());
   assert.equal(restored.read(f.episode.id).project.characters[0].id, shared.asset.id);
+});
+
+test('移出原剧时明确图片绑定也会报告镜号，资产无须列入分镜清单', async t => {
+  const f = await fixture(t), { asset, context_token } = f.create('scene', '未入清单的共享图');
+  const image = addImage(asset, f.media);
+  await f.writes.save('series', f.series.id, asset.id, {
+    request_id: randomUUID(), context_token, expected_revision: asset.revision, asset,
+  });
+  const board = new StoryboardDatabase(f.lib, f.store).init();
+  const source = syntheticSource();
+  source.scenes[0].shots.push(emptyShot());
+  const shot = source.scenes[0].shots[1];
+  source.assets.push({ id: 'synthetic_ref', path: 'reference.png', media_type: 'image/png', content_hash: 'a'.repeat(64) });
+  shot.reference_bindings.push({ asset_id: 'synthetic_ref', image_binding_id: image.id, locks: '', ignores: '' });
+  board.initialize(f.episode.id, { source, request_id: randomUUID(), expected_revision: null });
+  const context = f.scoped.assetContext(f.episode.id);
+  assert.throws(() => f.directory.move({ request_id: randomUUID(), target: { series_id: null, season_id: null },
+    items: [{ project_id: f.episode.id, expected_revision: context.membership_revision }] }), error => {
+    assert.equal(error.code, 'ASSET_IN_USE');
+    assert(error.details.conflicts[0].shots.some(row => row.asset_id === asset.id && row.shot_id === shot.id && row.number === '02'));
+    return true;
+  });
+  assert.equal(f.directory.membership(f.episode.id).series_id, f.series.id);
+});
+
+test('明确绑定图片的本集整份保存和旧入口都不能绕过归档保护', async t => {
+  const f = await fixture(t);
+  const asset = await f.store.create({ project_id: f.episode.id, kind: 'scene', name: '本集图' });
+  const image = addImage(asset, f.media), replacement = addImage(asset, f.media);
+  const saved = await f.store.save(asset.id, asset, asset.revision);
+  const board = new StoryboardDatabase(f.lib, f.store).init();
+  const source = syntheticSource();
+  source.assets.push({ id: 'synthetic_ref', path: 'reference.png', media_type: 'image/png', content_hash: 'a'.repeat(64) });
+  source.scenes[0].shots[0].reference_bindings.push({
+    asset_id: 'synthetic_ref', image_binding_id: image.id, locks: '', ignores: '',
+  });
+  board.initialize(f.episode.id, { source, request_id: randomUUID(), expected_revision: null });
+  const input = structuredClone(saved);
+  input.images.find(row => row.id === image.id).archived_at = 1;
+  input.default_image_id = replacement.id;
+  const context_token = f.scoped.assetContext(f.episode.id).context_token;
+  await assert.rejects(f.writes.save('episode', f.episode.id, asset.id, {
+    asset: input, context_token, request_id: randomUUID(), expected_revision: saved.revision,
+  }), { code: 'ASSET_IN_USE' });
+  await assert.rejects(f.store.save(asset.id, input, saved.revision), { code: 'ASSET_IN_USE' });
+  assert.deepEqual(f.store.get(asset.id), { ...saved, storyboard_protected: false });
+});
+
+test('同剧换季后旧请求回执不返回旧季覆盖和令牌', async t => {
+  const f = await fixture(t);
+  const { asset } = f.create('scene', '共享场景');
+  const context = f.scoped.assetContext(f.episode.id);
+  const input = { request_id: randomUUID(), context_token: context.context_token, name: asset.name, kind: asset.kind, on_shared: 'reuse' };
+  f.writes.create('episode', f.episode.id, input);
+  f.directory.move({ request_id: randomUUID(), target: { series_id: f.series.id, season_id: null },
+    items: [{ project_id: f.episode.id, expected_revision: context.membership_revision }] });
+  assert.throws(() => f.writes.request(input.request_id), { code: 'ASSET_SCOPE_CHANGED' });
+  assert.throws(() => f.writes.create('episode', f.episode.id, input), { code: 'ASSET_SCOPE_CHANGED' });
 });
 
 test('删除后同毫秒重建的覆盖拒绝旧令牌', async t => {

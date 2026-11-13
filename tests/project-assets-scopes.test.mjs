@@ -82,11 +82,15 @@ test('generation freezes only the episode’s visible assets and effective selec
 test('backup keeps the historical owner when an asset’s promotion source episode is removed', async t => {
   const f = await fixture(t);
   const draft = await local(f, f.ep.id, '可提升人物');
+  const earlier = await f.store.save(draft.id, { ...draft, base_info: '仅本集可见的旧稿' }, draft.revision);
+  await f.store.save(draft.id, { ...earlier, base_info: '' }, earlier.revision);
   const context_token = f.store.scoped.assetContext(f.ep.id).context_token;
   const { preview_token } = f.store.scopedImpact.previewPromotion('episode', f.ep.id, draft.id, { context_token });
-  f.store.scopedImpact.commitPromotion('episode', f.ep.id, draft.id, {
+  const promoted = f.store.scopedImpact.commitPromotion('episode', f.ep.id, draft.id, {
     request_id: randomUUID(), context_token, preview_token,
   });
+  assert.deepEqual(f.scoped.versions('series', f.series.id, draft.id).map(row => row.version), [promoted.asset.revision]);
+  assert.throws(() => f.scoped.versions('series', f.series.id, draft.id, earlier.revision), missing);
   f.projects.remove(f.ep.id);
   const backup = f.store.backup();
   assert.doesNotThrow(() => f.store.validateBackup(backup));
@@ -96,6 +100,7 @@ test('backup keeps the historical owner when an asset’s promotion source episo
   restored.projects.remove(restored.b.id);
   await restored.store.restore(backup);
   assert.equal(restored.store.version(draft.id, draft.revision).project_id, f.ep.id);
+  assert.equal(restored.store.version(draft.id, earlier.revision).base_info, '仅本集可见的旧稿');
   assert.equal(restored.store.get(draft.id).owner_id, f.series.id);
 });
 

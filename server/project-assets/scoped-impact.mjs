@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dimensionDTO, isRecord, isRevision, isScore } from '../project-attributes/model.mjs';
 import { timeline } from '../storyboard/shared/model.mjs';
+import { explicitAssetShots } from '../storyboard/asset-references.mjs';
 import { cardBinding } from './crop-state.mjs';
 import { canonical, digest, fault, idOK, nameKey } from './model.mjs';
 
@@ -94,12 +95,6 @@ function resolvedDefaults(asset, fields, overrides, layers) {
     if (valid) resolved.set(override.field_key, value);
   }
   return resolved;
-}
-
-function referencesTarget(row, target, lookIds, imageIds) {
-  if (target.type === 'asset' && (row.subject_id === target.id || row.creative_asset_id === target.id)) return true;
-  if (lookIds.has(row.look_id)) return true;
-  return [row.asset_id, row.image_id, row.image_binding_id, row.binding_id].some(id => imageIds.has(id));
 }
 
 export class ScopedAssetImpact {
@@ -368,15 +363,12 @@ export class ScopedAssetImpact {
       const listed = linked.has(episode.id) || associations?.listed;
       if (listed) result.manifests.push({ episode_id: episode.id, episode_name: episode.name, document_id: document.id });
       const previousCount = result.shots.length;
-      const globals = project.reference_bindings ?? [];
+      const explicit = new Set(explicitAssetShots(project, {
+        assetIds: new Set(target.type === 'asset' ? [asset.id] : []), lookIds, imageIds,
+      }).map(shot => shot.shotId));
       for (const { shot, scene, number } of timeline(project)) {
         const reasons = [...(byShot.get(shot.id) ?? [])];
-        const references = [...globals, ...(shot.reference_bindings ?? [])].filter(row =>
-          (!row.scene_ids?.length || row.scene_ids.includes(scene.id)) &&
-          (!row.shot_ids?.length || row.shot_ids.includes(shot.id)));
-        const explicit = [scene, shot, ...references, ...(shot.character_presence ?? [])]
-          .some(row => referencesTarget(row, target, lookIds, imageIds));
-        if (explicit) reasons.push('明确参考绑定');
+        if (explicit.has(shot.id)) reasons.push('明确参考绑定');
         if (reasons.length) result.shots.push({ id: shot.id, name: '镜 ' + number, episode_id: episode.id,
           episode_name: episode.name, number, scene_id: scene.id, reasons });
       }

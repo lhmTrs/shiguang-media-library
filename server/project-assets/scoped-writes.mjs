@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, text } from './model.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
+import { explicitAssetShots } from '../storyboard/asset-references.mjs';
 import { DEFAULT_DIMENSIONS, dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from '../project-attributes/model.mjs';
 
 const conflict = (code, message, details) => fault(message, 409, { code, details });
@@ -69,15 +70,37 @@ export class ScopedAssetWrites {
   assertMembershipChange({ project_id, before, after }) {
     if (before.series_id === after.series_id) return;
     if (before.series_id !== null) {
-      const storyboard = this.assets.storyboards?.head(project_id);
-      const links = storyboard ? this.assets.storyboards.linked(storyboard)
+      const board = this.assets.storyboards;
+      const storyboard = board?.head(project_id);
+      const links = storyboard ? board.linked(storyboard)
         .filter(row => row.owner_type === 'series' && row.owner_id === before.series_id) : [];
-      if (links.length) throw conflict('ASSET_IN_USE', '该集分镜仍引用原剧共享资产，请先处理分镜素材清单', {
-        assets: links.map(row => ({ id: row.id, kind: row.kind, name: row.name })),
-        shots: links.flatMap(row => this.assets.storyboards.assetShots(row.id, project_id).items.map(shot => ({
-          asset_id: row.id, shot_id: shot.shotId, number: shot.number, scene_id: shot.sceneId,
-        }))),
-      });
+      if (storyboard) {
+        const shared = this.db.prepare("SELECT id,kind,name FROM creative_assets WHERE owner_type='series' AND owner_id=?")
+          .all(before.series_id);
+        const children = table => this.db.prepare(`SELECT c.id,c.asset_id FROM ${table} c JOIN creative_assets a ON a.id=c.asset_id
+          WHERE a.owner_type='series' AND a.owner_id=?`).all(before.series_id);
+        const looks = Map.groupBy(children('creative_looks'), row => row.asset_id);
+        const images = Map.groupBy(children('creative_image_bindings'), row => row.asset_id);
+        const manifestIds = new Set(links.map(row => row.id));
+        const project = JSON.parse(storyboard.document_json);
+        const blocked = [], shots = [];
+        for (const asset of shared) {
+          const matches = new Map(explicitAssetShots(project, {
+            assetIds: new Set([asset.id]), lookIds: new Set((looks.get(asset.id) ?? []).map(row => row.id)),
+            imageIds: new Set((images.get(asset.id) ?? []).map(row => row.id)),
+          }).map(shot => [shot.shotId, shot]));
+          if (manifestIds.has(asset.id)) {
+            for (const shot of board.assetShots(asset.id, project_id).items) matches.set(shot.shotId, shot);
+          }
+          if (manifestIds.has(asset.id) || matches.size) blocked.push(asset);
+          for (const shot of matches.values()) {
+            shots.push({ asset_id: asset.id, shot_id: shot.shotId, number: shot.number, scene_id: shot.sceneId });
+          }
+        }
+        if (blocked.length) throw conflict('ASSET_IN_USE', '该集分镜仍引用原剧共享资产，请先处理明确绑定和素材清单', {
+          assets: blocked, shots,
+        });
+      }
       this.assertNoOverrides('episode', project_id);
     }
     if (after.series_id === null) return;
@@ -104,6 +127,7 @@ export class ScopedAssetWrites {
   visibleReceipt(scope, row) {
     const result = JSON.parse(row.result_json);
     if (result.asset?.id) this.reads.detailInTransaction(scope, result.asset.id);
+    if (scope.type === 'episode' && result.context_token) this.reads.assertContextToken(scope, result.context_token);
     return result;
   }
 

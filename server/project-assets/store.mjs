@@ -7,6 +7,7 @@ import { ProjectAttributes } from '../project-attributes/store.mjs';
 import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
 import { snapshotSeries, validateSeriesBackup, restoreSeriesBackup } from '../project-series/backup.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
+import { explicitAssetShots } from '../storyboard/asset-references.mjs';
 import {CharacterVoiceFiles} from './voices.mjs';
 import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 import { ScopedProjectAssets } from './scoped.mjs';
@@ -179,6 +180,21 @@ export class ProjectAssets {
     const p = seriesId ? this.lib.projectSeries.series(seriesId) : this.project(a.project_id);
     if (p.project_kind === 'public' && a.kind !== 'character') throw fault('公共项目当前仅管理人物');
     a = normalize(a);
+    if (previous && a.project_id !== null && p.project_kind === 'normal' && this.storyboards) {
+      const retiringAsset = a.archived_at && !previous.archived_at;
+      const retired = (before, after, changed) => {
+        const next = new Map(after.map(row => [row.id, row]));
+        return new Set(before.filter(row => row.archived_at === null &&
+          (retiringAsset || changed(row, next.get(row.id)))).map(row => row.id));
+      };
+      const lookIds = retired(previous.looks, a.looks, (_old, next) => next?.archived_at !== null);
+      const imageIds = retired(previous.images, a.images, (old, next) => next?.archived_at !== null ||
+        next.media_asset_id !== old.media_asset_id || next.expected_sha256 !== old.expected_sha256 || lookIds.has(old.look_id));
+      const assetIds = new Set(retiringAsset ? [a.id] : []);
+      const board = (assetIds.size || lookIds.size || imageIds.size) && this.storyboards.head(a.project_id);
+      const shots = board ? explicitAssetShots(JSON.parse(board.document_json), { assetIds, lookIds, imageIds }) : [];
+      if (shots.length) throw fault('请先解除分镜中的明确绑定再修改资料', 409, { code: 'ASSET_IN_USE', details: { shots } });
+    }
     if (previous && a.archived_at) {
       this.assertUnlinked(a.id);
       if (!previous.archived_at) { const max=this.db.prepare('SELECT MAX(archived_at) n FROM creative_assets WHERE owner_type=? AND owner_id=? AND kind=? AND name_key=?').get(ownerType,ownerId,a.kind,nameKey(a.name)).n??0; a.archived_at=Math.max(Date.now(),max+1); }

@@ -280,9 +280,21 @@ export class ScopedProjectAssets {
     return this.#snapshot(() => {
       const scope = this.scope(type, id);
       const row = this.#visibleRow(scope, assetId);
-      // Promotion can leave old snapshots with a source episode's private data.
       const owns = type === 'series' || type === 'episode' && row.owner_type === 'project';
       if (!owns) throw notFound();
+      // Keep earlier local snapshots in backups without granting a new owner
+      // access to the originating episode's drafts or images.
+      if (type === 'series') {
+        const belongs = snapshot => snapshot.owner_type === 'series' && snapshot.owner_id === scope.id && snapshot.project_id === null;
+        if (version !== undefined) {
+          const snapshot = this.store.version(row.id, version);
+          if (!belongs(snapshot)) throw notFound();
+          return snapshot;
+        }
+        return this.db.prepare(`SELECT id,version,summary,created_at,snapshot FROM creative_asset_versions
+          WHERE asset_id=? ORDER BY version DESC`).all(row.id)
+          .filter(entry => belongs(JSON.parse(entry.snapshot))).map(({ snapshot, ...entry }) => entry);
+      }
       return version === undefined ? this.store.versions(row.id) : this.store.version(row.id, version);
     });
   }
