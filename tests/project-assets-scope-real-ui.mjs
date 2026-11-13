@@ -58,6 +58,36 @@ try {
     assert.equal(lisi.owner.type, 'series'); assert.equal(lisi.asset.looks.filter(l => !l.archived_at).length, 2); assert.equal(lisi.asset.base_info, '全剧的李四');
   });
 
+  // 合成 1×1 PNG（每次内容不同，避免查重弹窗）
+  const png = n => { const b = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'); return Buffer.concat([b, Buffer.from('synthetic-' + n)]); };
+  const fileInput = () => work().locator('input[type=file][aria-label="选择一张参考图片"]');
+  const seriesLisi = async () => (await api(`/project-assets/scopes/series/${s.id}/assets?kind=character`)).items.find(i => i.asset.name === '李四').asset;
+  await check('全剧视图从本地文件导入：落到剧的图片文件夹，保存后绑定，其他集继承默认图', async () => {
+    const before = await seriesLisi(), look = before.looks.filter(l => !l.archived_at)[0];
+    await work().locator('.ca-look-list button').filter({ hasText: look.name }).first().click();
+    await fileInput().setInputFiles({ name: '全剧参考.png', mimeType: 'image/png', buffer: png(1) });
+    await expect(work().getByRole('button', { name: '设置参考图片：全剧参考.png' })).toBeVisible();
+    assert.equal((await seriesLisi()).images.length, 0, '已复制不等于已绑定：保存前不应有绑定');
+    await work().getByRole('button', { name: '保存资料', exact: true }).click(); await expect(work().getByRole('button', { name: '保存资料', exact: true })).toBeDisabled();
+    const after = await seriesLisi(), bound = after.images.find(b => b.look_id === look.id && !b.archived_at); assert.ok(bound, '保存后应绑定到全剧人物的造型');
+    const inEp2 = await api(`/project-assets/scopes/episode/${eps[1].id}/assets/${after.id}`);
+    assert.equal(inEp2.effective.default_images[look.id].value, bound.id, '第 2 集应继承全剧默认图');
+  });
+
+  await check('集里从本地文件追加图片：上传到本集，回执 → 预览 → 确认后写到全剧', async () => {
+    await scopeSwitch().getByRole('button').first().click(); await expect.poll(names).toEqual(['李四']); await openDetail('李四');
+    await work().getByRole('navigation', { name: '详情分区' }).getByRole('button', { name: '造型与参考图', exact: true }).click();
+    const look = (await seriesLisi()).looks.filter(l => !l.archived_at)[1]; // 两个造型同名（都叫「新造型」），按顺序选第二个
+    await work().locator('.ca-look-list button').nth(1).click();
+    await fileInput().setInputFiles({ name: '本集追加.png', mimeType: 'image/png', buffer: png(2) });
+    const confirm = page.getByRole('dialog', { name: '确认追加图片' }); await expect(confirm).toBeVisible();
+    if (await confirm.getByRole('checkbox').count()) { await expect(confirm.getByRole('button', { name: '确认追加' })).toBeDisabled(); await confirm.getByRole('checkbox').check(); }
+    await confirm.getByRole('button', { name: '确认追加' }).click();
+    await expect(confirm, '追加失败：' + await page.getByRole('alert').allTextContents().catch(() => [])).toHaveCount(0, { timeout: 8000 }).catch(async e => { throw Error('追加确认没有成功：' + (await page.getByRole('alert').allTextContents()).join(' / ')); });
+    const after = await seriesLisi(); assert.ok(after.images.some(b => b.look_id === look.id && !b.archived_at), '确认后全剧人物的这个造型应有新图：' + JSON.stringify({ look: look.id, looks: after.looks.map(l => [l.id, l.name]), images: after.images.map(b => [b.look_id, b.last_known_name, b.archived_at]) }));
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await expect(work().locator('.ca-series-note')).toBeVisible();
+  });
+
   await check('集视图：全剧人物带「全剧」标记、只读；本集设置改默认造型来源变本集，恢复后回到上层', async () => {
     await scopeSwitch().getByRole('button').first().click(); await expect.poll(names).toEqual(['李四']);
     await expect(cardOf('李四').locator('.ca-owner-src')).toHaveText('全剧'); await openDetail('李四');

@@ -19,7 +19,7 @@ export type ScoreDimension = { id: string; name: string; negative_label: string;
 type ScoreValue = { value: number | null } | null;
 /** 集里追加造型的预览回执（合同 v1：append/preview）。 */
 export type AppendPreview = { preview_token: string; sets_series_default: boolean; impact?: { episodes?: { id: string; name: string }[] } };
-export type AppendHandlers = { preview: (name: string) => Promise<AppendPreview>; confirm: (token: string, allowSeriesDefault: boolean) => Promise<void> };
+export type AppendHandlers = { preview: (name: string) => Promise<AppendPreview>; confirm: (token: string, allowSeriesDefault: boolean) => Promise<boolean> };
 
 /** 在本集新增造型：先预览，确认后写到全剧（服务端记录来源集）；成为全剧默认时需明确勾选。 */
 function AppendLook({ busy, handlers, seriesName }: { busy: boolean; handlers: AppendHandlers; seriesName: string }) {
@@ -34,7 +34,7 @@ function AppendLook({ busy, handlers, seriesName }: { busy: boolean; handlers: A
   return <div className="ca-append-confirm" role="group" aria-label="确认新增造型">
     <p>新造型「{name.trim()}」会加到{seriesName ? '「' + seriesName + '」' : ''}全剧的这个人物上，记下来源是本集；其他集也能看到它，但不会改它们的默认造型。</p>
     {preview.sets_series_default && <label className="ca-append-default"><input type="checkbox" checked={allow} disabled={off} onChange={e => setAllow(e.target.checked)}/>这是这个人物的第一个造型，会成为<b>全剧默认造型</b>。我已了解</label>}
-    <span className="ca-append-actions"><button type="button" disabled={off} onClick={() => setPreview(null)}>返回修改</button><button type="button" className="ca-primary" disabled={off || preview.sets_series_default && !allow} onClick={() => void run(async () => { await handlers.confirm(preview.preview_token, preview.sets_series_default && allow); setPreview(null); setName(''); })}>确认新增</button></span>
+    <span className="ca-append-actions"><button type="button" disabled={off} onClick={() => setPreview(null)}>返回修改</button><button type="button" className="ca-primary" disabled={off || preview.sets_series_default && !allow} onClick={() => void run(async () => { if (await handlers.confirm(preview.preview_token, preview.sets_series_default && allow)) { setPreview(null); setName(''); } })}>确认新增</button></span>
   </div>;
 }
 

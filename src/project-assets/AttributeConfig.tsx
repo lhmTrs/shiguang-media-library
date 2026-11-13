@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Sparkles, X } from 'lucide-react';
 import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { AgentShare } from '../AgentShare';
+import { scopedWrite } from './scoped';
 import { type AttrConfig, type AttrDimension, type DimensionDraft, type RemovalPreview, attrApi, defaultTiers, errCode } from './attributes';
 
 type Row = DimensionDraft & { key: string; custom: boolean };
@@ -71,7 +72,22 @@ function applyMerge(m: Merge): Row[] {
  * 2) 用最终删除集合取一次影响并展示，用户确认的就是提交的那个凭证；影响变了重新展示、重新确认。
  * 配置被别处改过 → 保留草稿，按字段三方合并；同一字段两边都改、或我改过的维度被别处删了 → 逐项选择。
  */
-export function AttributeConfig({ projectId, projectName, request, onClose, onSaved }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void }) {
+/** 全剧视图：维度配置读写走 <series>/attribute-config（PATCH 带 request_id / context_token），projectId 传全剧编号。 */
+export type SeriesConfigScope = { base: string; token: () => string | undefined };
+type SeriesImpact = RemovalPreview['affected'][number] & { episode_overrides?: number };
+export function AttributeConfig({ projectId, projectName, request, onClose, onSaved, series }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void; series?: SeriesConfigScope }) {
+  const asProject = (c: AttrConfig & { series_id?: string }): AttrConfig => series ? { ...c, project_id: c.series_id ?? '' } : c;
+  const api = series ? {
+    config: async () => asProject(await request<AttrConfig>('/project-assets' + series.base + '/attribute-config')),
+    saveConfig: async (body: Parameters<typeof attrApi.saveConfig>[2]) => asProject(await scopedWrite<AttrConfig>(request, '/project-assets' + series.base + '/attribute-config', { ...body, request_id: crypto.randomUUID(), context_token: series.token() }, 'PATCH', '/project-assets')),
+    removalPreview: (body: Parameters<typeof attrApi.removalPreview>[2]) => request<RemovalPreview>('/project-assets' + series.base + '/attribute-config/removal-preview', { ...body, context_token: series.token() }, 'POST'),
+  } : {
+    config: () => attrApi.config(request, projectId),
+    saveConfig: (body: Parameters<typeof attrApi.saveConfig>[2]) => attrApi.saveConfig(request, projectId, body),
+    removalPreview: (body: Parameters<typeof attrApi.removalPreview>[2]) => attrApi.removalPreview(request, projectId, body),
+  };
+  /** 有分数，或（全剧）有集里单独改的分：删除 / 改含义都要先核对。 */
+  const touched = (a: SeriesImpact) => a.scored_assets > 0 || (a.episode_overrides ?? 0) > 0;
   const [config, setConfig] = useState<AttrConfig | null>(null), [rows, setRows] = useState<Row[]>([]), [error, setError] = useState(''), [saving, setSaving] = useState(false);
   const [review, setReview] = useState<Choose | Final | null>(null), [openTiers, setOpenTiers] = useState(''), [stale, setStale] = useState<AttrConfig | null>(null), [merge, setMerge] = useState<Merge | null>(null), [note, setNote] = useState('');
   const dialog = useRef<HTMLDivElement>(null), alive = useRef(true);
@@ -79,7 +95,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   // Every draft edit bumps the generation; any response that started on an older generation is dropped.
   const generation = useRef(0);
   async function load() {
-    try { const c = await attrApi.config(request, projectId); if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
+    try { const c = await api.config(); if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
     catch (e) { setError((e as Error).message || '维度配置读取失败'); }
   }
   useEffect(() => { void load(); }, [projectId]);
@@ -105,7 +121,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   async function put(meaning: string[], preserve: string[], token?: string) {
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
-    const next = await attrApi.saveConfig(request, projectId, { expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
+    const next = await api.saveConfig({ expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
     if (next.project_id !== projectId) throw Error('保存回执不属于当前项目');
     // The save is settled for its own project either way; an unmounted dialog must not touch whatever is open now.
     if (!alive.current) return;
@@ -115,9 +131,9 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   async function toFinal(set: string[], preserve: string[], meaning: string[], message = '', gen = generation.current) {
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     if (!set.length) { await put(meaning, preserve); return; }
-    const pv = await attrApi.removalPreview(request, projectId, { expected_revision: config.revision, remove: set });
+    const pv = await api.removalPreview({ expected_revision: config.revision, remove: set });
     if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
-    const affected = pv.affected.filter(a => a.scored_assets > 0);
+    const affected = pv.affected.filter(touched);
     if (!affected.length) { await put(meaning, preserve); return; } // nothing scored: no token; the server refuses if scores appear meanwhile
     setReview({ stage: 'final', token: pv.token, affected, set, preserve, meaning }); setError(message);
   }
@@ -134,15 +150,15 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       const changed = rows.filter(r => r.id && base.has(r.id) && wording(outOf(r)) !== wording(base.get(r.id)!)).map(r => r.id!);
       if (changed.length) {
         // Read-only probe: which of the reworded dimensions actually have scores.
-        const probe = await attrApi.removalPreview(request, projectId, { expected_revision: config.revision, remove: changed });
+        const probe = await api.removalPreview({ expected_revision: config.revision, remove: changed });
         if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
-        const scored = probe.affected.filter(a => a.scored_assets > 0);
+        const scored = probe.affected.filter(touched);
         if (scored.length) { setReview({ stage: 'choose', changed: scored, choice: {} }); return; }
       }
       await toFinal(removed, [], [], '', gen);
     } catch (e) {
       const code = errCode(e);
-      if (code === 'CONFIG_STALE') { try { setStale(await attrApi.config(request, projectId)); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
+      if (code === 'CONFIG_STALE') { try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
       else if ((code === 'REMOVAL_PREVIEW_STALE' || code === 'DIMENSION_REMOVAL_CONFIRM') && review?.stage === 'final') {
         try { await toFinal(review.set, review.preserve, review.meaning, '删除影响刚变了（下面是最新人数），请重新确认'); } catch (e2) { setReview(null); setError((e2 as Error).message || '请再点一次保存'); }
       }
@@ -165,7 +181,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const choose = (id: string, v: 'text' | 'meaning') => setReview(r => r && r.stage === 'choose' ? { ...r, choice: { ...r.choice, [id]: v } } : r);
   return <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !saving) onClose(); }} onKeyDown={e => { if (e.key === 'Escape' && !saving) { e.stopPropagation(); onClose(); } }}>
     <div className="ca-modal ca-attr-config" ref={dialog} role="dialog" aria-modal="true" aria-label="人物属性维度">
-      <header><div><h2>人物属性维度 · {projectName}</h2><p className="ca-muted">每个维度 -100 ~ +100，0 居中；五档：-100～-60、-59～-20、-19～19、20～59、60～100。这是本项目的配置，可按剧本修改。</p></div>
+      <header><div><h2>人物属性维度 · {projectName}</h2><p className="ca-muted">每个维度 -100 ~ +100，0 居中；五档：-100～-60、-59～-20、-19～19、20～59、60～100。{series ? '这是全剧的配置，所有集共用；集里单独改的分也按这些维度。' : '这是本项目的配置，可按剧本修改。'}</p></div>
         <button type="button" className="ca-icon-button" aria-label="关闭维度设置" disabled={saving} onClick={onClose}><X size={17}/></button></header>
       <div className="ca-modal-content">
         {error && <div className="ca-alert" role="alert">{error}</div>}
@@ -224,7 +240,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
           </div>}
           {review?.stage === 'final' && <div className="ca-attr-confirm" role="group" aria-label="保存前确认">
             <b>保存会删掉这些维度的分数，不能撤销：</b>
-            <ul>{review.affected.map(a => <li key={a.dimension_id}>「{a.name}」：{a.scored_assets} 个人物有分数{a.archived_scored_assets ? `（其中 ${a.archived_scored_assets} 个已归档）` : ''}</li>)}</ul>
+            <ul>{review.affected.map(a => <li key={a.dimension_id}>「{a.name}」：{a.scored_assets} 个人物有分数{a.archived_scored_assets ? `（其中 ${a.archived_scored_assets} 个已归档）` : ''}{(a as SeriesImpact).episode_overrides ? `；另有 ${(a as SeriesImpact).episode_overrides} 处集里单独改的分会一并删除` : ''}</li>)}</ul>
             {review.preserve.length > 0 && <small className="ca-muted">只改文字、保留分数：{review.preserve.map(id => '「' + (rows.find(r => r.id === id)?.name ?? '') + '」').join('、')}</small>}
           </div>}
         </>}

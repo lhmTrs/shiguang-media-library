@@ -769,3 +769,4 @@
 .ca-v2 .ca-season-table button{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
 .ca-v2 .ca-season-pick{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .ca-v2 .ca-season-pick select{height:30px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);padding:0 8px;max-width:240px}
+.ca-v2 .ca-season-pick input{height:30px;box-sizing:border-box;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:13px inherit;width:140px}

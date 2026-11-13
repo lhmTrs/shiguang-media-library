@@ -3,6 +3,7 @@ import { Radar, Pencil, SlidersHorizontal } from 'lucide-react';
 import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { useFeedbackToast } from '../global-feedback';
 import { AttributeRadar } from './AttributeRadar';
+import { scopedWrite } from './scoped';
 import { type AssetAttributes, type AttrConfig, SINGLE_COLOR, attrApi, clampScore, errCode, readConsistent, scoreValue, signed, sourceSummary, tierText } from './attributes';
 
 const when = (t: number) => new Date(t).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
@@ -53,7 +54,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
     setSaving(true); setError('');
     try {
       const next = scopedUrl
-        ? await request<AssetAttributes>(scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH')
+        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
         : await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes });
       if (next.asset_id !== assetId) throw Error('保存回执不属于当前人物，请重新打开后核对');
       setAttrs(next); setDraft(null); setEdited(new Set()); setNotice('属性已保存');
