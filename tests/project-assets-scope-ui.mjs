@@ -56,6 +56,22 @@ async function routeScoped(route) {
     if (type === 'series') fake.shared.push(created); else (fake.local[sid] ||= []).push(created);
     return route.fulfill({ json: created });
   }
+  // 第 4 步：归档影响 / 提升
+  const imp = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|episode)\/([^/]+)\/assets\/([^/]+)\/(archive-impact|archive|promotion\/preview|promotion)$/);
+  if (imp && route.request().method() === 'POST') {
+    const [, , sid, aid, op] = imp, body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body });
+    const ep = Object.values(fake.ctx).filter(c => c.series).map(c => c.project);
+    if (op === 'archive-impact') {
+      const needReplace = body.target.type === 'look' && body.target.id === 'look-a' && !body.replacement_id;
+      fake.pendingArchive = { aid, target: body.target, replacement: body.replacement_id };
+      return route.fulfill({ json: { preview_token: 'arch-' + (body.replacement_id || 'none'), impact: { seasons: [], episodes: [{ id: ep[0].id, name: '第1集', fields: [{ key: 'default_look', before: 'look-a', after: body.replacement_id ?? null, invalidates_override: true }] }], explicit_shots: [], blockers: needReplace ? [{ code: 'ASSET_REPLACEMENT_REQUIRED', candidates: [{ id: 'look-b', name: '囚服' }] }] : [] } } });
+    }
+    if (op === 'archive') { const hit = fake.shared.find(x => x.asset.id === aid); hit.asset = { ...hit.asset, looks: hit.asset.looks.map(l => l.id === fake.pendingArchive.target.id ? { ...l, archived_at: Date.now() } : l), default_look_id: fake.pendingArchive.replacement ?? hit.asset.default_look_id, revision: hit.asset.revision + 1 }; return route.fulfill({ json: { request_id: body.request_id, ...hit } }); }
+    if (op === 'promotion/preview') return route.fulfill({ json: { preview_token: 'promo-1', impact: { seasons: [], episodes: [{ id: ep[0].id, name: '第1集', fields: [{ key: 'owner', before: { type: 'project' }, after: { type: 'series' } }] }, { id: ep[1].id, name: '第2集', fields: [{ key: 'visible', before: false, after: true }] }], explicit_shots: [], blockers: [] } } });
+    const list = fake.local[sid] || [], at = list.findIndex(x => x.asset.id === aid), moved = list.splice(at, 1)[0];
+    const promoted = { ...moved, asset: { ...moved.asset, project_id: null }, owner: { type: 'series', id: 'series', name: '穿越计' }, capabilities: caps(false) };
+    fake.shared.push(promoted); return route.fulfill({ json: { request_id: body.request_id, ...promoted } });
+  }
   const receiptPath = url.pathname.match(/^\/api\/project-assets\/scopes\/episode\/([^/]+)\/assets\/([^/]+)\/append\/media-receipt$/);
   if (receiptPath) { const body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body }); return route.fulfill({ json: { media_receipt_id: 'rc-' + body.media_asset_id, media_asset_id: body.media_asset_id, file_name: '夜景.png', preview_url: '', expires_at: Date.now() + 600000 } }); }
   const app = url.pathname.match(/^\/api\/project-assets\/scopes\/episode\/([^/]+)\/assets\/([^/]+)\/append(\/preview)?$/);
@@ -197,7 +213,7 @@ try {
     assert.ok(fake.cfgReads.includes('?asset_id=' + lisi.id), '集视图读维度要带当前人物 ID');
   });
 
-  await check('全剧视图：可以编辑全剧基础资料，保存走剧作用域并带令牌；归档造型、解绑图片暂不开放', async () => {
+  await check('全剧视图：可以编辑全剧基础资料，保存走剧作用域并带令牌；归档造型改走影响预览', async () => {
     await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await settled(['李四', '工头']); await card('李四').click();
     await expect(work().locator('.ca-scope-lock')).toHaveCount(0); await expect(work().getByRole('region', { name: '本集设置' })).toHaveCount(0);
     await work().getByLabel('基础信息', { exact: true }).fill('全剧的李四资料'); await work().getByRole('button', { name: '保存资料', exact: true }).click();
@@ -213,7 +229,7 @@ try {
     assert.deepEqual({ changes: wa.body.changes, cfg: wa.body.expected_config_revision, rev: wa.body.expected_attribute_revision, ctx: wa.body.context_token }, { changes: [{ dimension_id: 'd-wealth', value: -15 }], cfg: 3, rev: 1, ctx: 'ctx-token' });
     assert.match(wa.body.request_id, /^[0-9a-f-]{36}$/);
     await work().getByRole('navigation', { name: '详情分区' }).getByRole('button', { name: '造型与参考图', exact: true }).click();
-    await work().locator('.ca-look-config > summary').click(); await expect(work().getByRole('button', { name: '归档造型', exact: true })).toBeDisabled();
+    await work().locator('.ca-look-config > summary').click(); await expect(work().getByRole('button', { name: '归档造型', exact: true })).toBeEnabled(); // 第 4 步起：全剧里归档走影响预览
     await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '工头', '卖油郎']);
   });
 
@@ -278,6 +294,31 @@ try {
     await page.getByRole('button', { name: '下一集：第2集' }).click(); await expect(projectInBar(page)).toHaveAttribute('data-project', eps[1].id);
     await expect(scopeSwitch().getByRole('button').first()).toHaveAttribute('aria-pressed', 'true'); await settled(['李四', '工头', '王五']);
     assert.ok(seen.some(p => p === `/api/project-assets/scopes/episode/${eps[1].id}/assets`));
+  });
+
+  await check('提升到全剧：本集自有资产先看影响（哪些集会看到它），确认后变成全剧共享', async () => {
+    await pickEpisode(eps[0].id); await expect(list()).toHaveAttribute('aria-busy', 'false');
+    await card('卖油郎').click(); await expect(work().locator('.ca-name-input')).toHaveValue('卖油郎');
+    await work().getByRole('button', { name: '资料操作', exact: true }).click(); await work().getByRole('menuitem', { name: '提升到全剧…' }).click();
+    const dlg = page.getByRole('dialog', { name: '把「卖油郎」提升到全剧' }); await expect(dlg).toContainText('第2集'); await expect(dlg).toContainText('在这里可见：否 → 是');
+    await dlg.getByRole('button', { name: '确认提升' }).click(); await expect(dlg).toHaveCount(0);
+    await expect(card('卖油郎').locator('.ca-owner-src')).toHaveText('全剧');
+    const w = fake.writes.filter(x => x.path.endsWith('/promotion')).at(-1); assert.equal(w.body.preview_token, 'promo-1'); assert.match(w.body.request_id, /^[0-9a-f-]{36}$/);
+  });
+
+  await check('全剧里归档默认造型：先要选替代，选好后重新预览才能确认', async () => {
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await expect(list()).toHaveAttribute('aria-busy', 'false');
+    await list().locator('.ca-card').filter({ has: page.locator('strong', { hasText: /^李四$/ }) }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    await work().getByRole('navigation', { name: '详情分区' }).getByRole('button', { name: '造型与参考图', exact: true }).click();
+    await work().locator('.ca-look-list button').filter({ hasText: '常服' }).click(); await work().locator('.ca-look-config > summary').click();
+    await work().getByRole('button', { name: '归档造型', exact: true }).click();
+    const dlg = page.getByRole('dialog', { name: '归档造型「常服」' }); await expect(dlg.getByRole('alert')).toContainText('先选一个替代');
+    await expect(dlg.getByRole('button', { name: '确认归档' })).toBeDisabled();
+    await dlg.getByLabel('选择替代项').selectOption('look-b'); await expect(dlg.getByRole('alert')).toHaveCount(0);
+    await expect(dlg).toContainText('默认造型：常服 → 囚服（本层的单独设置会失效）'); await dlg.getByRole('button', { name: '确认归档' }).click(); await expect(dlg).toHaveCount(0);
+    const pv = fake.writes.filter(x => x.path.endsWith('/archive-impact')).at(-1); assert.deepEqual({ target: pv.body.target, rep: pv.body.replacement_id }, { target: { type: 'look', id: 'look-a' }, rep: 'look-b' });
+    assert.equal(fake.writes.filter(x => x.path.endsWith('/archive')).at(-1).body.preview_token, 'arch-look-b');
+    await scopeSwitch().getByRole('button').first().click();
   });
 
   await check('项目不在任何剧里：没有「全剧」，按原接口读取', async () => {

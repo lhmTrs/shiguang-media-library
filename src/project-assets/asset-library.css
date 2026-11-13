@@ -750,3 +750,11 @@
 .ca-v2 .ca-append-actions{display:flex;gap:8px;justify-content:flex-end}
 .ca-v2 .ca-append-actions button{height:30px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
 .ca-v2 .ca-append-image{display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.6}.ca-v2 .ca-append-thumb{width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+/* 第二期 P2a 第 4 步：归档 / 提升影响预览 */
+.ca-v2 .ca-impact{width:min(620px,calc(100vw - 32px))}
+.ca-v2 .ca-impact-body{display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.6}
+.ca-v2 .ca-impact-body h3{margin:4px 0;font-size:13px}
+.ca-v2 .ca-impact-body ul{margin:0;padding-left:18px}
+.ca-v2 .ca-impact-blockers{list-style:none;padding:8px 10px!important;border:1px solid color-mix(in srgb,#d0432f 35%,var(--line));border-radius:8px;background:color-mix(in srgb,#d0432f 6%,var(--c-fff));color:color-mix(in srgb,#d0432f 70%,var(--c-24292c))}
+.ca-v2 .ca-impact-blockers li{display:flex;gap:6px;align-items:flex-start}
+.ca-v2 .ca-impact-scopes>li{margin-bottom:6px}
