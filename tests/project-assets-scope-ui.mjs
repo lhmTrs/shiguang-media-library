@@ -30,7 +30,7 @@ const switchTo = name => scopeSwitch().getByRole('button', { name, exact: true }
 async function pickEpisode(id) { await projectInBar(page).getByRole('navigation', { name: '当前项目' }).getByRole('button').last().click(); await projectInBar(page).locator(`.ppb-option[data-target-project="${id}"]`).click(); await expect(projectInBar(page)).toHaveAttribute('data-project', id); }
 
 // —— 作用域接口替身（合同 v1 形状）——
-const fake = { mode: 'contract', ctx: {}, shared: [], local: {} };
+const fake = { mode: 'contract', ctx: {}, shared: [], local: {}, writes: [] };
 const caps = (own) => ({ edit_base: own, create_override: !own, append: !own, promote: own, archive: own });
 const item = (asset, owner) => ({ asset, owner, capabilities: caps(owner.type === 'project'), effective: {}, context_token: 'ctx-token', cover: null, look_count: asset.looks?.length ?? 0 });
 async function routeScoped(route) {
@@ -39,13 +39,30 @@ async function routeScoped(route) {
   if (fake.mode === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><body>旧版后端把未知路径交给前端页面</body></html>' });
   const ctxMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-context$/);
   if (ctxMatch) { const c = fake.ctx[ctxMatch[1]]; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
+  const w = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/assets\/([^/]+)(\/overrides)?$/);
+  const method = route.request().method();
+  if (w && method !== 'GET') {
+    const body = route.request().postDataJSON(); fake.writes.push({ method, path: url.pathname, body });
+    const hit = fake.shared.find(x => x.asset.id === w[3]) || Object.values(fake.local).flat().find(x => x.asset.id === w[3]);
+    if (!hit) return route.fulfill({ status: 404, json: { error: '不在这个作用域' } });
+    if (w[4]) { // 本集覆盖：set / inherit
+      const eff = fake.effective[w[3]], f = body.field.key === 'default_look' ? eff.default_look : eff.default_images[body.field.look_id ?? 'null'];
+      if (body.action === 'set') { f.value = body.value; f.override = { value: body.value, revision: (f.override?.revision ?? 0) + 1 }; f.source = { type: 'episode', id: w[2], revision: 1 }; }
+      else { f.value = f.parent.value; f.override = null; f.source = f.parent.source; }
+      return route.fulfill({ json: { ...hit, effective: structuredClone(eff), context_token: 'ctx-token' } });
+    }
+    hit.asset = { ...body.asset, revision: body.expected_revision + 1 }; // 整份保存（全剧基础资料）
+    return route.fulfill({ json: hit });
+  }
   const m = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/assets(?:\/([^/]+))?$/);
   if (!m) return route.continue();
   const [, type, id, assetId] = m, kind = url.searchParams.get('kind') || 'character';
   const shared = fake.shared.filter(x => x.asset.kind === kind), local = type === 'episode' ? (fake.local[id] || []).filter(x => x.asset.kind === kind) : [];
   const all = [...shared, ...local];
-  if (assetId) { const hit = [...fake.shared, ...(fake.local[id] || [])].find(x => x.asset.id === assetId); return hit ? route.fulfill({ json: hit }) : route.fulfill({ status: 404, json: { error: '不在这个作用域' } }); }
-  return route.fulfill({ json: { scope: { type, id }, context_token: 'ctx-token', total: all.length, page: 1, items: all } });
+  // 能力按作用域给：剧作用域里共享资产可编辑基础资料；集作用域里只能设本集覆盖
+  const asScope = x => type === 'series' ? { ...x, capabilities: { ...x.capabilities, edit_base: true, create_override: false, append: false } } : x;
+  if (assetId) { const hit = [...fake.shared, ...(fake.local[id] || [])].find(x => x.asset.id === assetId); return hit ? route.fulfill({ json: asScope(hit) }) : route.fulfill({ status: 404, json: { error: '不在这个作用域' } }); }
+  return route.fulfill({ json: { scope: { type, id }, context_token: 'ctx-token', total: all.length, page: 1, items: all.map(asScope) } });
 }
 
 try {
@@ -60,7 +77,13 @@ try {
   const seller = await api('/project-assets/assets', { project_id: eps[0].id, kind: 'character', name: '卖油郎' });
   await api('/project-assets/assets', { project_id: solo.id, kind: 'character', name: '短片主角' });
   const seriesOwner = { type: 'series', id: s.id, name: s.name };
-  fake.shared = [item({ ...lisi, project_id: null }, seriesOwner)];
+  const img = (id, look, name) => ({ id, look_id: look, media_asset_id: 'media-' + id, reference_type: '人物身份', purpose: '', locks: '', ignores: '', confirmed: false, archived_at: null, crop: { x: 50, y: 50, zoom: 1 }, last_known_name: name });
+  const lisiShared = { ...lisi, project_id: null, looks: [{ id: 'look-a', name: '常服', description: '', tags: [], default_image_id: 'img-1', archived_at: null }, { id: 'look-b', name: '囚服', description: '', tags: [], default_image_id: 'img-3', archived_at: null }], default_look_id: 'look-a', images: [img('img-1', 'look-a', '常服正面.png'), img('img-2', 'look-a', '常服侧面.png'), img('img-3', 'look-b', '囚服.png')] };
+  const src = (type, sid) => ({ type, id: sid, revision: 1 });
+  fake.effective = { [lisi.id]: {
+    default_look: { value: 'look-b', source: src('season', 'season'), override: null, parent: { value: 'look-b', source: src('season', 'season') }, write_token: 'wt-look' },
+    default_images: { 'look-a': { value: 'img-1', source: src('series', 'series'), override: null, parent: { value: 'img-1', source: src('series', 'series') }, write_token: 'wt-img-a' }, 'look-b': { value: 'img-3', source: src('series', 'series'), override: null, parent: { value: 'img-3', source: src('series', 'series') }, write_token: 'wt-img-b' } } } };
+  fake.shared = [{ ...item(lisiShared, seriesOwner), effective: fake.effective[lisi.id] }];
   fake.local[eps[0].id] = [item(seller, { type: 'project', id: eps[0].id, name: eps[0].name })];
   for (const e of eps) fake.ctx[e.id] = { project: { id: e.id, name: e.name }, series: { id: s.id, name: s.name }, season: { id: q.id, name: '第 1 季' }, membership_revision: 1, context_token: 'ctx-' + e.id };
   fake.ctx[solo.id] = { project: { id: solo.id, name: solo.name }, series: null, season: null, membership_revision: 1, context_token: 'ctx-solo' };
@@ -89,7 +112,41 @@ try {
     await expect(work().locator('.ca-scope-lock')).toHaveCount(0); await expect(work().locator('.ca-name-input')).toBeEnabled();
     await work().getByLabel('基础信息', { exact: true }).fill('本集自有的资料'); await work().getByRole('button', { name: '保存资料', exact: true }).click();
     await expect(work().getByRole('button', { name: '保存资料', exact: true })).toBeDisabled();
-    assert.equal((await api('/project-assets/assets/' + seller.id)).base_info, '本集自有的资料');
+    // 作用域模式下本集自有资产也走 <scope>/assets/:id 保存（合同：本集自有资料按原方式编辑），带令牌与请求号
+    const own = fake.writes.at(-1); assert.equal(own.method, 'PUT'); assert.equal(own.path, `/api/project-assets/scopes/episode/${eps[0].id}/assets/${seller.id}`); assert.equal(own.body.asset.base_info, '本集自有的资料'); assert.equal(own.body.context_token, 'ctx-token');
+  });
+
+  await check('本集设置：显示实际生效的默认造型和来源；本集改默认造型 / 默认图带令牌写入，恢复上层回到上层值', async () => {
+    await card('李四').click(); const panel = work().getByRole('region', { name: '本集设置' }); await expect(panel).toBeVisible();
+    const lookRow = panel.getByRole('group', { name: '默认造型' });
+    await expect(lookRow.getByRole('button', { name: '囚服', exact: true })).toHaveAttribute('aria-pressed', 'true'); await expect(lookRow.locator('.ca-src-tag')).toHaveText('本季');
+    await expect(lookRow.getByRole('button', { name: /恢复上层/ })).toHaveCount(0);
+    await lookRow.getByRole('button', { name: '常服', exact: true }).click();
+    await expect(lookRow.getByRole('button', { name: '常服', exact: true })).toHaveAttribute('aria-pressed', 'true'); await expect(lookRow.locator('.ca-src-tag')).toHaveText('本集');
+    const w1 = fake.writes.at(-1); assert.equal(w1.method, 'PATCH'); assert.equal(w1.path, `/api/project-assets/scopes/episode/${eps[0].id}/assets/${lisi.id}/overrides`);
+    assert.deepEqual({ field: w1.body.field, action: w1.body.action, value: w1.body.value, write_token: w1.body.write_token, context_token: w1.body.context_token }, { field: { key: 'default_look' }, action: 'set', value: 'look-a', write_token: 'wt-look', context_token: 'ctx-token' });
+    assert.match(w1.body.request_id, /^[0-9a-f-]{36}$/);
+    // 下面只读的造型列表也按本集实际生效显示默认
+    await lookRow.getByRole('button', { name: /恢复上层（本季）/ }).click(); await expect(lookRow.locator('.ca-src-tag')).toHaveText('本季');
+    assert.equal(fake.writes.at(-1).body.action, 'inherit'); assert.equal('value' in fake.writes.at(-1).body, false);
+    // 当前造型（常服）的默认图：本集换成侧面
+    await work().locator('.ca-look-list button').filter({ hasText: '常服' }).click();
+    const imgRow = panel.getByRole('group', { name: '造型「常服」的默认图' }); await expect(imgRow.locator('.ca-src-tag')).toHaveText('全剧');
+    await imgRow.getByRole('button', { name: '设为本集默认图：常服侧面.png' }).click(); await expect(imgRow.locator('.ca-src-tag')).toHaveText('本集');
+    assert.deepEqual(fake.writes.at(-1).body.field, { key: 'default_image', look_id: 'look-a' }); assert.equal(fake.writes.at(-1).body.write_token, 'wt-img-a');
+    await expect(work().locator('.ca-name-input')).toBeDisabled();
+  });
+
+  await check('全剧视图：可以编辑全剧基础资料，保存走剧作用域并带令牌；归档造型、解绑图片暂不开放', async () => {
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await settled(['李四']); await card('李四').click();
+    await expect(work().locator('.ca-scope-lock')).toHaveCount(0); await expect(work().getByRole('region', { name: '本集设置' })).toHaveCount(0);
+    await work().getByLabel('基础信息', { exact: true }).fill('全剧的李四资料'); await work().getByRole('button', { name: '保存资料', exact: true }).click();
+    await expect(work().getByRole('button', { name: '保存资料', exact: true })).toBeDisabled();
+    const w = fake.writes.at(-1); assert.equal(w.method, 'PUT'); assert.equal(w.path, `/api/project-assets/scopes/series/${s.id}/assets/${lisi.id}`);
+    assert.equal(w.body.asset.base_info, '全剧的李四资料'); assert.equal(w.body.context_token, 'ctx-token'); assert.match(w.body.request_id, /^[0-9a-f-]{36}$/); assert.equal(typeof w.body.expected_revision, 'number');
+    await work().getByRole('navigation', { name: '详情分区' }).getByRole('button', { name: '造型与参考图', exact: true }).click();
+    await work().locator('.ca-look-config > summary').click(); await expect(work().getByRole('button', { name: '归档造型', exact: true })).toBeDisabled();
+    await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '卖油郎']);
   });
 
   await check('切到「全剧」：顶栏不变，提示条说明，只列共享资产，暂不能新建', async () => {
@@ -98,7 +155,6 @@ try {
     await settled(['李四']); await expect(projectInBar(page)).toHaveAttribute('data-project', eps[0].id);
     assert.ok(seen.some(p => p === `/api/project-assets/scopes/series/${s.id}/assets`), '全剧视图应走剧作用域');
     await expect(work().getByRole('button', { name: /^新建/ }).first()).toBeDisabled();
-    await card('李四').click(); await expect(work().locator('.ca-scope-lock')).toContainText('全剧资料的编辑会在下一步接入');
     // 回到集视图；去公共人物库再回来也回到集视图
     await switchTo('第1集').catch(() => scopeSwitch().getByRole('button').first().click()); await settled(['李四', '卖油郎']);
     await switchTo('全剧'); await settled(['李四']); await switchTo('公共人物库'); await expect(work().locator('.ca-series-note')).toHaveCount(0);

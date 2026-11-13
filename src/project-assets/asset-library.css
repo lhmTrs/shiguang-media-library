@@ -719,3 +719,19 @@
 .ca-v2 .ca-owner-src.is-series{background:color-mix(in srgb,var(--green) 14%,var(--c-fff));color:color-mix(in srgb,var(--green) 70%,var(--c-24292c))}
 .ca-v2 .ca-owner-src.is-local{background:color-mix(in srgb,#d98a2b 16%,var(--c-fff));color:color-mix(in srgb,#b0611a 70%,var(--c-24292c))}
 .ca-v2 .ca-series-note{border-color:color-mix(in srgb,#d98a2b 35%,var(--line));background:color-mix(in srgb,#d98a2b 8%,var(--c-fff))}
+/* 第二期 P2a：集视图「本集设置」（默认造型 / 默认图覆盖）与来源标记 */
+.ca-v2 .ca-scope-overrides{margin:10px 0 4px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--green) 28%,var(--line));border-radius:10px;background:color-mix(in srgb,var(--green) 5%,var(--c-fff));display:flex;flex-direction:column;gap:10px}
+.ca-v2 .ca-scope-overrides h3{margin:0;font-size:14px}
+.ca-v2 .ca-scope-overrides h3 small{font-weight:400;font-size:12px;color:var(--muted);margin-left:6px}
+.ca-v2 .ca-override-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.ca-v2 .ca-override-label{display:inline-flex;align-items:center;gap:6px;min-width:150px;font-size:13px;font-weight:600}
+.ca-v2 .ca-override-choices,.ca-v2 .ca-override-thumbs{display:inline-flex;flex-wrap:wrap;gap:6px}
+.ca-v2 .ca-override-choices button{height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:13px inherit;cursor:pointer}
+.ca-v2 .ca-override-choices button[aria-pressed=true]{border-color:var(--green);background:color-mix(in srgb,var(--green) 14%,var(--c-fff));font-weight:600}
+.ca-v2 .ca-override-thumbs button{width:52px;height:52px;padding:0;border:2px solid transparent;border-radius:8px;overflow:hidden;background:var(--soft);cursor:pointer}
+.ca-v2 .ca-override-thumbs button[aria-pressed=true]{border-color:var(--green)}
+.ca-v2 .ca-override-thumbs button img{width:100%;height:100%;object-fit:cover;display:block}
+.ca-v2 .ca-override-reset{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
+.ca-v2 .ca-src-tag{display:inline-block;padding:0 6px;border-radius:5px;font-size:11px;font-weight:600;line-height:18px;background:var(--soft);color:var(--c-24292c)}
+.ca-v2 .ca-src-tag.is-episode{background:color-mix(in srgb,#d98a2b 16%,var(--c-fff));color:color-mix(in srgb,#b0611a 70%,var(--c-24292c))}
+.ca-v2 .ca-src-tag.is-series{background:color-mix(in srgb,var(--green) 14%,var(--c-fff));color:color-mix(in srgb,var(--green) 70%,var(--c-24292c))}
