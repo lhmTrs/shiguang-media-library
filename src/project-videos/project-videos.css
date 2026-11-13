@@ -396,3 +396,19 @@
 .pv-reject-items li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-reject-items li small { flex: none; color: var(--muted); }
 .pv-reject-items li[data-status="failed"] small, .pv-reject-items li[data-status="unknown"] small { color: var(--pv-warn); }
+
+/* 多选移动（move-videos） */
+.pv-drag-badge { position: fixed; top: -100px; left: -100px; padding: 6px 12px; border-radius: 999px; background: var(--c-24292c, #24292c); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pv-batch-object > div { min-width: 0; flex: 1; }
+.pv-batch-items { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.pv-batch-items li { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
+.pv-batch-items li > span, .pv-batch-items li > s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-batch-items small { flex: none; color: var(--muted); }
+.pv-batch-skip { color: var(--muted); }
+.pv-batch-warn small { color: var(--pv-warn); }
+.pv-batch-items li[data-state=ready] small { color: var(--green); }
+.pv-batch-items li[data-state=failed] small, .pv-batch-items li[data-state=unknown] small { color: var(--pv-warn); }
+.pv-op-background p { color: var(--pv-warn); }
+.pv-session > .pv-task.pv-op-background { display: flex; align-items: center; gap: 12px; }
+.pv-op-background p { flex: 1; min-width: 0; }
+.pv-op-background button { flex: none; }

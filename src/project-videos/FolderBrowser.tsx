@@ -7,10 +7,12 @@ import './project-videos.css';
 
 type FolderBrowserProps = {
   folders: VideoFolder[]; current: FolderView; breadcrumbs?: VideoFolder[]; projectId: string;
-  onNavigate: (id: FolderView) => void; onMoveVideo?: (videoId: string, folderId: string) => void;
+  onNavigate: (id: FolderView) => void; onMoveVideo?: (videoIds: string[], folderId: string) => void;
+  /** 暂时不能移动的原因（例如上一笔移动还没完成）：仍接受拖放，卡片上说明原因，放下时由宿主提示。 */
+  moveBlockedReason?: string;
 };
 
-export function FolderBrowser({folders, current, breadcrumbs, projectId, onNavigate, onMoveVideo, part = 'all'}: FolderBrowserProps & {part?: 'all' | 'tree' | 'breadcrumbs' | 'subfolders' | 'cards'}) {
+export function FolderBrowser({folders, current, breadcrumbs, projectId, onNavigate, onMoveVideo, moveBlockedReason, part = 'all'}: FolderBrowserProps & {part?: 'all' | 'tree' | 'breadcrumbs' | 'subfolders' | 'cards'}) {
   const trail = breadcrumbs || folderTrail(folders, current);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [fileDropTarget, setFileDropTarget] = useState<string | null>(null);
@@ -18,7 +20,7 @@ export function FolderBrowser({folders, current, breadcrumbs, projectId, onNavig
   const drop = (id: string) => ({
     onDragOver: (e: React.DragEvent) => { if (onMoveVideo && e.dataTransfer.types.includes(VIDEO_DRAG_TYPE) && !e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropTarget(id); } },
     onDragLeave: (e: React.DragEvent) => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDropTarget(old => old === id ? null : old); },
-    onDrop: (e: React.DragEvent) => { setDropTarget(null); const videoId = readVideoDrag(e.dataTransfer, projectId); if (videoId && onMoveVideo) { e.preventDefault(); e.stopPropagation(); onMoveVideo(videoId, id); } },
+    onDrop: (e: React.DragEvent) => { setDropTarget(null); const videoIds = readVideoDrag(e.dataTransfer, projectId); if (videoIds && onMoveVideo) { e.preventDefault(); e.stopPropagation(); onMoveVideo(videoIds, id); } },
   });
   function blockCardFiles(e: React.DragEvent, id: string) {
     if (!e.dataTransfer.types.includes('Files')) return false;
@@ -56,7 +58,7 @@ export function FolderBrowser({folders, current, breadcrumbs, projectId, onNavig
       aria-label={`打开文件夹：${f.name}`} title={`项目根目录 / ${f.path || f.name}`} onClick={() => onNavigate(f.id)} {...cardDrop(f)}>
       <span className="pv-thumbnail pv-folder-visual" aria-hidden="true"><Folder size={76} strokeWidth={1.3}/><ChevronRight size={18} className="pv-folder-enter"/></span>
       <span className="pv-card-body"><strong title={f.name}>{f.name}</strong><small title={f.path || f.name}>{current === 'all' || current === 'root' ? '位于项目根目录' : `位于 ${folders.find(parent => parent.id === current)?.path || trail.map(parent => parent.name).join(' / ') || '当前目录'}`}</small>
-        <span className="pv-folder-card-hint">{fileDropTarget === f.id ? '请用“导入视频”入口' : !f.available ? '目录不可用 · 查看目录' : onMoveVideo && dropTarget === f.id ? '松开，预览移动到此文件夹' : onMoveVideo ? '单击进入 · 可拖入视频' : '单击进入文件夹'}</span>
+        <span className="pv-folder-card-hint">{fileDropTarget === f.id ? '请用“导入视频”入口' : !f.available ? '目录不可用 · 查看目录' : onMoveVideo && dropTarget === f.id ? (moveBlockedReason || '松开，预览移动到此文件夹') : onMoveVideo ? '单击进入 · 可拖入视频' : '单击进入文件夹'}</span>
       </span>
     </button>
   </div>)}</>;

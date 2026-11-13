@@ -17,8 +17,13 @@ export function folderContains(folders: Folder[], ancestor: string, child: strin
 export function uniqueShots(shots: AdoptedShot[]): AdoptedShot[] {
   return [...new Map(shots.map(s => [s.id, s])).values()];
 }
-export function readVideoDrag(data: Pick<DataTransfer, 'types' | 'getData'>, projectId: string): string | null {
+/** 拖动的视频：拖已选中的一个时带整组（videoIds，和访达一样），否则只有被拖的那一个。 */
+export function readVideoDrag(data: Pick<DataTransfer, 'types' | 'getData'>, projectId: string): string[] | null {
   if (!data.types.includes(VIDEO_DRAG_TYPE) || data.types.includes('Files')) return null;
-  try { const value = JSON.parse(data.getData(VIDEO_DRAG_TYPE)); return value.projectId === projectId && typeof value.videoId === 'string' ? value.videoId : null; }
-  catch { return null; }
+  try {
+    const value = JSON.parse(data.getData(VIDEO_DRAG_TYPE));
+    if (value.projectId !== projectId || typeof value.videoId !== 'string') return null;
+    const ids = Array.isArray(value.videoIds) && value.videoIds.every((x: unknown) => typeof x === 'string') && value.videoIds.includes(value.videoId) ? value.videoIds as string[] : [value.videoId];
+    return [...new Set(ids)];
+  } catch { return null; }
 }

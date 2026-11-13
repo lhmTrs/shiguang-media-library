@@ -157,13 +157,20 @@ export type FolderView = 'all' | 'root' | 'reject' | string;
 export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | null};
 export type ConflictChoice = 'rename' | 'overwrite';
 export type FolderOperation = {
-  kind: 'move-video' | 'rename-folder' | 'move-folder' | 'delete-folder';
+  kind: 'move-video' | 'move-videos' | 'rename-folder' | 'move-folder' | 'delete-folder';
   sourceId?: string; folderId?: string; destinationFolderId?: string; name?: string;
   mode?: 'trash' | 'contents-to-root';
+  /** move-videos：选中的视频（含当前所在目录，用于排除已在目标目录的项）与预先排除的项。 */
+  items?: {id: string; name: string; folderId: string | null}[];
+  skipped?: {name: string; reason: string}[];
 };
 export type OperationPlan = {
   requestId: string; previewHash: string; description: string;
   conflicts: {key: string; name: string; sourceName: string; targetName: string; targetVideoId?: string; adoptedShots: AdoptedShot[]; choice?: ConflictChoice}[];
   affectedShots: AdoptedShot[]; files: number; folders: number; ready: boolean;
 };
-export type OperationReceipt = {requestId: string; status: 'running' | 'ready' | 'failed' | 'unknown'; description: string; error?: string; folderId?: string};
+export type OperationReceipt = {requestId: string; status: 'running' | 'ready' | 'failed' | 'unknown'; description: string; error?: string; folderId?: string;
+  /** move-videos：逐项结果；执行中各项都是 not-run（后端不给逐项进度）。 */
+  items?: { sourceId: string; name?: string; status: BatchItemStatus; unboundShotIds?: string[]; error?: string }[];
+  /** 只有预览、执行没有登记：status=unknown, phase=preview, errorCode=OPERATION_NOT_STARTED。 */
+  phase?: 'preview' | 'execution'; errorCode?: string};

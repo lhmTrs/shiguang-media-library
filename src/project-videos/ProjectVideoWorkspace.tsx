@@ -1,6 +1,6 @@
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
 import type {
   AdoptedShot, ImportRequest, ProjectVideo, ProjectVideoCollection, ProjectVideoWorkspaceProps,
   PromptInput, Receipt, ReferencePrompt, UpdateVideoRequest, UpgradePreview,
@@ -556,11 +556,35 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ kind: 'relink', video, path: '' }); };
   // Video moves always open the move-video preview; nothing is moved by the drop itself.
   const moveVideoTo = (videoId: string, target: string) => {
-    if (readOnly || operationPending || sending || modalOpen) return;
+    if (readOnly || sending || modalOpen) return;
+    if (operationPending) { setNotice(moveBusyNote); return; }
     const video = videos.find(v => v.id === videoId); if (!video || video.folderId === target || !video.managed) return;
     if (target === 'reject' || rejectSet.has(target)) { if (!video.inRejectArea) markReject([videoId]); return; } // 移入废片区域一律走解除采用确认
     setOpenMenu(''); setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: videoId, destinationFolderId: target, label: video.name});
   };
+  /** 上一笔文件夹操作（含移动）还在后台完成：不开始新的移动，并说明原因，不能像「点了没反应」。 */
+  const moveBusyNote = '上一笔移动还在完成中，完成后再移动。';
+  /**
+   * 多选移动（move-videos，一次 1–50 个，一次核对一次确认）。只剩一个时沿用单个移动。
+   * 旧视频（未托管）和废片里的视频先排除并说明；已在目标目录的由弹窗按所选目标排除。
+   */
+  function moveVideosTo(ids: string[], target?: string) {
+    if (readOnly || sending || modalOpen) return;
+    if (operationPending) { setNotice(moveBusyNote); return; }
+    const list = ids.map(id => videos.find(v => v.id === id)).filter((v): v is ProjectVideo => !!v);
+    if (target && (target === 'reject' || rejectSet.has(target))) { markReject(list.map(v => v.id)); return; } // 移入废片一律走解除采用确认
+    const skipped: {name: string; reason: string}[] = [];
+    const movable = list.filter(v => {
+      if (!v.managed) { skipped.push({name: v.name || v.fileName, reason: '旧视频，升级后才能移动'}); return false; }
+      if (v.inRejectArea) { skipped.push({name: v.name || v.fileName, reason: '在废片里，请用「移回…」'}); return false; }
+      return true;
+    });
+    if (!movable.length) { setNotice(skipped.length ? `所选视频都不能移动：${skipped[0].reason}。` : '没有可以移动的视频。'); return; }
+    if (movable.length > MAX_REJECT) { setNotice(`一次最多移动 ${MAX_REJECT} 个视频，请分批操作。`); return; }
+    if (movable.length === 1 && !skipped.length) { if (target) moveVideoTo(movable[0].id, target); else setFolderAction({kind: 'move-video', sourceId: movable[0].id, label: movable[0].name}); return; }
+    setOpenMenu(''); setExpandedId('');
+    setFolderAction({kind: 'move-videos', label: `${list.length} 个视频`, items: movable.map(v => ({id: v.id, name: v.name || v.fileName, folderId: v.folderId ?? null})), skipped, ...(target ? {destinationFolderId: target} : {})});
+  }
   /** 标记为废片（1–50 个）：只收已托管的视频；收纳处没有时先设置。 */
   function markReject(ids: string[]) {
     const list = ids.map(id => videos.find(v => v.id === id)).filter((v): v is ProjectVideo => !!v && !v.inRejectArea);
@@ -573,7 +597,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   }
   const openRejectRole = () => { if (!reject.openRole({roles, folders})) setNotice('上一笔废片收纳还没有结清，请先在页面顶部查看它的结果。'); };
   const rejectBlocked = locked || operationPending || reject.attention;
-  const folderCards = <FolderCards folders={folders.filter(f => !rejectSet.has(f.id))} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || operationPending || !!sending || modalOpen ? undefined : moveVideoTo}/>;
+  const folderCards = <FolderCards folders={folders.filter(f => !rejectSet.has(f.id))} current={folderId} breadcrumbs={collection?.breadcrumbs} projectId={projectId} onNavigate={navigateFolder} onMoveVideo={readOnly || !!sending || modalOpen ? undefined : moveVideosTo} moveBlockedReason={operationPending ? '上一笔移动完成后才能放进来' : undefined}/>;
   const orderedFolders = useMemo(() => {
     const out: {folder: typeof folders[number]; depth: number}[] = [];
     const walk = (parentId: string, depth: number, seen: Set<string>) => {
@@ -588,15 +612,15 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     onDragOver: (e: React.DragEvent) => {
       const types = Array.from(e.dataTransfer.types);
       if (types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; return; }
-      if (!types.includes(VIDEO_DRAG_TYPE) || !available || readOnly || operationPending || sending || modalOpen) return;
+      if (!types.includes(VIDEO_DRAG_TYPE) || !available || readOnly || sending || modalOpen) return;
       e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropFolder(id);
     },
     onDragLeave: (e: React.DragEvent) => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDropFolder(old => old === id ? '' : old); },
     onDrop: (e: React.DragEvent) => {
       setDropFolder('');
       if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); e.stopPropagation(); notifyFeedback({source: '生成视频', kind: 'info', message: '请用“导入视频”入口导入外部文件。'}); return; }
-      const videoId = readVideoDrag(e.dataTransfer, projectId); if (!videoId || !available) return;
-      e.preventDefault(); e.stopPropagation(); moveVideoTo(videoId, id);
+      const videoIds = readVideoDrag(e.dataTransfer, projectId); if (!videoIds || !available) return;
+      e.preventDefault(); e.stopPropagation(); moveVideosTo(videoIds, id);
     },
   });
   useEffect(() => { setOpenMenu(''); }, [active, projectId, modalOpen, folderId]);
@@ -638,6 +662,15 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const visibleOrder = groups.flatMap(group => group.videos.map(video => video.id));
   const visibleKey = visibleOrder.join('|');
   const pickedOrdered = visibleOrder.filter(id => picked.includes(id));
+  /** 拖动已选中的视频时带整组（和访达一样）；拖未选中的只带它自己。多个时用「N 个视频」做拖动预览。 */
+  function startVideoDrag(e: React.DragEvent, id: string) {
+    const group = picked.length > 1 && picked.includes(id) ? pickedOrdered : [id];
+    e.dataTransfer.setData(VIDEO_DRAG_TYPE, JSON.stringify({projectId, videoId: id, videoIds: group})); e.dataTransfer.effectAllowed = 'move';
+    if (group.length > 1) {
+      const badge = document.createElement('div'); badge.className = 'pv-drag-badge'; badge.textContent = `${group.length} 个视频`;
+      document.body.appendChild(badge); e.dataTransfer.setDragImage(badge, 12, 12); setTimeout(() => badge.remove(), 0);
+    }
+  }
   const multi = picked.length > 1;
   // 过滤或切换后，多选里看不见的视频被移出，避免一键复制看不见的旧项；单选沿用原来的行为。
   useEffect(() => { if (picked.length > 1) { const next = picked.filter(id => visibleOrder.includes(id)); if (next.length !== picked.length) applyPick(next); } }, [visibleKey]);
@@ -819,7 +852,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           {projectEmpty && <div className="pv-cards"><button type="button" className="pv-card pv-card-empty" disabled={importDisabled} onClick={openImport}><Upload size={20} aria-hidden="true"/><strong>还没有生成视频</strong>{!importDisabled && <small>拖入视频或点击导入</small>}</button></div>}
           {!projectEmpty && groups.map(group => <section key={group.id} className="pv-group">
             {view === 'prompts' && <header><h2>{group.title}<small>{group.videos.length} 个视频</small></h2>{group.text && <details><summary>查看完整参考提示词</summary><pre>{group.text}</pre></details>}</header>}
-            <div className="pv-cards" role="group" aria-label={view === 'videos' ? '当前目录的文件夹与视频' : group.title}>{view === 'videos' && folderCards}{group.videos.map(video => <div className="pv-card-entry" key={video.id}><button type="button" data-video-id={video.id} className={`pv-card${picked.includes(video.id) ? ' pv-selected' : ''}${multi && picked.includes(video.id) ? ' pv-multi' : ''}`} aria-pressed={picked.includes(video.id)} draggable={video.managed && !readOnly && !operationPending} onDragStart={e => { e.dataTransfer.setData(VIDEO_DRAG_TYPE, JSON.stringify({projectId, videoId: video.id})); e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDropFolder('')} onClick={e => pickCard(e, video.id)} onDoubleClick={() => { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); }}
+            <div className="pv-cards" role="group" aria-label={view === 'videos' ? '当前目录的文件夹与视频' : group.title}>{view === 'videos' && folderCards}{group.videos.map(video => <div className="pv-card-entry" key={video.id}><button type="button" data-video-id={video.id} className={`pv-card${picked.includes(video.id) ? ' pv-selected' : ''}${multi && picked.includes(video.id) ? ' pv-multi' : ''}`} aria-pressed={picked.includes(video.id)} draggable={video.managed && !readOnly} onDragStart={e => startVideoDrag(e, video.id)} onDragEnd={() => setDropFolder('')} onClick={e => pickCard(e, video.id)} onDoubleClick={() => { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); }}
               onContextMenu={e => { e.preventDefault(); if (!picked.includes(video.id)) { anchorRef.current = video.id; applyPick([video.id]); } openContext(e.clientX, e.clientY); }}
               onKeyDown={e => {
                 if ((e.key === 'ContextMenu' || e.key === 'F10' && e.shiftKey)) { e.preventDefault(); if (!picked.includes(video.id)) { anchorRef.current = video.id; applyPick([video.id]); } const r = e.currentTarget.getBoundingClientRect(); openContext(r.left + 24, r.top + 24); return; }
@@ -836,6 +869,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           {multi && <div className="pv-selection-bar" role="toolbar" aria-label="已选视频操作"><strong>已选 {picked.length} 个视频</strong>
             <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} title={copyDisabledReason || '复制到系统剪贴板（⌘C）'} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制</button>
             <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} title={revealDisabledReason || '在访达中定位这些文件'} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>在访达中显示</button>
+            {folderId !== 'reject' && <button type="button" disabled={locked || readOnly} title={operationPending ? moveBusyNote : '移动到项目内的其他文件夹，会先核对影响；拖动其中任一个也会带着整组一起拖'} onClick={() => moveVideosTo(pickedOrdered)}><FolderInput size={14}/>移动到…</button>}
             {folderId !== 'reject' && <button type="button" disabled={rejectBlocked} title={`移入废片收纳处（一次最多 ${MAX_REJECT} 个），会先核对影响`} onClick={() => markReject(pickedOrdered)}><Archive size={14}/>标记为废片</button>}
             <button type="button" onClick={() => applyPick([])}>取消选择</button>
             {(copyDisabledReason || revealDisabledReason) && <small>{copyDisabledReason || revealDisabledReason}</small>}</div>}
@@ -863,7 +897,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {selected && draft && <aside className="pv-detail" aria-label="视频详情">
           <header className="pv-detail-head"><div className="pv-detail-title"><small>视频详情</small><h2 title={selected.name || selected.fileName}>{selected.name || selected.fileName}</h2></div>
             {menuWrap('detail', <Ellipsis size={17}/>, {label: '视频操作', className: 'pv-icon-button pv-ghost'}, <>
-              {menuItem('移动到…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name}); }, {disabled: locked || operationPending || !selected.managed, hint: selected.managed ? '会先核对影响' : '升级后可移动'})}
+              {menuItem('移动到…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, label: selected.name}); }, {disabled: locked || operationPending || !selected.managed, hint: !selected.managed ? '升级后可移动' : operationPending ? '上一笔完成后可用' : '会先核对影响'})}
               {selected.inRejectArea
                 ? menuItem('移回…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, destinationFolderId: 'root', label: selected.name}); }, {disabled: rejectBlocked || !selected.managed, hint: '不会自动恢复采用'})
                 : menuItem('标记为废片…', () => markReject([selected.id]), {disabled: rejectBlocked || !selected.managed, hint: selected.adoptedShots.length ? '会先确认解除采用' : '移入废片收纳处'})}
@@ -909,9 +943,10 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {actionTargets.length === 1 && <>
           <hr/>
           {menuItem('查看原视频', () => setExpandedId(actionTargets[0]))}
-          {menuItem('移动到…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, label: v.name}); }, {disabled: locked || operationPending || !videos.find(x => x.id === actionTargets[0])?.managed})}
+          {menuItem('移动到…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, label: v.name}); }, {disabled: locked || operationPending || !videos.find(x => x.id === actionTargets[0])?.managed, hint: operationPending ? '上一笔完成后可用' : undefined})}
           {videos.find(x => x.id === actionTargets[0])?.inRejectArea && menuItem('移回…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, destinationFolderId: 'root', label: v.name}); }, {disabled: rejectBlocked, hint: '不会自动恢复采用'})}
         </>}
+        {actionTargets.length > 1 && actionTargets.some(id => !videos.find(v => v.id === id)?.inRejectArea) && <><hr/>{menuItem(`移动 ${actionTargets.length} 个到…`, () => moveVideosTo(actionTargets), {disabled: locked || readOnly, hint: operationPending ? '上一笔完成后可用' : undefined})}</>}
         {actionTargets.some(id => !videos.find(v => v.id === id)?.inRejectArea) && <><hr/>{menuItem(actionTargets.length > 1 ? `标记 ${actionTargets.length} 个为废片…` : '标记为废片…', () => markReject(actionTargets), {disabled: rejectBlocked, hint: '会先核对影响'})}</>}
         {(copyDisabledReason || revealDisabledReason) && <p className="pv-menu-note">{copyDisabledReason || revealDisabledReason}</p>}
       </div>
@@ -991,7 +1026,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     </Modal>}
     {active && contentChange.video && contentChange.visible && <ContentChangeDialog ctl={contentChange}/>}
     {active && reject.mode && reject.visible && <RejectDialog ctl={reject} allFolders={folders}/>}
-    <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} excludeTargets={rejectSet} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else void refresh();}} onPending={setOperationPending}/>
+    <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} excludeTargets={rejectSet} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else { if (receipt?.status === 'ready' && folderAction?.kind === 'move-videos') applyPick([]); void refresh(); }}} onPending={setOperationPending}
+      rolesRevision={roles?.revision} onOpenFolder={id => navigateFolder(id)}/>
     {active && confirmation && <Modal title={confirmation.kind === 'remove' ? '移除视频记录' : '重新定位视频'} locked={locked} onClose={() => setConfirmation(null)}>
       <p>项目：<strong>{projectName}</strong> · {confirmation.video.name}</p>
       {error && <p className="pv-error" role="alert">{error}</p>}
