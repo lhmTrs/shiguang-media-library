@@ -80,6 +80,13 @@ async function routeApi(route) {
   if (method === 'POST') assert.equal(req.headers()['x-local-token'], 'synthetic-token');
   const endpoint = url.pathname.slice('/api/file-intake'.length);
   if (endpoint === '/status') {if (fixture.firstCompletionAfterMount) {fixture.firstCompletionAfterMount = false; await pause(30); fixture.status.latestCompletion.updatedAt = Date.now();} return respond(fixture.status);}
+  // 新页面走安装任务接口（INSTALL-FEEDBACK）；旧同步接口保留给旧页面
+  if (endpoint === '/install/job') {
+    if (method === 'GET') return respond({job: fixture.status.installJob ?? null});
+    fixture.installCount++; fixture.status.installed = true; const at = Date.now();
+    fixture.status.installJob = {id: 'job-' + fixture.installCount, stage: 'done', window: 'skipped', startedAt: at, finishedAt: at, message: '已安装合成入口，首次请到系统设置启用。', error: null, previousKept: null};
+    return respond({job: fixture.status.installJob}, 202);
+  }
   if (endpoint === '/install') {fixture.installCount++; fixture.status.installed = true; return respond({installed: true, message: '已安装合成入口，首次请到系统设置启用。'});}
   if (endpoint === '/preferences') {assert.equal(method, 'GET'); return respond({targets: backendPreferences()});}
   if (endpoint === '/handoffs/' + handoffId) return respond({...fixture.handoff, preferences: backendPreferences()});

@@ -18,8 +18,18 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   route('get','/categories/:kind',async(req,res)=>res.json(await store.generic.choices(req.params.kind)));
   route('post','/categories/:kind',async(req,res)=>res.json(await withActivity(()=>store.generic.createFolder(req.params.kind,req.body))));
   route('get','/image-proposal',async(req,res)=>res.json(await store.generic.imageProposal(req.query.projectId,req.query.name,req.query.lookName)));
-  route('get','/status',async(_req,res)=>res.json({...await native.status(),...store.status()}));
-  route('post','/install',async(_req,res)=>res.json(await withActivity(()=>native.install())));
+  route('get','/status',async(_req,res)=>res.json({...await native.status(),...store.status(),installJob:native.installJob()}));
+  route('post','/install',async(_req,res)=>{
+    try{res.json(await native.install(withActivity));}
+    catch(cause){
+      if(cause.code==='INTAKE_COMPILER_TIMEOUT')
+        throw error('INTAKE_COMPILER_UNAVAILABLE','无法准备本机窗口组件，请先安装 Mac 命令行工具后再试；未安装右键入口',409);
+      throw cause;
+    }
+  });
+  route('get','/install/job',(_req,res)=>res.json({job:native.installJob()}));
+  route('post','/install/job',async(_req,res)=>res.status(202).json({job:await native.startInstall(withActivity)}));
+  route('post','/open-services-settings',async(_req,res)=>res.json(await withActivity(()=>native.openServicesSettings())));
   route('get','/handoffs/:id',async(req,res)=>res.json(await withActivity(()=>store.handoff(req.params.id))));
   route('post','/handoffs/:id/name-preview',async(req,res)=>res.json(await withActivity(()=>store.namePreview(req.params.id,req.body))));
   route('get','/handoffs/:id/files/:fileId/preview',async(req,res)=>{

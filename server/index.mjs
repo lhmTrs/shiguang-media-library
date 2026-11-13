@@ -351,7 +351,7 @@ const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStor
 if(process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1')void projectVideos.prepareDesktop();
 const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
 const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
-const intakeNative=new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')});
+const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
 app.disable("x-powered-by");
@@ -448,7 +448,7 @@ app.get("/api/projects/:id/agent-guide", asyncRoute(async (req, res) => {
     throw error;
   }
   if (target.project_kind !== "normal") return res.status(404).json({ error: "未找到可分享的项目" });
-  res.type("text/markdown").send(projectAgentGuide({ project: target, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
+  res.type("text/markdown").send(projectAgentGuide({ project: { ...target, ...projects.series.membership(target.id) }, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
 }));
 app.use("/api", (req, res, next) => {
   const cookie = req.headers.cookie?.match(
@@ -824,6 +824,14 @@ app.post("/api/asset-metadata-registration/commands/:id/abort", fieldRegistratio
 app.post("/api/asset-fingerprints", (req, res) => res.status(202).json(assetFingerprints.start(req.body)));
 app.get("/api/asset-fingerprints/:id", (req, res) => res.json(assetFingerprints.get(req.params.id)));
 app.post("/api/asset-fingerprints/:id/cancel", (req, res) => res.json(assetFingerprints.cancel(req.params.id)));
+app.get("/api/projects/:id/asset-context", asyncRoute(async (req, res) => {
+  try {
+    res.json(projectAssets.scoped.assetContext(req.params.id));
+  } catch (error) {
+    if (!error.status) throw error;
+    res.status(error.status).json({ error: error.message, code: error.code, details: error.details });
+  }
+}));
 app.use("/api", projectSeriesRouter(projects.series));
 app.get("/api/projects", asyncRoute(async (req, res) => res.json(projects.list())));
 app.get("/api/projects/usage-counts", (req,res) => res.json(lib.db.prepare("SELECT asset_id,COUNT(*) n FROM project_assets WHERE status='used' GROUP BY asset_id").all()));

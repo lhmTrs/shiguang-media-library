@@ -130,8 +130,26 @@ async function publishRelative(s,suffixed){
 export class ReferenceImageImports{
   constructor(store,pictures){this.store=store;this.lib=store.lib;this.pictures=pictures;this.sessions=new Map();this.hashCache=new Map();}
   guard(s){
-    this.pictures.writable();const a=this.store.get(s.target.assetId);this.store.project(a.project_id);
-    if(a.project_id!==s.target.projectId||a.archived_at)throw fault('原资产已归档或所属项目已变化，文件不绑定到其他资料',409);
+    this.pictures.writable();
+    const { assetId, projectId, lookId, seriesId, contextToken } = s.target;
+    let a;
+    if (seriesId) {
+      const scope = this.store.scoped.scope(s.scopeType, projectId);
+      this.store.scoped.assertContextToken(scope, contextToken);
+      const item = this.store.scoped.detailInTransaction(scope, assetId);
+      if (item.owner.type !== 'series' || item.owner.id !== seriesId || item.asset.archived_at) {
+        throw fault('原资产归属已变化，请重新选择', 409, { code: 'ASSET_SCOPE_CHANGED' });
+      }
+      a = item.asset;
+      if (a.kind === 'character' ? !a.looks.some(look => look.id === lookId && look.archived_at === null) : lookId !== null) {
+        throw fault('请选择已保存的当前造型或资产', 409, { code: 'ASSET_SCOPE_CHANGED' });
+      }
+      if (s.scopeType === 'episode') this.store.generationLocks?.assertWritable(projectId);
+      return a;
+    }
+    a = this.store.get(assetId);
+    this.store.project(a.project_id);
+    if(a.project_id!==projectId||a.archived_at)throw fault('原资产已归档或所属项目已变化，文件不绑定到其他资料',409);
     if(a.kind==='character'){
       const l=a.looks.find(l=>l.id===s.target.lookId);
       const owner=this.store.db.prepare('SELECT asset_id FROM creative_looks WHERE id=?').get(s.target.lookId);
@@ -140,20 +158,31 @@ export class ReferenceImageImports{
     this.store.generationLocks?.assertWritable(a.project_id);return a;
   }
   get(id){const s=this.sessions.get(id);if(!s)throw fault('导入记录已过期或服务已重启；已完成的图片仍在项目文件夹，请从素材库选择',404);this.guard(s);return s;}
-  dto(s){return{id:s.id,status:s.status,target:s.target,fileName:s.finalName||s.fileName,mediaAssetId:s.mediaId,previewUrl:s.mediaId?'/api/project-assets/media/'+s.mediaId+'/preview':null,candidates:(s.candidates||[]).map(c=>({id:c.id,name:path.basename(c.file),reason:c.reason,previewUrl:'/api/project-assets/image-imports/'+s.id+'/candidates/'+c.id+'/preview'})),error:s.error};}
+  dto(s){const {contextToken,...target}=s.target;return{id:s.id,status:s.status,target,fileName:s.finalName||s.fileName,mediaAssetId:s.mediaId,previewUrl:s.mediaId?'/api/project-assets/media/'+s.mediaId+'/preview':null,candidates:(s.candidates||[]).map(c=>({id:c.id,name:path.basename(c.file),reason:c.reason,previewUrl:'/api/project-assets/image-imports/'+s.id+'/candidates/'+c.id+'/preview'})),error:s.error};}
   async start(input){
-    const {requestId,assetId,projectId,lookId=null,fileName,bytes}=input;
+    const {requestId,assetId,projectId,lookId=null,fileName,bytes,append_context_token,series_context_token}=input;
     if(!idOK(requestId)||!idOK(assetId)||!idOK(projectId)||lookId!==null&&!idOK(lookId)||typeof fileName!=='string'||!fileName||/^[. ]|[<>:"/\\|?*\x00-\x1f]|[. ]$/.test(fileName)||!Number.isSafeInteger(bytes)||bytes<1)throw fault('请选择一张有效的本地图片；文件名不能包含路径或系统保留字符');
-    const target={assetId,projectId,lookId};const args=canonical({target,fileName,bytes});
+    const target={assetId,projectId,lookId};
+    let scopeType;
+    if (append_context_token !== undefined || series_context_token !== undefined) {
+      if (append_context_token !== undefined && series_context_token !== undefined) throw fault('请选择一个明确的图片导入目标', 422);
+      scopeType = append_context_token === undefined ? 'series' : 'episode';
+      const scope = this.store.scoped.scope(scopeType, projectId);
+      this.store.scoped.assertContextToken(scope, append_context_token ?? series_context_token);
+      if (!scope.series_id) throw fault('当前项目未归入剧，请重新选择', 409, { code: 'ASSET_SCOPE_CHANGED' });
+      Object.assign(target, { seriesId: scope.series_id, contextToken: scope.context_token });
+    }
+    const args=canonical({target,fileName,bytes});
     const previous=this.sessions.get(requestId);if(previous){if(previous.args!==args)throw fault('导入编号已用于其他文件',409);this.guard(previous);return this.dto(previous);}
-    const s={id:requestId,target,fileName,bytes,args,status:'preparing',created:Date.now()};const a=this.guard(s);
+    const s={id:requestId,target,scopeType,fileName,bytes,args,status:'preparing',created:Date.now()};const a=this.guard(s);
     if(a.kind==='character'?!lookId:lookId!==null)throw fault('请选择当前造型');
     // Reserve the ID before the first asynchronous filesystem operation.
     this.sessions.set(s.id,s);s.running=true;
     try{await this.pictures.serial(async()=>{
       const state=await this.pictures.prepare();await this.pictures.current(state);
-      const p=this.store.project(projectId),scope={id:p.id,name:p.project_kind==='public'?'公共人物库':p.name};
-      const existing=(await fs.readdir(this.pictures.directory,{withFileTypes:true})).filter(e=>e.name.endsWith('--'+projectId.toLowerCase()));
+      const p=s.target.seriesId?this.lib.projectSeries.series(s.target.seriesId):this.store.project(projectId);
+      const scope={id:p.id,name:p.project_kind==='public'?'公共人物库':p.name};
+      const existing=(await fs.readdir(this.pictures.directory,{withFileTypes:true})).filter(e=>e.name.endsWith('--'+scope.id.toLowerCase()));
       if(existing.length>1)throw fault('同一项目存在多个图片文件夹，请核对后再导入',409);
       const target=path.join(this.pictures.directory,existing[0]?.name||projectFolderName(scope));await privateDirectory(target);
       Object.assign(state,{target,targetIdentity:await fs.lstat(target)});await this.pictures.current(state);this.guard(s);s.state=state;
@@ -218,11 +247,18 @@ export class ReferenceImageImports{
   async register(s,file,d){
     await this.pictures.current(s.state);this.guard(s);const current=await fs.lstat(file);
     if(identity(current)!==identity(d.stat))throw fault('图片已变化，未登记到资料',409);
-    const db=this.lib.db,old=db.prepare('SELECT * FROM assets WHERE path=?').get(file);
-    if(old&&(old.trashed||old.kind!=='photo'||old.root_id!==s.state.root.id))throw fault('已有素材记录状态不同，请核对素材库；文件已保留',409);
-    const mediaId=old?.id||randomUUID();
-    if(!old){const ids=indexFileIdentity(current);db.prepare('INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mediaId,s.state.root.id,file,path.basename(file),path.extname(file).slice(1).toLowerCase(),'photo',current.size,current.mtimeMs,current.birthtimeMs||current.mtimeMs,'','','参考图片导入',0,ids.dev,ids.ino,d.hash);}
-    this.lib.directoryClassification?.sync(s.state.root.id,mediaId);
+    const db=this.lib.db;
+    const register = () => {
+      if (s.target.seriesId) this.store.lockDirectory();
+      this.guard(s);
+      const old=db.prepare('SELECT * FROM assets WHERE path=?').get(file);
+      if(old&&(old.trashed||old.kind!=='photo'||old.root_id!==s.state.root.id))throw fault('已有素材记录状态不同，请核对素材库；文件已保留',409);
+      const mediaId=old?.id||randomUUID();
+      if(!old){const ids=indexFileIdentity(current);db.prepare('INSERT INTO assets(id,root_id,path,name,ext,kind,size,mtime,created_ms,category,sub,basis,review,dev,ino,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mediaId,s.state.root.id,file,path.basename(file),path.extname(file).slice(1).toLowerCase(),'photo',current.size,current.mtimeMs,current.birthtimeMs||current.mtimeMs,'','','参考图片导入',0,ids.dev,ids.ino,d.hash);}
+      this.lib.directoryClassification?.sync(s.state.root.id,mediaId);
+      return mediaId;
+    };
+    const mediaId = s.target.seriesId ? this.store.tx(register) : register();
     s.mediaId=mediaId;s.finalName=path.basename(file);s.status='ready';s.error=null;
     // No pathname-based deletion: completed files and private receive caches are retained.
     return this.dto(s);

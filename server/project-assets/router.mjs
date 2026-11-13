@@ -49,10 +49,45 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('patch', scorePath, req => attributes.patchScores(req.params.id, req.body));
   route('get', '/projects/:id/attributes', req => attributes.compare(req.params.id, req.query.asset_ids));
   route('post', '/projects/:id/attribute-scores', req => attributes.scoreBatch(req.params.id, req.body));
+  const scoped = '/scopes/:scopeType/:scopeId';
+  route('get', scoped + '/assets', req => store.scoped.list(req.params.scopeType, req.params.scopeId, req.query));
+  route('get', scoped + '/overrides', req => store.scoped.seasonOverrides(req.params.scopeType, req.params.scopeId, req.query));
+  route('get', scoped + '/assets/:assetId', req => store.scoped.detail(req.params.scopeType, req.params.scopeId, req.params.assetId));
+  const scopeWrite = (method, suffix, action) =>
+    route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));
+  const writes = store.scopedWrites;
+  scopeWrite('get', '/assets/:assetId/health', (type, id, req) =>
+    store.scoped.health(type, id, req.params.assetId));
+  scopeWrite('get', '/assets/:assetId/shots', (type, id, req) =>
+    store.scoped.episodeShots(type, id, req.params.assetId));
+  scopeWrite('get', '/assets/:assetId/versions', (type, id, req) =>
+    store.scoped.versions(type, id, req.params.assetId));
+  scopeWrite('get', '/assets/:assetId/versions/:version', (type, id, req) =>
+    store.scoped.versions(type, id, req.params.assetId, req.params.version));
+  scopeWrite('post', '/names/check', (type, id, req) => writes.checkNames(type, id, req.body));
+  scopeWrite('post', '/assets', (type, id, req) => writes.create(type, id, req.body));
+  scopeWrite('put', '/assets/:assetId', (type, id, req) => writes.save(type, id, req.params.assetId, req.body));
+  scopeWrite('patch', '/assets/:assetId/overrides', (type, id, req) => writes.setOverride(type, id, req.params.assetId, req.body));
+  const append = store.scopedAppend;
+  scopeWrite('post', '/assets/:assetId/append/media-receipt', (type, id, req) => append.mediaReceipt(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/append/preview', (type, id, req) => append.preview(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/append', (type, id, req) => append.commit(type, id, req.params.assetId, req.body));
+  const impact = store.scopedImpact;
+  scopeWrite('post', '/assets/:assetId/promotion/preview', (type, id, req) => impact.previewPromotion(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/promotion', (type, id, req) => impact.commitPromotion(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/archive-impact', (type, id, req) => impact.previewArchive(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/archive', (type, id, req) => impact.commitArchive(type, id, req.params.assetId, req.body));
+  scopeWrite('get', '/attribute-config', (type, id, req) => store.scoped.attributeConfig(type, id, req.query.asset_id));
+  scopeWrite('patch', '/attribute-config', (type, id, req) => writes.patchConfig(type, id, req.body));
+  scopeWrite('post', '/attribute-config/removal-preview', (type, id, req) => writes.configRemovalPreview(type, id, req.body));
+  scopeWrite('post', '/attribute-scores', (type, id, req) => writes.scoreBatch(type, id, req.body));
+  scopeWrite('get', '/assets/:assetId/attributes', (type, id, req) => store.scoped.attributeScores(type, id, req.params.assetId));
+  scopeWrite('patch', '/assets/:assetId/attributes', (type, id, req) => writes.patchScores(type, id, req.params.assetId, req.body));
+  route('get', '/scoped-requests/:requestId', req => writes.request(req.params.requestId));
   route('get', '/scopes', () => store.scopes());
   route('get', '/assets', req => store.list(req.query));
   route('post', '/assets', req => store.create(req.body));
-  route('get', '/assets/:id', req => store.get(req.params.id));
+  route('get', '/assets/:id', req => store.localAsset(store.get(req.params.id)));
   router.get('/assets/:id/voice/:voiceId',asyncRoute(async(req,res)=>{const result=await store.voices.preview(store.get(req.params.id),req.params.voiceId);res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});res.type(result.mime).send(result.bytes);}));
   route('put', '/assets/:id', async req => {
     const previous=store.get(req.params.id),saved=await store.save(req.params.id, req.body.asset, req.body.expected_revision);
@@ -65,10 +100,19 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     return saved;
   });
   route('post', '/assets/:id/archive', req => store.archive(req.params.id, req.body.archived === true, req.body.expected_revision));
-  route('get', '/assets/:id/health', req => store.health(req.params.id));
+  route('get', '/assets/:id/health', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.health(req.params.id);
+  });
   route('get', '/assets/:id/shots', req => store.associatedShots(req.params.id));
-  route('get', '/assets/:id/versions', req => store.versions(req.params.id));
-  route('get', '/assets/:id/versions/:version', req => store.version(req.params.id, req.params.version));
+  route('get', '/assets/:id/versions', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.versions(req.params.id);
+  });
+  route('get', '/assets/:id/versions/:version', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.version(req.params.id, req.params.version);
+  });
   route('get', '/assets/:id/copy-preview', req => store.copyPreview(req.params.id, req.query.project_id));
   route('post', '/assets/:id/copy', req => store.copy(req.params.id, req.body));
   route('get', '/copies/:id', req => store.copyStatus(req.params.id));
@@ -85,6 +129,6 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('get', '/backup', () => store.backup());
   route('post', '/restore', req => store.restore(req.body));
   router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
-  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}) }); });
+  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}), ...(error.status && error.details ? { details: error.details } : {}) }); });
   return router;
 }

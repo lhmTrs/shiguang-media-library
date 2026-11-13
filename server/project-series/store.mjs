@@ -228,6 +228,7 @@ export class ProjectSeries {
       if (this.db.prepare("SELECT id FROM project_series_members WHERE series_id=? LIMIT 1").get(id)) {
         throw new SeriesError("SERIES_NOT_EMPTY", "剧中仍有项目，请先移出项目");
       }
+      this.projects.lib.creativeAssetStore?.scopedWrites.assertSeriesRemovable(id);
       this.db.prepare("DELETE FROM project_series_seasons WHERE series_id=?").run(id);
       this.db.prepare("DELETE FROM project_series WHERE id=?").run(id);
       return { removed: true };
@@ -279,6 +280,7 @@ export class ProjectSeries {
       if (this.db.prepare("SELECT id FROM project_series_members WHERE series_id=? AND container_key=? LIMIT 1").get(seriesId, id)) {
         throw new SeriesError("SEASON_NOT_EMPTY", "季中仍有项目，请先移出项目");
       }
+      this.projects.lib.creativeAssetStore?.scopedWrites.assertNoOverrides('season', id);
       this.db.prepare("DELETE FROM project_series_seasons WHERE id=?").run(id);
       return { removed: true };
     });
@@ -371,7 +373,14 @@ export class ProjectSeries {
         conflicts.push({ project_id: id, code: "INVALID_SERIES_INPUT", ...target });
         continue;
       }
-      changes.push({ project_id: id, before, after: { ...target, episode_no: episodeNo, revision: before.revision + 1 } });
+      const change = { project_id: id, before, after: { ...target, episode_no: episodeNo, revision: before.revision + 1 } };
+      try { this.projects.lib.creativeAssetStore?.scopedWrites.assertMembershipChange(change); }
+      catch (error) {
+        if (!['ASSET_IN_USE', 'ASSET_SCOPE_CHANGED', 'ASSET_NAME_CONFLICT'].includes(error.code)) throw error;
+        conflicts.push({ project_id: id, code: error.code, ...error.details });
+        continue;
+      }
+      changes.push(change);
     }
     return { changes, conflicts };
   }
@@ -404,6 +413,7 @@ export class ProjectSeries {
       try {
         if (!project.get(id)) throw new SeriesError("PROJECT_NOT_FOUND", "项目已删除，请刷新后重试", 404);
         this.projects.generationLocks?.assertWritable(id);
+        this.projects.lib.creativeAssetStore?.scopedWrites.assertMembershipChange(byProject.get(id));
       } catch (error) {
         const { group_id } = byProject.get(id);
         if (group_id === undefined || !["PROJECT_NOT_FOUND", "STORYBOARD_GENERATION_LOCKED"].includes(error.code)) throw error;
@@ -423,7 +433,7 @@ export class ProjectSeries {
       const { changes, conflicts } = this.planMove(input);
       if (conflicts.length) {
         const codes = conflicts.map(conflict => conflict.code);
-        const code = ["EPISODE_NUMBER_CONFLICT", "SERIES_STALE", "PROJECT_NOT_FOUND", "INVALID_SERIES_INPUT"].find(candidate => codes.includes(candidate));
+        const code = ["ASSET_IN_USE", "ASSET_SCOPE_CHANGED", "ASSET_NAME_CONFLICT", "EPISODE_NUMBER_CONFLICT", "SERIES_STALE", "PROJECT_NOT_FOUND", "INVALID_SERIES_INPUT"].find(candidate => codes.includes(candidate));
         const status = code === "PROJECT_NOT_FOUND" ? 404 : code === "INVALID_SERIES_INPUT" ? 400 : 409;
         throw new SeriesError(code, "部分项目无法移动，请核对冲突后重试", status, { conflicts });
       }

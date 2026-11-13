@@ -521,6 +521,7 @@ export class ManagedIntakeCatalog {
         creativeId:prepared?.id,revision:prepared?(previous?.revision??0)+1:undefined,contentHash:prepared?digest(contentOf(prepared)):undefined};
       s.commit=commit;s.status='committing';this.persist(s);
       this.assets.tx(()=>{
+        if (prepared) this.assets.lockDirectory();
         this.currentSync(s.target);
         if(!same(stamp(fsSync.fstatSync(opened.handle.fd)),opened.identity) || !same(stamp(fsSync.lstatSync(file)),opened.identity) || fsSync.realpathSync(file)!==file) throw error('SOURCE_CHANGED','文件在登记前变化');
         if(assetProof(this.db.prepare('SELECT * FROM assets WHERE path=?').get(file))!==beforeProof) throw error('MEDIA_CONFLICT','素材登记或分类在准备期间变化');
