@@ -21,6 +21,24 @@ const installError=(cause,fallback)=>({
   code:/^[A-Z_]{1,64}$/.test(cause?.code??'')?cause.code:'INTAKE_INSTALL_FAILED',
   message:cause?.status&&cause.message?cause.message:fallback,
 });
+async function workflowDigest(workflowPath){
+  const contents=path.join(workflowPath,'Contents');
+  const resources=await fs.lstat(path.join(contents,'Resources'));
+  if(!resources.isDirectory())return null;
+  const digest=createHash('sha256');
+  for(const name of ['Info.plist','Resources/document.wflow']){
+    const handle=await fs.open(path.join(contents,name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try{
+      const stat=await handle.stat();
+      if(!stat.isFile()||stat.size===0||stat.size>1024*1024)return null;
+      const bytes=Buffer.alloc(stat.size+1);
+      const {bytesRead}=await handle.read(bytes,0,bytes.length,0);
+      if(bytesRead!==stat.size)return null;
+      digest.update(name).update('\0').update(bytes.subarray(0,bytesRead));
+    }finally{await handle.close();}
+  }
+  return digest.digest('hex');
+}
 const xml = value => String(value).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
 function node(value) {
   if(Array.isArray(value))return '<array>'+value.map(node).join('')+'</array>';
@@ -110,9 +128,11 @@ export class IntakeNative {
         if(!target)return null;
         const owned=await this.ownedWorkflow(target);
         if(!owned||!sameEntry(owned.identity,entry.identity))return false;
+        if(!entry.digest)return null;
+        if(await workflowDigest(target)!==entry.digest)return false;
       }
       return true;
-    }catch(cause){return cause.code==='INTAKE_INSTALL_CONFLICT'?false:null;}
+    }catch(cause){return ['ENOENT','ENOTDIR','ELOOP','INTAKE_INSTALL_CONFLICT'].includes(cause.code)?false:null;}
   }
   async finishInstall(job,previous,failure,result){
     const problem=failure?installError(failure,'访达入口安装失败，请核对后重试'):null;
@@ -180,7 +200,9 @@ export class IntakeNative {
       try {
         const result=await this.performInstall({
           recordPrevious:async workflows=>{
-            previous=workflows.map(({target,identity})=>({slot:target===this.target?'current':'legacy',identity}));
+            previous=await Promise.all(workflows.map(async({target,identity})=>({
+              slot:target===this.target?'current':'legacy',identity,digest:await workflowDigest(target).catch(()=>null),
+            })));
             await this.saveInstallJob(job,previous);
           },
           progress:(stage,window=job.window)=>{Object.assign(job,{stage,window});},
