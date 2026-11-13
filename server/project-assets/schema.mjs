@@ -56,6 +56,28 @@ export function creativeSchema(mysql, tables = CREATIVE_TABLES) {
   });
 }
 
+export function ensureCreativeSchema(lib) {
+  const db = lib.db, mysql = db.kind === 'mysql';
+  db.exec(creativeSchema(mysql)[0]);
+  const existing = db.prepare('SELECT version FROM creative_schema WHERE id=?').get('asset-library');
+  if (!existing) {
+    const create = () => {
+      for (const sql of creativeSchema(mysql)) db.exec(sql);
+      const now = Date.now();
+      db.prepare('INSERT INTO creative_schema VALUES(?,?,?,?)').run('asset-library', creativeSchemaVersion, now, now);
+    };
+    if (mysql) create();
+    else { const run = db.transaction(create); (run.immediate ?? run)(); }
+    return;
+  }
+  if (![1, 2, creativeSchemaVersion].includes(existing.version)) {
+    throw fault('资产库 schema 版本不受支持，未开放写入', 503);
+  }
+  migrateCreativeArchive(lib);
+  migrateCreativeOwners(lib);
+  for (const sql of creativeSchema(mysql)) db.exec(sql);
+}
+
 export function convertCreativeBackupV2(input) {
   const legacyNames = Object.keys(LEGACY_CREATIVE_TABLES);
   if (Object.keys(input.tables).length !== legacyNames.length || legacyNames.some(name => !Array.isArray(input.tables[name]))) {
@@ -116,6 +138,7 @@ export function migrateCreativeOwners(lib) {
     JSON.stringify({ schema_version: 2, tables }), { flag: 'wx', mode: 0o600 });
 
   const migrate = () => {
+    for (const sql of creativeSchema(mysql)) db.exec(sql);
     const expected = tables.creative_assets;
     if (mysql) {
       const cols = db.prepare("SELECT COLUMN_NAME name,IS_NULLABLE nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='creative_assets'").all();
@@ -131,8 +154,15 @@ export function migrateCreativeOwners(lib) {
         "MODIFY project_id VARCHAR(36) NULL",
       ];
       db.exec('ALTER TABLE creative_assets ' + columns.join(','));
-      const index = db.prepare("SELECT INDEX_NAME name FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='creative_assets' AND INDEX_NAME='creative_assets_name_owner'").get();
-      if (!index) db.exec('CREATE UNIQUE INDEX creative_assets_name_owner ON creative_assets(owner_type,owner_id,kind,name_key,archived_at)');
+      const index = () => db.prepare(`SELECT COLUMN_NAME name,NON_UNIQUE non_unique,SUB_PART sub_part
+        FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='creative_assets'
+          AND INDEX_NAME='creative_assets_name_owner' ORDER BY SEQ_IN_INDEX`).all();
+      if (!index().length) db.exec('CREATE UNIQUE INDEX creative_assets_name_owner ON creative_assets(owner_type,owner_id,kind,name_key,archived_at)');
+      const keys = index();
+      if (keys.map(key => key.name).join(',') !== 'owner_type,owner_id,kind,name_key,archived_at' ||
+          keys.some(key => Number(key.non_unique) !== 0 || key.sub_part !== null)) {
+        throw fault('资产归属索引校验失败，请先恢复升级前备份', 503);
+      }
     } else {
       const sql = creativeSchema(false).find(statement => statement.startsWith('CREATE TABLE IF NOT EXISTS creative_assets '));
       db.exec(sql.replace('IF NOT EXISTS creative_assets ', 'creative_assets_v3 '));
@@ -144,7 +174,26 @@ export function migrateCreativeOwners(lib) {
     const legacyColumns = Object.keys(LEGACY_CREATIVE_TABLES.creative_assets).join(',');
     const after = db.prepare(`SELECT ${legacyColumns} FROM creative_assets WHERE owner_type=? AND owner_id=project_id ORDER BY id`).all('project');
     const missingOwner = db.prepare('SELECT a.id FROM creative_assets a LEFT JOIN media_projects p ON p.id=a.owner_id WHERE p.id IS NULL LIMIT 1').get();
-    if (canonical(expected) !== canonical(after) || missingOwner) throw Error('资产归属升级校验失败');
+    const count = Number(db.prepare('SELECT COUNT(*) n FROM creative_assets').get().n);
+    if (count !== expected.length || canonical(expected) !== canonical(after) || missingOwner) throw fault('资产归属升级校验失败', 503);
+    if (!mysql) {
+      for (const [name, [table, column]] of Object.entries(creativeIndexes)) {
+        db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${column})`);
+      }
+    }
+    const legacyLinks = [
+      ['creative_looks', 'asset_id', 'creative_assets'],
+      ['creative_image_bindings', 'asset_id', 'creative_assets'],
+      ['creative_image_bindings', 'look_id', 'creative_looks'],
+      ['creative_asset_versions', 'asset_id', 'creative_assets'],
+      ['creative_asset_copy_records', 'target_id', 'creative_assets'],
+    ];
+    for (const [child, field, parent] of legacyLinks) {
+      if (db.prepare(`SELECT c.id FROM ${child} c LEFT JOIN ${parent} p ON p.id=c.${field}
+        WHERE c.${field} IS NOT NULL AND p.id IS NULL LIMIT 1`).get()) {
+        throw fault('资产库迁移发现悬空关联：' + child + '.' + field, 503);
+      }
+    }
     db.prepare('UPDATE creative_schema SET version=?,updated_at=? WHERE id=?').run(creativeSchemaVersion, Date.now(), 'asset-library');
   };
   if (mysql) migrate(); else { const tx = db.transaction(migrate); (tx.immediate ?? tx)(); }

@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { CREATIVE_TABLES, creativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2, migrateCreativeArchive, migrateCreativeOwners } from './schema.mjs';
+import { CREATIVE_TABLES, ensureCreativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2 } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
 import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
@@ -28,9 +28,7 @@ export class ProjectAssets {
   tx(fn) { const action = this.db.transaction(fn); return (action.immediate ?? action)(); }
   lock() { return this.db.kind === 'mysql' ? ' FOR UPDATE' : ''; }
   init() {
-    for (const sql of creativeSchema(this.db.kind === 'mysql')) this.db.exec(sql);
-    migrateCreativeArchive(this.lib);
-    migrateCreativeOwners(this.lib);
+    ensureCreativeSchema(this.lib);
     for (const [table, fields] of Object.entries(CREATIVE_TABLES)) {
       const columns = this.db.kind === 'mysql' ? this.db.prepare('SELECT COLUMN_NAME name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?').all(table) : this.db.prepare(`PRAGMA table_info(${table})`).all();
       if (Object.keys(fields).some(name => !columns.some(c => c.name === name))) throw fault('资产库 schema 升级未完成，请恢复升级前备份后重试：' + table, 503);
@@ -40,8 +38,7 @@ export class ProjectAssets {
       if (!exists) this.db.exec(`CREATE INDEX ${name} ON ${table}(${column})`);
     }
     const state = this.db.prepare('SELECT * FROM creative_schema WHERE id=?').get('asset-library');
-    if (state && state.version !== creativeSchemaVersion) throw fault('资产库 schema 版本不受支持，未开放写入', 503);
-    if (!state) { const now = Date.now(); this.db.prepare('INSERT INTO creative_schema VALUES(?,?,?,?)').run('asset-library', creativeSchemaVersion, now, now); }
+    if (state?.version !== creativeSchemaVersion) throw fault('资产库 schema 版本不受支持，未开放写入', 503);
     this.tx(() => {
       if (!this.db.prepare('SELECT id FROM media_projects WHERE system_key=?' + this.lock()).get(PUBLIC_KEY)) {
         const id = randomUUID(), now = Date.now();
