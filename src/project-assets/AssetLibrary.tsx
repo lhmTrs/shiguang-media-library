@@ -502,6 +502,20 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     catch (e: any) { if (ticket === selectionGeneration.current) setError(e.message || '读取资料失败'); }
     finally { if (ticket === selectionGeneration.current) setDetailLoading(false); }
   }
+  /** 异步写入 / 读取回来后采用详情：必须仍在发出时的作用域、仍是打开的那份资料；有未保存修改时不覆盖（版本变了只给冲突提示）。 */
+  function adopt(base: string, asset: Asset, meta: Omit<ScopedItem<Asset>, 'asset'> | null) {
+    if (base !== scopeBaseRef.current) return false;
+    if (meta) setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
+    const open = draftRef.current; if (!open || open.id !== asset.id) return false;
+    const next = meta && !seriesViewRef.current && meta.owner?.type === 'series' ? withEffective(asset, meta) : asset;
+    if (dirtyRef.current || scriptDirtyRef.current) { if (open.revision !== asset.revision) setConflict(next); return false; }
+    install(next); return true;
+  }
+  /** 后台刷新打开的资料（写入被拒、季设置改动后）：不切换选择、不打断编辑，规则同 adopt。 */
+  async function refreshDetail(id: string) {
+    const base = scopeBaseRef.current; if (!base) return;
+    try { const r = await api<ScopedItem<Asset>>(base + '/assets/' + id); const { asset, ...meta } = r; adopt(base, asset, meta); } catch { /* 刷新失败不影响当前编辑 */ }
+  }
   /** Clicking the character whose detail is already open does nothing (no reload, no flash). */
   const alreadyOpen = (id: string) => draft?.id === id && !detailLoading;
   function dropDetail() { selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
@@ -541,11 +555,10 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       await run('正在追加到全剧…', async () => {
         try {
           const r = await scopedWrite<ScopedItem<Asset>>(api, base + '/assets/' + d.id + '/append', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, preview_token: token, ...(allowSeriesDefault ? { allow_series_default: true } : {}) }, 'POST');
-          const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
-          if (draftRef.current?.id === asset.id) install(withEffective(asset, meta));
+          const { asset, ...meta } = r; adopt(base, asset, meta);
           ok = true; await loadList(); setNotice('已加到全剧，并记下来源是本集');
         } catch (e: any) {
-          if (['ASSET_SCOPE_CHANGED', 'ASSET_STALE', 'ASSET_IMPACT_CHANGED'].includes(e.code)) { if (e.code === 'ASSET_SCOPE_CHANGED') void fetchContext(); void openAsset(d.id, true); throw Error('影响范围或资料刚变了，已重新读取，请重新预览后再确认'); }
+          if (['ASSET_SCOPE_CHANGED', 'ASSET_STALE', 'ASSET_IMPACT_CHANGED'].includes(e.code)) { if (e.code === 'ASSET_SCOPE_CHANGED') void fetchContext(); void refreshDetail(d.id); throw Error('影响范围或资料刚变了，已重新读取，请重新预览后再确认'); }
           throw e;
         }
       });
@@ -553,15 +566,24 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     },
   };
   // 第二期 P2a 第 4 步：全剧里的归档（资产 / 造型 / 图片）和本集资产提升到全剧，都先看影响再确认
-  type ImpactState = { kind: 'archive' | 'promotion'; assetId: string; target?: { type: 'asset' | 'look' | 'image'; id: string }; replacement: string | null; data: ImpactPreviewData; label: string };
+  type ImpactState = { kind: 'archive' | 'promotion'; base: string; assetId: string; target?: { type: 'asset' | 'look' | 'image'; id: string }; replacement: string | null; data: ImpactPreviewData; label: string };
   const [impactState, setImpactState] = useState<ImpactState | null>(null), [seasonOpen, setSeasonOpen] = useState<{ id: string; name: string; seriesName: string; source: { projectId: string; token: string } } | null>(null);
   /** 打开本季设定前重读归组，锁定在确认后的季；这一集已不在任何季时说明。 */
+  // 每次打开动作带编号，绑定发起时的集：切集或新的打开动作让旧结果作废，不会用切换后的集去重读、打开别的季
+  const seasonOpenSeq = useRef(0);
+  useEffect(() => { seasonOpenSeq.current++; }, [activeProject]);
   async function openSeasonSettings(expectSeasonId?: string) {
     if (!canLeave()) return;
-    // 别处同时触发的重读会让这次结果作废（返回 null）：再读一次，仍以最新归组为准
-    const c = await fetchContext() ?? await fetchContext();
-    if (expectSeasonId && c?.season?.id !== expectSeasonId) { setNotice('这一集的所属季已变化，没有打开本季设定；请从项目目录重新打开'); return; }
-    if (!c?.season || !c.series) { setNotice('这一集现在不属于任何季，没有本季设定'); return; }
+    const project = activeProjectRef.current, seq = ++seasonOpenSeq.current;
+    const stale = () => seq !== seasonOpenSeq.current || project !== activeProjectRef.current;
+    if (!project) return;
+    let c: AssetContext;
+    try { c = await request<AssetContext>('/projects/' + encodeURIComponent(project) + '/asset-context'); }
+    catch (e: any) { if (!stale()) setError('读取这一集所属的季失败：' + (e.message || '请稍后重试')); return; }
+    if (stale() || c?.project?.id !== project) return;
+    ctxSeq.current++; setAssetCtx(c); // 这次读到的归组最新：作废更早发出的重读
+    if (expectSeasonId && c.season?.id !== expectSeasonId) { setNotice('这一集的所属季已变化，没有打开本季设定；请从项目目录重新打开'); return; }
+    if (!c.season || !c.series) { setNotice('这一集现在不属于任何季，没有本季设定'); return; }
     // 记下打开时的来源集和它的归组令牌：季写入时一起提交，服务端在写事务里核对这集仍在这一季
     setSeasonOpen({ id: c.season.id, name: c.season.name, seriesName: c.series.name, source: { projectId: c.project.id, token: c.context_token } });
   }
@@ -579,7 +601,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (dirtyRef.current || scriptDirtyRef.current) { setError('这份资料有未保存的修改：请先保存或放弃修改，再归档'); return; }
     await run('正在核对归档影响…', async () => {
       const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/archive-impact', { context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, target, ...(replacement ? { replacement_id: replacement } : {}) }, 'POST');
-      setImpactState({ kind: 'archive', assetId: d.id, target, replacement, data, label });
+      if (base !== scopeBaseRef.current || draftRef.current?.id !== d.id) return; // 等待期间换了集或资料：预览作废
+      setImpactState({ kind: 'archive', base, assetId: d.id, target, replacement, data, label });
     });
   }
   async function previewPromotion() {
@@ -587,11 +610,13 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (dirtyRef.current || scriptDirtyRef.current) { setError('这份资料有未保存的修改：请先保存或放弃修改，再提升到全剧'); return; }
     await run('正在核对提升影响…', async () => {
       const data = await api<ImpactPreviewData>(base + '/assets/' + d.id + '/promotion/preview', { context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token }, 'POST');
-      setImpactState({ kind: 'promotion', assetId: d.id, replacement: null, data, label: '「' + d.name + '」' });
+      if (base !== scopeBaseRef.current || draftRef.current?.id !== d.id) return;
+      setImpactState({ kind: 'promotion', base, assetId: d.id, replacement: null, data, label: '「' + d.name + '」' });
     });
   }
   async function confirmImpact() {
-    const st = impactState, base = scopeBaseRef.current; if (!st || !base) return;
+    const st = impactState, base = st?.base; if (!st || !base) return;
+    if (base !== scopeBaseRef.current) { setImpactState(null); setError('预览之后换了集或视图：没有提交，请重新预览'); return; }
     // 确认开始时再核对：打开的仍是这份资料、没有未保存修改；否则不提交
     if (draftRef.current?.id !== st.assetId || dirtyRef.current || scriptDirtyRef.current) { setImpactState(null); setError('预览之后资料有了未保存的修改或换了资料：没有提交，请先保存后重新预览'); return; }
     await run(st.kind === 'archive' ? '正在归档…' : '正在提升到全剧…', async () => {
@@ -602,10 +627,12 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
         throw e;
       }
       setImpactState(null); await loadList();
-      if (draftRef.current?.id === st.assetId) { const fresh = await readAsset(st.assetId); if (!dirtyRef.current) install(fresh); else setConflict(fresh); }
+      await refreshDetail(st.assetId);
       setNotice(st.kind === 'archive' ? '已归档' + st.label + '，受影响的季和集已按预览回退' : '已把' + st.label + '提升到全剧，原有造型、图片和镜头引用保持不变');
     });
   }
+  // 换集 / 切视图：旧作用域的影响预览、追加图片确认作废，不能在新作用域里确认
+  useEffect(() => { setImpactState(cur => cur && cur.base !== scopeBase ? null : cur); setModal((cur: { type?: string } | null) => cur?.type === 'append-image' ? null : cur); }, [scopeBase]);
   const impactNameOf = (id: string) => draft?.looks.find(l => l.id === id)?.name ?? draft?.images.find(b => b.id === id)?.last_known_name ?? scopeDims?.dims.find(d => d.id === id)?.name ?? (impactState?.data.impact.blockers ?? []).flatMap(b => b.candidates ?? []).find(c => c.id === id)?.name ?? id;
   /** 集内追加图片：素材库选图 → 签发回执 → 预览，再在确认框里确认（回执过期或内容变化时提示重选）。 */
   async function appendImagePick(m: { id: string; name: string }) { await appendFromMedia(m, modal?.append?.lookId ?? null); }
@@ -616,14 +643,15 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       const ctxToken = metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token;
       const receipt = await api<{ media_receipt_id: string; file_name?: string; preview_url?: string; expires_at?: number }>(base + '/assets/' + d.id + '/append/media-receipt', { context_token: ctxToken, look_id: lookIdFor, media_asset_id: m.id }, 'POST');
       const preview = await api<AppendPreview>(base + '/assets/' + d.id + '/append/preview', { context_token: ctxToken, item: { type: 'image', look_id: lookIdFor, media_receipt_id: receipt.media_receipt_id } }, 'POST');
+      if (base !== scopeBaseRef.current || draftRef.current?.id !== d.id) return; // 等待期间换了集或资料：不弹旧资料的确认框
       setModal({ type: 'append-image', preview, fileName: receipt.file_name || m.name, previewUrl: receipt.preview_url, lookId: lookIdFor, allow: false });
     });
   }
   // 本地文件上传完成时导入组件还占着忙碌状态：先记下，忙碌结束后再进入追加确认
-  const [appendReady, setAppendReady] = useState<{ assetId: string; mediaId: string; name: string; lookId: string | null } | null>(null);
+  const [appendReady, setAppendReady] = useState<{ assetId: string; projectId: string; mediaId: string; name: string; lookId: string | null } | null>(null);
   useEffect(() => {
     if (!appendReady || busy) return; const x = appendReady; setAppendReady(null);
-    if (draftRef.current?.id !== x.assetId) { setNotice('图片已上传到本集文件夹，但打开的资料已换：没有追加，可以之后从素材库选择这张图'); return; }
+    if (draftRef.current?.id !== x.assetId || x.projectId !== scopeRef.current || seriesViewRef.current) { setNotice('图片已上传到本集文件夹，但打开的资料已换：没有追加，可以之后从素材库选择这张图'); return; }
     void appendFromMedia({ id: x.mediaId, name: x.name }, x.lookId);
   }, [appendReady, busy]); // eslint-disable-line react-hooks/exhaustive-deps
   /** 作用域导入前核对目标：读本作用域详情，比对版本、类型和归档。 */
@@ -638,11 +666,10 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     await run(action === 'set' ? '正在保存本集设置…' : '正在恢复上层…', async () => {
       try {
         const r = await scopedWrite<ScopedItem<Asset>>(api, base + '/assets/' + d.id + '/overrides', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? scopeToken() ?? assetCtx?.context_token, write_token: writeToken, field, action, ...(action === 'set' ? { value } : {}) }, 'PATCH');
-        const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
-        if (draftRef.current?.id === asset.id) install(withEffective(asset, meta));
+        const { asset, ...meta } = r; adopt(base, asset, meta);
         await loadList(); setNotice(action === 'set' ? '已保存本集设置，只影响这一集' : field.key === 'attribute_score' ? '已恢复全剧评分' : '已恢复上层设置');
       } catch (e: any) {
-        if (['ASSET_SCOPE_CHANGED', 'ASSET_STALE', 'ASSET_IMPACT_CHANGED'].includes(e.code)) { if (e.code === 'ASSET_SCOPE_CHANGED') void fetchContext(); void openAsset(d.id, true); throw Error((e.code === 'ASSET_SCOPE_CHANGED' ? '这一集的所属剧或季刚变了' : '这份资料刚在别处更新过') + '，已重新读取，请核对后再设置'); }
+        if (['ASSET_SCOPE_CHANGED', 'ASSET_STALE', 'ASSET_IMPACT_CHANGED'].includes(e.code)) { if (e.code === 'ASSET_SCOPE_CHANGED') void fetchContext(); void refreshDetail(d.id); throw Error((e.code === 'ASSET_SCOPE_CHANGED' ? '这一集的所属剧或季刚变了' : '这份资料刚在别处更新过') + '，已重新读取，请核对后再设置'); }
         throw e;
       }
     });
@@ -1302,7 +1329,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
           </div>
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
           {!!scopeLock && !draft.archived_at && <div className="ca-archive-note ca-scope-lock" role="status"><Layers size={15}/>{scopeLock}</div>}
-          {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} dims={dimsAligned ? scopeDims!.dims : undefined} onPickImage={lk => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: lk } }); }} append={appendHandlers} seriesName={assetCtx?.series?.name} dimsNote={scopeDims && !dimsAligned ? '评分维度刚在全剧改过，请重新打开这个人物后再改分' : ''} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
+          {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides key={draft.id + ':' + scopeBase} asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} dims={dimsAligned ? scopeDims!.dims : undefined} onPickImage={lk => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: lk } }); }} append={appendHandlers} seriesName={assetCtx?.series?.name} dimsNote={scopeDims && !dimsAligned ? '评分维度刚在全剧改过，请重新打开这个人物后再改分' : ''} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。{sharedRestoreBlocked ? sharedRestoreNote : '在右上角“⋯”中选择“恢复”后可继续编辑。'}</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}
           <nav className="ca-detail-nav" aria-label="详情分区">{([['ca-sec-info', '资料'], ['ca-sec-refs', draft.kind === 'character' ? '造型与参考图' : '参考图'], ...(draft.kind === 'character' && owner?.project_kind !== 'public' ? [['ca-sec-attrs', '属性']] : []), ...(draft.kind === 'character' ? [['ca-sec-voice', '语音']] : []), ['ca-sec-shots', '出场镜头']] as [string, string][]).map(([id, l]) => <button type="button" key={id} onClick={() => jump(id)}>{l}</button>)}</nav>
@@ -1348,7 +1375,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
                 </div>; })}</div>
                 {!images.length && empty('还没有参考图片，可以在下方导入，或从访达拖到这里')}
                 <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary>{seriesImport ? <ReferenceImageImport key={'series:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} target={{assetId:draft.id,projectId:seriesImport,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:'全剧「'+(assetCtx?.series?.name??'')+'」',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy} scoped={{startExtra:{series_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'关联需点击“保存”，保存后各集沿用',confirmNote:'确认后复制到这部剧的 picture 文件夹；关联仍需点击下方“保存”，保存后各集都能看到。'}}/>
-                  : inheritedHere ? (draftMeta?.capabilities.append && !draft.archived_at ? <ReferenceImageImport key={'append:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: draft.kind==='character'?currentLook!.id:null } }); }}><ImagePlus size={16}/>从素材库选择</button>} target={{assetId:draft.id,projectId:assetCtx?.project.id??scope,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:currentScope?.name||'本集',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy} request={request} onReady={r=>{if(r.mediaAssetId)setAppendReady({assetId:r.target.assetId,mediaId:r.mediaAssetId,name:r.fileName,lookId:r.target.lookId});}} onBusy={importBusy} scoped={{startExtra:{append_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'上传后先预览，确认才追加到全剧',confirmNote:'确认后复制到本集的 picture 文件夹，接着预览「追加到全剧」的影响，需要你再确认一次。'}}/> : <p className="ca-muted">这是全剧共享的资产，当前没有在本集追加图片的权限。</p>)
+                  : inheritedHere ? (draftMeta?.capabilities.append && !draft.archived_at ? <ReferenceImageImport key={'append:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: draft.kind==='character'?currentLook!.id:null } }); }}><ImagePlus size={16}/>从素材库选择</button>} target={{assetId:draft.id,projectId:assetCtx?.project.id??scope,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:currentScope?.name||'本集',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy} request={request} onReady={r=>{if(r.mediaAssetId)setAppendReady({assetId:r.target.assetId,projectId:r.target.projectId,mediaId:r.mediaAssetId,name:r.fileName,lookId:r.target.lookId});}} onBusy={importBusy} scoped={{startExtra:{append_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'上传后先预览，确认才追加到全剧',confirmNote:'确认后复制到本集的 picture 文件夹，接着预览「追加到全剧」的影响，需要你再确认一次。'}}/> : <p className="ca-muted">这是全剧共享的资产，当前没有在本集追加图片的权限。</p>)
                   : <ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/>}<details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
@@ -1433,7 +1460,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       </div></div>
       <footer>{(() => { const todo = dropJob.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown')), checkOnly = todo.length > 0 && todo.every(i => i.state === 'unknown'); return todo.length && !(dropJob.mode === 'attach' && dropJob.kind === 'character' && !dropJob.lookId) ? <button className="ca-primary" disabled={dropJob.running || !!busy && !dropJob.running} onClick={() => void runDropJob()}>{dropJob.running ? '正在处理…' : checkOnly ? '核对结果' : todo.some(i => i.state !== 'waiting') ? '继续处理' : dropJob.mode === 'create' ? `新建 ${todo.length} 个${labels[dropJob.kind]}` : '添加图片'}</button> : null; })()}<button disabled={dropJob.running} onClick={closeDropJob}>{dropJob.items.some(i => i.state === 'done') ? '完成' : '取消'}</button></footer>
     </div></div>}
-    {seasonOpen && <SeasonSettings key={seasonOpen.id + ':' + seasonOpen.source.projectId} api={api} base={scopePath('season', seasonOpen.id)} source={seasonOpen.source} seasonName={seasonOpen.name} seriesName={seasonOpen.seriesName} onClose={() => setSeasonOpen(null)} onScopeChanged={() => { setSeasonOpen(null); void fetchContext(); setNotice('这一集的所属剧或季刚变了，已重新读取；请重新打开本季设定'); }} onChanged={() => { void loadList(); const d = draftRef.current; if (d && scopeBaseRef.current) void openAsset(d.id, true); }}/>}
+    {seasonOpen && <SeasonSettings key={seasonOpen.id + ':' + seasonOpen.source.projectId} api={api} base={scopePath('season', seasonOpen.id)} source={seasonOpen.source} seasonName={seasonOpen.name} seriesName={seasonOpen.seriesName} onClose={() => setSeasonOpen(null)} onScopeChanged={() => { const opened = seasonOpen; setSeasonOpen(cur => cur === opened ? null : cur); void fetchContext(); setNotice('这一集的所属剧或季刚变了，已重新读取；请重新打开本季设定'); }} onChanged={() => { void loadList(); const d = draftRef.current; if (d) void refreshDetail(d.id); }}/>}
     {impactState && <ImpactPreview title={impactState.kind === 'archive' ? '归档' + impactState.label : '把' + impactState.label + '提升到全剧'} confirmLabel={impactState.kind === 'archive' ? '确认归档' : '确认提升'}
       intro={impactState.kind === 'archive' ? <>归档后，下面这些季和集里的显示会按预览回退；这些层上相关的单独设置会失效（记录留在操作历史里）。明确引用它的镜头需要先在分镜里处理。</> : <>提升后它变成整部剧共享：原来的造型、图片、版本和镜头引用都保持不变，只是归属从本集变成全剧，其他集也能看到它。</>}
       data={impactState.data} nameOf={impactNameOf} busy={!!busy} replacement={impactState.replacement}

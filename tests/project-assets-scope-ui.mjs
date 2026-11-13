@@ -13,7 +13,7 @@ import { projectInBar } from './helpers/path-bar.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-assets-scope-'));
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
-let logs = '', browser, page, cookie, token, passed = false; const checks = [], errors = [], seen = [];
+let logs = '', browser, page, cookie, token, passed = false; const checks = [], errors = [], seen = [], reqLog = [];
 const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal'), CODEX_HOME: path.join(temp, 'no-codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
@@ -111,7 +111,7 @@ async function routeScoped(route) {
   const cfgw = url.pathname.match(/^\/api\/project-assets\/scopes\/series\/([^/]+)\/attribute-config(\/removal-preview)?$/);
   if (cfgw && route.request().method() !== 'GET') {
     const body = route.request().postDataJSON(); fake.writes.push({ method: route.request().method(), path: url.pathname, body });
-    if (cfgw[2]) return route.fulfill({ json: { token: 'a'.repeat(64), config_revision: 3, affected: body.remove.map(id => ({ dimension_id: id, name: '维度' + id, scored_assets: 0, archived_scored_assets: 0, episode_overrides: 2 })) } });
+    if (cfgw[2]) return route.fulfill({ json: { token: 'a'.repeat(64), config_revision: 3, affected: body.remove.map(id => fake.archivedOnly ? { dimension_id: id, name: '维度' + id, scored_assets: 0, archived_scored_assets: 1, episode_overrides: 0 } : { dimension_id: id, name: '维度' + id, scored_assets: 0, archived_scored_assets: 0, episode_overrides: 2 }) } });
     return route.fulfill({ json: { series_id: cfgw[1], revision: 4, source: 'user', updated_at: Date.now(), dimensions: body.dimensions.map((d, i) => ({ ...d, id: d.id ?? 'new-' + i })), request_id: body.request_id } });
   }
   const cfg = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/attribute-config$/);
@@ -125,6 +125,8 @@ async function routeScoped(route) {
     const hit = fake.shared.find(x => x.asset.id === w[3]) || Object.values(fake.local).flat().find(x => x.asset.id === w[3]);
     if (!hit) return route.fulfill({ status: 404, json: { error: '不在这个作用域' } });
     if (w[4] && w[1] === 'season') {
+      if (fake.seasonGate) await fake.seasonGate;
+      if (fake.seasonFail) { fake.seasonFail = false; return route.fulfill({ status: 409, json: { error: '资产作用域已变化，请重新读取', code: 'ASSET_SCOPE_CHANGED' } }); }
       const key = body.field.key + ':' + (body.field.look_id ?? ''); fake.seasonOverrides = fake.seasonOverrides.filter(r => r.asset.id !== w[3] || r.field.key + ':' + (r.field.look_id ?? '') !== key);
       if (body.action === 'set') fake.seasonOverrides.push({ asset: { id: hit.asset.id, name: hit.asset.name, kind: hit.asset.kind }, field: body.field, value: body.value, source: { type: 'season', id: w[2], revision: 1 }, override: { value: body.value, revision: 1 }, parent: { value: hit.asset.default_look_id, source: { type: 'series', id: 'series', revision: 1 } }, write_token: 'wt-season' });
       return route.fulfill({ json: hit });
@@ -184,7 +186,8 @@ try {
   await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
   await context.route(u => /\/api\/projects\/[^/]+\/asset-context$/.test(new URL(u).pathname) || new URL(u).pathname.startsWith('/api/project-assets/scopes/') || new URL(u).pathname.startsWith('/api/project-assets/scoped-requests/') || new URL(u).pathname.startsWith('/api/project-assets/image-imports'), routeScoped);
   await context.route(u => new URL(u).pathname === '/api/assets' && new URL(u).searchParams.get('kind') === 'photo', r => r.fulfill({ json: { items: [{ id: 'media-lib-1', name: '夜景.png' }], total: 1 } }));
-  page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+  await context.route(u => /\/api\/project-assets\/projects\/[^/]+\/attribute-config\/removal-preview$/.test(new URL(u).pathname), async r => { fake.prHits = (fake.prHits || 0) + 1; if (fake.prGate) await fake.prGate; return r.continue(); });
+  page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); page.on('request', r => reqLog.push({ method: r.method(), path: new URL(r.url()).pathname }));
   await page.goto(origin + '/#/projects'); await expect(projectInBar(page)).toHaveAttribute('data-project', /./);
   await pickEpisode(eps[0].id); await nav('项目资产');
 
@@ -470,6 +473,64 @@ try {
     const rc = fake.writes.filter(w => w.path.endsWith('/append/media-receipt')).at(-1); assert.equal(rc.body.media_asset_id, 'media-up-' + fake.uploads.length); assert.equal(rc.body.look_id, 'look-b');
     await confirm.getByRole('button', { name: '确认追加' }).click(); await expect(confirm).toHaveCount(0);
     assert.equal(fake.writes.filter(w => w.path.endsWith('/append')).at(-1).path, `/api/project-assets/scopes/episode/${eps[0].id}/assets/${lisi.id}/append`);
+  });
+
+
+  // —— 第二轮复验（5e9305d BLOCKED 5 项）：旧操作的回应晚到，不能作用到新界面 ——
+  // 弹窗遮住顶栏时，按 Codex 的复现方式用键盘切集
+  const keyStep = async (name, id) => { const b = projectInBar(page).getByRole('button', { name }); await b.focus(); await page.keyboard.press('Enter'); await expect(projectInBar(page)).toHaveAttribute('data-project', id); };
+  const pickSeasonValue = async dlg => { await dlg.getByLabel('选择资产').selectOption({ label: '李四' }); await dlg.getByLabel('选择设置项').selectOption({ index: 1 }); await dlg.getByLabel('选择本季的值').selectOption({ label: '夜行服' }); };
+  const seasonWrites = () => fake.writes.filter(w => w.path.includes('/scopes/season/')).length;
+  await check('返工2·旧季写入成功晚到：不刷掉之后打开的另一位人物的未保存资料', async () => {
+    await work().getByRole('button', { name: '第 1 季设定' }).click(); const dlg = seasonDlg(); await pickSeasonValue(dlg);
+    let release; fake.seasonGate = new Promise(r => release = r); const n = seasonWrites();
+    await dlg.getByRole('button', { name: '设为本季' }).click(); await expect.poll(seasonWrites).toBe(n + 1);
+    await keyStep('下一集：第2集', eps[1].id); await expect(dlg).toHaveCount(0); await keyStep('上一集：第1集', eps[0].id);
+    await card('李四（少年）').click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四（少年）');
+    const info = work().getByLabel('基础信息', { exact: true }), saveBtn = work().getByRole('button', { name: '保存资料', exact: true });
+    await info.fill('还没保存的资料'); await expect(saveBtn).toBeEnabled();
+    fake.seasonGate = null; release(); await page.waitForTimeout(1500);
+    await expect(info).toHaveValue('还没保存的资料'); await expect(saveBtn).toBeEnabled();
+    await info.fill(''); await expect(saveBtn).toBeDisabled(); fake.seasonOverrides = [];
+  });
+
+  await check('返工2·旧季的拒绝晚到：只关发出它的弹窗，新开的弹窗和待选值保留', async () => {
+    await work().getByRole('button', { name: '第 1 季设定' }).click(); const dlg = seasonDlg(); await pickSeasonValue(dlg);
+    let release; fake.seasonGate = new Promise(r => release = r); fake.seasonFail = true; const n = seasonWrites();
+    await dlg.getByRole('button', { name: '设为本季' }).click(); await expect.poll(seasonWrites).toBe(n + 1);
+    await keyStep('下一集：第2集', eps[1].id); await expect(dlg).toHaveCount(0);
+    await work().getByRole('button', { name: '第 1 季设定' }).click(); await expect(dlg).toBeVisible(); await pickSeasonValue(dlg);
+    fake.seasonGate = null; release(); await page.waitForTimeout(1500);
+    await expect(dlg).toBeVisible(); await expect(dlg.getByLabel('选择本季的值')).not.toHaveValue('');
+    await dlg.getByRole('button', { name: '关闭' }).click(); await expect(dlg).toHaveCount(0); fake.seasonFail = false;
+  });
+
+  await check('返工2·点了本季设定、核对归组期间换集：旧的打开动作作废，不会自动打开', async () => {
+    let release; fake.ctxGate = new Promise(r => release = r);
+    await work().getByRole('button', { name: '第 1 季设定' }).click();
+    await keyStep('上一集：第1集', eps[0].id);
+    fake.ctxGate = null; release(); await page.waitForTimeout(1500);
+    await expect(seasonDlg()).toHaveCount(0); await expect(work().getByRole('button', { name: '第 1 季设定' })).toBeVisible();
+  });
+
+  await check('返工2·维度弹窗在删除预览等待中被切集关闭：之后不再发出旧集的保存', async () => {
+    let release; fake.prGate = new Promise(r => release = r); fake.prHits = 0; reqLog.length = 0;
+    await work().getByRole('button', { name: '更多资产操作' }).click(); await work().getByRole('menuitem', { name: '人物属性维度…' }).click();
+    const dlg = page.getByRole('dialog', { name: '人物属性维度' }); await dlg.getByLabel('第 1 个维度名称').fill('改过的维度名');
+    await dlg.getByRole('button', { name: '保存配置' }).click(); await expect.poll(() => fake.prHits).toBe(1);
+    await keyStep('下一集：第2集', eps[1].id); await expect(dlg).toHaveCount(0);
+    fake.prGate = null; release(); await page.waitForTimeout(1500);
+    assert.deepEqual(reqLog.filter(r => r.method !== 'GET' && /\/attribute-config$/.test(r.path)), [], '已关闭的弹窗不应再发出保存');
+    await keyStep('上一集：第1集', eps[0].id);
+  });
+
+  await check('返工2·只有已归档人物有分数时删全剧维度：仍要确认并带确认凭证', async () => {
+    fake.archivedOnly = true; await switchTo('全剧'); await expect(list()).toHaveAttribute('aria-busy', 'false');
+    await work().getByRole('button', { name: '更多资产操作' }).click(); await work().getByRole('menuitem', { name: '人物属性维度…' }).click();
+    const dlg = page.getByRole('dialog', { name: '人物属性维度' }); await dlg.getByRole('button', { name: '删除智谋' }).click(); await dlg.getByRole('button', { name: '保存配置' }).click();
+    await expect(dlg).toContainText('1 个人物有分数（其中 1 个已归档）'); await dlg.getByRole('button', { name: '确认删除并保存' }).click(); await expect(dlg).toHaveCount(0);
+    const save = fake.writes.filter(w => w.method === 'PATCH' && w.path.endsWith('/attribute-config')).at(-1); assert.equal(save.body.removal_confirmation?.token, 'a'.repeat(64));
+    fake.archivedOnly = false; await scopeSwitch().getByRole('button').first().click(); await expect(list()).toHaveAttribute('aria-busy', 'false');
   });
 
   await check('返工·季菜单跳转核对中点面包屑返回：迟到的响应不再切到资产页', async () => {

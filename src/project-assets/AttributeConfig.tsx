@@ -80,7 +80,12 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const api = series ? {
     config: async () => asProject(await request<AttrConfig>('/project-assets' + series.base + '/attribute-config')),
     saveConfig: async (body: Parameters<typeof attrApi.saveConfig>[2]) => asProject(await scopedWrite<AttrConfig>(request, '/project-assets' + series.base + '/attribute-config', { ...body, request_id: crypto.randomUUID(), context_token: series.token() }, 'PATCH', '/project-assets')),
-    removalPreview: (body: Parameters<typeof attrApi.removalPreview>[2]) => request<RemovalPreview>('/project-assets' + series.base + '/attribute-config/removal-preview', { ...body, context_token: series.token() }, 'POST'),
+    // 全剧预览里 scored_assets 不含已归档人物（单独记在 archived_scored_assets）；项目级是含在内的。统一成项目级口径，
+    // 否则「只有已归档人物有分数」会被当成无影响、跳过确认，服务端随后以 DIMENSION_REMOVAL_CONFIRM 拒绝
+    removalPreview: async (body: Parameters<typeof attrApi.removalPreview>[2]) => {
+      const pv = await request<RemovalPreview>('/project-assets' + series.base + '/attribute-config/removal-preview', { ...body, context_token: series.token() }, 'POST');
+      return { ...pv, affected: pv.affected.map(a => ({ ...a, scored_assets: a.scored_assets + a.archived_scored_assets })) };
+    },
   } : {
     config: () => attrApi.config(request, projectId),
     saveConfig: (body: Parameters<typeof attrApi.saveConfig>[2]) => attrApi.saveConfig(request, projectId, body),
@@ -119,6 +124,8 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const blocked = !config || config.project_id !== projectId || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
 
   async function put(meaning: string[], preserve: string[], token?: string) {
+    // 弹窗已关闭（切集 / 切视图 / 关掉）：等待中的预览回来后不再发出新的保存；已发出的保存由回执核对
+    if (!alive.current) return;
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
     const next = await api.saveConfig({ expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
@@ -132,6 +139,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     if (!set.length) { await put(meaning, preserve); return; }
     const pv = await api.removalPreview({ expected_revision: config.revision, remove: set });
+    if (!alive.current) return;
     if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
     const affected = pv.affected.filter(touched);
     if (!affected.length) { await put(meaning, preserve); return; } // nothing scored: no token; the server refuses if scores appear meanwhile
@@ -151,6 +159,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       if (changed.length) {
         // Read-only probe: which of the reworded dimensions actually have scores.
         const probe = await api.removalPreview({ expected_revision: config.revision, remove: changed });
+        if (!alive.current) return;
         if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
         const scored = probe.affected.filter(touched);
         if (scored.length) { setReview({ stage: 'choose', changed: scored, choice: {} }); return; }

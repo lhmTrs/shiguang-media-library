@@ -20,6 +20,8 @@ export function SeasonSettings({ api, base, source, seasonName, seriesName, onCl
   const nameOf = (assetId: string, id: string | null) => { if (!id) return '无'; const a = assets.find(x => x.asset.id === assetId)?.asset; return a?.looks.find(l => l.id === id)?.name ?? a?.images.find(b => b.id === id)?.last_known_name ?? id; };
   const lookName = (assetId: string, lookId?: string | null) => assets.find(x => x.asset.id === assetId)?.asset.looks.find(l => l.id === lookId)?.name ?? '';
   // 每次读取带代次：切类别 / 季时旧响应不会覆盖新列表，也不会带出旧令牌
+  // 弹窗关闭后（切集、换季、关掉），已发出写入的回应不再回调宿主：回调只属于发出它的这个弹窗
+  const alive = useRef(true); useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const gen = useRef(0), [loadedKind, setLoadedKind] = useState<Kind | null>(null), [q, setQ] = useState('');
   /** 分页取全：每页 100 条，直到 total（上限 50 页，防止异常循环）。 */
   async function all<T>(url: (page: number) => string): Promise<{ items: T[]; context_token: string }> {
@@ -42,13 +44,15 @@ export function SeasonSettings({ api, base, source, seasonName, seriesName, onCl
     setBusy(action === 'set' ? '正在保存本季设置…' : '正在恢复全剧…'); setError('');
     try {
       await scopedWrite(api, base + '/assets/' + assetId + '/overrides', { request_id: crypto.randomUUID(), context_token: token, source_project_id: source.projectId, source_context_token: source.token, write_token: writeToken, field, action, ...(action === 'set' ? { value } : {}) }, 'PATCH');
-      await load(kind); onChanged(); setPick({ assetId: '', field: '', value: '' });
+      if (!alive.current) return;
+      await load(kind); if (!alive.current) return; onChanged(); setPick({ assetId: '', field: '', value: '' });
     } catch (e) {
+      if (!alive.current) return;
       const code = (e as { code?: string }).code;
       if (code === 'ASSET_SCOPE_CHANGED' && onScopeChanged) { onScopeChanged(); return; }
       setError(code === 'ASSET_STALE' ? '这一季的资料刚变了，已重新读取，请核对后再设置' : (e as Error).message || '保存失败');
       if (code === 'ASSET_STALE') void load(kind);
-    } finally { setBusy(''); }
+    } finally { if (alive.current) setBusy(''); }
   }
   // 新增覆盖：从本季候选（按季解析）里挑资产和字段
   const cand = assets.find(x => x.asset.id === pick.assetId);
