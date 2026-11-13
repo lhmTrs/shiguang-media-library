@@ -113,7 +113,7 @@ export class ScopedAssetWrites {
     return { requestId, hash, prior };
   }
 
-  mutation(type, id, operation, input, apply) {
+  mutation(type, id, operation, input, apply, { beforeCommit } = {}) {
     if (this.assets.lib.migrating) throw fault('数据库正在迁移，请稍后保存', 423);
     return this.assets.tx(() => {
       lockSeriesDirectory(this.db);
@@ -127,6 +127,7 @@ export class ScopedAssetWrites {
       this.db.prepare(`INSERT INTO creative_asset_scope_requests
         (id,scope_type,scope_id,request_hash,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
         .run(requestId, type, id, hash, canonical(result), now, now);
+      beforeCommit?.();
       return result;
     });
   }

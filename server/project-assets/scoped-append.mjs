@@ -304,7 +304,7 @@ export class ScopedAssetAppend {
       if (proof) this.#assertCurrentFile(proof);
       return { ...detail, appended: { type: payload.item.type, id: payload.child_id },
         sets_series_default: plan.setsSeriesDefault, impact: plan.impact };
-    }, proof ? () => this.#assertCurrentFile(proof) : undefined);
+    }, { beforeCommit: () => { if (proof) this.#assertCurrentFile(proof); } });
   }
 
   #append(scope, asset, { item, child_id: id }, proof, plan) {

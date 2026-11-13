@@ -185,6 +185,14 @@ test('in-place mutation immediately before writes or during readback rolls back 
   assert.deepEqual(f.store.get(asset.id), asset);
   assert.equal(f.store.versions(asset.id).length, 1);
   assert.equal(f.store.scopedWrites.request(input.request_id).found, false);
+
+  await fs.writeFile(f.image, original);
+  f.db.exec('DROP TRIGGER change_append_source');
+  f.db.exec('CREATE TRIGGER change_receipt_source AFTER INSERT ON creative_asset_scope_requests BEGIN SELECT change_fixture_image(); END');
+  await assert.rejects(f.commit(asset, input), impactChanged);
+  assert.deepEqual(f.store.get(asset.id), asset);
+  assert.equal(f.store.versions(asset.id).length, 1);
+  assert.equal(f.store.scopedWrites.request(input.request_id).found, false);
 });
 
 test('commit rechecks the current audience, source episode, asset version and other episodes’ generation locks', async t => {
