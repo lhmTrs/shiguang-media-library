@@ -123,7 +123,10 @@ test('属性备份复原和幂等回执；旧备份保留现有评分；删除�
   target.projects.remove(target.a.id);
   target.projects.remove(target.b.id);
   await target.store.restore(snapshot);
-  assert.deepEqual(target.store.attributes.getScores(a.id), attrs.getScores(a.id));
+  const restoredScores = target.store.attributes.getScores(a.id);
+  const sourceScores = attrs.getScores(a.id);
+  assert.notEqual(restoredScores.config_token, sourceScores.config_token);
+  assert.deepEqual(restoredScores, {...sourceScores, config_token:restoredScores.config_token});
   assert.deepEqual(target.store.attributes.scoreBatch(f.a.id, input), response);
   const invalid = structuredClone(snapshot);
   invalid.project_attributes.project_character_attributes[0].project_id = f.b.id;

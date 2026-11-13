@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { blankAsset, canonical, digest, fault, idOK, nameKey, text } from './model.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
 import { explicitAssetShots } from '../storyboard/asset-references.mjs';
-import { DEFAULT_DIMENSIONS, dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from '../project-attributes/model.mjs';
+import { dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from '../project-attributes/model.mjs';
 
 const conflict = (code, message, details) => fault(message, 409, { code, details });
 const readOnly = () => fault('请在允许编辑的作用域操作', 403, { code: 'ASSET_SCOPE_READ_ONLY' });
@@ -263,10 +263,14 @@ export class ScopedAssetWrites {
   }
 
   seriesConfig(seriesId) {
-    const row = this.db.prepare('SELECT revision,data_json FROM series_attribute_configs WHERE id=?').get(seriesId);
-    return row
-      ? { series_id: seriesId, revision: row.revision, ...JSON.parse(row.data_json) }
-      : { series_id: seriesId, revision: 0, source: 'default', updated_at: null, dimensions: DEFAULT_DIMENSIONS };
+    return this.assets.attributes.seriesConfig(seriesId);
+  }
+
+  attributeWriteConfig(id, input) {
+    const attrs = this.assets.attributes;
+    const config = attrs.effectiveConfig(null, { seriesId: id, editSeries: true });
+    attrs.assertConfigToken(config, input.config_token, config.alignment_status === 'aligned');
+    return config;
   }
 
   seriesScores(seriesId, assetId) {
@@ -287,10 +291,11 @@ export class ScopedAssetWrites {
       const item = this.reads.detailInTransaction(scope, assetId);
       if (item.asset.kind !== 'character') throw fault('人物不存在', 404);
       if (item.asset.archived_at || item.owner.type !== 'series') throw readOnly();
+      const config = this.attributeWriteConfig(id, input);
       const current = this.seriesScores(id, assetId);
       if (current.config_revision !== input.expected_config_revision ||
           current.attribute_revision !== input.expected_attribute_revision) throw stale();
-      const valid = new Set(this.seriesConfig(id).dimensions.map(dimension => dimension.id));
+      const valid = new Set(config.dimensions.map(dimension => dimension.id));
       const now = Date.now();
       for (const change of changes) {
         if (!valid.has(change.dimension_id)) throw invalid('评分维度已不存在');
@@ -298,7 +303,7 @@ export class ScopedAssetWrites {
       }
       this.writeScores(id, assetId, current, now);
       current.attribute_revision++;
-      return current;
+      return { ...current, config_scope: config.config_scope, config_token: config.config_token };
     });
   }
 
@@ -321,6 +326,12 @@ export class ScopedAssetWrites {
     const rows = this.db.prepare(`SELECT s.id,s.revision,s.data_json,a.archived_at FROM series_character_attributes s
       JOIN creative_assets a ON a.id=s.id WHERE s.series_id=? ORDER BY s.id`).all(config.series_id)
       .map(row => ({ ...row, scores: JSON.parse(row.data_json) }));
+    if (config.alignment_status === 'aligned') {
+      rows.push(...this.db.prepare(`SELECT s.id,s.project_id,s.revision,s.data_json,a.archived_at
+        FROM project_character_attributes s JOIN creative_assets a ON a.id=s.id
+        JOIN project_series_members m ON m.id=s.project_id WHERE m.series_id=? ORDER BY s.id`).all(config.series_id)
+        .map(row => ({ ...row, scores: JSON.parse(row.data_json) })));
+    }
     const overlays = this.db.prepare(`SELECT o.id,o.field_key,o.value_json,o.revision,o.updated_at FROM creative_asset_overrides o
       JOIN creative_assets a ON a.id=o.asset_id
       WHERE a.owner_type='series' AND a.owner_id=? AND o.scope_type='episode' AND o.field_key LIKE 'attribute_score:%'
@@ -335,7 +346,7 @@ export class ScopedAssetWrites {
     const overrides = overlays.filter(row => affected.has(row.field_key.slice('attribute_score:'.length)));
     for (const row of overrides) affected.get(row.field_key.slice('attribute_score:'.length)).episode_overrides++;
     const token = createHmac('sha256', this.#configKey)
-      .update(canonical([config.series_id, config.revision, remove, records, overrides])).digest('hex');
+      .update(canonical([config.series_id, config.config_token, config.revision, remove, records, overrides])).digest('hex');
     const scored = new Set([...rows.flatMap(row => Object.keys(row.scores)),
       ...overlays.map(row => row.field_key.slice('attribute_score:'.length))]);
     return { token, records, overrides, scored, affected: [...affected.values()] };
@@ -348,7 +359,7 @@ export class ScopedAssetWrites {
       this.assets.lockDirectory();
       const scope = this.scope(type, id);
       this.reads.assertContextToken(scope, input.context_token);
-      const config = this.seriesConfig(id);
+      const config = this.attributeWriteConfig(id, input);
       if (config.revision !== input.expected_revision) throw stale();
       const { token, affected } = this.configImpact(config, remove);
       return { token, config_revision: config.revision, affected };
@@ -367,7 +378,7 @@ export class ScopedAssetWrites {
     }
     return this.mutation(type, id, 'attribute-config', input, scope => {
       this.lockProjects(scope);
-      const config = this.seriesConfig(id);
+      const config = this.attributeWriteConfig(id, input);
       if (config.revision !== input.expected_revision) throw stale();
       const previous = new Map(config.dimensions.map(dimension => [dimension.id, dimension]));
       const retained = new Set(proposed.map(dimension => dimension.id));
@@ -396,7 +407,8 @@ export class ScopedAssetWrites {
       const now = Date.now();
       for (const row of impact.records) {
         for (const axis of remove) delete row.scores[axis];
-        this.writeScores(id, row.id, { attribute_revision: row.revision, scores: row.scores }, now);
+        if (row.project_id) this.assets.attributes.saveScores(row.project_id, row.id, row);
+        else this.writeScores(id, row.id, { attribute_revision: row.revision, scores: row.scores }, now);
       }
       for (const row of impact.overrides) this.db.prepare('DELETE FROM creative_asset_overrides WHERE id=?').run(row.id);
       const data = { source: 'user', updated_at: now, dimensions }, revision = config.revision + 1;
@@ -407,7 +419,7 @@ export class ScopedAssetWrites {
         this.db.prepare('UPDATE series_attribute_configs SET revision=?,data_json=?,updated_at=? WHERE id=?')
           .run(revision, canonical(data), now, id);
       }
-      return this.assets.attributes.configDTO({ series_id: id, revision, ...data });
+      return this.assets.attributes.configDTO(this.assets.attributes.effectiveConfig(null, { seriesId: id, editSeries: true }));
     });
   }
 
@@ -417,7 +429,7 @@ export class ScopedAssetWrites {
     if (!isRevision(input.config_revision)) throw invalid('评分配置修订号无效');
     return this.mutation(type, id, 'attribute-scores', input, scope => {
       this.lockProjects(scope);
-      const config = this.seriesConfig(id);
+      const config = this.attributeWriteConfig(id, input);
       if (config.revision !== input.config_revision) throw stale();
       const valid = new Set(config.dimensions.map(dimension => dimension.id));
       const records = new Map(), dirty = new Set();

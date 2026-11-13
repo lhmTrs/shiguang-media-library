@@ -256,11 +256,14 @@ test('shared scoring distinguishes absent, explicit unscored and zero; local sco
   const shared = makeShared(f, await local(f, f.a.id, '共享评分角色'));
   const localAsset = await local(f, ep.id, '本集评分角色');
   const [first, second, third] = DEFAULT_DIMENSIONS;
+  // Emulate an existing series from before the alignment migration.
+  db.prepare('DELETE FROM series_attribute_alignment WHERE id=?').run(series.id);
   const defaultConfig = scoped.attributeConfig('series', series.id);
   assert.deepEqual([defaultConfig.revision, defaultConfig.source, defaultConfig.updated_at], [0, 'default', null]);
   assert.deepEqual(defaultConfig.dimensions.map(dim => dim.id), DEFAULT_DIMENSIONS.map(dim => dim.id));
   assert.deepEqual(scoped.attributeScores('series', series.id, shared.id), {
     asset_id: shared.id, series_id: series.id, config_revision: 0, attribute_revision: 0, scores: {},
+    config_scope: "series", config_token: defaultConfig.config_token,
   });
 
   const seriesDimensions = [first, second, third].map(dim => ({ ...dim, id: randomUUID() }));
@@ -297,6 +300,7 @@ test('shared scoring distinguishes absent, explicit unscored and zero; local sco
   assert.throws(() => scoped.attributeConfig('episode', f.peer.id, localAsset.id), missing);
   assert.deepEqual(scoped.attributeScores('series', series.id, shared.id), {
     asset_id: shared.id, series_id: series.id, config_revision: 3, attribute_revision: 4, scores,
+    config_scope: "series", config_token: scoped.attributeConfig("series", series.id).config_token,
   });
   const localEffective = scoped.detail('episode', ep.id, localAsset.id).effective;
   assert.equal(localEffective.attribute_config_revision, 0);

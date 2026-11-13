@@ -159,7 +159,7 @@ export class ScopedAssetImpact {
       throw invalid('确认请求格式无效');
     }
     if (!idOK(assetId)) throw missing();
-    // Local attribute writers lock the project without taking the directory lock.
+    // Lock project rows before reading score records and applying the scope change.
     // Read their committed values after taking that same project lock.
     if (this.db.kind === 'mysql' && !this.store.lib.migrating) this.db.exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
     return this.writes.mutation(type, id, operation + ':' + assetId.toLowerCase(), input, scope => {
@@ -230,7 +230,7 @@ export class ScopedAssetImpact {
     const record = asset.kind === 'character' ? this.db.prepare('SELECT * FROM project_character_attributes WHERE id=?').get(asset.id) : null;
     const scores = record ? JSON.parse(record.data_json) : {};
     const entries = Object.entries(scores).sort(([a], [b]) => a.localeCompare(b));
-    const local = entries.length ? this.store.attributes.config(scope.id) : null;
+    const local = entries.length ? this.store.attributes.effectiveConfig(scope.id) : null;
     const shared = entries.length ? this.writes.seriesConfig(series.id) : null;
     if (entries.length) {
       const dimensions = config => new Map(config.dimensions.map(dimension => [dimension.id, dimension]));
@@ -329,7 +329,7 @@ export class ScopedAssetImpact {
 
   #archiveScores(asset) {
     const shared = asset.owner_type === 'series';
-    const config = shared ? this.writes.seriesConfig(asset.owner_id) : this.store.attributes.config(asset.owner_id);
+    const config = shared ? this.writes.seriesConfig(asset.owner_id) : this.store.attributes.effectiveConfig(asset.owner_id);
     const record = shared ? this.writes.seriesScores(asset.owner_id, asset.id) : this.store.attributes.record(asset.id);
     return { configRevision: config.revision, scoreRevision: record.attribute_revision ?? record.revision,
       dimensionIds: config.dimensions.map(row => row.id), values: record.scores };

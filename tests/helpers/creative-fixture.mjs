@@ -18,3 +18,16 @@ export async function creativeFixture() {
 }
 export function addLook(a, name = '日常造型') { const l = { id: randomUUID(), name, tags: ['日常'], description: '', default_image_id: null, archived_at: null }; a.looks.push(l); a.default_look_id ??= l.id; return l; }
 export function addImage(a, media, look = a.default_look_id) { const b = { id: randomUUID(), look_id: a.kind === 'character' ? look : null, media_asset_id: media, reference_type: '身份', purpose: '合成参考', locks: '脸部', ignores: '背景', confirmed: true, archived_at: null, crop: { x: 50, y: 50, zoom: 1 } }; a.images.push(b); if (a.kind === 'character') a.looks.find(l => l.id === look).default_image_id ??= b.id; else a.default_image_id ??= b.id; return b; }
+
+// Build a confirmed directory request the same way a client does.
+export function confirmAttributePlan(series, method, input) {
+  const preview = method === 'move' ? series.previewMove(input) : series.previewOrganize(input);
+  const plan = preview.attribute_plan;
+  return plan?.preview_token ? {
+    ...input, attribute_preview_token: plan.preview_token, attribute_choices: plan.choices,
+  } : input;
+}
+
+export function moveWithAttributePlan(series, input) {
+  return series.move(confirmAttributePlan(series, 'move', input));
+}
