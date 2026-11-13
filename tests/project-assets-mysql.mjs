@@ -65,6 +65,61 @@ try {
   // Deliberate old-schema fixture, retaining ordinary records; verify additive upgrade and backup without reinitializing a new public project.
   freshProjects.init(); assert.ok((await fs.readdir(path.join(freshLib.dataDir, 'backups'))).some(n => n.startsWith('projects-before-creative-'))); assert.ok(freshProjects.list().length > 0);
  });
+ await check('原生 MySQL 旧资产 v2 升级保留已有编号、历史和图片引用', () => {
+  const before = fresh.snapshot();
+  freshDB.exec('ALTER TABLE creative_assets DROP INDEX creative_assets_name_owner, DROP COLUMN owner_type, DROP COLUMN owner_id, MODIFY project_id VARCHAR(36) NOT NULL');
+  freshDB.exec('CREATE UNIQUE INDEX creative_assets_name_archive ON creative_assets(project_id,kind,name_key,archived_at)');
+  freshDB.prepare('UPDATE creative_schema SET version=2 WHERE id=?').run('asset-library');
+  fresh.init();
+  const after = fresh.snapshot();
+  assert.deepEqual(after.creative_assets, before.creative_assets);
+  assert.deepEqual(after.creative_image_bindings, before.creative_image_bindings);
+  assert.deepEqual(after.creative_asset_versions, before.creative_asset_versions);
+  assert.equal(after.creative_schema[0].version,3);
+ });
+ await check('原生 MySQL P2a 同剧覆盖、提升、归档、回执及独立备份恢复', async () => {
+  const request_id = () => randomUUID(), dir = freshProjects.series;
+  const series = dir.createSeries({ name: 'P2a 合成剧', request_id: request_id() });
+  const season = dir.createSeason(series.id, { request_id: request_id() });
+  const { project: episode } = dir.createEpisode(series.id, {
+   season_id: season.id, expected_episode_no: 1, request_id: request_id(),
+  });
+  const scope = fresh.scoped.scope('episode', episode.id), write = fresh.scopedWrites;
+  const draft = await fresh.create({ project_id: episode.id, kind: 'character', name: 'P2a 合成人物' });
+  const first = addLook(draft, '日常'), second = addLook(draft, '夜间');
+  await fresh.save(draft.id, draft, draft.revision);
+  const plan = fresh.scopedImpact.previewPromotion('episode', episode.id, draft.id, { context_token: scope.context_token });
+  const promoted = fresh.scopedImpact.commitPromotion('episode', episode.id, draft.id, {
+   request_id: request_id(), context_token: scope.context_token, preview_token: plan.preview_token,
+  });
+  assert.equal(promoted.owner.id,series.id);
+  const seasonItem = fresh.scoped.detail('season', season.id, draft.id);
+  write.setOverride('season', season.id, draft.id, {
+   request_id: request_id(), context_token: seasonItem.context_token, write_token: seasonItem.effective.default_look.write_token,
+   field: { key: 'default_look' }, action: 'set', value: second.id,
+  });
+  assert.equal(fresh.scoped.detail('episode', episode.id, draft.id).effective.default_look.value,second.id);
+  const { context_token } = fresh.scoped.scope('series', series.id);
+  const archive = fresh.scopedImpact.previewArchive('series', series.id, draft.id, {
+   context_token, target: { type: 'look', id: second.id },
+  });
+  const archived = fresh.scopedImpact.commitArchive('series', series.id, draft.id, {
+   request_id: request_id(), context_token, preview_token: archive.preview_token,
+  });
+  assert.equal(fresh.scoped.detail('episode', episode.id, draft.id).effective.default_look.value,first.id);
+  assert.deepEqual(write.request(archived.request_id).result,archived);
+  const backup = fresh.backup();
+  const restoreDir = path.join(base, 'p2a-restored'); await fs.mkdir(restoreDir);
+  const restoredDB = new Database(path.join(restoreDir, 'library.sqlite'));
+  try {
+   const restoredLib = { db: restoredDB, dataDir: restoreDir };
+   new Projects(restoredLib).init();
+   const restored = new ProjectAssets(restoredLib).init();
+   await restored.restore(backup);
+   assert.deepEqual(restored.snapshot(),fresh.snapshot());
+   assert.equal(restored.scoped.detail('episode', episode.id, draft.id).effective.default_look.value,first.id);
+  } finally { restoredDB.close(); }
+ });
  passed = true;
 } catch (e) { await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }
 finally {
