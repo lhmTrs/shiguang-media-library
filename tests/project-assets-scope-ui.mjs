@@ -39,6 +39,32 @@ async function routeScoped(route) {
   if (fake.mode === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><body>旧版后端把未知路径交给前端页面</body></html>' });
   const ctxMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-context$/);
   if (ctxMatch) { const c = fake.ctx[ctxMatch[1]]; return c ? route.fulfill({ json: c }) : route.fulfill({ status: 404, json: { error: '项目不存在' } }); }
+  // 第 3 步：同名检查、按作用域新建、集内追加造型
+  const scopeOf = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/(names\/check|assets)$/);
+  if (scopeOf && route.request().method() === 'POST') {
+    const [, type, sid, what] = scopeOf, body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body });
+    const shared = fake.shared.find(x => x.asset.kind === body.kind && x.asset.name === body.name), local = type === 'episode' ? (fake.local[sid] || []).find(x => x.asset.kind === body.kind && x.asset.name === body.name) : null;
+    if (what === 'names/check') {
+      if (local) return route.fulfill({ json: { status: 'existing_local', match: { id: local.asset.id, name: local.asset.name }, context_token: 'ctx-token' } });
+      if (shared && type === 'episode') return route.fulfill({ json: { status: 'inherit_shared', match: { id: shared.asset.id, name: shared.asset.name }, context_token: 'ctx-token' } });
+      if (shared) return route.fulfill({ json: { status: 'conflict', conflicts: [{ id: shared.asset.id, name: shared.asset.name, scope_name: '全剧' }], context_token: 'ctx-token' } });
+      return route.fulfill({ json: { status: 'available', context_token: 'ctx-token' } });
+    }
+    if (body.on_shared === 'reuse' && shared) return route.fulfill({ json: { ...shared, reused: true } });
+    const asset = { ...structuredClone(fake.template), id: crypto.randomUUID(), name: body.name, base_info: '', project_id: type === 'series' ? null : sid, looks: [], images: [], default_look_id: null, revision: 1 };
+    const created = item(asset, type === 'series' ? { type: 'series', id: sid, name: '穿越计' } : { type: 'project', id: sid, name: '第1集' });
+    if (type === 'series') fake.shared.push(created); else (fake.local[sid] ||= []).push(created);
+    return route.fulfill({ json: created });
+  }
+  const app = url.pathname.match(/^\/api\/project-assets\/scopes\/episode\/([^/]+)\/assets\/([^/]+)\/append(\/preview)?$/);
+  if (app) {
+    const body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body }); const hit = fake.shared.find(x => x.asset.id === app[2]);
+    if (app[3]) { fake.pendingAppend = body.item; return route.fulfill({ json: { preview_token: 'pv-' + fake.writes.length, sets_series_default: hit.asset.looks.length === 0, impact: { episodes: [] } } }); }
+    const look = { id: 'look-' + crypto.randomUUID().slice(0, 6), name: fake.pendingAppend.name, description: '', tags: [], default_image_id: null, archived_at: null };
+    hit.asset = { ...hit.asset, looks: [...hit.asset.looks, look], default_look_id: hit.asset.default_look_id ?? (body.allow_series_default ? look.id : null), revision: hit.asset.revision + 1 };
+    if (fake.effective[hit.asset.id]) fake.effective[hit.asset.id].default_images[look.id] = { value: null, source: { type: 'series', id: 'series', revision: 1 }, override: null, parent: null, write_token: 'wt-' + look.id };
+    return route.fulfill({ json: { ...hit, effective: fake.effective[hit.asset.id] ?? hit.effective } });
+  }
   const attrs = url.pathname.match(/^\/api\/project-assets\/scopes\/series\/([^/]+)\/assets\/([^/]+)\/attributes$/);
   if (attrs) {
     const a = fake.seriesAttrs;
@@ -96,7 +122,9 @@ try {
     default_look: { value: 'look-b', source: src('season', 'season'), override: null, parent: { value: 'look-b', source: src('season', 'season') }, write_token: 'wt-look' },
     attribute_scores: { 'd-wealth': { value: { value: 20, source: 'manual', reason: null, updated_at: 0 }, source: src('series', 'series'), override: null, parent: { value: { value: 20, source: 'manual', reason: null, updated_at: 0 }, source: src('series', 'series') }, write_token: 'wt-score' } },
     default_images: { 'look-a': { value: 'img-1', source: src('series', 'series'), override: null, parent: { value: 'img-1', source: src('series', 'series') }, write_token: 'wt-img-a' }, 'look-b': { value: 'img-3', source: src('series', 'series'), override: null, parent: { value: 'img-3', source: src('series', 'series') }, write_token: 'wt-img-b' } } } };
-  fake.shared = [{ ...item(lisiShared, seriesOwner), effective: fake.effective[lisi.id] }];
+  const foreman = await api('/project-assets/assets', { project_id: eps[1].id, kind: 'character', name: '工头' });
+  fake.template = seller;
+  fake.shared = [{ ...item(lisiShared, seriesOwner), effective: fake.effective[lisi.id] }, item({ ...foreman, project_id: null, looks: [], images: [], default_look_id: null }, seriesOwner)];
   fake.local[eps[0].id] = [item(seller, { type: 'project', id: eps[0].id, name: eps[0].name })];
   for (const e of eps) fake.ctx[e.id] = { project: { id: e.id, name: e.name }, series: { id: s.id, name: s.name }, season: { id: q.id, name: '第 1 季' }, membership_revision: 1, context_token: 'ctx-' + e.id };
   fake.ctx[solo.id] = { project: { id: solo.id, name: solo.name }, series: null, season: null, membership_revision: 1, context_token: 'ctx-solo' };
@@ -112,7 +140,7 @@ try {
   await check('集视图：页内三段切换；列表 = 全剧共享 + 本集自有，卡片标来源', async () => {
     await expect(scopeSwitch().getByRole('button')).toHaveText([/第1集|穿越计/, '全剧', '公共人物库']);
     await expect(scopeSwitch().getByRole('button').first()).toHaveAttribute('aria-pressed', 'true');
-    await settled(['李四', '卖油郎']);
+    await settled(['李四', '工头', '卖油郎']);
     await expect(card('李四').locator('.ca-owner-src')).toHaveText('全剧'); await expect(card('卖油郎').locator('.ca-owner-src')).toHaveText('只在本集');
     assert.ok(seen.some(p => p === `/api/project-assets/scopes/episode/${eps[0].id}/assets`), '集视图应走作用域列表接口');
   });
@@ -166,7 +194,7 @@ try {
   });
 
   await check('全剧视图：可以编辑全剧基础资料，保存走剧作用域并带令牌；归档造型、解绑图片暂不开放', async () => {
-    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await settled(['李四']); await card('李四').click();
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await settled(['李四', '工头']); await card('李四').click();
     await expect(work().locator('.ca-scope-lock')).toHaveCount(0); await expect(work().getByRole('region', { name: '本集设置' })).toHaveCount(0);
     await work().getByLabel('基础信息', { exact: true }).fill('全剧的李四资料'); await work().getByRole('button', { name: '保存资料', exact: true }).click();
     await expect(work().getByRole('button', { name: '保存资料', exact: true })).toBeDisabled();
@@ -182,25 +210,57 @@ try {
     assert.match(wa.body.request_id, /^[0-9a-f-]{36}$/);
     await work().getByRole('navigation', { name: '详情分区' }).getByRole('button', { name: '造型与参考图', exact: true }).click();
     await work().locator('.ca-look-config > summary').click(); await expect(work().getByRole('button', { name: '归档造型', exact: true })).toBeDisabled();
-    await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '卖油郎']);
+    await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '工头', '卖油郎']);
   });
 
-  await check('切到「全剧」：顶栏不变，提示条说明，只列共享资产，暂不能新建', async () => {
+  await check('新建同名：全剧已有 → 问继承还是另建；继承打开全剧的那个人；另建需改名；本集已有同名直接说明', async () => {
+    const createBtn = () => work().getByRole('button', { name: /^新建/ }).first(), dlg = () => page.getByRole('dialog', { name: '新建资产' });
+    await createBtn().click(); await dlg().getByLabel('新资产名称').fill('李四'); await dlg().getByRole('button', { name: '创建并编辑' }).click();
+    await expect(dlg().getByRole('alert')).toContainText('全剧已经有「李四」');
+    await dlg().getByRole('button', { name: '继承全剧的「李四」' }).click(); await expect(dlg()).toHaveCount(0);
+    await expect(work().locator('.ca-name-input')).toHaveValue('李四'); await expect(work().getByRole('region', { name: '本集设置' })).toBeVisible();
+    const reuse = fake.writes.filter(w => w.path.endsWith('/assets') && w.method === 'POST').at(-1); assert.equal(reuse.body.on_shared, 'reuse'); assert.equal(reuse.body.name, '李四');
+    await createBtn().click(); await dlg().getByLabel('新资产名称').fill('李四'); await dlg().getByRole('button', { name: '创建并编辑' }).click();
+    await dlg().getByRole('button', { name: '新建另一个（改个名字）' }).click(); await expect(dlg()).toContainText('同一部剧里不能有两个同名');
+    await dlg().getByLabel('新资产名称').fill('李四（少年）'); await dlg().getByRole('button', { name: '创建并编辑' }).click(); await expect(dlg()).toHaveCount(0);
+    await expect(work().locator('.ca-name-input')).toHaveValue('李四（少年）'); await expect(card('李四（少年）').locator('.ca-owner-src')).toHaveText('只在本集');
+    await createBtn().click(); await dlg().getByLabel('新资产名称').fill('卖油郎'); await dlg().getByRole('button', { name: '创建并编辑' }).click();
+    await expect(work().getByRole('alert').first()).toContainText('本集已有同名的「卖油郎」'); await dlg().getByRole('button', { name: '关闭弹窗' }).click();
+  });
+
+  await check('本集追加造型：预览后确认，写到全剧；成为全剧默认时必须勾选才可确认', async () => {
+    await list().locator('.ca-card').filter({ hasText: /^李四$/ }).or(list().locator('.ca-card').filter({ has: page.locator('strong', { hasText: /^李四$/ }) })).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    const panel = work().getByRole('region', { name: '本集设置' });
+    await panel.getByLabel('新造型名称').fill('夜行服'); await expect(panel.getByLabel('新造型名称')).toHaveValue('夜行服'); await panel.getByRole('button', { name: '预览' }).click();
+    const box = panel.getByRole('group', { name: '确认新增造型' }); await expect(box).toContainText('会加到「穿越计」全剧的这个人物上'); await expect(box.getByRole('checkbox')).toHaveCount(0);
+    await box.getByRole('button', { name: '确认新增' }).click(); await expect(panel.getByRole('group', { name: '默认造型' }).getByRole('button', { name: '夜行服', exact: true })).toBeVisible();
+    const pv = fake.writes.find(w => w.path.endsWith('/append/preview')); assert.deepEqual(pv.body.item, { type: 'look', name: '夜行服' }); assert.equal(pv.body.context_token, 'ctx-token');
+    const cf = fake.writes.filter(w => w.path.endsWith('/append')).at(-1); assert.equal(cf.body.preview_token, pv ? 'pv-' + (fake.writes.indexOf(pv) + 1) : ''); assert.equal('allow_series_default' in cf.body, false);
+    // 工头还没有任何造型：第一个造型会成为全剧默认，必须勾选
+    await card('工头').click(); await expect(work().locator('.ca-name-input')).toHaveValue('工头'); await panel.getByLabel('新造型名称').fill('短打'); await expect(panel.getByLabel('新造型名称')).toHaveValue('短打'); await panel.getByRole('button', { name: '预览' }).click();
+    const box2 = panel.getByRole('group', { name: '确认新增造型' }); await expect(box2).toContainText('会成为全剧默认造型');
+    await expect(box2.getByRole('button', { name: '确认新增' })).toBeDisabled(); await box2.getByRole('checkbox').check(); await box2.getByRole('button', { name: '确认新增' }).click();
+    await expect(box2).toHaveCount(0); assert.equal(fake.writes.filter(w => w.path.endsWith('/append')).at(-1).body.allow_series_default, true);
+  });
+
+  await check('切到「全剧」：顶栏不变，提示条说明，只列共享资产，新建的是全剧人物', async () => {
     await switchTo('全剧'); await expect(scopeSwitch().getByRole('button', { name: '全剧', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(work().locator('.ca-series-note')).toContainText('正在看「穿越计」全剧的资产');
-    await settled(['李四']); await expect(projectInBar(page)).toHaveAttribute('data-project', eps[0].id);
+    await settled(['李四', '工头']); await expect(projectInBar(page)).toHaveAttribute('data-project', eps[0].id);
     assert.ok(seen.some(p => p === `/api/project-assets/scopes/series/${s.id}/assets`), '全剧视图应走剧作用域');
-    await expect(work().getByRole('button', { name: /^新建/ }).first()).toBeDisabled();
+    await work().getByRole('button', { name: /^新建/ }).first().click(); await page.getByRole('dialog', { name: '新建资产' }).getByLabel('新资产名称').fill('王五');
+    await expect(page.getByRole('dialog', { name: '新建资产' })).toContainText('这个人物会在整部剧共享'); await page.getByRole('dialog', { name: '新建资产' }).getByRole('button', { name: '创建并编辑' }).click();
+    await expect(work().locator('.ca-name-input')).toHaveValue('王五'); assert.equal(fake.writes.filter(w => w.path === `/api/project-assets/scopes/series/${s.id}/assets`).length, 1);
     // 回到集视图；去公共人物库再回来也回到集视图
-    await switchTo('第1集').catch(() => scopeSwitch().getByRole('button').first().click()); await settled(['李四', '卖油郎']);
-    await switchTo('全剧'); await settled(['李四']); await switchTo('公共人物库'); await expect(work().locator('.ca-series-note')).toHaveCount(0);
-    await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '卖油郎']);
+    await switchTo('第1集').catch(() => scopeSwitch().getByRole('button').first().click()); await settled(['李四', '工头', '王五', '卖油郎', '李四（少年）']);
+    await switchTo('全剧'); await settled(['李四', '工头', '王五']); await switchTo('公共人物库'); await expect(work().locator('.ca-series-note')).toHaveCount(0);
+    await scopeSwitch().getByRole('button').first().click(); await settled(['李四', '工头', '王五', '卖油郎', '李四（少年）']);
   });
 
   await check('换集：回到「第 N 集」视图并读新的作用域', async () => {
-    await switchTo('全剧'); await settled(['李四']);
+    await switchTo('全剧'); await settled(['李四', '工头', '王五']);
     await page.getByRole('button', { name: '下一集：第2集' }).click(); await expect(projectInBar(page)).toHaveAttribute('data-project', eps[1].id);
-    await expect(scopeSwitch().getByRole('button').first()).toHaveAttribute('aria-pressed', 'true'); await settled(['李四']);
+    await expect(scopeSwitch().getByRole('button').first()).toHaveAttribute('aria-pressed', 'true'); await settled(['李四', '工头', '王五']);
     assert.ok(seen.some(p => p === `/api/project-assets/scopes/episode/${eps[1].id}/assets`));
   });
 

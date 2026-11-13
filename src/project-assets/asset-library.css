@@ -740,3 +740,12 @@
 .ca-v2 .ca-score-row>button:not(.ca-override-reset){height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
 .ca-v2 .ca-score-now{display:inline-flex;align-items:baseline;gap:6px;min-width:120px;font-variant-numeric:tabular-nums;font-weight:600}
 .ca-v2 .ca-score-now small{font-weight:400;font-size:11px;color:var(--muted)}
+/* 第二期 P2a 第 3 步：同名继承询问、集内新增造型 */
+.ca-v2 .ca-inherit-ask{margin:8px 0 0;padding:8px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--green) 30%,var(--line));background:color-mix(in srgb,var(--green) 7%,var(--c-fff));color:var(--c-24292c);font-size:13px;line-height:1.6}
+.ca-v2 .ca-append input:not([type=checkbox]){height:28px;box-sizing:border-box;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:13px inherit;min-width:180px}
+.ca-v2 .ca-append>button{height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
+.ca-v2 .ca-append-confirm{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--c-fff);font-size:13px}
+.ca-v2 .ca-append-confirm p{margin:0;line-height:1.6}
+.ca-v2 .ca-append-default{display:flex;align-items:center;gap:6px}
+.ca-v2 .ca-append-actions{display:flex;gap:8px;justify-content:flex-end}
+.ca-v2 .ca-append-actions button{height:30px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}

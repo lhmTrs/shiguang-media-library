@@ -17,6 +17,26 @@ export type OverrideRequest = (field: OverrideField, action: 'set' | 'inherit', 
 /** 评分维度（与 attributes.ts 的 AttrDimension 同形，这里只用到名称和两端说明）。 */
 export type ScoreDimension = { id: string; name: string; negative_label: string; positive_label: string };
 type ScoreValue = { value: number | null } | null;
+/** 集里追加造型的预览回执（合同 v1：append/preview）。 */
+export type AppendPreview = { preview_token: string; sets_series_default: boolean; impact?: { episodes?: { id: string; name: string }[] } };
+export type AppendHandlers = { preview: (name: string) => Promise<AppendPreview>; confirm: (token: string, allowSeriesDefault: boolean) => Promise<void> };
+
+/** 在本集新增造型：先预览，确认后写到全剧（服务端记录来源集）；成为全剧默认时需明确勾选。 */
+function AppendLook({ busy, handlers, seriesName }: { busy: boolean; handlers: AppendHandlers; seriesName: string }) {
+  const [name, setName] = useState(''), [preview, setPreview] = useState<AppendPreview | null>(null), [allow, setAllow] = useState(false), [working, setWorking] = useState(false);
+  const off = busy || working;
+  const run = async (fn: () => Promise<void>) => { setWorking(true); try { await fn(); } finally { setWorking(false); } };
+  if (!preview) return <div className="ca-override-row ca-append" role="group" aria-label="在本集新增造型">
+    <span className="ca-override-label">新增造型</span>
+    <input value={name} maxLength={120} placeholder="造型名称，如：夜行服" aria-label="新造型名称" disabled={off} onChange={e => setName(e.target.value)}/>
+    <button type="button" disabled={off || !name.trim()} onClick={() => void run(async () => { const p = await handlers.preview(name.trim()); setPreview(p); setAllow(false); })}>预览</button>
+  </div>;
+  return <div className="ca-append-confirm" role="group" aria-label="确认新增造型">
+    <p>新造型「{name.trim()}」会加到{seriesName ? '「' + seriesName + '」' : ''}全剧的这个人物上，记下来源是本集；其他集也能看到它，但不会改它们的默认造型。</p>
+    {preview.sets_series_default && <label className="ca-append-default"><input type="checkbox" checked={allow} disabled={off} onChange={e => setAllow(e.target.checked)}/>这是这个人物的第一个造型，会成为<b>全剧默认造型</b>。我已了解</label>}
+    <span className="ca-append-actions"><button type="button" disabled={off} onClick={() => setPreview(null)}>返回修改</button><button type="button" className="ca-primary" disabled={off || preview.sets_series_default && !allow} onClick={() => void run(async () => { await handlers.confirm(preview.preview_token, preview.sets_series_default && allow); setPreview(null); setName(''); })}>确认新增</button></span>
+  </div>;
+}
 
 /** 把实际生效的默认值叠到只读详情上，让下面的造型和图片按「本集看到的样子」显示（只读，不会保存）。 */
 export function withEffective<A extends AssetLike & { default_look_id: string | null; default_image_id?: string | null; looks: (LookLike & { default_image_id: string | null })[] }>(a: A, meta?: Omit<ScopedItem<A>, 'asset'>): A {
@@ -48,9 +68,9 @@ function ScoreRow({ dim, field, busy, canWrite, onOverride }: { dim: ScoreDimens
   </div>;
 }
 
-export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, dims, dimsNote }: {
+export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, dims, dimsNote, append, seriesName }: {
   asset: AssetLike; meta: Omit<ScopedItem<AssetLike>, 'asset'>; lookId: string | null; busy: boolean;
-  thumb: (b: BindingLike) => React.ReactNode; onOverride: OverrideRequest; dims?: ScoreDimension[]; dimsNote?: string;
+  thumb: (b: BindingLike) => React.ReactNode; onOverride: OverrideRequest; dims?: ScoreDimension[]; dimsNote?: string; append?: AppendHandlers; seriesName?: string;
 }) {
   const e = meta.effective, canWrite = meta.capabilities.create_override;
   const looks = asset.looks.filter(l => !l.archived_at);
@@ -75,6 +95,7 @@ export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, d
       <span className="ca-override-label">属性评分 <small className="ca-muted">只分本集和全剧两层</small></span>
       {dims.map(d => { const f = e.attribute_scores?.[d.id]; return f ? <ScoreRow key={d.id + ':' + JSON.stringify(f.value) + ':' + (f.override?.revision ?? 0)} dim={d} field={f} busy={busy} canWrite={canWrite} onOverride={onOverride}/> : null; })}
     </div>}
+    {asset.kind === 'character' && append && meta.capabilities.append && <AppendLook busy={busy} handlers={append} seriesName={seriesName ?? ''}/>}
     {!!dimsNote && <p className="ca-muted" role="status">{dimsNote}</p>}
     {!canWrite && <p className="ca-muted">当前没有设置本集覆盖的权限。</p>}
   </section>;
