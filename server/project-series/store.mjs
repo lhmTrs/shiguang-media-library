@@ -228,6 +228,7 @@ export class ProjectSeries {
       if (this.db.prepare("SELECT id FROM project_series_members WHERE series_id=? LIMIT 1").get(id)) {
         throw new SeriesError("SERIES_NOT_EMPTY", "剧中仍有项目，请先移出项目");
       }
+      this.projects.lib.creativeAssetStore?.scopedWrites.assertSeriesRemovable(id);
       this.db.prepare("DELETE FROM project_series_seasons WHERE series_id=?").run(id);
       this.db.prepare("DELETE FROM project_series WHERE id=?").run(id);
       return { removed: true };
@@ -279,6 +280,7 @@ export class ProjectSeries {
       if (this.db.prepare("SELECT id FROM project_series_members WHERE series_id=? AND container_key=? LIMIT 1").get(seriesId, id)) {
         throw new SeriesError("SEASON_NOT_EMPTY", "季中仍有项目，请先移出项目");
       }
+      this.projects.lib.creativeAssetStore?.scopedWrites.assertNoOverrides('season', id);
       this.db.prepare("DELETE FROM project_series_seasons WHERE id=?").run(id);
       return { removed: true };
     });
@@ -400,6 +402,7 @@ export class ProjectSeries {
     const remove = this.db.prepare("DELETE FROM project_series_members WHERE id=?");
     const project = this.db.prepare("SELECT id FROM media_projects WHERE id=? AND project_kind='normal'" + mysqlLock(this.db));
     const byProject = new Map(changes.map(change => [change.project_id, change]));
+    for (const change of changes) this.projects.lib.creativeAssetStore?.scopedWrites.assertMembershipChange(change);
     for (const id of [...byProject.keys()].sort()) {
       try {
         if (!project.get(id)) throw new SeriesError("PROJECT_NOT_FOUND", "项目已删除，请刷新后重试", 404);

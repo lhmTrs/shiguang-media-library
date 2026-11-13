@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { CREATIVE_TABLES, creativeSchema, creativeIndexes, migrateCreativeArchive } from './schema.mjs';
+import { CREATIVE_TABLES, creativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2, migrateCreativeArchive, migrateCreativeOwners } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
 import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
@@ -9,6 +9,9 @@ import { snapshotSeries, validateSeriesBackup, restoreSeriesBackup } from '../pr
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
 import {CharacterVoiceFiles} from './voices.mjs';
 import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
+import { ScopedProjectAssets } from './scoped.mjs';
+import { ScopedAssetWrites } from './scoped-writes.mjs';
+import { validateScopedAssetBackup } from './scoped-backup.mjs';
 
 const parse = value => JSON.parse(value);
 const PUBLIC_KEY = 'creative-public';
@@ -26,6 +29,7 @@ export class ProjectAssets {
   init() {
     for (const sql of creativeSchema(this.db.kind === 'mysql')) this.db.exec(sql);
     migrateCreativeArchive(this.lib);
+    migrateCreativeOwners(this.lib);
     for (const [table, fields] of Object.entries(CREATIVE_TABLES)) {
       const columns = this.db.kind === 'mysql' ? this.db.prepare('SELECT COLUMN_NAME name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?').all(table) : this.db.prepare(`PRAGMA table_info(${table})`).all();
       if (Object.keys(fields).some(name => !columns.some(c => c.name === name))) throw fault('资产库 schema 升级未完成，请恢复升级前备份后重试：' + table, 503);
@@ -35,8 +39,8 @@ export class ProjectAssets {
       if (!exists) this.db.exec(`CREATE INDEX ${name} ON ${table}(${column})`);
     }
     const state = this.db.prepare('SELECT * FROM creative_schema WHERE id=?').get('asset-library');
-    if (state && state.version !== 2) throw fault('资产库 schema 版本不受支持，未开放写入', 503);
-    if (!state) { const now = Date.now(); this.db.prepare('INSERT INTO creative_schema VALUES(?,?,?,?)').run('asset-library', 2, now, now); }
+    if (state && state.version !== creativeSchemaVersion) throw fault('资产库 schema 版本不受支持，未开放写入', 503);
+    if (!state) { const now = Date.now(); this.db.prepare('INSERT INTO creative_schema VALUES(?,?,?,?)').run('asset-library', creativeSchemaVersion, now, now); }
     this.tx(() => {
       if (!this.db.prepare('SELECT id FROM media_projects WHERE system_key=?' + this.lock()).get(PUBLIC_KEY)) {
         const id = randomUUID(), now = Date.now();
@@ -45,8 +49,13 @@ export class ProjectAssets {
     });
     this.attributes = new ProjectAttributes(this).init();
     this.lib.projectAttributes = this.attributes;
+    this.lib.creativeAssetStore = this;
+    this.scoped ??= new ScopedProjectAssets(this);
+    this.scopedWrites ??= new ScopedAssetWrites(this);
+    this.scoped.setWriteCapabilities({ edit_base: true, create_override: true });
     return this;
   }
+  lockDirectory() { if (this.lib.projectSeries) lockSeriesDirectory(this.db); }
   project(id, lock = false) {
     if (!idOK(id)) throw fault('项目编号无效');
     const row = this.db.prepare('SELECT * FROM media_projects WHERE id=?' + (lock ? this.lock() : '')).get(id);
@@ -58,6 +67,10 @@ export class ProjectAssets {
     if (!idOK(id)) throw fault('资产编号无效');
     const row = this.db.prepare('SELECT * FROM creative_assets WHERE id=?' + (lock ? this.lock() : '')).get(id);
     if (!row) throw fault('资产不存在', 404);
+    return row;
+  }
+  localAsset(row) {
+    if (row.project_id === null) throw fault('请在全剧作用域修改共享资产', 403, { code: 'ASSET_SCOPE_READ_ONLY' });
     return row;
   }
   expected(row, revision) { if (!Number.isSafeInteger(revision) || row.revision !== revision) throw fault('角色已经更新，请核对最新版本；你的编辑仍保留', 409, { current_revision: row.revision }); }
@@ -111,8 +124,8 @@ export class ProjectAssets {
   }
   async health(id) { const asset = this.get(id); return { revision: asset.revision, images: await Promise.all(asset.images.map(async b => ({ id: b.id, ...(await this.inspect(b.media_asset_id, b.expected_sha256)) }))) }; }
   async prepare(input, previous) {
+    if (previous && (input?.project_id !== previous.project_id || input?.kind !== previous.kind)) throw fault('不能更改资产所属项目或类型');
     const a = normalize(input);
-    if (previous && (a.project_id !== previous.project_id || a.kind !== previous.kind)) throw fault('不能更改资产所属项目或类型');
     if (previous) {
       for (const key of ['looks', 'images']) for (const old of previous[key]) if (!a[key].some(r => r.id === old.id)) throw fault('请归档条目，不能直接移除已有记录');
     }
@@ -131,10 +144,10 @@ export class ProjectAssets {
   }
   async create(input) {
     const a = await this.prepare(blankAsset(input.project_id, input.kind, input.name), null);
-    return this.tx(() => { this.project(a.project_id, true); return this.write(a, null, '创建资产'); });
+    return this.tx(() => { this.lockDirectory(); this.project(a.project_id, true); return this.write(a, null, '创建资产'); });
   }
   async save(id, input, revision) {
-    const old = this.get(id); this.expected(old, revision);
+    const old = this.localAsset(this.get(id)); this.expected(old, revision);
     const a = await this.prepare({ ...input, id }, old);
     const cover=cardBinding(a),before=cardBinding(old);
     if(this.headBox&&cover&&cover!==before){
@@ -149,18 +162,34 @@ export class ProjectAssets {
         }
       }
     }
-    return this.tx(() => { this.project(a.project_id, true); const current = this.get(id); this.expected(this.head(id, true), revision); return this.write(a, current, '保存资料'); });
+    return this.tx(() => { this.lockDirectory(); this.project(a.project_id, true); const current = this.get(id); this.expected(this.head(id, true), revision); return this.write(a, current, '保存资料'); });
   }
-  write(a, previous, summary, source = previous?.source ?? null) {
+  write(a, previous, summary, source = previous?.source ?? null, seriesId = null) {
+    if (seriesId === null) {
+      this.localAsset(a);
+      if (previous) this.localAsset(previous);
+    } else if (a.project_id !== null || a.owner_type !== 'series' || a.owner_id !== seriesId ||
+      previous && previous.owner_id !== seriesId) {
+      throw fault('共享资产归属已变化', 409, { code: 'ASSET_SCOPE_CHANGED' });
+    }
+    const ownerType = seriesId ? 'series' : 'project';
+    const ownerId = seriesId ?? a.project_id;
     if(this.generationLocks)for(const owner of [...new Set([a.project_id,previous?.project_id].filter(Boolean))].sort()){this.project(owner,true);this.generationLocks.assertWritable(owner);}
-    const p = this.project(a.project_id);
+    const p = seriesId ? this.lib.projectSeries.series(seriesId) : this.project(a.project_id);
     if (p.project_kind === 'public' && a.kind !== 'character') throw fault('公共项目当前仅管理人物');
     a = normalize(a);
     if (previous && a.archived_at) {
       this.assertUnlinked(a.id);
-      if (!previous.archived_at) { const max=this.db.prepare('SELECT MAX(archived_at) n FROM creative_assets WHERE project_id=? AND kind=? AND name_key=?').get(a.project_id,a.kind,nameKey(a.name)).n??0; a.archived_at=Math.max(Date.now(),max+1); }
+      if (!previous.archived_at) { const max=this.db.prepare('SELECT MAX(archived_at) n FROM creative_assets WHERE owner_type=? AND owner_id=? AND kind=? AND name_key=?').get(ownerType,ownerId,a.kind,nameKey(a.name)).n??0; a.archived_at=Math.max(Date.now(),max+1); }
     }
-    const existingName = this.db.prepare('SELECT id FROM creative_assets WHERE project_id=? AND kind=? AND name_key=? AND archived_at=?').get(a.project_id, a.kind, nameKey(a.name), a.archived_at);
+    if (ownerType === 'project' && a.archived_at === 0 &&
+        (!previous || previous.archived_at || nameKey(a.name) !== nameKey(previous.name))) {
+      const series = this.lib.projectSeries?.membership(ownerId).series_id;
+      const shared = series && this.db.prepare(`SELECT id,name FROM creative_assets WHERE owner_type='series'
+        AND owner_id=? AND kind=? AND name_key=? AND archived_at=0`).get(series, a.kind, nameKey(a.name));
+      if (shared) throw fault('全剧已有同名资产，请选择沿用或改名', 409, { code: 'SHARED_ASSET_EXISTS', details: { match: shared } });
+    }
+    const existingName = this.db.prepare('SELECT id FROM creative_assets WHERE owner_type=? AND owner_id=? AND kind=? AND name_key=? AND archived_at=?').get(ownerType, ownerId, a.kind, nameKey(a.name), a.archived_at);
     if (existingName && existingName.id !== a.id) throw fault('该名称已存在，本项目不允许同名资产，请修改名称', 409);
     if(a.kind==='character'){
       const cover=cardBinding(a);
@@ -174,10 +203,10 @@ export class ProjectAssets {
     }
     const now = Math.max(Date.now(), (previous?.updated_at ?? 0) + 1), revision = (previous?.revision ?? 0) + 1;
     const data = canonical({ base_info: a.base_info, performance_info: a.performance_info, details: a.details });
-    const args = [a.project_id, a.kind, a.name, nameKey(a.name), data, a.default_look_id, a.default_image_id, revision, a.archived_at, canonical(source)];
+    const args = [a.project_id, ownerType, ownerId, a.kind, a.name, nameKey(a.name), data, a.default_look_id, a.default_image_id, revision, a.archived_at, canonical(source)];
     try {
-      if (previous) this.db.prepare('UPDATE creative_assets SET project_id=?,kind=?,name=?,name_key=?,data_json=?,default_look_id=?,default_image_id=?,revision=?,archived_at=?,source_json=?,updated_at=? WHERE id=?').run(...args, now, a.id);
-      else this.db.prepare('INSERT INTO creative_assets(id,project_id,kind,name,name_key,data_json,default_look_id,default_image_id,revision,archived_at,source_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(a.id, ...args, now, now);
+      if (previous) this.db.prepare('UPDATE creative_assets SET project_id=?,owner_type=?,owner_id=?,kind=?,name=?,name_key=?,data_json=?,default_look_id=?,default_image_id=?,revision=?,archived_at=?,source_json=?,updated_at=? WHERE id=?').run(...args, now, a.id);
+      else this.db.prepare('INSERT INTO creative_assets(id,project_id,owner_type,owner_id,kind,name,name_key,data_json,default_look_id,default_image_id,revision,archived_at,source_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(a.id, ...args, now, now);
     } catch (e) { if (e.code === 'ER_DUP_ENTRY' || String(e.code).startsWith('SQLITE_CONSTRAINT_UNIQUE')) throw fault('本项目已有同名资产，请修改名称', 409); throw e; }
     const child = (table, row, values, oldRows) => {
       const old = oldRows?.find(r => r.id === row.id);
@@ -202,8 +231,8 @@ export class ProjectAssets {
     const exists = this.db.kind === 'mysql' ? this.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='storyboard_asset_links'").get() : this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='storyboard_asset_links'").get();
     if (exists && this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)) throw fault('该资产属于当前分镜素材清单，不能删除或归档；请先用完整 JSON 重新初始化并移出清单', 409);
   }
-  archive(id, archived, revision) { const owner=this.head(id).project_id; return this.tx(() => {
-    this.project(owner, true);this.generationLocks?.assertWritable(owner); const old=this.get(id); this.expected(this.head(id, true), revision);
+  archive(id, archived, revision) { const owner=this.localAsset(this.head(id)).project_id; return this.tx(() => {
+    this.lockDirectory(); this.project(owner, true);this.generationLocks?.assertWritable(owner); const old=this.get(id); this.expected(this.head(id, true), revision);
     if (archived) this.assertUnlinked(id);
     const a = structuredClone(old), max = this.db.prepare('SELECT MAX(archived_at) n FROM creative_assets WHERE project_id=? AND kind=? AND name_key=?').get(a.project_id, a.kind, nameKey(a.name)).n ?? 0;
     a.archived_at = archived ? Math.max(Date.now(), max + 1) : 0;
@@ -212,20 +241,21 @@ export class ProjectAssets {
   versions(id) { this.head(id); return this.db.prepare('SELECT id,version,summary,created_at FROM creative_asset_versions WHERE asset_id=? ORDER BY version DESC').all(id); }
   version(id, version) { this.head(id); const row = this.db.prepare('SELECT snapshot FROM creative_asset_versions WHERE asset_id=? AND version=?').get(id, Number(version)); if (!row) throw fault('版本不存在', 404); return parse(row.snapshot); }
   copyPreview(id, projectId) {
-    const a = this.get(id), p = this.project(projectId); if (a.kind !== 'character' || a.archived_at) throw fault('只可复制未归档人物');
+    const a = this.localAsset(this.get(id)), p = this.project(projectId); if (a.kind !== 'character' || a.archived_at) throw fault('只可复制未归档人物');
     return { source: a, target_project: { id: p.id, name: p.project_kind === 'public' ? '公共项目' : p.name }, source_revision: a.revision, request_id: randomUUID() };
   }
   copy(id, input) {
     if (!idOK(input.request_id)) throw fault('复制请求编号无效');
     const requestHash = digest({ id, ...input });
     return this.tx(() => {
+      this.lockDirectory();
       const done = this.db.prepare('SELECT * FROM creative_asset_copy_records WHERE id=?' + this.lock()).get(input.request_id);
       if (done) { if (done.request_hash !== requestHash) throw fault('复制请求编号已用于其他内容', 409); return this.get(done.target_id); }
       this.project(input.project_id, true);
-      const original = this.get(id); this.expected(this.head(id, true), input.source_revision);
+      const original = this.localAsset(this.get(id)); this.expected(this.head(id, true), input.source_revision);
       if (original.kind !== 'character' || original.archived_at) throw fault('只可复制未归档人物');
       const a = structuredClone(original), map = new Map();
-      a.id = randomUUID(); a.project_id = input.project_id; a.name = input.name; a.base_info = input.base_info ?? original.base_info; a.performance_info = input.performance_info ?? original.performance_info;
+      a.id = randomUUID(); a.project_id = input.project_id; a.owner_id = input.project_id; a.name = input.name; a.base_info = input.base_info ?? original.base_info; a.performance_info = input.performance_info ?? original.performance_info;
       a.looks = a.looks.filter(active); const lookIds = new Set(a.looks.map(l => l.id)); a.images = a.images.filter(b => active(b) && lookIds.has(b.look_id));
       for (const row of [...a.looks, ...a.images]) { const prior = row.id; row.id = randomUUID(); map.set(prior, row.id); row.source = { id: prior, asset_id: id, revision: row.revision }; }
       a.default_look_id = map.get(a.default_look_id) ?? null;
@@ -245,19 +275,27 @@ export class ProjectAssets {
   backupInTransaction() {
     const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all();
     const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), project_attributes: snapshotAttributes(this.db), project_series: this.lib.projectSeries ? snapshotSeries(this.db) : undefined });
-    return { format: 'shiguang-creative-backup', schema_version: 2, ...data, checksum: digest(data) };
+    return { format: 'shiguang-creative-backup', schema_version: creativeSchemaVersion, ...data, checksum: digest(data) };
   }
   validateBackup(input) {
-    if (!input || input.format !== 'shiguang-creative-backup' || ![1,2].includes(input.schema_version) || digest(backupContent(input)) !== input.checksum || canonical(Object.keys(input.tables ?? {}).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort()) || !Array.isArray(input.projects) || input.projects.length > 10000) throw fault('资产库备份格式或摘要无效');
+    if (!input || input.format !== 'shiguang-creative-backup' || ![1,2,creativeSchemaVersion].includes(input.schema_version) || digest(backupContent(input)) !== input.checksum || !input.tables || typeof input.tables !== 'object' || Array.isArray(input.tables) || !Array.isArray(input.projects) || input.projects.length > 10000) throw fault('资产库备份格式或摘要无效');
     input = structuredClone(input);
     if(Object.hasOwn(input,'project_scripts')&&!this.scripts)throw fault('项目剧本模块尚未就绪，未恢复备份');
-    if (input.tables.creative_schema?.length !== 1 || input.tables.creative_schema[0].version !== input.schema_version) throw fault('备份 schema 版本无效');
+    if (input.tables.creative_schema?.length !== 1 || input.tables.creative_schema[0]?.version !== input.schema_version) throw fault('备份 schema 版本无效');
     if (input.schema_version === 1) {
-      for (const a of input.tables.creative_assets) a.archived_at ??= 0;
+      if (!Array.isArray(input.tables.creative_assets)) throw fault('旧资产备份表不完整');
+      for (const a of input.tables.creative_assets) {
+        if (!a || typeof a !== 'object' || Array.isArray(a)) throw fault('旧资产备份记录无效');
+        a.archived_at ??= 0;
+      }
       for (const s of input.tables.creative_schema) s.version = 2;
       input.schema_version = 2;
+    }
+    if (input.schema_version === 2) {
+      convertCreativeBackupV2(input);
       input.checksum = digest(backupContent(input));
     }
+    if (canonical(Object.keys(input.tables).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort())) throw fault('资产库备份表不完整');
     const projectIds = new Set();
     for (const p of input.projects) {
       if (!idOK(p.id) || projectIds.has(p.id) || typeof p.name !== 'string' || !p.name || !['normal','public'].includes(p.project_kind) || (p.project_kind === 'public' ? p.system_key !== PUBLIC_KEY : p.system_key !== null)) throw fault('备份项目身份无效');
@@ -275,24 +313,30 @@ export class ProjectAssets {
         if (!row || canonical(Object.keys(row).sort()) !== canonical(Object.keys(columns).sort()) || ids.has(row.id)) throw fault('备份记录结构或编号无效'); ids.add(row.id);
         for (const [key, type] of Object.entries(columns)) {
           const v = row[key];
-          if ((type === 'id' || type === 'ref') && !idOK(v) || type === 'optional_ref' && v !== null && !idOK(v) || (type === 'integer' || type === 'nullable' && v !== null) && (!Number.isSafeInteger(v) || v < 0) || ['key','name','text'].includes(type) && typeof v !== 'string') throw fault('备份字段类型无效');
+          if ((type === 'id' || type === 'ref') && !idOK(v) || type === 'optional_ref' && v !== null && !idOK(v) || (type === 'integer' || type === 'nullable' && v !== null) && (!Number.isSafeInteger(v) || v < 0) || ['key','name','text'].includes(type) && typeof v !== 'string' || type === 'hash_id' && !/^[a-f0-9]{64}$/.test(v)) throw fault('备份字段类型无效');
         }
         if (row.updated_at < row.created_at || row.revision !== undefined && row.revision < 1) throw fault('备份时间或修订号无效');
-        for (const k of ['data_json','source_json','snapshot']) if (k in row) { try { parse(row[k]); } catch { throw fault('备份 JSON 字段无效'); } }
+        for (const k of ['data_json','source_json','snapshot','value_json','result_json']) if (k in row) { try { parse(row[k]); } catch { throw fault('备份 JSON 字段无效'); } }
       }
     }
     const t = input.tables;
-    if (t.creative_schema.length !== 1 || t.creative_schema[0].id !== 'asset-library' || t.creative_schema[0].version !== 2) throw fault('备份 schema 版本无效');
+    if (t.creative_schema.length !== 1 || t.creative_schema[0].id !== 'asset-library' || t.creative_schema[0].version !== creativeSchemaVersion) throw fault('备份 schema 版本无效');
     const assets = new Map(t.creative_assets.map(a => [a.id, a]));
     if (Object.hasOwn(input, 'project_attributes')) validateAttributes(input.project_attributes, input.projects, assets);
     const looks = new Map(t.creative_looks.map(l => [l.id,l]));
-    for (const a of assets.values()) if (!projectIds.has(a.project_id)) throw fault('备份资产项目不存在');
+    const seriesIds = new Set((input.project_series?.project_series ?? []).map(row => row.id));
+    for (const a of assets.values()) {
+      const valid = a.owner_type === 'project' && a.owner_id === a.project_id && projectIds.has(a.project_id) ||
+        a.owner_type === 'series' && a.project_id === null && seriesIds.has(a.owner_id);
+      if (!valid) throw fault('备份资产归属无效');
+    }
+    validateScopedAssetBackup(t, input.project_series);
     for (const l of looks.values()) if (assets.get(l.asset_id)?.kind !== 'character') throw fault('备份造型归属无效');
     for (const b of t.creative_image_bindings) if (!assets.has(b.asset_id) || b.look_id !== null && looks.get(b.look_id)?.asset_id !== b.asset_id || !/^[a-f0-9]{64}$/.test(b.expected_sha256)) throw fault('备份图片归属或摘要无效');
     const versionKeys = new Set();
     for (const v of t.creative_asset_versions) {
       const a = assets.get(v.asset_id), s = parse(v.snapshot), key = v.asset_id + '/' + v.version;
-      if (!a || versionKeys.has(key) || v.version < 1 || v.version > a.revision || s.id !== a.id || s.project_id !== a.project_id || s.revision !== v.version || v.created_at !== v.updated_at) throw fault('备份版本引用无效');
+      if (!a || versionKeys.has(key) || v.version < 1 || v.version > a.revision || s.id !== a.id || s.project_id !== null && !projectIds.has(s.project_id) || s.project_id === null && !seriesIds.has(s.owner_id) || s.revision !== v.version || v.created_at !== v.updated_at) throw fault('备份版本引用无效');
       normalize(s); versionKeys.add(key);
     }
     for (const a of assets.values()) if (!versionKeys.has(a.id + '/' + a.revision)) throw fault('备份缺少当前版本');
@@ -306,7 +350,7 @@ export class ProjectAssets {
   }
   // Caller holds the transaction when restoring a combined storyboard backup.
   lockRestoreScope() {
-    if (this.lib.projectSeries) lockSeriesDirectory(this.db);
+    this.lockDirectory();
     const ids=this.db.prepare('SELECT id FROM media_projects ORDER BY id'+this.lock()).all().map(row=>row.id);
     this.generationLocks?.assertRestoreProjects(ids);
   }
@@ -338,11 +382,16 @@ export class ProjectAssets {
           else this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(() => '?')})`).run(...keys.map(k => row[k]));
         }
       }
-      for (const row of input.tables.creative_assets) { const a = this.get(row.id); this.project(a.project_id); normalize(a); }
+      if (Object.hasOwn(input, 'project_series')) restoreSeriesBackup(this.db, input.project_series);
+      for (const row of input.tables.creative_assets) {
+        const a = this.get(row.id);
+        if (a.project_id === null) this.lib.projectSeries.series(a.owner_id);
+        else this.project(a.project_id);
+        normalize(a);
+      }
       for (const table of ['creative_looks', 'creative_image_bindings', 'creative_asset_versions']) for (const r of input.tables[table]) this.head(r.asset_id);
       this.scripts?.restoreRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[]);
       restoreAttributes(this.db, input.project_attributes);
-      if (Object.hasOwn(input, 'project_series')) restoreSeriesBackup(this.db, input.project_series);
       return { restored: true, assets: input.tables.creative_assets.length };
   }
 }

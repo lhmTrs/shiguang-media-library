@@ -24,7 +24,11 @@ export function blankAsset(project_id, kind = 'character', name = '') {
   return { id: randomUUID(), project_id, kind, name, base_info: '', performance_info: '', details: {}, default_look_id: null, default_image_id: null, archived_at: 0, looks: [], images: [] };
 }
 export function normalize(input) {
-  if (!input || typeof input !== 'object' || !['character', 'scene', 'prop'].includes(input.kind) || !idOK(input.project_id) || !idOK(input.id)) throw fault('资产类型、项目或编号无效');
+  const validOwner = input?.project_id === null
+    ? input.owner_type === 'series' && idOK(input.owner_id)
+    : idOK(input?.project_id) && (input.owner_type === undefined && input.owner_id === undefined ||
+      input.owner_type === 'project' && input.owner_id === input.project_id);
+  if (!input || typeof input !== 'object' || !['character', 'scene', 'prop'].includes(input.kind) || !validOwner || !idOK(input.id)) throw fault('资产类型、项目或编号无效');
   const a = structuredClone(input); a.name = text(a.name, '名称', 120, true); a.base_info = text(a.base_info ?? '', '基础信息'); a.performance_info = text(a.performance_info ?? '', '性格与表演');
   if (!a.details || typeof a.details !== 'object' || Array.isArray(a.details) || canonical(a.details).length > 200000) throw fault('扩展资料无效');
   if (Object.hasOwn(a.details,VOICE_KEY)) { if(a.kind!=='character')throw fault('只有人物可以添加角色语音');a.details[VOICE_KEY]=canonical(voiceProfile(a.details[VOICE_KEY])); }

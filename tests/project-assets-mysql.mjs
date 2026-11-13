@@ -52,7 +52,7 @@ try {
   const a = store.get(snapshot.tables.creative_assets[0].id); const checksum = store.backup().checksum;
   lib.db.exec("CREATE TRIGGER refuse_creative_version BEFORE INSERT ON creative_asset_versions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic rollback'");
   await assert.rejects(store.save(a.id, { ...a, name: '不得保存' }, a.revision), /synthetic rollback/); assert.equal(store.backup().checksum, checksum); lib.db.exec('DROP TRIGGER refuse_creative_version');
-  const row = snapshot.tables.creative_assets[0]; assert.throws(() => lib.db.prepare('INSERT INTO creative_assets SELECT ?,project_id,kind,name,name_key,data_json,default_look_id,default_image_id,revision,archived_at,source_json,created_at,updated_at FROM creative_assets WHERE id=?').run(randomUUID(), row.id), e => e.code === 'ER_DUP_ENTRY');
+  const row = snapshot.tables.creative_assets[0]; assert.throws(() => lib.db.prepare('INSERT INTO creative_assets SELECT ?,project_id,kind,name,name_key,data_json,default_look_id,default_image_id,revision,archived_at,source_json,created_at,updated_at,owner_type,owner_id FROM creative_assets WHERE id=?').run(randomUUID(), row.id), e => e.code === 'ER_DUP_ENTRY');
  });
  await connection.query('CREATE DATABASE creative_fresh CHARACTER SET utf8mb4 COLLATE utf8mb4_bin'); freshDB = new MysqlDatabase({ ...config, database: 'creative_fresh' });
  const freshLib = { db: freshDB, dataDir: path.join(base, 'fresh'), asset: lib.asset.bind(lib), checked: lib.checked.bind(lib) }; const freshProjects = new Projects(freshLib).init(), fresh = new ProjectAssets(freshLib).init();

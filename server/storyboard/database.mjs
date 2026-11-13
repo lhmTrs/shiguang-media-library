@@ -62,6 +62,7 @@ export class StoryboardDatabase {
     const sourceHash=digest(input.source), requestHash=digest({projectId,sourceHash,expected_revision:input.expected_revision,filename:input.filename??'',timing:input.timing??'duration'});
     const parsed=parseInitialization(input.source,{filename:input.filename,timing:input.timing});
     return this.tx(()=>{
+      this.assets.lockDirectory();
       this.project(projectId,true);this.generationLocks?.assertWritable(projectId);
       const done=this.db.prepare('SELECT * FROM storyboard_import_requests WHERE id=?').get(input.request_id);
       if(done) { if(done.request_hash!==requestHash || done.project_id!==projectId) throw fault('初始化请求编号已用于其他内容',409); return {...this.read(projectId),receipt:JSON.parse(done.result_json),repeated:true}; }

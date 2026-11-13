@@ -49,6 +49,20 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('patch', scorePath, req => attributes.patchScores(req.params.id, req.body));
   route('get', '/projects/:id/attributes', req => attributes.compare(req.params.id, req.query.asset_ids));
   route('post', '/projects/:id/attribute-scores', req => attributes.scoreBatch(req.params.id, req.body));
+  const scoped = '/scopes/:scopeType/:scopeId';
+  route('get', scoped + '/assets', req => store.scoped.list(req.params.scopeType, req.params.scopeId, req.query));
+  route('get', scoped + '/assets/:assetId', req => store.scoped.detail(req.params.scopeType, req.params.scopeId, req.params.assetId));
+  const scopeWrite = (method, suffix, action) =>
+    route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));
+  const writes = store.scopedWrites;
+  scopeWrite('post', '/names/check', (type, id, req) => writes.checkNames(type, id, req.body));
+  scopeWrite('post', '/assets', (type, id, req) => writes.create(type, id, req.body));
+  scopeWrite('put', '/assets/:assetId', (type, id, req) => writes.save(type, id, req.params.assetId, req.body));
+  scopeWrite('patch', '/assets/:assetId/overrides', (type, id, req) => writes.setOverride(type, id, req.params.assetId, req.body));
+  scopeWrite('get', '/attribute-config', (type, id, req) => store.scoped.attributeConfig(type, id, req.query.asset_id));
+  scopeWrite('get', '/assets/:assetId/attributes', (type, id, req) => store.scoped.attributeScores(type, id, req.params.assetId));
+  scopeWrite('patch', '/assets/:assetId/attributes', (type, id, req) => writes.patchScores(type, id, req.params.assetId, req.body));
+  route('get', '/scoped-requests/:requestId', req => writes.request(req.params.requestId));
   route('get', '/scopes', () => store.scopes());
   route('get', '/assets', req => store.list(req.query));
   route('post', '/assets', req => store.create(req.body));
@@ -85,6 +99,6 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('get', '/backup', () => store.backup());
   route('post', '/restore', req => store.restore(req.body));
   router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
-  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}) }); });
+  router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}), ...(error.status && error.details ? { details: error.details } : {}) }); });
   return router;
 }
