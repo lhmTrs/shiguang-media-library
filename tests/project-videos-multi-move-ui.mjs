@@ -40,7 +40,7 @@ const folderCard = name => work().locator('.pv-folder-card').filter({ hasText: n
 const chipBar = () => work().getByRole('navigation', { name: /视频文件夹/ });
 const where = async () => Object.fromEntries((await api(pv('?folderId=all'))).videos.map(v => [v.id, v.folderId]));
 const pickMany = async ids => { await card(ids[0]).click(); for (const id of ids.slice(1)) await card(id).click({ modifiers: ['Meta'] }); };
-const hold = { running: false, failGetOnce: false, dropPost: false, capturePost: false, captured: null, loseAbandon: false }; let gets = 0;
+const hold = { running: false, failGetOnce: false, dropPost: false, capturePost: false, captured: null, loseAbandon: false, abandonAsRunning: false }; let gets = 0;
 const shot = async name => { const dir = process.env.CREATIVE_TEST_EVIDENCE; if (!dir) return; await fs.mkdir(dir, { recursive: true }); await page.screenshot({ path: path.join(dir, name + '.png') }); };
 
 try {
@@ -59,6 +59,11 @@ try {
   page.on('request', r => { const u = new URL(r.url()); if (r.method() === 'POST' && u.pathname.startsWith(opBase)) posts.push({ path: u.pathname, body: r.postDataJSON() }); });
   // 执行中：把执行回执和轮询都说成 running（真实移动已完成），放行后轮询读到真实 ready
   await page.route(u => new URL(u).pathname.startsWith(opBase + '/'), async route => {
+    // 执行已先登记、作废接口回 running（真实服务可能已经跑完，这里把这一次回应固定成 running，之后的 GET 都走真实服务）
+    if (route.request().method() === 'POST' && route.request().url().endsWith('/abandon') && hold.abandonAsRunning) {
+      hold.abandonAsRunning = false; const res = await route.fetch(); const data = await res.json(); hold.abandonReplied = data.requestId;
+      return route.fulfill({ status: 200, json: { ...data, status: 'running', items: (data.items || []).map(x => ({ ...x, status: 'not-run' })) } });
+    }
     if (route.request().method() === 'POST' && route.request().url().endsWith('/abandon') && hold.loseAbandon) { hold.loseAbandon = false; await route.fetch(); return route.abort('connectionreset'); } // 服务端已作废，回应丢失
     if (route.request().method() !== 'GET') return route.fallback();
     gets++; if (hold.failGetOnce) { hold.failGetOnce = false; return route.abort('connectionreset'); } // 只断一次，之后网络正常
@@ -152,31 +157,37 @@ try {
     await modal().getByRole('button', { name: '查询原文件夹操作' }).click(); await expect(modal()).toContainText('尚未开始');
     await expect(modal().getByRole('button', { name: '恢复原操作（回滚）' })).toHaveCount(0);
   }
-  await check('反例 R2a：读到「尚未开始」仍锁住；放下先到 → 迟到的原执行被拒（409），文件不动，页面回到核对前', async () => {
+  await check('反例 R2a：读到「尚未开始」仍锁住；放下先到 → 迟到的原执行被拒（409），文件不动，页面解锁', async () => {
     await startStuckMove('第一场', [A, B], F2);
     await modal().getByRole('button', { name: '返回列表' }).click();
     await expect(work().locator('.pv-op-background')).toContainText('移动尚未开始');
     await card(A).dragTo(chipBar().getByRole('button', { name: '第二场' })); await expect(page.getByText('上一笔移动还在完成中，完成后再移动。').first()).toBeVisible();
     await work().locator('.pv-op-background').getByRole('button', { name: '查看进度' }).click();
-    await modal().getByRole('button', { name: '放下这笔，重新核对' }).click(); await expect(work().locator('.pv-op-background')).toHaveCount(0);
+    await expect(modal()).toContainText('尚未开始'); await modal().getByRole('button', { name: '放下这笔，重新核对' }).click();
+    // 从底部条重新打开的进度窗（原移动弹窗已关）：放下后关闭、解锁；所选视频还在，可以重新点移动
+    await expect(modal()).toHaveCount(0); await expect(work().locator('.pv-op-background')).toHaveCount(0);
     const late = await deliverCaptured(); assert.equal(late.status, 409); assert.equal(late.body.code, 'OPERATION_ABANDONED');
     const at = await where(); assert.deepEqual({ A: at[A], B: at[B] }, { A: F1, B: F1 });
   });
 
-  await check('反例 R2b：原执行先登记再点放下 → 不放下，继续跟踪同一编号直到完成', async () => {
-    if (await modal().count()) await modal().getByRole('button', { name: /取消|返回列表|关闭/ }).first().click();
+  await check('反例 R2b：原执行先登记、放下回 running → 继续轮询同一编号到完成，不卡住、不重发', async () => {
     await startStuckMove('第一场', [A, B], F2);
     const first = await deliverCaptured(); assert.equal(first.status < 300, true, '原执行应登记成功');
+    hold.abandonAsRunning = true; hold.abandonReplied = null; gets = 0; posts.length = 0;
     await modal().getByRole('button', { name: '放下这笔，重新核对' }).click();
-    await expect(modal()).toContainText('已移动 2 个到「第二场」', { timeout: 15000 });
+    await expect.poll(() => hold.abandonReplied).not.toBeNull(); // 作废接口确实回了 running
+    await expect(modal()).toContainText('已移动 2 个到「第二场」', { timeout: 15000 }); // 之后靠原编号轮询到完成
+    assert.ok(gets >= 1, '作废回 running 后应继续查询原编号'); assert.equal(posts.filter(p => p.path === opBase).length, 0, '不应重发执行');
     const at = await where(); assert.deepEqual({ A: at[A], B: at[B] }, { A: F2, B: F2 });
-    await modal().getByRole('button', { name: '留在这里' }).click();
+    await modal().getByRole('button', { name: '留在这里' }).click(); await expect(modal()).toHaveCount(0); await expect(work().locator('.pv-op-background')).toHaveCount(0);
   });
 
   await check('反例 R2c：放下的回应丢失 → 不自动重发执行；查询读到已放下后解锁', async () => {
     await startStuckMove('第二场', [A, B], F1); posts.length = 0; hold.loseAbandon = true;
     await modal().getByRole('button', { name: '放下这笔，重新核对' }).click(); await expect(page.getByText(/放下结果尚未确认/).first()).toBeVisible();
-    await modal().getByRole('button', { name: '查询原文件夹操作' }).click(); await expect(work().locator('.pv-op-background')).toHaveCount(0);
+    await modal().getByRole('button', { name: '查询原文件夹操作' }).click();
+    await expect(modal().getByRole('button', { name: '核对 2 个视频的移动影响' })).toBeEnabled(); // 查到已放下，真正回到核对前
+    await modal().getByRole('button', { name: '取消' }).click(); await expect(modal()).toHaveCount(0); await expect(work().locator('.pv-op-background')).toHaveCount(0);
     assert.equal(posts.filter(p => p.path === opBase).length, 0, '不应重发执行');
     const at = await where(); assert.deepEqual({ A: at[A], B: at[B] }, { A: F2, B: F2 });
   });

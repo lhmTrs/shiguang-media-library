@@ -88,7 +88,8 @@ export function FolderOperations({action, active, folders, projectId, request, c
     try {
       const next = await original.api<OperationReceipt>(base + `/operations/${encodeURIComponent(original.requestId)}/abandon`, {}, 'POST');
       receive(next);
-      if (next.status !== 'cancelled') report(next.status === 'ready' ? '执行已经先开始并完成了，没有放下。' : '执行刚刚已经开始，没有放下；继续跟踪原请求。', next.status === 'ready' ? 'success' : 'error');
+      // 执行已先登记：只是说明，不是查询错误——不能写进 error，否则会停掉轮询；ready / failed / unknown 由 receive 按各自原因提示
+      if (next.status === 'running') notifyFeedback({source: '生成视频', kind: 'info', message: '执行刚刚已经开始，没有放下；继续跟踪原请求，完成后会提示。'});
     } catch (e) { report(`放下结果尚未确认：${(e as Error).message}。可以再点一次，或查询原请求；不会重新提交移动。`); }
     finally { inFlight.current = false; setBusy(false); }
   }
