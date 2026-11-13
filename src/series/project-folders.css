@@ -29,6 +29,8 @@
 .pf-card:hover .pf-more { opacity: 1; }
 /* 按下 */
 .pf-card:has(.pf-card-main:active), .pf-add:active { border-color: color-mix(in srgb, var(--green) 60%, var(--line)); background: color-mix(in srgb, var(--green) 14%, var(--c-fff)); transform: translateY(1px); }
+/* 底色加深后，小字往主题文字色靠一点，保证 12px 小字在各主题下仍 ≥ 4.5:1 */
+.pf-card:has(.pf-card-main:active) small { color: color-mix(in srgb, var(--muted) 70%, var(--c-24292c)); }
 /* 键盘焦点：蓝色外环，只在键盘操作时 */
 /* 焦点环用主题文字色：各主题下都和强调色的「当前」边框分得开（午夜蓝主题的强调色本身就是蓝） */
 .pf-card-main:focus-visible { outline: 2px solid var(--c-24292c); outline-offset: 3px; }
@@ -39,7 +41,7 @@
 .pf-tick { position: absolute; left: -7px; top: -7px; width: 18px; height: 18px; border-radius: 50%; background: var(--green); color: var(--c-fff); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px var(--c-fff); pointer-events: none; }
 /* 放置目标：绿底 + 副标题写后果 */
 .pf-folder[data-drop=over] { border-color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--c-fff)); box-shadow: 0 0 0 2px var(--green); }
-.pf-folder[data-drop=over] small { color: var(--green); font-weight: 600; }
+.pf-folder[data-drop=over] small { color: color-mix(in srgb, var(--green) 70%, var(--c-24292c)); font-weight: 600; }
 /* 刚完成：橙色闪框约 1 秒 */
 .pf-card[data-flash] { animation: pf-flash 1.2s ease-out; }
 @keyframes pf-flash { 0%, 60% { border-color: #c8642a; box-shadow: 0 0 0 4px color-mix(in srgb, #c8642a 28%, transparent); } 100% { box-shadow: none; } }

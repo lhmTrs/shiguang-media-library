@@ -42,9 +42,10 @@ try {
   const s = await api('/project-series', { name: '穿越计', software: 'jianying', request_id: rid() });
   const q = await api(`/project-series/${s.id}/seasons`, { request_id: rid() });
   for (let i = 1; i <= 4; i++) await api(`/project-series/${s.id}/episodes`, { season_id: q.id, expected_episode_no: i, request_id: rid() });
+  await api(`/project-series/${s.id}/episodes`, { season_id: null, expected_episode_no: 1, request_id: rid() });
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
 
-  await check(`FE2-R1 反例：${themes.length} 套主题下，悬停、按 ⌘ 多选两集时卡片标题对比度 ≥ 4.5、小字 ≥ 4.5`, async () => {
+  await check(`FE2-R1/FE3 反例：${themes.length} 套主题下，悬停、按下、按 ⌘ 多选、拖到季卡上时卡片标题和小字对比度都 ≥ 4.5`, async () => {
     assert.ok(themes.includes('dark') && themes.includes('midnight'), '主题清单应包含深色与午夜蓝');
     const report = [];
     for (const theme of themes) {
@@ -56,13 +57,23 @@ try {
       await pf().getByRole('button', { name: '打开剧 穿越计' }).click(); await pf().getByRole('button', { name: '打开 第 1 季' }).click();
       await ep(2).hover(); await page.waitForTimeout(150);
       const hover = await contrastOf(ep(2));
+      await page.mouse.down(); await page.waitForTimeout(150);
+      const pressed = await contrastOf(ep(2)); await page.mouse.up();
       await ep(1).click(); await ep(3).click({ modifiers: ['Meta'] }); await page.mouse.move(5, 5); await page.waitForTimeout(150);
       await expect(pf().locator('.pf-episode[data-selected]')).toHaveCount(2);
       const picked = await contrastOf(ep(3));
-      report.push({ theme, hover, picked });
+      // 放置提示：回到剧里，把散放的第 1 集拖到季卡上（真实 dragstart → dragover），季卡小字显示「松手移入 1 集」
+      await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '穿越计' }).click();
+      const loose = pf().getByRole('button', { name: /^穿越计 第 1 集(（当前项目）)?$/ }), season = pf().getByRole('button', { name: '打开 第 1 季' });
+      const dt = await page.evaluateHandle(() => new DataTransfer());
+      await loose.dispatchEvent('dragstart', { dataTransfer: dt }); await season.dispatchEvent('dragenter', { dataTransfer: dt }); await season.dispatchEvent('dragover', { dataTransfer: dt });
+      await expect(season.locator('small')).toHaveText('松手移入 1 集'); await page.mouse.move(5, 5); await page.waitForTimeout(150);
+      const drop = await contrastOf(season);
+      await loose.dispatchEvent('dragend', { dataTransfer: dt });
+      report.push({ theme, hover, pressed, picked, drop });
       await context.close();
     }
-    const bad = report.flatMap(r => ['hover', 'picked'].flatMap(k => ['title', 'sub'].filter(f => r[k][f] < 4.5).map(f => `${r.theme} ${k} ${f} ${r[k][f].toFixed(2)}`)));
+    const bad = report.flatMap(r => ['hover', 'pressed', 'picked', 'drop'].flatMap(k => ['title', 'sub'].filter(f => r[k][f] < 4.5).map(f => `${r.theme} ${k} ${f} ${r[k][f].toFixed(2)}`)));
     assert.deepEqual(bad, [], '对比度不足：' + bad.join('；'));
   });
 
