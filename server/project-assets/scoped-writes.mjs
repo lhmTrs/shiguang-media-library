@@ -345,8 +345,9 @@ export class ScopedAssetWrites {
     }
     const overrides = overlays.filter(row => affected.has(row.field_key.slice('attribute_score:'.length)));
     for (const row of overrides) affected.get(row.field_key.slice('attribute_score:'.length)).episode_overrides++;
+    const members = this.db.prepare('SELECT id,revision FROM project_series_members WHERE series_id=? ORDER BY id').all(config.series_id);
     const token = createHmac('sha256', this.#configKey)
-      .update(canonical([config.series_id, config.config_token, config.revision, remove, records, overrides])).digest('hex');
+      .update(canonical([config.series_id, config.config_token, config.revision, members, remove, records, overrides])).digest('hex');
     const scored = new Set([...rows.flatMap(row => Object.keys(row.scores)),
       ...overlays.map(row => row.field_key.slice('attribute_score:'.length))]);
     return { token, records, overrides, scored, affected: [...affected.values()] };

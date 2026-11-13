@@ -15,6 +15,9 @@ export class GenerationStore{
  head(id){if(!idOK(id))throw error('INVALID_TASK_ID','任务编号无效',400);const row=this.db.prepare('SELECT * FROM sb_generation_tasks WHERE id=?').get(id);if(!row)throw error('TASK_NOT_FOUND','分镜任务不存在',404);return row;}
  display(id){if(!idOK(id))throw error("INVALID_TASK_ID","任务编号无效",400);const row=this.db.prepare(`SELECT ${DISPLAY_COLUMNS} FROM sb_generation_tasks WHERE id=?`).get(id);if(!row)throw error("TASK_NOT_FOUND","分镜任务不存在",404);return row;}
  lock(projectId){return this.db.prepare('SELECT * FROM sb_generation_locks WHERE id=?'+this.sqlLock()).get(projectId);}
+ isLocked(projectId){return !!this.db.prepare('SELECT id FROM sb_generation_locks WHERE id=? AND owner_task_id IS NOT NULL').get(projectId);}
+ isSeriesLocked(seriesId){return !!this.db.prepare(`SELECT l.id FROM sb_generation_locks l
+  JOIN project_series_members m ON m.id=l.id WHERE m.series_id=? AND l.owner_task_id IS NOT NULL LIMIT 1`).get(seriesId);}
  assertWritable(projectId){const row=this.lock(projectId),owner=this.context.getStore();if(row?.owner_task_id&&!(owner?.id===row.owner_task_id&&owner.generation===row.generation))throw error('STORYBOARD_GENERATION_LOCKED','当前项目正在生成分镜，全部分镜和关联资料编辑暂时冻结',423,{taskId:row.owner_task_id});}
  assertRestoreProjects(ids){for(const id of [...new Set(ids)].sort()){this.storyboards.assets.project(id,true);this.assertWritable(id);}}
  assetSnapshot(projectId){
