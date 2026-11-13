@@ -5,10 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
+import express from 'express';
 import {PHOTO,VIDEO,AUDIO} from '../server/fs-identity.mjs';
 import {Receipts,inspectSelection,selectionHash,revalidateSelection,stamp} from '../server/file-intake/files.mjs';
 import {IntakeNative,workflow,plist,shellQuote} from '../server/file-intake/native.mjs';
 import {FileIntake} from '../server/file-intake/store.mjs';
+import {fileIntakeRouter} from '../server/file-intake/router.mjs';
 
 // Synthetic files only. Every installer has an explicit tempServicesDir and a
 // compiler stub that writes bytes, never executes a process or registers a
@@ -292,6 +294,108 @@ test('concurrent explicit install requests share one compiler and one publicatio
   assert.deepEqual((await fs.readdir(f.tempServicesDir)).filter(v=>v.endsWith('.workflow')),['收纳素材到拾光.workflow']);
   await f.native.install();assert.equal(f.calls.length,1,'unchanged helper may be reused');
   assert.deepEqual(await f.native.status(),{supported:true,installed:true,upgradeNeeded:false});
+});
+
+test('installation routes expose one live job while the legacy request waits for completion',async t=>{
+  const f=await fixture(t);
+  const compilation=Promise.withResolvers(),allowCompile=Promise.withResolvers();
+  const writing=Promise.withResolvers(),allowWrite=Promise.withResolvers();
+  const compile=f.native.run;
+  f.native.run=async(...args)=>{
+    compilation.resolve();
+    await allowCompile.promise;
+    return compile(...args);
+  };
+  const assertMissing=f.native.assertMissing.bind(f.native);
+  f.native.assertMissing=async target=>{
+    writing.resolve();
+    await allowWrite.promise;
+    await assertMissing(target);
+  };
+  let active=0;
+  const app=express();
+  app.use(fileIntakeRouter({status:()=>({activeCount:0})},f.native,{withActivity:async fn=>{
+    active++;
+    try{return await fn();}finally{active--;}
+  }}));
+  const server=await new Promise(resolve=>{const listener=app.listen(0,'127.0.0.1',()=>resolve(listener));});
+  t.after(async()=>{
+    allowCompile.resolve();allowWrite.resolve();
+    await f.native.close();
+    server.closeAllConnections();
+    await new Promise(resolve=>server.close(resolve));
+  });
+  const base='http://127.0.0.1:'+server.address().port;
+  const request=async (route,method='GET',status=200)=>{
+    const response=await fetch(base+route,{method,signal:AbortSignal.timeout(5000)});
+    assert.equal(response.status,status);
+    return response.json();
+  };
+  assert.deepEqual(await request('/install/job'),{job:null});
+  const first=(await request('/install/job','POST',202)).job;
+  assert.equal(first.stage,'checking');
+  assert.equal(first.finishedAt,null);
+  await compilation.promise;
+  const compiling=(await request('/install/job')).job;
+  assert.deepEqual([compiling.id,compiling.stage,compiling.window],[first.id,'preparing-window','compiling']);
+  assert.deepEqual((await request('/status')).installJob,compiling);
+  assert.equal((await request('/install/job','POST',202)).job.id,first.id);
+  const legacy=request('/install','POST');
+  void legacy.catch(()=>{});
+  assert.equal(active,1);
+  allowCompile.resolve();
+  await writing.promise;
+  assert.equal((await request('/install/job')).job.stage,'writing');
+  allowWrite.resolve();
+  assert.equal((await legacy).installed,true);
+  const done=(await request('/install/job')).job;
+  assert.deepEqual([done.id,done.stage,done.error,done.previousKept],[first.id,'done',null,null]);
+  assert.ok(done.finishedAt>=done.startedAt);
+  assert.equal(f.calls.length,1);
+  assert.equal(active,0);
+
+  const restored=await new IntakeNative({
+    dataDir:f.dataDir,project:f.project,servicesDirectory:f.tempServicesDir,platform:'darwin',
+  }).init();
+  assert.deepEqual(restored.installJob(),done);
+  await f.native.install();
+  assert.equal(f.native.installJob().window,'skipped');
+  assert.equal(f.calls.length,1);
+});
+
+test('an interrupted install is recovered from the journal without starting a compiler',async t=>{
+  const f=await fixture(t);
+  await f.installOwned();
+  const compilation=Promise.withResolvers(),release=Promise.withResolvers();
+  f.native.run=async()=>{compilation.resolve();await release.promise;throw Error('synthetic end');};
+  t.after(()=>release.resolve());
+  const first=await f.native.startInstall();
+  await compilation.promise;
+  const restored=await new IntakeNative({
+    dataDir:f.dataDir,project:f.project,servicesDirectory:f.tempServicesDir,platform:'darwin',
+    runner:()=>assert.fail('recovery must not start an installer'),
+  }).init();
+  const interrupted=restored.installJob();
+  assert.deepEqual([interrupted.id,interrupted.stage,interrupted.error.code,interrupted.previousKept],
+    [first.id,'failed','INSTALL_INTERRUPTED',true]);
+  assert.equal((await restored.status()).installed,true);
+  const initialWork=f.native.installing;
+  release.resolve();
+  await assert.rejects(initialWork,{code:'INTAKE_COMPILER_UNAVAILABLE'});
+  assert.equal(f.native.installJob().previousKept,true);
+  await f.native.close();
+});
+
+test('opening settings passes only the fixed keyboard pane to macOS',async t=>{
+  const f=await fixture(t);
+  f.native.run=async(command,args)=>{
+    assert.equal(command,'/usr/bin/open');
+    assert.match(args[0],/^x-apple\.systempreferences:com\.apple\.(Keyboard-Settings\.extension|preference\.keyboard)$/);
+    assert.equal(args.length,1);
+  };
+  assert.deepEqual(await f.native.openServicesSettings(),{opened:true,target:'keyboard'});
+  f.native.run=async()=>{throw Error('synthetic settings failure');};
+  await assert.rejects(f.native.openServicesSettings(),{code:'INTAKE_SETTINGS_OPEN_FAILED'});
 });
 
 test('same-title legacy markers and duplicate owned movie entries upgrade together',async t=>{

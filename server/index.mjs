@@ -351,7 +351,7 @@ const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStor
 if(process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1')void projectVideos.prepareDesktop();
 const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
 const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
-const intakeNative=new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')});
+const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
 app.disable("x-powered-by");
