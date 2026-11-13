@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import net from 'node:net';import assert from 'node:assert/strict';import {spawn} from 'node:child_process';import {chromium,expect} from '@playwright/test';import {randomUUID} from 'node:crypto';import {syntheticSource} from './helpers/storyboard-fixture.mjs';
 import { selectProjectInBar, projectInBar } from './helpers/path-bar.mjs';
-import { evidenceDir } from './helpers/artifacts.mjs';
-const root=path.resolve(process.env.STORYBOARD_TEST_ROOT||path.resolve(import.meta.dirname,'..')),evidence=evidenceDir('storyboard-db',process.env.STORYBOARD_UI_EVIDENCE);const temp=await fs.mkdtemp(path.join(os.tmpdir(),'storyboard-db-ui-'));
+import { builtDist, evidenceDir } from './helpers/artifacts.mjs';
+const root=path.resolve(process.env.STORYBOARD_TEST_ROOT||path.resolve(import.meta.dirname,'..')),dist=builtDist(root)/* 服务从这里的 dist 提供页面：缺构建时启动前就说明，也不留空证据目录 */,evidence=evidenceDir('storyboard-db',process.env.STORYBOARD_UI_EVIDENCE);const temp=await fs.mkdtemp(path.join(os.tmpdir(),'storyboard-db-ui-'));
 const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));const origin='http://127.0.0.1:'+port;
 let logs='',cookie,token,browser,page,passed=false;const checks=[],errors=[],external=[];
 const child=spawn(process.execPath,['server/index.mjs'],{cwd:root,env:{...process.env,NODE_ENV:'production',PORT:String(port),MEDIA_DATA_DIR:path.join(temp,'data'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_READONLY_FILES:'1',SHIGUANG_AUDIO_ANALYSIS:'0'},stdio:['ignore','pipe','pipe']});child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);const exited=new Promise(r=>child.once('exit',r));
