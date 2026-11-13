@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { canonical, digest, fault, idOK, nameKey } from '../project-assets/model.mjs';
 import { DEFAULT_DIMENSIONS, dimensionDTO, dimensionsInput, distinctIds, isRecord, isRevision, scoreChanges } from './model.mjs';
 import { attributeSchema } from './schema.mjs';
+import { AttributeAlignment } from './alignment.mjs';
 
 const conflict = (code, message, fields) => fault(message, 409, { code, ...fields });
 
@@ -17,6 +18,7 @@ export class ProjectAttributes {
 
   constructor(assets) {
     this.assets = assets;
+    this.alignment = new AttributeAlignment(this);
   }
 
   get db() { return this.assets.db; }
@@ -34,7 +36,10 @@ export class ProjectAttributes {
 
   write(projectId, fn) {
     if (this.assets.lib.migrating) throw fault('数据库正在迁移，请稍后保存人物属性', 423);
-    return this.assets.tx(() => fn(this.project(projectId, true)));
+    return this.assets.tx(() => {
+      this.assets.lockDirectory();
+      return fn(this.project(projectId, true));
+    });
   }
 
   config(projectId) {
@@ -48,7 +53,51 @@ export class ProjectAttributes {
     return { ...config, dimensions: config.dimensions.map(dimensionDTO) };
   }
 
-  getConfig(id) { return this.configDTO(this.config(this.project(id))); }
+  seriesConfig(seriesId) {
+    const row = this.db.prepare('SELECT revision,data_json FROM series_attribute_configs WHERE id=?').get(seriesId);
+    return row
+      ? { series_id: seriesId, revision: row.revision, ...JSON.parse(row.data_json) }
+      : { series_id: seriesId, revision: 0, source: 'default', updated_at: null, dimensions: DEFAULT_DIMENSIONS };
+  }
+
+  effectiveConfig(projectId, { seriesId, editSeries = false, seasonId = null } = {}) {
+    const membership = projectId && this.assets.lib.projectSeries?.membership(projectId);
+    const series_id = seriesId ?? (membership?.series_id || null);
+    const alignment = this.alignment.state(series_id);
+    const config_scope = seriesId || alignment.status === 'aligned' ? 'series' : 'project';
+    const config_owner_id = config_scope === 'series' ? series_id : projectId;
+    const config = config_scope === 'series' ? this.seriesConfig(series_id) : this.config(projectId);
+    const config_token = this.alignment.token('config', [
+      projectId, series_id, seasonId, membership?.revision ?? 0, alignment.revision,
+      config_scope, config_owner_id, config.revision,
+    ]);
+    return { ...config, project_id: projectId, series_id, config_scope, config_owner_id,
+      alignment_status: alignment.status, config_editable: !this.assets.lib.migrating && (config_scope === 'project' || editSeries), config_token };
+  }
+
+  assertConfigToken(config, token, required = true) {
+    if ((!required && token === undefined) || this.alignment.matchesToken(config.config_token, token)) return;
+    throw conflict('ATTRIBUTE_CONTEXT_STALE', '评分所属配置已变化，请重新读取', {
+      details: { project_id: config.project_id, series_id: config.series_id, config_scope: config.config_scope,
+        config_owner_id: config.config_owner_id, alignment_status: config.alignment_status, config_revision: config.revision },
+    });
+  }
+
+  assertProjectConfigWritable(config, input, source = 'user') {
+    if (config.config_scope === 'series') throw conflict('SERIES_MANAGED', '本集维度由全剧统一设置', {
+      details: { project_id: config.project_id, series_id: config.series_id, alignment_status: 'aligned',
+        config_path: '/api/project-assets/scopes/series/' + config.series_id + '/attribute-config' },
+    });
+    if (source === 'agent' && config.alignment_status === 'pending')
+      throw conflict('ATTRIBUTE_ALIGNMENT_REQUIRED', '请先统一该剧的人物属性维度', { details: { series_id: config.series_id } });
+    this.assertConfigToken(config, input.config_token, this.requiresProjectToken(config));
+  }
+
+  requiresProjectToken(config) {
+    return !!this.assets.lib.projectSeries?.membership(config.project_id)?.revision;
+  }
+
+  getConfig(id) { return this.alignment.read(() => this.configDTO(this.effectiveConfig(this.project(id)))); }
 
   asset(id, projectId, allowArchived = false) {
     if (!idOK(id)) throw fault('人物编号无效');
@@ -72,30 +121,31 @@ export class ProjectAttributes {
     return {
       asset_id: assetId, project_id: config.project_id, config_revision: config.revision,
       attribute_revision: record.revision, scores: record.scores,
+      config_scope: config.config_scope, series_id: config.series_id, config_token: config.config_token,
     };
   }
 
   getScores(id) {
-    return this.db.transaction(() => {
+    return this.alignment.read(() => {
       const head = this.assets.head(id);
       const projectId = this.project(head.project_id);
       const asset = this.requireAsset(id, projectId, true);
-      return this.scoresDTO(asset.id, this.config(projectId), this.record(asset.id));
-    })();
+      return this.scoresDTO(asset.id, this.effectiveConfig(projectId), this.record(asset.id));
+    });
   }
 
   compare(id, assetIds) {
     const ids = distinctIds(typeof assetIds === 'string' ? assetIds.split(',') : null, 3, '对比人物');
-    return this.db.transaction(() => {
+    return this.alignment.read(() => {
       const projectId = this.project(id);
-      const config = this.config(projectId);
+      const config = this.effectiveConfig(projectId);
       const items = ids.map(id => {
         const asset = this.requireAsset(id, projectId);
         const record = this.record(asset.id);
         return { asset_id: asset.id, attribute_revision: record.revision, scores: record.scores };
       });
-      return { config_revision: config.revision, items };
-    })();
+      return { config_revision: config.revision, config_scope: config.config_scope, series_id: config.series_id, config_token: config.config_token, items };
+    });
   }
 
   saveScores(projectId, assetId, record) {
@@ -116,7 +166,8 @@ export class ProjectAttributes {
     return this.write(input.project_id, projectId => {
       const asset = this.requireAsset(id, projectId);
       this.assets.generationLocks?.assertWritable(projectId);
-      const config = this.config(projectId), record = this.record(asset.id);
+      const config = this.effectiveConfig(projectId), record = this.record(asset.id);
+      this.assertConfigToken(config, input.config_token, this.requiresProjectToken(config));
       const current = this.scoresDTO(asset.id, config, record);
       expectConfig(config, input.expected_config_revision, current);
       if (record.revision !== input.expected_attribute_revision) {
@@ -155,7 +206,7 @@ export class ProjectAttributes {
         records.push({ ...row, removed: removed.map(item => item.dimension_id), scores });
       }
     }
-    const fingerprint = [config.project_id, config.revision, affected,
+    const fingerprint = [config.project_id, config.config_token, config.revision, affected,
       records.map(row => [row.id, row.revision, row.asset_revision, row.removed])];
     const token = createHmac('sha256', this.#previewKey).update(JSON.stringify(fingerprint)).digest('hex');
     return { token, affected, records };
@@ -164,7 +215,8 @@ export class ProjectAttributes {
   removalPreview(id, input) {
     const remove = distinctIds(input?.remove, 8, '待删除维度').sort();
     return this.write(id, projectId => {
-      const config = this.config(projectId);
+      const config = this.effectiveConfig(projectId);
+      this.assertProjectConfigWritable(config, input);
       expectConfig(config, input.expected_revision);
       const { token, affected } = this.removal(config, remove);
       return { token, config_revision: config.revision, affected };
@@ -181,7 +233,8 @@ export class ProjectAttributes {
         !/^[a-f0-9]{64}$/.test(confirmation.token))) throw fault('删除确认凭证无效');
     return this.write(id, projectId => {
       this.assets.generationLocks?.assertWritable(projectId);
-      const current = this.config(projectId);
+      const current = this.effectiveConfig(projectId);
+      this.assertProjectConfigWritable(current, input, source);
       expectConfig(current, input.expected_revision);
       if (source === 'agent') {
         const scores = this.db.prepare('SELECT data_json FROM project_character_attributes WHERE project_id=?').all(projectId);
@@ -235,7 +288,7 @@ export class ProjectAttributes {
       } else {
         this.db.prepare('UPDATE project_attribute_configs SET revision=?,data_json=? WHERE id=?').run(revision, json, projectId);
       }
-      return this.configDTO({ project_id: projectId, revision, ...data });
+      return this.configDTO(this.effectiveConfig(projectId));
     });
   }
 
@@ -243,7 +296,7 @@ export class ProjectAttributes {
     const scores = scoreChanges(input?.scores, true);
     if (!idOK(input.request_id) || !isRevision(input.config_revision)) throw fault('评分请求编号或配置修订号无效');
     const request_id = input.request_id.toLowerCase();
-    const requestHash = digest({ config_revision: input.config_revision, scores });
+    const requestHash = digest({ config_revision: input.config_revision, ...(input.config_token !== undefined && {config_token: input.config_token}), scores });
     return this.write(id, projectId => {
       const key = digest([projectId, request_id]);
       const prior = this.db.prepare('SELECT data_json FROM project_attribute_requests WHERE id=? AND project_id=?').get(key, projectId);
@@ -254,7 +307,8 @@ export class ProjectAttributes {
       }
 
       this.assets.generationLocks?.assertWritable(projectId);
-      const config = this.config(projectId);
+      const config = this.effectiveConfig(projectId);
+      this.assertConfigToken(config, input.config_token, this.requiresProjectToken(config));
       expectConfig(config, input.config_revision);
       const active = new Set(config.dimensions.map(dimension => dimension.id));
       const records = new Map();

@@ -60,15 +60,16 @@ ${example({ asset: '<基于读取结果修改后的完整 asset 对象>', expect
 ## 人物属性打分
 
 1. 先读取 \`GET ${projectAssets}/script\`、项目规则及人物列表。需要核对人物背景时，读取人物完整资料。只给剧本或资料有依据的维度打分。
-2. 读取 \`GET ${projectAssets}/attribute-config\`。使用返回的维度 ID 和评分依据，按该维度的两端含义打整数分。五档区间从低到高为 −100～−60、−59～−20、−19～19、20～59、60～100。0 是有效分数。没有依据时跳过该格。用户授权初始化且项目尚无评分记录时，可调用 \`POST ${projectAssets}/attribute-config/initialize\`，提交 \`expected_revision\` 和 3–8 个 \`dimensions\`。沿用的维度传现有 ID，新维度传 \`id:null\`。已经评分的项目若需改维度，请将提案交给用户核对。
+2. 读取 \`GET ${projectAssets}/attribute-config\`。读取 \`config_scope\`、\`alignment_status\` 和 \`config_token\`。使用返回的维度 ID 和评分依据，按该维度的两端含义打整数分。全剧已统一时，本集自有人物仍走本集评分接口，用全剧维度 ID；项目链接不授予修改全剧底分或设置的权限。五档区间从低到高为 −100～−60、−59～−20、−19～19、20～59、60～100。0 是有效分数。没有依据时跳过该格。仅独立项目经用户授权、尚无评分记录时，可调用 \`POST ${projectAssets}/attribute-config/initialize\`，提交 \`expected_revision\`、\`config_token\` 和 3–8 个 \`dimensions\`。沿用的维度传现有 ID，新维度传 \`id:null\`。已经评分的项目若需改维度，请将提案交给用户核对。
 3. 用 \`GET ${assets}/<asset_id>/attributes\` 查看已有评分。\`source:manual\` 包含人工清空，应跳过。用户授权打分后，用 \`POST ${projectAssets}/attribute-scores\` 提交，每次 1–200 格，每格附最多 200 字的依据。
-4. 回执包含 \`applied\` 和 \`skipped\`。\`MANUAL_PRESERVED\` 表示人工记录已保留，\`ASSET_UNAVAILABLE\` 表示当前项目中没有该可评分人物，\`DIMENSION_UNAVAILABLE\` 表示该维度不可用。遇到 \`CONFIG_STALE\` 时重新读取配置再评估。请求结果未知时，用相同 \`request_id\` 和相同请求内容取回原回执。完成后读取人物属性核对。
+4. 回执包含 \`applied\` 和 \`skipped\`。\`MANUAL_PRESERVED\` 表示人工记录已保留，\`ASSET_UNAVAILABLE\` 表示当前项目中没有该可评分人物，\`DIMENSION_UNAVAILABLE\` 表示该维度不可用。遇到 \`CONFIG_STALE\` 或 \`ATTRIBUTE_CONTEXT_STALE\` 时重新读取配置再评估。遇到 \`SERIES_MANAGED\` 或 \`ATTRIBUTE_ALIGNMENT_REQUIRED\` 时，把配置交给用户在全剧设置处理。请求结果未知时，用相同 \`request_id\` 和相同请求内容取回原回执。完成后读取人物属性核对。
 
 打分请求示例（替换为本次读取的 ID、版本及依据）：
 
 ${example({
   request_id: '<新生成的 UUID>',
   config_revision: 0,
+  config_token: '<本次读取的配置凭证>',
   scores: [{ asset_id: '<人物 ID>', dimension_id: '<维度 ID>', value: 30, reason: '对应剧本或人物资料中的依据' }],
 })}
 

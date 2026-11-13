@@ -72,7 +72,7 @@ test('promotion retains identity, child rows, history and linked shots while mig
   const looks = children('creative_looks'), bindings = children('creative_image_bindings');
   const [zero, unscored] = DEFAULT_DIMENSIONS.map(row => row.id);
   const beforeScores = f.store.attributes.patchScores(asset.id, {
-    project_id: f.origin.id, expected_config_revision: 0, expected_attribute_revision: 0,
+    project_id: f.origin.id, config_token:f.store.attributes.getConfig(f.origin.id).config_token, expected_config_revision: 0, expected_attribute_revision: 0,
     changes: [{ dimension_id: zero, value: 0 }, { dimension_id: unscored, value: null }],
   }).scores;
   const preview = f.promotion(asset.id);
@@ -121,14 +121,17 @@ test('promotion blocks same-kind names, incompatible saved dimensions, and AI pr
   const [changed, ai, missing] = DEFAULT_DIMENSIONS.map(row => row.id);
   const config = DEFAULT_DIMENSIONS.map((row, i) => i === 0 ? { ...row, criterion: '定义已变化' } : row);
   config.splice(2, 1);
+  // Legacy episode dimensions still differ until explicitly aligned.
+  f.db.prepare('DELETE FROM series_attribute_alignment WHERE id=?').run(f.series.id);
   f.writes.patchConfig('series', f.series.id, {
     ...f.context('series', f.series.id), request_id: randomUUID(), expected_revision: 0, dimensions: config,
   });
   f.store.attributes.patchScores(asset.id, {
-    project_id: f.origin.id, expected_config_revision: 0, expected_attribute_revision: 0,
+    project_id: f.origin.id, config_token:f.store.attributes.getConfig(f.origin.id).config_token, expected_config_revision: 0, expected_attribute_revision: 0,
     changes: [{ dimension_id: changed, value: 0 }, { dimension_id: missing, value: null }],
   });
   f.store.attributes.scoreBatch(f.origin.id, {
+    config_token:f.store.attributes.getConfig(f.origin.id).config_token,
     request_id: randomUUID(), config_revision: 0, scores: [{ asset_id: asset.id, dimension_id: ai, value: 23, reason: '合成原因' }],
   });
   const preview = f.promotion(asset.id);
@@ -165,7 +168,7 @@ test('promotion expires and rechecks sibling membership, name and source scores 
     { code: 'ASSET_IMPACT_CHANGED' });
   f.store.archive(duplicate.id, true, duplicate.revision);
   const staleScore = f.promotion(asset.id);
-  f.store.attributes.patchScores(asset.id, { project_id: f.origin.id, expected_config_revision: 0, expected_attribute_revision: 0,
+  f.store.attributes.patchScores(asset.id, { project_id: f.origin.id, config_token:f.store.attributes.getConfig(f.origin.id).config_token, expected_config_revision: 0, expected_attribute_revision: 0,
     changes: [{ dimension_id: DEFAULT_DIMENSIONS[0].id, value: 0 }] });
   assert.throws(() => f.impact.commitPromotion('episode', f.origin.id, asset.id, f.request('episode', f.origin.id, staleScore)),
     { code: 'ASSET_IMPACT_CHANGED' });
@@ -292,6 +295,7 @@ test('whole archive removes inherited overrides, leaves historical versions and 
   f.override('season', f.season.id, asset.id, { key: 'default_look' }, first.id);
   const dimension = DEFAULT_DIMENSIONS[0].id;
   const base = f.writes.patchScores('series', f.series.id, asset.id, {
+    config_token:f.store.scoped.attributeConfig('series', f.series.id).config_token,
     ...f.context('series', f.series.id), request_id: randomUUID(), expected_config_revision: 0, expected_attribute_revision: 0,
     changes: [{ dimension_id: dimension, value: 0 }],
   }).scores[dimension];

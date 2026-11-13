@@ -171,8 +171,11 @@ export class ProjectSeries {
   }
 
   request(id) {
-    const row = this.db.prepare("SELECT result_json FROM project_series_requests WHERE id=?").get(identifier(id, "请求编号"));
-    return row ? { found: true, result: JSON.parse(row.result_json) } : { found: false };
+    const row = this.db.prepare("SELECT kind,result_json FROM project_series_requests WHERE id=?").get(identifier(id, "请求编号"));
+    if (!row) return { found: false };
+    const result = JSON.parse(row.result_json);
+    if (row.kind === "attribute-alignment" && !this.db.prepare("SELECT id FROM project_series WHERE id=?").get(result.series_id)) return { found: false };
+    return { found: true, result };
   }
 
   withReceipt(kind, target, input, action) {
@@ -181,7 +184,7 @@ export class ProjectSeries {
     return this.transaction(() => {
       const prior = this.db.prepare("SELECT request_hash,result_json FROM project_series_requests WHERE id=?").get(id);
       if (prior) {
-        if (prior.request_hash !== hash) throw new SeriesError("SERIES_REQUEST_CONFLICT", "请求编号已用于不同操作");
+        if (prior.request_hash !== hash) throw new SeriesError(kind === "attribute-alignment" ? "REQUEST_ID_CONFLICT" : "SERIES_REQUEST_CONFLICT", "请求编号已用于不同操作");
         return JSON.parse(prior.result_json);
       }
       const result = action(id);
@@ -196,12 +199,15 @@ export class ProjectSeries {
     if (existing && existing.id !== id) throw new SeriesError("SERIES_NAME_CONFLICT", "剧名已存在，请换一个名称");
   }
 
+  get attributeAlignment() { return this.projects.lib.projectAttributes?.alignment; }
+
   insertSeries(input) {
     const name = label(input.name, "剧名"), software = editor(input.software ?? "");
     this.assertSeriesNameAvailable(name);
     const id = randomUUID(), now = Date.now();
     this.db.prepare("INSERT INTO project_series (id,name,name_key,software,revision,max_season_no,max_root_episode_no,created_at,updated_at) VALUES (?,?,?,?,1,0,0,?,?)")
       .run(id, name, nameKey(name), software, now, now);
+    this.attributeAlignment?.markAligned(id);
     return id;
   }
 
@@ -230,6 +236,7 @@ export class ProjectSeries {
       }
       this.projects.lib.creativeAssetStore?.scopedWrites.assertSeriesRemovable(id);
       this.db.prepare("DELETE FROM project_series_seasons WHERE series_id=?").run(id);
+      if (this.attributeAlignment) this.db.prepare("DELETE FROM series_attribute_alignment WHERE id=?").run(id);
       this.db.prepare("DELETE FROM project_series WHERE id=?").run(id);
       return { removed: true };
     });
@@ -351,8 +358,8 @@ export class ProjectSeries {
     const seen = new Set(), conflicts = [], changes = [];
     for (const item of items) {
       const id = identifier(item?.project_id, "项目编号");
-      if (seen.has(id)) invalid("同一项目不能重复选择");
-      seen.add(id);
+      if (seen.has(id.toLowerCase())) invalid("同一项目不能重复选择");
+      seen.add(id.toLowerCase());
       const expected = number(item.expected_revision, "归组版本", 0);
       if (item.episode_no !== undefined) {
         if (target.series_id === null) invalid("移出剧时不填写集号");
@@ -424,8 +431,34 @@ export class ProjectSeries {
     for (const { project_id, after } of changes) this.writeMembership(project_id, after);
   }
 
+  attributeMove(input, changes) {
+    const { target, items, attribute_choices } = input;
+    return this.attributeAlignment?.movePlan([{ group_id: "move", target: this.target(target), changes }], attribute_choices, { target, items });
+  }
+
+  movementPreview(result, attributes) {
+    if (!attributes) return { ...result, attribute_plan: null };
+    const conflicts = [...result.conflicts, ...attributes.blockers];
+    return { ...result, conflicts, ready: conflicts.length === 0 && attributes.ready, attribute_plan: attributes.view };
+  }
+
+  applyAttributeMove(attributes, requestId, created, changes) {
+    if (!attributes) return [];
+    try {
+      return this.attributeAlignment.applyMoves(attributes, requestId, created);
+    } catch (error) {
+      const change = changes.find(row => row.project_id === error.project_id);
+      if (change?.group_id && ["PROJECT_NOT_FOUND", "STORYBOARD_GENERATION_LOCKED"].includes(error.code))
+        throw organizeConflict([{ group_id: change.group_id, project_id: change.project_id, code: error.code }]);
+      throw error;
+    }
+  }
+
   previewMove(input) {
-    return this.transaction(() => this.planMove(input));
+    return this.transaction(() => {
+      const result = this.planMove(input);
+      return this.movementPreview(result, result.ready ? this.attributeMove(input, result.changes) : null);
+    });
   }
 
   move(input) {
@@ -437,44 +470,82 @@ export class ProjectSeries {
         const status = code === "PROJECT_NOT_FOUND" ? 404 : code === "INVALID_SERIES_INPUT" ? 400 : 409;
         throw new SeriesError(code, "部分项目无法移动，请核对冲突后重试", status, { conflicts });
       }
+      const attributes = this.attributeAlignment?.confirmationPlan(() => this.attributeMove(input, changes), input.attribute_preview_token);
+      if (attributes) this.attributeAlignment.assertMove(attributes, input);
+      const historyIds = this.applyAttributeMove(attributes, requestId, undefined, changes);
       this.applyChanges(changes);
-      return { request_id: requestId, changes, can_undo: true };
+      const can_undo = attributes?.view.can_undo ?? true;
+      return { request_id: requestId, changes, can_undo,
+        ...(!can_undo && { attribute_history_ids: historyIds, undo_disabled_reason: attributes.view.undo_disabled_reason }) };
+    });
+  }
+
+  planOrganize(groups) {
+    validateOrganizeGroups(groups);
+    const changes = [], conflicts = [], attributeGroups = [], newNames = new Set();
+    for (const { group_id, target, items } of groups) {
+      let position;
+      try {
+        if (target.new_series) {
+          const name = label(target.new_series.name, "剧名"), key = nameKey(name);
+          this.assertSeriesNameAvailable(name);
+          if (newNames.has(key)) throw new SeriesError("SERIES_NAME_CONFLICT", "剧名已存在，请换一个名称");
+          newNames.add(key);
+          // Internal placeholders cannot match a real series ID; IDs are allocated only on confirmation.
+          position = { series_id: "new:" + group_id, season_id: null };
+        } else {
+          const series = this.series(target.series_id);
+          const season = target.season_id === null ? null : this.season(series.id, target.season_id);
+          position = { series_id: series.id, season_id: season?.id ?? null };
+        }
+      } catch (error) {
+        if (!(error instanceof SeriesError) || !["SERIES_NAME_CONFLICT", "SERIES_NOT_FOUND", "SEASON_NOT_FOUND"].includes(error.code)) throw error;
+        const { series_id, season_id } = target;
+        conflicts.push({ group_id, code: error.code, ...(series_id && { series_id, season_id }) });
+        continue;
+      }
+      const planned = this.planMembership(position, items, true);
+      const groupChanges = planned.changes.map(change => ({ group_id, ...change }));
+      changes.push(...groupChanges);
+      attributeGroups.push({ group_id, target, changes: groupChanges });
+      conflicts.push(...planned.conflicts.map(conflict => ({ group_id, ...conflict })));
+    }
+    const groupByProject = new Map(changes.map(change => [change.project_id, change.group_id]));
+    const newGroups = new Set(attributeGroups.filter(group => group.target.new_series).map(group => group.group_id));
+    const expose = change => newGroups.has(change.group_id) ? { ...change, after: { ...change.after, series_id: null } } : change;
+    conflicts.push(...this.numberConflicts(changes).map(conflict => {
+      const group_id = groupByProject.get(conflict.project_id);
+      return { group_id, ...conflict, ...(newGroups.has(group_id) && { series_id: null }) };
+    }));
+    return { changes: changes.map(expose), conflicts, attributeGroups };
+  }
+
+  previewOrganize(input) {
+    return this.transaction(() => {
+      const { changes, conflicts, attributeGroups } = this.planOrganize(input.groups);
+      const attributes = conflicts.length ? null : this.attributeAlignment?.movePlan(attributeGroups, input.attribute_choices, { groups: input.groups });
+      return this.movementPreview({ ready: conflicts.length === 0, changes, conflicts }, attributes);
     });
   }
 
   organize(input) {
     return this.withReceipt("organize", null, input, requestId => {
-      validateOrganizeGroups(input.groups);
-      const changes = [], conflicts = [], created = [];
-      for (const { group_id, target, items } of input.groups) {
-        let position;
-        try {
-          if (target.new_series) {
-            const id = this.insertSeries(target.new_series);
-            created.push({ group_id, id });
-            position = { series_id: id, season_id: null };
-          } else {
-            const series = this.series(target.series_id);
-            const season = target.season_id === null ? null : this.season(series.id, target.season_id);
-            position = { series_id: series.id, season_id: season?.id ?? null };
-          }
-        } catch (error) {
-          if (!(error instanceof SeriesError) || !["SERIES_NAME_CONFLICT", "SERIES_NOT_FOUND", "SEASON_NOT_FOUND"].includes(error.code)) throw error;
-          const { series_id, season_id } = target;
-          conflicts.push({ group_id, code: error.code, ...(series_id && { series_id, season_id }) });
-          continue;
-        }
-        const planned = this.planMembership(position, items, true);
-        changes.push(...planned.changes.map(change => ({ group_id, ...change })));
-        conflicts.push(...planned.conflicts.map(conflict => ({ group_id, ...conflict })));
+      const plan = this.planOrganize(input.groups);
+      if (plan.conflicts.length) throw organizeConflict(plan.conflicts);
+      const attributes = this.attributeAlignment?.confirmationPlan(() =>
+        this.attributeAlignment.movePlan(plan.attributeGroups, input.attribute_choices, { groups: input.groups }), input.attribute_preview_token);
+      if (attributes) this.attributeAlignment.assertMove(attributes, input);
+      const created = new Map();
+      for (const { group_id, target } of input.groups) {
+        if (target.new_series) created.set(group_id, this.insertSeries(target.new_series));
       }
-      const groupByProject = new Map(changes.map(change => [change.project_id, change.group_id]));
-      conflicts.push(...this.numberConflicts(changes).map(conflict => ({ group_id: groupByProject.get(conflict.project_id), ...conflict })));
-      if (conflicts.length) throw organizeConflict(conflicts);
-
+      const changes = plan.changes.map(change => created.has(change.group_id)
+        ? { ...change, after: { ...change.after, series_id: created.get(change.group_id) } } : change);
+      const historyIds = this.applyAttributeMove(attributes, requestId, created, changes);
       this.applyChanges(changes);
-      const created_series = created.map(({ group_id, id }) => ({ group_id, series: seriesView(this.series(id), []) }));
-      return { request_id: requestId, created_series, changes };
+      const created_series = [...created].map(([group_id, id]) => ({ group_id, series: seriesView(this.series(id), []) }));
+      return { request_id: requestId, created_series, changes,
+        ...(historyIds.length && { attribute_history_ids: historyIds, can_undo: false, undo_disabled_reason: attributes.view.undo_disabled_reason }) };
     });
   }
 
@@ -484,7 +555,7 @@ export class ProjectSeries {
       const original = this.db.prepare("SELECT result_json,kind FROM project_series_requests WHERE id=?").get(originalId);
       if (original?.kind !== "move") throw new SeriesError("SERIES_REQUEST_NOT_FOUND", "找不到可撤销的移动记录", 404);
       const receipt = JSON.parse(original.result_json);
-      if (!receipt.can_undo) throw new SeriesError("SERIES_UNDO_CONFLICT", "这批移动已撤销");
+      if (!receipt.can_undo) throw new SeriesError("SERIES_UNDO_CONFLICT", receipt.undo_disabled_reason ? "维度归属已变化，请预览反向移动" : "这批移动已撤销");
       const conflicts = [], changes = [];
       for (const change of receipt.changes) {
         const { project_id, before, after } = change;
@@ -504,6 +575,12 @@ export class ProjectSeries {
       }
       conflicts.push(...this.numberConflicts(changes));
       if (conflicts.length) throw new SeriesError("SERIES_UNDO_CONFLICT", "项目或原位置已有变化，未撤销本批移动", 409, { conflicts });
+      if (this.attributeAlignment && changes.some(change => change.before.series_id !== change.after.series_id &&
+          (this.attributeAlignment.changeMode(change) === "copy_to_standalone" ||
+            change.after.series_id !== null && (change.before.series_id !== null ||
+              this.attributeAlignment.state(change.after.series_id).status !== "pending")))) {
+        throw new SeriesError("SERIES_UNDO_CONFLICT", "维度归属会发生变化，请预览反向移动");
+      }
       this.applyChanges(changes);
       const updated = { ...receipt, can_undo: false, undone_by: requestId };
       this.db.prepare("UPDATE project_series_requests SET result_json=? WHERE id=?").run(JSON.stringify(updated), originalId);

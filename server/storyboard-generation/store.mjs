@@ -23,17 +23,18 @@ export class GenerationStore{
  assetStamp(projectId){
   const member=this.storyboards.lib.projectSeries?.membership(projectId);
   const local=this.db.prepare('SELECT id,revision,name,archived_at FROM creative_assets WHERE project_id=? ORDER BY id').all(projectId);
-  if(!member?.series_id)return digest(local);
+  const localConfig=this.db.prepare('SELECT revision FROM project_attribute_configs WHERE id=?').get(projectId)??null;
+  const localScores=this.db.prepare('SELECT id,revision FROM project_character_attributes WHERE project_id=? ORDER BY id').all(projectId);
+  if(!member?.series_id)return digest({member,local,localConfig,localScores});
   const shared=this.db.prepare("SELECT id,revision,name,archived_at FROM creative_assets WHERE owner_type='series' AND owner_id=? ORDER BY id").all(member.series_id);
   const overrides=this.db.prepare(`SELECT id,revision,value_json FROM creative_asset_overrides WHERE
     (scope_type='episode' AND scope_id=?) OR (scope_type='season' AND scope_id=?) ORDER BY id`).all(projectId,member.season_id);
-  const config=this.db.prepare('SELECT revision FROM series_attribute_configs WHERE id=?').get(member.series_id);
+  const config=this.db.prepare('SELECT revision FROM series_attribute_configs WHERE id=?').get(member.series_id)??null;
+  const alignment=this.storyboards.assets.attributes.alignment.state(member.series_id);
   const scores=this.db.prepare('SELECT id,revision FROM series_character_attributes WHERE series_id=? ORDER BY id').all(member.series_id);
-  const localConfig=this.db.prepare('SELECT revision FROM project_attribute_configs WHERE id=?').get(projectId);
-  const localScores=this.db.prepare('SELECT id,revision FROM project_character_attributes WHERE project_id=? ORDER BY id').all(projectId);
   const series=this.db.prepare('SELECT name,revision FROM project_series WHERE id=?').get(member.series_id);
   const season=member.season_id?this.db.prepare('SELECT label,season_no,revision FROM project_series_seasons WHERE id=?').get(member.season_id):null;
-  return digest({member,series,season,local,shared,overrides,config,scores,localConfig,localScores});
+  return digest({member,series,season,local,shared,overrides,config,alignment,scores,localConfig,localScores});
  }
  admit(id,snapshot,inputHash,deadlineAt){return this.tx(()=>{this.storyboards.assets.lockDirectory();this.storyboards.project(snapshot.project.id,true);const existing=this.db.prepare('SELECT * FROM sb_generation_tasks WHERE id=?').get(id);if(existing){if(existing.input_hash!==inputHash)throw error('REQUEST_ID_CONFLICT','请求编号已用于不同生成配置');return{row:existing,repeated:true};}this.assertWritable(snapshot.project.id);this.storyboards.expected(this.storyboards.head(snapshot.project.id),snapshot.expected_revision);if(this.assetStamp(snapshot.project.id)!==snapshot.assetStamp)throw error('PROJECT_ASSETS_CHANGED','项目资料已更新，请重新检查后发送');
   if(this.db.prepare('SELECT id FROM storyboard_import_requests WHERE id=?').get(id))throw error('REQUEST_ID_CONFLICT','请求编号已用于其他分镜初始化');

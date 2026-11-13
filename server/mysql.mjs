@@ -365,7 +365,7 @@ export class MysqlStorage {
           if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(VIDEO_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
-          if (Object.hasOwn(ATTRIBUTE_TABLES, t)) return `\`${col.name}\` ${type} NOT NULL`;
+          if (Object.hasOwn(ATTRIBUTE_TABLES, t)) return `\`${col.name}\` ${type}${ATTRIBUTE_TABLES[t][col.name] === "optional_project" ? "" : " NOT NULL"}`;
           if (Object.hasOwn(SERIES_TABLES, t)) return `\`${col.name}\` ${type}${col.notnull ? " NOT NULL" : " NULL"}`;
           if(Object.hasOwn(SCRIPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(CREATIVE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${t==='creative_assets'&&col.name==='archived_at'?" DEFAULT 0":""}`;

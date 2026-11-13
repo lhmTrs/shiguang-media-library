@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { StoryboardDatabase } from '../server/storyboard/database.mjs';
 import { ProjectAssets } from '../server/project-assets/store.mjs';
-import { addImage, addLook, creativeFixture } from './helpers/creative-fixture.mjs';
+import { addImage, addLook, creativeFixture, moveWithAttributePlan } from './helpers/creative-fixture.mjs';
 import { emptyShot } from '../server/storyboard/shared/model.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
 
@@ -108,7 +108,7 @@ test('评分拒绝共享场景；已移出该剧的集不能再从旧请求取�
   const reused = f.writes.create('episode', f.episode.id, request);
   assert.equal(reused.asset.id, scene.asset.id);
   assert.equal(f.writes.request(request.request_id).found, true);
-  f.directory.move({ request_id: randomUUID(), target: { series_id: null, season_id: null },
+  moveWithAttributePlan(f.directory, { request_id: randomUUID(), target: { series_id: null, season_id: null },
     items: [{ project_id: f.episode.id, expected_revision: episodeContext.membership_revision }] });
   assert.deepEqual(f.writes.request(request.request_id), { found: false });
   assert.throws(() => f.writes.create('episode', f.episode.id, request), { status: 404 });
@@ -232,11 +232,11 @@ test('全剧维度移除需要核对剧级评分与本集覆盖，AI 保留人�
   const config = f.scoped.attributeConfig('series', f.series.id);
   const axis = config.dimensions[0].id;
   const manual = f.writes.patchScores('series', f.series.id, asset.id, {
-    request_id: randomUUID(), context_token, expected_config_revision:0, expected_attribute_revision:0,
+    request_id: randomUUID(), context_token, config_token:config.config_token, expected_config_revision:0, expected_attribute_revision:0,
     changes:[{dimension_id:axis, value:0}],
   });
   const ai = f.writes.scoreBatch('series', f.series.id, {
-    request_id: randomUUID(), context_token, config_revision:0,
+    request_id: randomUUID(), context_token, config_token:config.config_token, config_revision:0,
     scores:[{asset_id:asset.id, dimension_id:axis, value:30, reason:'合成依据'}],
   });
   assert.equal(manual.scores[axis].value, 0);
@@ -246,9 +246,9 @@ test('全剧维度移除需要核对剧级评分与本集覆盖，AI 保留人�
     request_id:randomUUID(), context_token:detail.context_token, write_token:detail.effective.attribute_scores[axis].write_token,
     action:'set', field:{key:'attribute_score', dimension_id:axis}, value:{value:null},
   });
-  const edit = { request_id:randomUUID(), context_token, expected_revision:0, dimensions:config.dimensions.slice(1) };
+  const edit = { request_id:randomUUID(), context_token, config_token:config.config_token, expected_revision:0, dimensions:config.dimensions.slice(1) };
   assert.throws(() => f.writes.patchConfig('series', f.series.id, edit), {code:'DIMENSION_REMOVAL_CONFIRM'});
-  const preview = f.writes.configRemovalPreview('series', f.series.id, {context_token, expected_revision:0, remove:[axis]});
+  const preview = f.writes.configRemovalPreview('series', f.series.id, {context_token, config_token:config.config_token, expected_revision:0, remove:[axis]});
   assert.equal(preview.affected[0].episode_overrides, 1);
   assert.equal(preview.affected[0].scored_assets, 1);
   const saved = f.writes.patchConfig('series', f.series.id, {...edit, removal_confirmation:{token:preview.token}});

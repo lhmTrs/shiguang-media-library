@@ -2,7 +2,7 @@ import { canonical, fault, idOK, nameKey } from "../project-assets/model.mjs";
 import { SERIES_TABLES } from "./schema.mjs";
 
 const tables = Object.keys(SERIES_TABLES).filter(table => table !== "project_series_lock");
-const requestKinds = new Set(["create-series", "create-season", "create-episode", "move", "undo-move", "reorder-episodes", "reorder-seasons", "organize"]);
+const requestKinds = new Set(["create-series", "create-season", "create-episode", "move", "undo-move", "reorder-episodes", "reorder-seasons", "organize", "attribute-alignment"]);
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min && value < Number.MAX_SAFE_INTEGER;
 const validName = value => typeof value === "string" && value.length > 0 && value.length <= 120 && value === value.trim() && !/[\x00-\x1f\x7f]/.test(value);
 const validTimes = row => integer(row.created_at) && integer(row.updated_at, row.created_at);
@@ -21,8 +21,15 @@ const groupIdValid = value => typeof value === "string" && value.trim().length >
 const changeValid = change => idOK(change.project_id) && positionValid(change.before) && positionValid(change.after) &&
   change.after.revision === change.before.revision + 1;
 
+const attributeMoveFields = ["can_undo", "attribute_history_ids", "undo_disabled_reason"];
+const validAttributeMove = result => result.can_undo === false && result.undo_disabled_reason === "ATTRIBUTE_CONFIGURATION_CHANGED" &&
+  Array.isArray(result.attribute_history_ids) && result.attribute_history_ids.length > 0 &&
+  result.attribute_history_ids.length <= 200 && result.attribute_history_ids.every(idOK) &&
+  new Set(result.attribute_history_ids).size === result.attribute_history_ids.length;
+
 function validOrganizeReceipt(result) {
-  if (!sameKeys(result, ["request_id", "created_series", "changes"]) || !Array.isArray(result.created_series) ||
+  const baseFields = ["request_id", "created_series", "changes"];
+  if (!(sameKeys(result, baseFields) || sameKeys(result, [...baseFields, ...attributeMoveFields]) && validAttributeMove(result)) || !Array.isArray(result.created_series) ||
       !Array.isArray(result.changes) || !result.changes.length || result.changes.length > 200 ||
       result.created_series.length > result.changes.length) return false;
   const targets = new Map(), projects = new Set(), createdGroups = new Set(), createdIds = new Set();
@@ -53,9 +60,17 @@ function validReceipt(row) {
   if (result.request_id !== row.id) return false;
   if (row.kind === "create-episode") return idOK(result.project?.id);
   if (row.kind === "reorder-seasons") return Array.isArray(result.seasons) && result.seasons.length === 2 && result.seasons.every(season => idOK(season?.id));
+  if (row.kind === "attribute-alignment") return sameKeys(result, ["request_id","kind","series_id","alignment_status",
+    "alignment_revision","config_revision","history_id","episodes_updated","scores_remapped","scores_retained_in_history","can_undo"]) &&
+    result.kind === "attribute_alignment" && idOK(result.series_id) && idOK(result.history_id) &&
+    result.alignment_status === "aligned" && integer(result.alignment_revision, 1) && result.can_undo === false &&
+    ["config_revision","episodes_updated","scores_remapped","scores_retained_in_history"].every(key => integer(result[key]));
   if (row.kind === "organize") return validOrganizeReceipt(result);
   if (row.kind === "move") {
-    if (result.can_undo !== true && !(result.can_undo === false && idOK(result.undone_by))) return false;
+    const baseFields = ["request_id", "changes"];
+    if (!(sameKeys(result, [...baseFields, ...attributeMoveFields]) && validAttributeMove(result) ||
+        sameKeys(result, [...baseFields, "can_undo", "undone_by"]) && result.can_undo === false && idOK(result.undone_by) ||
+        sameKeys(result, [...baseFields, "can_undo"]) && result.can_undo === true)) return false;
   } else if (result.can_undo !== false || row.kind === "undo-move" && !idOK(result.undo_of)) return false;
   if (!Array.isArray(result.changes) || !result.changes.length || result.changes.length > 200) return false;
   const seen = new Set();
