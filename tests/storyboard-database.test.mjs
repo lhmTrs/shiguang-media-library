@@ -52,6 +52,7 @@ test('归档0/时间戳唯一、同名多归档、活动冲突恢复、旧schema
  const c=await f.store.create({project_id:f.a.id,kind:'character',name:'同名'});assert.equal(c.archived_at,0);assert.throws(()=>f.store.archive(a.id,false,a.revision),/名称已存在/);
  // Reproduce the previous nullable column + three-column unique constraint.
  const columns=f.db.prepare('PRAGMA table_info(creative_assets)').all().map(c=>c.name).filter(name=>!['owner_type','owner_id'].includes(name));
+ f.db.prepare('DELETE FROM creative_asset_versions WHERE asset_id<>?').run(c.id);
  f.db.prepare('DELETE FROM creative_assets WHERE id<>?').run(c.id); f.db.exec('ALTER TABLE creative_assets RENAME TO legacy_assets');
  const sql=f.db.prepare("SELECT sql FROM sqlite_master WHERE name='legacy_assets'").get().sql.replace('legacy_assets','creative_assets').replace(/,`owner_type` TEXT NOT NULL,`owner_id` TEXT NOT NULL/,'').replace(/archived_at` INTEGER NOT NULL DEFAULT 0/,'archived_at` INTEGER').replace('CONSTRAINT creative_assets_name_owner UNIQUE(owner_type,owner_id,kind,name_key,archived_at)','UNIQUE(project_id,kind,name_key)');f.db.exec(sql);
  f.db.exec(`INSERT INTO creative_assets(${columns.join(',')}) SELECT ${columns.map(k=>k==='archived_at'?'NULL':k).join(',')} FROM legacy_assets`);
