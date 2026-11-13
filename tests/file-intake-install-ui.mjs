@@ -12,10 +12,17 @@ const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-install-ui-')));
 const evidence = path.resolve(process.env.FILE_INTAKE_INSTALL_EVIDENCE || path.join(temp, 'evidence')); await fs.mkdir(evidence, {recursive: true});
 const checks = [], posts = [], errors = []; let server, browser, page, origin, passed = false;
-const fixture = {status: null, settings: 'ok', next: null, sequence: 0};
+const fixture = {status: null, settings: 'ok', next: null, sequence: 0, post: 'normal', hold: null};
+const within = (promise, ms, label) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(Error(label)), ms))]);
+/** 留住下一次匹配的读取：按请求到达时的状态拍快照，等 release() 后才返回（模拟迟到的旧读数）。 */
+function holdNext(endpoint) {
+  let release, arrived; const gate = new Promise(r => release = r), seen = new Promise(r => arrived = r);
+  const hold = {endpoint, gate, arrived, done: null}; fixture.hold = hold;
+  return {seen: within(seen, 12000, '被截住的 ' + endpoint + ' 读取一直没有发出'), release: () => release(), get done() { return within(hold.done ?? Promise.resolve(), 8000, '被截住的 ' + endpoint + ' 读取放行后没有送达'); }};
+}
 function fresh() {
   fixture.status = {supported: true, installed: true, upgradeNeeded: false, canTrash: true, activeCount: 0, needsAttention: 0, latestCompletion: null, installJob: null};
-  fixture.settings = 'ok'; fixture.next = null; posts.length = 0;
+  fixture.settings = 'ok'; fixture.next = null; fixture.post = 'normal'; fixture.hold = null; posts.length = 0;
 }
 /** 新建一个安装任务；next 决定它的初始形态（默认立即完成）。 */
 function startJob() {
@@ -29,11 +36,20 @@ async function routeApi(route) {
   const req = route.request(), url = new URL(req.url()), method = req.method(), endpoint = url.pathname.replace('/api/file-intake', '');
   const respond = (value, status = 200) => route.fulfill({status, json: structuredClone(value)});
   if (method === 'POST') posts.push(endpoint);
+  const hold = fixture.hold;
+  if (hold && hold.endpoint === endpoint && method === 'GET' && !hold.taken) {
+    hold.taken = true; const snapshot = structuredClone(endpoint === '/status' ? fixture.status : {job: fixture.status.installJob});
+    hold.arrived(); let finished; hold.done = new Promise(r => finished = r);
+    await hold.gate; await route.fulfill({status: 200, json: snapshot}).catch(() => {}); finished(); return;
+  }
   if (endpoint === '/status') return respond(fixture.status);
   if (endpoint === '/batches') return respond({batches: []});
   if (endpoint === '/install/job') {
     if (method === 'GET') return respond({job: fixture.status.installJob});
+    if (fixture.post === 'refuse') return respond({code: 'INTAKE_MAC_ONLY', error: '合成：服务器拒绝安装'}, 400);
+    if (fixture.post === 'drop-before') return route.abort('failed');
     const job = fixture.status.installJob && !['done', 'failed'].includes(fixture.status.installJob.stage) ? fixture.status.installJob : startJob();
+    if (fixture.post === 'drop-after') return route.abort('failed'); // 后端已接收并开始，回应在路上丢了
     return respond({job}, 202);
   }
   if (endpoint === '/open-services-settings') return fixture.settings === 'ok' ? respond({opened: true, target: 'keyboard'}) : respond({code: 'SETTINGS_OPEN_FAILED', error: '合成：系统设置拒绝打开'}, 500);
@@ -47,7 +63,9 @@ const state = () => install().locator('.fi-install-state');
 async function open() { if (!await drawer().count()) await entry().click(); await expect(drawer()).toBeVisible(); }
 async function close() { if (await drawer().count()) await drawer().getByRole('button', {name: '关闭文件任务', exact: true}).click(); await expect(drawer()).toHaveCount(0); }
 async function reload() { await page.reload(); await expect(entry()).toBeVisible(); }
-async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
+// FILE_INTAKE_INSTALL_CASE=名称开头：只跑这一项（复现、反证用）
+const onlyCase = process.env.FILE_INTAKE_INSTALL_CASE || '';
+async function check(name, fn) { if (onlyCase && !name.startsWith(onlyCase)) return; await fn(); checks.push(name); console.log('PASS ' + name); }
 
 try {
   await fs.writeFile(path.join(temp, 'index.html'), '<html><div id="root"></div><script type="module" src="/fixture.tsx"></script></html>');
@@ -138,6 +156,58 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     fresh(); fixture.status.installJob = {id: 'job-old', stage: 'done', window: 'skipped', startedAt: Date.now() - 3600000, finishedAt: Date.now() - 3600000, message: '早先安装', error: null, previousKept: null};
     await reload(); await open(); await expect(state()).toHaveCount(0); await expect(installButton()).toHaveText('重新安装访达入口');
     await expect(entry().locator('.fi-install-chip')).toHaveCount(0);
+  });
+
+  /** 等迟到的那次读数被页面处理完：回应送达 → 两轮两帧渲染（含 React 提交）。 */
+  async function settled(held) { await held.done; for (let i = 0; i < 2; i++) await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))); }
+  await check('迟到的旧读数：安装前发出的空状态、同一任务的旧阶段都不能清掉或倒退进度；终态不被复活', async () => {
+    fresh(); await reload(); await open();
+    // 安装前发出的 /status（installJob:null）被截住，安装开始后才返回
+    const early = holdNext('/status'); await early.seen;
+    fixture.next = {stage: 'checking', window: null, finishedAt: null, message: null}; await installButton().click();
+    await expect(installButton()).toBeDisabled(); await expect(state()).toHaveText('正在安装访达入口');
+    await close(); await expect(entry().getByRole('img', {name: '访达入口安装中'})).toBeVisible(); await open();
+    early.release(); await settled(early);
+    assert.equal(await installButton().isDisabled(), true, '迟到的空状态不应让安装按钮恢复可点');
+    assert.equal(await entry().locator('.fi-install-chip').count(), 1, '迟到的空状态不应清掉顶栏转圈');
+    // 同一任务的旧阶段：截住一次 preparing-window 的读数，进度推进到 writing 后才放行
+    const job = fixture.status.installJob; Object.assign(job, {stage: 'preparing-window', window: 'compiling', startedAt: Date.now() - 6000});
+    const stale = holdNext('/install/job'); await stale.seen;
+    Object.assign(job, {stage: 'writing'}); await expect(state().locator('.fi-install-steps li').nth(2)).toHaveAttribute('data-state', 'active');
+    stale.release(); await settled(stale);
+    assert.equal(await state().locator('.fi-install-steps li').nth(2).getAttribute('data-state'), 'active', '旧阶段不应把进度拨回');
+    // 终态不被迟到的进行中读数复活
+    const late = holdNext('/install/job'); await late.seen;
+    Object.assign(job, {stage: 'done', finishedAt: Date.now(), message: '合成：已完成'}); await expect(state()).toContainText('已安装 · 刚刚', {timeout: 8000});
+    late.release(); await settled(late);
+    assert.equal(await installButton().isEnabled(), true, '完成后不应被旧读数改回安装中'); assert.ok((await state().textContent()).includes('已安装'), '完成状态应保留');
+  });
+
+  await check('安装请求已被接收但回应丢失：先核对、不重复发起，接上同一安装直到成功和设置入口', async () => {
+    fresh(); fixture.status.installJob = {id: 'job-prev', stage: 'done', window: 'skipped', startedAt: Date.now() - 120000, finishedAt: Date.now() - 119000, message: '上一单的完成说明', error: null, previousKept: null};
+    await reload(); await open();
+    fixture.post = 'drop-after'; fixture.next = {stage: 'preparing-window', window: 'compiling', finishedAt: null, message: null};
+    await installButton().click();
+    await expect(state()).toContainText(/正在核对这次安装是否已开始|正在安装/); await expect(installButton()).toBeDisabled();
+    await expect(state().locator('.fi-install-steps li').nth(1)).toHaveAttribute('data-state', 'active', {timeout: 8000});
+    await expect(state()).not.toContainText('没有开始'); await expect(state()).not.toContainText('上一单的完成说明');
+    const job = fixture.status.installJob; assert.notEqual(job.id, 'job-prev');
+    Object.assign(job, {stage: 'done', finishedAt: Date.now(), message: '这一单的完成说明'});
+    await expect(state()).toContainText('这一单的完成说明', {timeout: 8000}); await expect(state().getByRole('button', {name: '打开系统设置'})).toBeVisible();
+    await expect(install().getByRole('alert')).toHaveCount(0);
+    assert.deepEqual(posts, ['/install/job'], '核对期间不重复发起安装');
+  });
+
+  await check('回应丢失且后端确实没开始：有界核对后说明未确认，不把上一单成功当成这次；服务器明确拒绝单独说明', async () => {
+    fresh(); fixture.status.installJob = {id: 'job-prev', stage: 'done', window: 'skipped', startedAt: Date.now() - 60000, finishedAt: Date.now() - 59000, message: '上一单的完成说明', error: null, previousKept: null};
+    await reload(); await open();
+    fixture.post = 'drop-before'; await installButton().click();
+    await expect(state()).toContainText('正在核对这次安装是否已开始'); await expect(installButton()).toBeDisabled();
+    await expect(state()).toContainText('没有确认这次安装', {timeout: 12000}); await expect(state()).not.toContainText('上一单的完成说明');
+    await expect(installButton()).toBeEnabled(); assert.deepEqual(posts, ['/install/job']);
+    fixture.post = 'refuse'; await installButton().click();
+    await expect(install().getByRole('alert')).toContainText('安装没有开始'); await expect(state()).toContainText('合成：服务器拒绝安装');
+    await expect(installButton()).toBeEnabled();
   });
 
   await check('窄屏与深色主题：安装状态不溢出', async () => {

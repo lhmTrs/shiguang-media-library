@@ -13,21 +13,34 @@ const STEPS: {stage: InstallJob['stage']; label: string}[] = [{stage: 'checking'
 const running = (job: InstallJob | null | undefined) => !!job && job.stage !== 'done' && job.stage !== 'failed';
 const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒'; };
 const ago = (at: number, now: number) => { const d = Math.max(0, now - at); return d < 60000 ? '刚刚' : d < 3600000 ? Math.floor(d / 60000) + ' 分钟前' : d < 86400000 ? Math.floor(d / 3600000) + ' 小时前' : new Date(at).toLocaleString(); };
+type InstallError = {kind: 'refused' | 'unknown'; message: string};
+const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
 type SettingsState = {state: 'idle'} | {state: 'opening'} | {state: 'opened'; target: string} | {state: 'error'; message: string};
 export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView: IntakeView}) {
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(() => !document.hidden), [status, setStatus] = useState<IntakeStatus | null>(null);
   const [batches, setBatches] = useState<IntakeBatch[]>([]), [selection, setSelection] = useState(''), [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [readError, setReadError] = useState(''), [reading, setReading] = useState(false), [busy, setBusy] = useState('');
   const [history, setHistory] = useState(false), historyRef = useRef(false);
   const [uncertain, setUncertain] = useState<Record<string, Uncertain>>({});
-  const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState(''), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
+  const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState<InstallError | null>(null), [verifying, setVerifying] = useState(false), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
   const jobRef = useRef<InstallJob | null>(null); jobRef.current = job;
-  /** 只接受同一任务的更新状态或更新的任务，避免迟到的旧读数把进度往回拨。 */
-  function acceptJob(next: InstallJob | null | undefined) {
+  // 状态读取的先后：每次读取在发出时取一个序号；安装请求返回（或结果未知开始核对）后，只信任之后发出的读取。
+  // 早于安装发出的读取只能推进同一任务的阶段，不能清空任务、也不能换成另一个任务。
+  const readSeq = useRef(0), trustFrom = useRef(0);
+  /** 本次点击安装的依据：点击前已知的任务 ID 与点击时间。用来认出「这次」的新任务，不把上一单当成这次。 */
+  const attempt = useRef<{before: string | null; clickedAt: number} | null>(null);
+  const isNewForAttempt = (j: InstallJob | null | undefined) => !!j && !!attempt.current && j.id !== attempt.current.before && j.startedAt >= attempt.current.clickedAt - 5000;
+  function acceptJob(next: InstallJob | null | undefined, seq?: number) {
     if (next === undefined) return;
-    const old = jobRef.current;
-    if (next && old && next.id === old.id && STEPS.findIndex(x => x.stage === next.stage) < STEPS.findIndex(x => x.stage === old.stage) && old.stage !== 'failed' && next.stage !== 'failed') return;
-    if (next && old && next.id !== old.id && next.startedAt < old.startedAt) return;
+    const old = jobRef.current, trusted = seq === undefined || seq >= trustFrom.current;
+    if (next === null) { if (old) return; }
+    else if (old && next.id === old.id) {
+      // 同一任务：终态不被迟到的进行中读数复活；进行中阶段只进不退；终态之间的变化只认可信读取
+      if (!running(old) && running(next)) return;
+      if (running(old) && running(next) && stageRank(next) < stageRank(old)) return;
+      if (!running(old) && !running(next) && next.stage !== old.stage && !trusted) return;
+    } else if (old && !trusted) return;
     jobRef.current = next; setJob(next);
+    if (isNewForAttempt(next)) { setVerifying(false); setInstallError(null); }
   }
   const mountedAt = useRef(Date.now()), completionRead = useRef(false), completionKey = useRef('');
   const api = useRef(request), alive = useRef(true), writing = useRef(false), batchRead = useRef(false), statusRead = useRef(false), readVersion = useRef(0), statusVersion = useRef(0), rows = useRef(batches), selectionRef = useRef(selection), openRef = useRef(open), entry = useRef<HTMLButtonElement>(null), close = useRef<HTMLButtonElement>(null), observed = useRef(new Map<string, string>());
@@ -50,7 +63,7 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
   }
   async function readStatus(signal?: AbortSignal) {
     if (statusRead.current) return; statusRead.current = true;
-    const version = ++statusVersion.current;
+    const version = ++statusVersion.current, seq = ++readSeq.current;
     try {
       const value = await api.current<IntakeStatus>(INTAKE_API + '/status', undefined, undefined, {signal});
       if (alive.current && version === statusVersion.current) {
@@ -60,7 +73,7 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
           message: completion.status === 'completed' ? '素材已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
         });
         completionRead.current = true; completionKey.current = key;
-        setStatus(value); setStatusError(''); acceptJob(value.installJob);
+        setStatus(value); setStatusError(''); acceptJob(value.installJob, seq);
       }
     }
     catch (e) {if (alive.current && !signal?.aborted && version === statusVersion.current) setStatusError(errorMessage(e));}
@@ -82,9 +95,9 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
   useEffect(() => {
     if (!installing || !visible) return; let stopped = false; const controller = new AbortController();
     const timer = setInterval(() => {
-      setNow(Date.now()); if (stopped) return;
+      setNow(Date.now()); if (stopped) return; const seq = ++readSeq.current;
       void api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job', undefined, undefined, {signal: controller.signal}).then(value => {
-        if (stopped || !alive.current) return; acceptJob(value.job); if (!running(value.job)) void readStatus();
+        if (stopped || !alive.current) return; acceptJob(value.job, seq); if (!running(jobRef.current)) void readStatus();
       }).catch(() => { /* 读不到时保留最后已知状态，状态轮询也会继续带回 installJob */ });
     }, 1000);
     return () => {stopped = true; clearInterval(timer); controller.abort();};
@@ -127,11 +140,30 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
     } finally {writing.current = false; if (alive.current) {setBusy(''); if (!document.hidden) void readStatus();}}
   }
   async function install() {
-    if (starting || running(jobRef.current) || !status?.supported || statusError) return;
-    setStarting(true); setInstallError(''); setSettings({state: 'idle'}); setNow(Date.now());
-    try {const value = await api.current<{job: InstallJob}>(INTAKE_API + '/install/job', {}); if (alive.current) acceptJob(value.job);}
-    catch (e) {if (alive.current) setInstallError(errorMessage(e));}
-    finally {if (alive.current) setStarting(false);}
+    if (starting || verifying || running(jobRef.current) || !status?.supported || statusError) return;
+    attempt.current = {before: jobRef.current?.id ?? null, clickedAt: Date.now()};
+    setStarting(true); setInstallError(null); setSettings({state: 'idle'}); setNow(Date.now());
+    try {
+      const value = await api.current<{job: InstallJob}>(INTAKE_API + '/install/job', {});
+      if (alive.current) { trustFrom.current = readSeq.current + 1; acceptJob(value.job); }
+    } catch (e) {
+      if (!alive.current) return;
+      // 服务器明确拒绝（有响应状态）：这次没有开始。没有响应：结果未知，先核对，不当成失败、也不允许重复发起
+      if ((e as {status?: number}).status) setInstallError({kind: 'refused', message: errorMessage(e)});
+      else { trustFrom.current = readSeq.current + 1; setVerifying(true); void verifyAttempt(); }
+    } finally {if (alive.current) setStarting(false);}
+  }
+  /** 安装请求结果未知：有界地读原安装状态，认出这次的新任务就接上进度或结果；读不到才说明可以重试。 */
+  async function verifyAttempt() {
+    for (let i = 0; i < 6 && alive.current; i++) {
+      if (isNewForAttempt(jobRef.current)) return;
+      const seq = ++readSeq.current;
+      try {const value = await api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job'); if (!alive.current) return; if (isNewForAttempt(value.job)) {acceptJob(value.job, seq); return;}}
+      catch { /* 核对本身失败就继续下一次 */ }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!alive.current || isNewForAttempt(jobRef.current)) return;
+    setVerifying(false); setInstallError({kind: 'unknown', message: '没有确认到这次安装已经开始。可以重试；上一次的安装结果不会被当成这次。'});
   }
   async function openSettings() {
     if (settings.state === 'opening') return; setSettings({state: 'opening'});
@@ -163,8 +195,8 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
         {selected?.canAcknowledge && <div className="fi-acknowledge"><span>{selected.acknowledged ? '原始结果保留，可随时恢复。' : '已知结果可收起，不再计入待处理；不会重试或移除文件。'}</span><button disabled={!!busy || !!uncertain[selected.id]} onClick={() => void mutate(selected, null, '/acknowledge', {acknowledged: !selected.acknowledged, resultKey: selected.resultKey}, selected.acknowledged ? '正在恢复待处理' : '正在标记已处理')}>{selected.acknowledged ? '恢复待处理' : '标记已处理'}</button></div>}
         {selected && <BatchDetails batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
         <section className="fi-install"><h3>访达右键入口</h3><p>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.upgradeNeeded ? '原视频入口已安装，点击升级后可收纳图片和音频。' : status.installed ? '入口已安装。若菜单尚未出现，请在系统设置中启用拾光快速操作。' : '安装后可从访达右键收纳图片、视频、音乐和音效。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p>
-          <button disabled={!status?.supported || !!statusError || installing || starting} aria-busy={installing || starting} onClick={() => void install()}>{installing || starting ? <><span className="fi-spinner"/>正在安装…</> : <><Download size={14}/>{job?.stage === 'failed' ? '重试安装' : status?.upgradeNeeded ? '升级访达入口' : status?.installed ? '重新安装访达入口' : '安装访达入口'}</>}</button>
-          <InstallState job={job} starting={starting} error={installError} now={now} settings={settings} onSettings={() => void openSettings()}/>
+          <button disabled={!status?.supported || !!statusError || installing || starting || verifying} aria-busy={installing || starting || verifying} onClick={() => void install()}>{installing || starting || verifying ? <><span className="fi-spinner"/>正在安装…</> : <><Download size={14}/>{job?.stage === 'failed' ? '重试安装' : status?.upgradeNeeded ? '升级访达入口' : status?.installed ? '重新安装访达入口' : '安装访达入口'}</>}</button>
+          <InstallState job={job} starting={starting} verifying={verifying} error={installError} now={now} settings={settings} onSettings={() => void openSettings()}/>
         </section>
       </div>
     </aside>, document.body)}
@@ -172,8 +204,9 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
 }
 
 /** 安装区按钮正下方的状态：进行中 / 慢 / 疑似卡住 / 成功（还差一步）/ 失败。 */
-function InstallState({job, starting, error, now, settings, onSettings}: {job: InstallJob | null; starting: boolean; error: string; now: number; settings: SettingsState; onSettings: () => void}) {
-  if (error) return <div className="fi-install-state is-bad" role="alert"><AlertCircle size={15}/><div><b>安装没有开始</b><p>{error}</p></div></div>;
+function InstallState({job, starting, verifying, error, now, settings, onSettings}: {job: InstallJob | null; starting: boolean; verifying: boolean; error: InstallError | null; now: number; settings: SettingsState; onSettings: () => void}) {
+  if (verifying && !running(job)) return <div className="fi-install-state" role="status"><span className="fi-spinner"/><div><b>正在核对这次安装是否已开始</b><p>安装请求没有收到回应，正在读取安装状态；核对完之前不会重复安装。</p></div></div>;
+  if (error && !running(job)) return <div className="fi-install-state is-bad" role="alert"><AlertCircle size={15}/><div><b>{error.kind === 'refused' ? '安装没有开始' : '没有确认这次安装'}</b><p>{error.message}</p></div></div>;
   if (starting && !running(job)) return <div className="fi-install-state" role="status"><span className="fi-spinner"/><div>正在安装访达入口</div></div>;
   if (!job) return null;
   if (running(job)) {
