@@ -72,6 +72,11 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   scopeWrite('post', '/assets/:assetId/append/media-receipt', (type, id, req) => append.mediaReceipt(type, id, req.params.assetId, req.body));
   scopeWrite('post', '/assets/:assetId/append/preview', (type, id, req) => append.preview(type, id, req.params.assetId, req.body));
   scopeWrite('post', '/assets/:assetId/append', (type, id, req) => append.commit(type, id, req.params.assetId, req.body));
+  const impact = store.scopedImpact;
+  scopeWrite('post', '/assets/:assetId/promotion/preview', (type, id, req) => impact.previewPromotion(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/promotion', (type, id, req) => impact.commitPromotion(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/archive-impact', (type, id, req) => impact.previewArchive(type, id, req.params.assetId, req.body));
+  scopeWrite('post', '/assets/:assetId/archive', (type, id, req) => impact.commitArchive(type, id, req.params.assetId, req.body));
   scopeWrite('get', '/attribute-config', (type, id, req) => store.scoped.attributeConfig(type, id, req.query.asset_id));
   scopeWrite('patch', '/attribute-config', (type, id, req) => writes.patchConfig(type, id, req.body));
   scopeWrite('post', '/attribute-config/removal-preview', (type, id, req) => writes.configRemovalPreview(type, id, req.body));

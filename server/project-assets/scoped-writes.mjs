@@ -74,6 +74,9 @@ export class ScopedAssetWrites {
         .filter(row => row.owner_type === 'series' && row.owner_id === before.series_id) : [];
       if (links.length) throw conflict('ASSET_IN_USE', '该集分镜仍引用原剧共享资产，请先处理分镜素材清单', {
         assets: links.map(row => ({ id: row.id, kind: row.kind, name: row.name })),
+        shots: links.flatMap(row => this.assets.storyboards.assetShots(row.id, project_id).items.map(shot => ({
+          asset_id: row.id, shot_id: shot.shotId, number: shot.number, scene_id: shot.sceneId,
+        }))),
       });
       this.assertNoOverrides('episode', project_id);
     }

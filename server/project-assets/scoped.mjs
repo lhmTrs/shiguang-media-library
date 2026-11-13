@@ -122,6 +122,34 @@ export class ScopedProjectAssets {
     });
   }
 
+  generationSnapshot(projectId, stamp) {
+    return this.#snapshot(() => {
+      const scope = this.scope('episode', projectId);
+      const assetStamp = stamp();
+      if (scope.series_id === null) return { assetStamp };
+      const { sql, params } = this.#owners(scope);
+      const rows = this.db.prepare(`SELECT id,project_id,owner_type,owner_id,kind,revision,archived_at
+        FROM creative_assets WHERE ${sql} AND archived_at=0 ORDER BY id`).all(...params);
+      const configs = new Map();
+      const assets = rows.map(row => {
+        const { asset, owner, effective } = this.#item(scope, row, configs);
+        return {
+          id: asset.id, kind: asset.kind, name: asset.name, revision: asset.revision, owner,
+          base_info: asset.base_info, performance_info: asset.performance_info,
+          looks: asset.looks.filter(activeChild).map(({ id, name, description, tags }) => ({ id, name, description, tags })),
+          default_look_id: effective.default_look?.value ?? null,
+          default_image_ids: Object.fromEntries(Object.entries(effective.default_images).map(([key, field]) => [key, field.value])),
+          attribute_scores: Object.fromEntries(Object.entries(effective.attribute_scores).map(([key, field]) => [key, field.value])),
+        };
+      });
+      return {
+        assetStamp, scopedAssets: {
+          series: scope.series, season: scope.season, membership_revision: scope.membership_revision, assets,
+        },
+      };
+    });
+  }
+
   #owners(scope) {
     const clauses = [], params = [];
     if (scope.type === 'episode') {

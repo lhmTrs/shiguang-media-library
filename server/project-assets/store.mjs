@@ -12,6 +12,7 @@ import {cardBinding,cropState,defaultCrop} from './crop-state.mjs';
 import { ScopedProjectAssets } from './scoped.mjs';
 import { ScopedAssetWrites } from './scoped-writes.mjs';
 import { ScopedAssetAppend } from './scoped-append.mjs';
+import { ScopedAssetImpact } from './scoped-impact.mjs';
 import { validateScopedAssetBackup } from './scoped-backup.mjs';
 
 const parse = value => JSON.parse(value);
@@ -51,7 +52,8 @@ export class ProjectAssets {
     this.scoped ??= new ScopedProjectAssets(this);
     this.scopedWrites ??= new ScopedAssetWrites(this);
     this.scopedAppend ??= new ScopedAssetAppend(this);
-    this.scoped.setWriteCapabilities({ edit_base: true, create_override: true, append: true });
+    this.scopedImpact ??= new ScopedAssetImpact(this);
+    this.scoped.setWriteCapabilities({ edit_base: true, create_override: true, append: true, promote: true, archive: true });
     return this;
   }
   lockDirectory() { if (this.lib.projectSeries) lockSeriesDirectory(this.db); }

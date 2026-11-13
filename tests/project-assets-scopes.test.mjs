@@ -4,6 +4,7 @@ import test from 'node:test';
 import { DEFAULT_DIMENSIONS } from '../server/project-attributes/model.mjs';
 import { canonical, digest } from '../server/project-assets/model.mjs';
 import { ScopedProjectAssets } from '../server/project-assets/scoped.mjs';
+import { GenerationStore } from '../server/storyboard-generation/store.mjs';
 import { addImage, addLook, creativeFixture } from './helpers/creative-fixture.mjs';
 
 const missing = { status: 404, code: 'ASSET_SCOPE_NOT_FOUND' };
@@ -57,6 +58,26 @@ async function sharedCharacter(f) {
   makeShared(f, saved);
   return { saved, first, second, base, rain, rainOverride };
 }
+
+test('generation freezes only the episode’s visible assets and effective selections', async t => {
+  const f = await fixture(t);
+  const { saved, first, second, rainOverride } = await sharedCharacter(f);
+  const localAsset = await local(f, f.ep.id, '本集角色');
+  const sibling = await local(f, f.peer.id, '隔壁集角色');
+  const generation = new GenerationStore(f.store.lib, { assets: f.store, lib: f.store.lib });
+  const before = generation.assetSnapshot(f.ep.id);
+  assert.deepEqual(new Set(before.scopedAssets.assets.map(row => row.id)), new Set([saved.id, localAsset.id]));
+  assert(!JSON.stringify(before).includes(sibling.id));
+  putOverride(f, 'season', f.season.id, saved.id, 'default_look', second.id);
+  putOverride(f, 'episode', f.ep.id, saved.id, 'default_image:' + second.id, rainOverride.id);
+  const after = generation.assetSnapshot(f.ep.id);
+  assert.equal(before.scopedAssets.assets.find(row => row.id === saved.id).default_look_id, first.id);
+  const result = after.scopedAssets.assets.find(row => row.id === saved.id);
+  assert.equal(result.default_look_id, second.id);
+  assert.equal(result.default_image_ids[second.id], rainOverride.id);
+  assert.notEqual(before.assetStamp, after.assetStamp);
+  assert.equal(generation.assetSnapshot(f.a.id).scopedAssets, undefined);
+});
 
 test('context and scoped reads keep sibling, standalone, other series and public owners isolated', async t => {
   const f = await fixture(t);
