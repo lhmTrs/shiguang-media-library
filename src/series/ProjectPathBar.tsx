@@ -107,7 +107,7 @@ export function ProjectPathBar({ projects, series, value, recent, lastInContaine
   let lastGroup = '';
   const listId = 'ppb-list-' + (open ?? 'none');
 
-  return <div className="ppb" ref={root} data-disabled={disabled || undefined}>
+  return <div className="ppb" ref={root} data-project={value || undefined} data-disabled={disabled || undefined}>
     <nav className="ppb-crumbs" aria-label="当前项目">
       {!current ? segment('series', '选择项目') : !hit ? segment('series', current.name) : <>
         {segment('series', hit.node.series.name)}

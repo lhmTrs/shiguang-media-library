@@ -9,6 +9,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-multicopy-real-')));
@@ -56,7 +57,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); /* 同一地址只改 hash 不会重载，桌面能力也不会重新读取 */ await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible(); };
+  const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); /* 同一地址只改 hash 不会重载，桌面能力也不会重新读取 */ await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible(); };
   await open();
 
   await check('人物列表多选复制：后端核对后把每人默认图的原文件交给系统剪贴板', async () => {

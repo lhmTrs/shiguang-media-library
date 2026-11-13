@@ -9,6 +9,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-multicopy-')), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -80,7 +81,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await installMocks();
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id);
   await expect(wrap('阿青')).toBeVisible(); await expect(wrap('小满')).toBeVisible();
 
   await check('人物列表和视频页同一套选法：单击只选一个并打开详情，⌘ 点加选后详情换成已选清单；没有勾选框；复制按每人默认图发出原图文件请求', async () => {
@@ -218,7 +219,7 @@ try {
     assert.equal(posts('clipboard').length, before + 1, 'no resend'); assert.ok(mock.gets >= 1);
     await page.keyboard.press('Escape');
     mock.caps = { version: 1, maxSelection: 50, clipboard: { available: false, code: 'LOCAL_SESSION_REQUIRED', reason: '只能在运行拾光的这台 Mac 上使用。' }, revealMany: { available: false, reason: '只能在运行拾光的这台 Mac 上使用。' } };
-    await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+    await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
     await wrap('阿青').locator('.ca-card').click({ modifiers: ['Meta'] }); await wrap('小满').locator('.ca-card').click({ modifiers: ['Meta'] });
     const gbar = work().getByRole('toolbar', { name: '已选人物操作' });
     await expect(gbar.getByRole('button', { name: '复制' })).toBeDisabled(); await expect(gbar).toContainText('只能在运行拾光的这台 Mac 上使用');
@@ -236,7 +237,7 @@ try {
     // 能力还没读到（读取失败）：同样说明原因，不退回 PNG。
     mock.caps = null; await page.unroute('**/api/project-assets/projects/*/desktop-capabilities');
     await page.route('**/api/project-assets/projects/*/desktop-capabilities', route => mock.caps ? route.fulfill({ json: mock.caps }) : route.fulfill({ status: 500, json: { error: '读取失败' } }));
-    await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+    await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
     await singleRefused('后台尚未提供图片文件复制，或正在检查本机桌面能力。');
   });
 

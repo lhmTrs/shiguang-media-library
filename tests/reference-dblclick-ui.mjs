@@ -7,6 +7,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar, projectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-dblclick-')), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -46,7 +47,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id);
 
   for (const [tab, name] of [['人物', '阿青'], ['场景', '海边']]) {
     await check(tab + '：双击参考图打开大图，不弹「图片设置」；单击稍后打开「图片设置」；回车立即打开；间隔约 0.32 秒的双击和放大镜都能放大', async () => {
@@ -97,7 +98,7 @@ try {
       await wrap(name).click({ button: 'right' }); await page.getByRole('menu', { name: name + '的操作' }).getByRole('menuitem', { name: '放大查看' }).click();
       await expect(viewer()).toBeVisible(); await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
     }
-    await api('/project-assets/assets', { project_id: (await page.getByLabel('资产所属项目').inputValue()), kind: 'character', name: '无图人物' });
+    await api('/project-assets/assets', { project_id: (await projectInBar(page).getAttribute('data-project')), kind: 'character', name: '无图人物' });
     await work().getByRole('tab', { name: /^人物/ }).click(); await work().getByRole('button', { name: '更多资产操作' }).click(); await work().getByRole('menuitem', { name: '刷新列表' }).click();
     await wrap('无图人物').click({ button: 'right' }); await expect(page.getByRole('menu', { name: '无图人物的操作' }).getByRole('menuitem', { name: '放大查看' })).toBeDisabled();
     await page.keyboard.press('Escape');

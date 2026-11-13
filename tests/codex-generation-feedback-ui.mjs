@@ -74,7 +74,8 @@ try{
  await check('Failed connection and missing project explain the blocked action at the bottom of the panel',async()=>{
   const context=await open();await chat().getByRole('button',{name:'断开',exact:true}).click();await context.route('**/api/prompt-codex/connect',route=>route.fulfill({status:503,json:{error:'合成本机 Codex 不可用'}}));
   await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');await expect(button()).toBeEnabled();
-  await page.getByLabel('图片所属项目').selectOption('');await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择图片所属项目');await context.close();
+  // 顶栏统一后不能再把项目清空：让项目列表真的为空（宿主没有当前项目），再看发送保护
+  await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
  });
  await check('Unsupported-tool failure is explained next to follow-up; failed reconnect preserves input and a later explicit send reconnects once',async()=>{
   const toolTemplate=await api('/prompt-templates',{...fixture(),name:'合成工具错误模板'});await api('/prompt-templates/'+toolTemplate.id+'/draft',{template_revision:1,expected_revision:0,values:{...inputs,主题:'合成工具断连测试'}},'PUT');

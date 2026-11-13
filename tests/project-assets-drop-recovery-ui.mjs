@@ -7,6 +7,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-drop-recovery-')), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -39,7 +40,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { const u = r.url(); if (!u.includes('/api/project-assets/')) return; if (r.method() === 'POST' && u.endsWith('/image-imports')) count.start++; if (r.method() === 'PUT' && u.includes('/content')) count.content++; if (u.endsWith('/resolve')) count.resolve++; if (r.method() === 'PUT' && /\/assets\/[^/]+$/.test(u)) count.assetPut++; if (r.method() === 'POST' && u.endsWith('/project-assets/assets')) count.create++; });
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(card('陈川')).toBeVisible();
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(card('陈川')).toBeVisible();
 
   await check('上传成功后丢回应：核对原回执后只绑定一次，不重新上传', async () => {
     const dropped = await dropResponseOnce(r => r.method() === 'PUT' && r.url().includes('/content'));

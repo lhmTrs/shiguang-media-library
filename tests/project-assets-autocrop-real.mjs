@@ -9,6 +9,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-autocrop-real-'))), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -36,7 +37,7 @@ const image = async (a, id) => (await asset(a.id)).images.find(b => b.id === id)
 const DEFAULT = { x: 50, y: 50, zoom: 1 };
 const idle = () => expect(page.locator('.ca-workspace')).not.toHaveAttribute('aria-busy', 'true');
 const openCrop = async name => { await wrap(name).click({ button: 'right' }); await page.getByRole('menuitem', { name: '调整头像…' }).click(); const panel = page.getByRole('dialog', { name: '调整' + name + '的头像' }); await expect(panel).toContainText('列表里会这样显示'); return panel; };
-const reopen = async project => { await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible(); };
+const reopen = async project => { await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible(); };
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -61,7 +62,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.url().includes('/head-box')) headRequests.push(r.url()); if (r.method() === 'PUT' && /\/api\/project-assets\/assets\/[^/]+$/.test(new URL(r.url()).pathname)) assetPuts.push(r.url()); });
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
 
   await check('换默认图：首次成为默认、没调整过的正脸图在同一次保存里自动框头部；提示说明；撤销恢复默认图、裁切和来源', async () => {
     await wrap('阿青').click({ button: 'right' }); await page.getByRole('menuitem', { name: '换默认图…' }).click();

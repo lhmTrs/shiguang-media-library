@@ -297,6 +297,16 @@
 .ca-v2 .ca-head-title{display:flex;align-items:baseline;gap:12px;min-width:0}
 .ca-v2 .ca-head-title h1{font-size:22px;margin:0}
 .ca-v2 .ca-scope-note{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:12px}
+.ca-v2 .ca-head-title{align-items:center}
+/* 顶栏统一：页内「当前项目 ｜ 公共人物库」切换（只改资产页范围，顶栏不变） */
+.ca-v2 .ca-scope-switch{display:inline-flex;padding:3px;gap:2px;border:1px solid var(--line);border-radius:8px;background:var(--c-fff);min-width:0}
+.ca-v2 .ca-scope-switch button{display:inline-flex;align-items:center;gap:5px;height:28px;max-width:240px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--c-24292c);font:13px inherit;cursor:pointer;min-width:0}
+.ca-v2 .ca-scope-switch button span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ca-v2 .ca-scope-switch button:hover:not(:disabled){background:var(--soft)}
+.ca-v2 .ca-scope-switch button[aria-pressed=true]{background:color-mix(in srgb,var(--green) 14%,var(--c-fff));color:var(--c-24292c);font-weight:600}
+.ca-v2 .ca-scope-switch button:disabled{cursor:default;opacity:.55}
+.ca-v2 .ca-scope-switch button:focus-visible{outline:2px solid var(--c-24292c);outline-offset:1px}
+.ca-v2 .ca-public-note{display:flex;align-items:center;gap:6px;margin:10px 0 0;padding:7px 12px;border:1px solid color-mix(in srgb,var(--green) 30%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--green) 6%,var(--c-fff));color:var(--c-24292c);font-size:12px;line-height:1.6}
 .ca-v2 .ca-head-tools{display:flex;align-items:center;gap:8px}
 .ca-v2 .ca-search{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--ca-card);border-radius:7px;padding:0 10px;width:240px;color:var(--muted)}
 .ca-v2 .ca-search:focus-within{border-color:var(--green);outline:2px solid var(--green);outline-offset:1px}

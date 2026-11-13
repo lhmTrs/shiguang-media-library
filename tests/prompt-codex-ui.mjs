@@ -6,6 +6,7 @@ import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
 import {chromium,expect} from '@playwright/test';
 import {fixture,inputs} from './helpers/prompt-lifecycle.mjs';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root=path.resolve(import.meta.dirname,'..'),evidence=path.resolve(process.env.CODEX_TEST_EVIDENCE||path.join(root,'collab/results/CODEX-PROMPT-CHAT-20261104'));
 const dist=path.resolve(process.env.CODEX_TEST_DIST||path.join(root,'dist'));
@@ -34,14 +35,16 @@ try{
  const app=page.getByRole('region',{name:'提示词模板工作台'}),chat=page.getByRole('region',{name:'Codex 图文对话'}),button=name=>chat.getByRole('button',{name,exact:true});let conversationId;
  const current=()=>api('/prompt-codex/conversations/'+conversationId);
  await check('Explicit connection reads model catalog and only supported reasoning levels; no generation on connect',async()=>{
-  await page.getByLabel('图片所属项目').selectOption('');await expect(chat.locator('.codex-generate-button')).toBeDisabled();await page.getByLabel('图片所属项目').selectOption(projectA.id);
+  // 没有可用项目时不能生成：项目列表真的为空（顶栏统一后不能再把项目清空），恢复后在层级栏选项目甲
+  await page.context().route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(chat.locator('.codex-generate-button')).toBeDisabled();
+  await page.context().unroute(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname));await page.reload();await selectProjectInBar(page, projectA.id);
   await expect(chat.getByLabel('Codex 输出偏好')).toHaveValue('mixed');assert.deepEqual(await chat.getByLabel('Codex 输出偏好').locator('option').evaluateAll(options=>options.map(o=>({value:o.value,text:o.textContent}))),[{value:'mixed',text:'图文'},{value:'image',text:'只生成图片'}]);
   await button('连接 Codex').click();await expect(chat.locator('.codex-connection')).toContainText('已连接');await expect(chat.getByLabel('Codex 对话模型')).toHaveValue('synthetic-a');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('high');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),4);
   await chat.getByLabel('Codex 对话模型').selectOption('synthetic-b');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('medium');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),2);
   await chat.getByLabel('Codex 对话模型').selectOption('synthetic-a');await chat.getByLabel('Codex 推理强度').selectOption('max');const calls=(await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse);assert.equal(calls.filter(c=>c.method==='turn/start').length,0);
  });
  await check('Mixed output streams, ordered text/two images/text, exact model/effort, safe Markdown, image downloads and preview',async()=>{
-  await chat.getByLabel('Codex 输出偏好').selectOption('mixed');await expect(chat.getByLabel('Codex 追问内容')).toHaveCount(0);const preview=await app.getByLabel('完整提示词内容').textContent();await chat.locator('.codex-generate-button').click();await expect(chat.getByTestId('codex-turn-1')).toContainText('合成回答');await page.getByLabel('图片所属项目').selectOption(projectB.id);
+  await chat.getByLabel('Codex 输出偏好').selectOption('mixed');await expect(chat.getByLabel('Codex 追问内容')).toHaveCount(0);const preview=await app.getByLabel('完整提示词内容').textContent();await chat.locator('.codex-generate-button').click();await expect(chat.getByTestId('codex-turn-1')).toContainText('合成回答');await selectProjectInBar(page, projectB.id);
   await expect(chat.locator('.codex-status')).toHaveText('已完成');conversationId=(await api('/prompt-codex/conversations?template_id='+template.id))[0].id;
   const turn=(await current()).turns[0];assert.equal(turn.request.text,'');assert.equal((await current()).context.prompt,preview);assert.equal(turn.request.model,'synthetic-a');assert.equal(turn.actual.model,'synthetic-a');assert.equal(turn.actual.effort,'max');assert.deepEqual(turn.blocks.map(b=>b.type),['text','image','image','text']);await expect(chat.locator('.codex-image img')).toHaveCount(2);assert.equal(await page.evaluate(()=>window.bad),undefined);assert.deepEqual(external,[]);
   assert.equal(turn.request.project_id,projectA.id);assert.equal(turn.actual.pictureProject.id,projectA.id);for(const block of turn.blocks.filter(b=>b.type==='image'))assert.ok(block.library.relativePath.startsWith('生图项目甲--'+projectA.id+path.sep));await expect(chat.getByTestId('codex-turn-1')).toContainText('图片所属项目：生图项目甲');
