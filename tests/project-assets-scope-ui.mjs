@@ -56,10 +56,13 @@ async function routeScoped(route) {
     if (type === 'series') fake.shared.push(created); else (fake.local[sid] ||= []).push(created);
     return route.fulfill({ json: created });
   }
+  const receiptPath = url.pathname.match(/^\/api\/project-assets\/scopes\/episode\/([^/]+)\/assets\/([^/]+)\/append\/media-receipt$/);
+  if (receiptPath) { const body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body }); return route.fulfill({ json: { media_receipt_id: 'rc-' + body.media_asset_id, media_asset_id: body.media_asset_id, file_name: '夜景.png', preview_url: '', expires_at: Date.now() + 600000 } }); }
   const app = url.pathname.match(/^\/api\/project-assets\/scopes\/episode\/([^/]+)\/assets\/([^/]+)\/append(\/preview)?$/);
   if (app) {
     const body = route.request().postDataJSON(); fake.writes.push({ method: 'POST', path: url.pathname, body }); const hit = fake.shared.find(x => x.asset.id === app[2]);
-    if (app[3]) { fake.pendingAppend = body.item; return route.fulfill({ json: { preview_token: 'pv-' + fake.writes.length, sets_series_default: hit.asset.looks.length === 0, impact: { episodes: [] } } }); }
+    if (app[3]) { fake.pendingAppend = body.item; const first = body.item.type === 'image' ? !hit.asset.images.some(b => b.look_id === body.item.look_id) : hit.asset.looks.length === 0; return route.fulfill({ json: { preview_token: 'pv-' + fake.writes.length, sets_series_default: first, impact: { episodes: [] } } }); }
+    if (fake.pendingAppend.type === 'image') { const b = { id: 'img-' + crypto.randomUUID().slice(0, 6), look_id: fake.pendingAppend.look_id, media_asset_id: 'media-lib-1', reference_type: '人物身份', purpose: '', locks: '', ignores: '', confirmed: false, archived_at: null, crop: { x: 50, y: 50, zoom: 1 }, last_known_name: '夜景.png' }; hit.asset = { ...hit.asset, images: [...hit.asset.images, b], revision: hit.asset.revision + 1 }; return route.fulfill({ json: { ...hit, effective: fake.effective[hit.asset.id] ?? hit.effective } }); }
     const look = { id: 'look-' + crypto.randomUUID().slice(0, 6), name: fake.pendingAppend.name, description: '', tags: [], default_image_id: null, archived_at: null };
     hit.asset = { ...hit.asset, looks: [...hit.asset.looks, look], default_look_id: hit.asset.default_look_id ?? (body.allow_series_default ? look.id : null), revision: hit.asset.revision + 1 };
     if (fake.effective[hit.asset.id]) fake.effective[hit.asset.id].default_images[look.id] = { value: null, source: { type: 'series', id: 'series', revision: 1 }, override: null, parent: null, write_token: 'wt-' + look.id };
@@ -133,6 +136,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
   await context.route(u => /\/api\/projects\/[^/]+\/asset-context$/.test(new URL(u).pathname) || new URL(u).pathname.startsWith('/api/project-assets/scopes/'), routeScoped);
+  await context.route(u => new URL(u).pathname === '/api/assets' && new URL(u).searchParams.get('kind') === 'photo', r => r.fulfill({ json: { items: [{ id: 'media-lib-1', name: '夜景.png' }], total: 1 } }));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await page.goto(origin + '/#/projects'); await expect(projectInBar(page)).toHaveAttribute('data-project', /./);
   await pickEpisode(eps[0].id); await nav('项目资产');
@@ -241,6 +245,18 @@ try {
     const box2 = panel.getByRole('group', { name: '确认新增造型' }); await expect(box2).toContainText('会成为全剧默认造型');
     await expect(box2.getByRole('button', { name: '确认新增' })).toBeDisabled(); await box2.getByRole('checkbox').check(); await box2.getByRole('button', { name: '确认新增' }).click();
     await expect(box2).toHaveCount(0); assert.equal(fake.writes.filter(w => w.path.endsWith('/append')).at(-1).body.allow_series_default, true);
+  });
+
+  await check('本集追加图片：素材库选图 → 签发回执 → 预览 → 确认，写到全剧当前造型', async () => {
+    await list().locator('.ca-card').filter({ has: page.locator('strong', { hasText: /^李四$/ }) }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    await work().locator('.ca-look-list button').filter({ hasText: '常服' }).click();
+    const panel = work().getByRole('region', { name: '本集设置' }); await panel.getByRole('group', { name: '造型「常服」的默认图' }).getByRole('button', { name: '从素材库添加图片' }).click();
+    await page.getByRole('dialog', { name: '选择素材库图片' }).getByRole('button', { name: /夜景\.png/ }).click();
+    const confirm = page.getByRole('dialog', { name: '确认追加图片' }); await expect(confirm).toContainText('会加到「穿越计」全剧「李四」的造型「常服」');
+    await expect(confirm.getByRole('checkbox')).toHaveCount(0); await confirm.getByRole('button', { name: '确认追加' }).click(); await expect(confirm).toHaveCount(0);
+    const rc = fake.writes.filter(w => w.path.endsWith('/append/media-receipt')).at(-1); assert.deepEqual({ look_id: rc.body.look_id, media_asset_id: rc.body.media_asset_id, ctx: rc.body.context_token }, { look_id: 'look-a', media_asset_id: 'media-lib-1', ctx: 'ctx-token' });
+    const pv = fake.writes.filter(w => w.path.endsWith('/append/preview')).at(-1); assert.deepEqual(pv.body.item, { type: 'image', look_id: 'look-a', media_receipt_id: 'rc-media-lib-1' });
+    await expect(panel.getByRole('button', { name: '设为本集默认图：夜景.png' })).toBeVisible();
   });
 
   await check('切到「全剧」：顶栏不变，提示条说明，只列共享资产，新建的是全剧人物', async () => {

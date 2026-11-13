@@ -749,3 +749,4 @@
 .ca-v2 .ca-append-default{display:flex;align-items:center;gap:6px}
 .ca-v2 .ca-append-actions{display:flex;gap:8px;justify-content:flex-end}
 .ca-v2 .ca-append-actions button{height:30px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
+.ca-v2 .ca-append-image{display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.6}.ca-v2 .ca-append-thumb{width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}

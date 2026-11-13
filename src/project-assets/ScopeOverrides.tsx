@@ -1,7 +1,7 @@
 // 第二期 P2a 第 2 步：集视图里继承自全剧的资产，「本集设置」——默认造型、各造型默认图按「本集 → 本季 → 全剧」覆盖。
 // 写入走 <scope>/assets/:id/overrides（set / inherit），令牌原样回传；返回更新后的详情，以服务端读回为准。
 import React, { useState } from 'react';
-import { RotateCcw } from 'lucide-react';
+import { ImagePlus, RotateCcw } from 'lucide-react';
 import type { EffectiveField, FieldSource, ScopedItem } from './scoped';
 
 type LookLike = { id: string; name: string; archived_at: number | null };
@@ -68,9 +68,9 @@ function ScoreRow({ dim, field, busy, canWrite, onOverride }: { dim: ScoreDimens
   </div>;
 }
 
-export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, dims, dimsNote, append, seriesName }: {
+export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, dims, dimsNote, append, seriesName, onPickImage }: {
   asset: AssetLike; meta: Omit<ScopedItem<AssetLike>, 'asset'>; lookId: string | null; busy: boolean;
-  thumb: (b: BindingLike) => React.ReactNode; onOverride: OverrideRequest; dims?: ScoreDimension[]; dimsNote?: string; append?: AppendHandlers; seriesName?: string;
+  thumb: (b: BindingLike) => React.ReactNode; onOverride: OverrideRequest; dims?: ScoreDimension[]; dimsNote?: string; append?: AppendHandlers; seriesName?: string; onPickImage?: (lookId: string | null) => void;
 }) {
   const e = meta.effective, canWrite = meta.capabilities.create_override;
   const looks = asset.looks.filter(l => !l.archived_at);
@@ -90,6 +90,7 @@ export function ScopeOverrides({ asset, meta, lookId, busy, thumb, onOverride, d
       <span className="ca-override-label">{asset.kind === 'character' ? <>「{look?.name ?? '当前造型'}」默认图</> : '默认图'} <SourceTag field={imgField}/></span>
       <span className="ca-override-thumbs">{images.length ? images.map(b => <button type="button" key={b.id} aria-label={'设为本集默认图：' + (b.last_known_name || '参考图片')} aria-pressed={imgField.value === b.id} disabled={busy || !canWrite || imgField.value === b.id} onClick={() => onOverride({ key: 'default_image', look_id: imgLook }, 'set', b.id, imgField.write_token)}>{thumb(b)}</button>) : <small>这个造型还没有图片</small>}</span>
       {imgField.override && <button type="button" className="ca-override-reset" disabled={busy || !canWrite} onClick={() => onOverride({ key: 'default_image', look_id: imgLook }, 'inherit', null, imgField.write_token)}><RotateCcw size={13}/>恢复上层{imgField.parent ? '（' + sourceLabel(imgField.parent.source) + '）' : ''}</button>}
+      {onPickImage && meta.capabilities.append && (asset.kind !== 'character' || !!look) && <button type="button" className="ca-override-reset" disabled={busy} onClick={() => onPickImage(imgLook)}><ImagePlus size={13}/>从素材库添加图片</button>}
     </div>}
     {asset.kind === 'character' && !!dims?.length && <div className="ca-score-overrides" role="group" aria-label="属性评分">
       <span className="ca-override-label">属性评分 <small className="ca-muted">只分本集和全剧两层</small></span>
