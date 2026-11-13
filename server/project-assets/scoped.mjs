@@ -220,6 +220,23 @@ export class ScopedProjectAssets {
     return this.#item(scope, this.#visibleRow(scope, assetId), new Map());
   }
 
+  async health(type, id, assetId) {
+    const before = this.#snapshot(() => {
+      const scope = this.scope(type, id);
+      return { scope, row: this.#visibleRow(scope, assetId) };
+    });
+    const result = await this.store.health(before.row.id);
+    this.#snapshot(() => {
+      const scope = this.scope(type, id);
+      this.assertContextToken(scope, before.scope.context_token);
+      const row = this.#visibleRow(scope, assetId);
+      if (row.revision !== before.row.revision || row.revision !== result.revision) {
+        throw fault('资产已更新，请重新读取图片状态', 409, { code: 'ASSET_STALE' });
+      }
+    });
+    return result;
+  }
+
   episodeShots(type, id, assetId) {
     return this.#snapshot(() => {
       const scope = this.scope(type, id);

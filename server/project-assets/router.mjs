@@ -56,6 +56,8 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   const scopeWrite = (method, suffix, action) =>
     route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));
   const writes = store.scopedWrites;
+  scopeWrite('get', '/assets/:assetId/health', (type, id, req) =>
+    store.scoped.health(type, id, req.params.assetId));
   scopeWrite('get', '/assets/:assetId/shots', (type, id, req) =>
     store.scoped.episodeShots(type, id, req.params.assetId));
   scopeWrite('get', '/assets/:assetId/versions', (type, id, req) =>
@@ -93,7 +95,10 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     return saved;
   });
   route('post', '/assets/:id/archive', req => store.archive(req.params.id, req.body.archived === true, req.body.expected_revision));
-  route('get', '/assets/:id/health', req => store.health(req.params.id));
+  route('get', '/assets/:id/health', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.health(req.params.id);
+  });
   route('get', '/assets/:id/shots', req => store.associatedShots(req.params.id));
   route('get', '/assets/:id/versions', req => {
     store.localAsset(store.head(req.params.id));
