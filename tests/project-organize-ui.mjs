@@ -79,7 +79,7 @@ try {
     await expect(dlg().locator('.pf-og').filter({ hasText: '赤贫农夫养家计_54' })).toContainText('已有同名的剧');
     assert.deepEqual(await seriesNames(), ['此恨', '赤贫农夫养家计']);
     assert.deepEqual(await ungroupedNames(), ['此恨2', '温情短剧', '玫瑰的婚姻1-1', '玫瑰的婚姻2', '玫瑰的婚姻3', '赤贫农夫养家计_1', '赤贫农夫养家计_54'].sort());
-    const first = organizeBodies.at(-1).request_id;
+    const first = organizeBodies.at(-1)?.request_id; // 合入维度统一后端后，冲突在整理预览里就拦下，可能根本没发出归组
     await dlg().getByLabel('赤贫农夫养家计的剧名').fill('赤贫农夫养家计（重剪）'); await submit().click();
     await expect(dlg()).toHaveCount(0); await expect(page.locator('.pf-toast')).toContainText('已新建 2 部剧、归组 6 个项目');
     assert.notEqual(organizeBodies.at(-1).request_id, first, '改过内容后应换新的请求编号');

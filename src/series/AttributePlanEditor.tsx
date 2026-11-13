@@ -5,9 +5,15 @@ import { AlignmentDecisions } from "./AlignmentDecisions";
 import { mergeChoices, type AlignmentChoice } from "./alignment";
 import type { AttributeGroupChoice, AttributePlan } from "./model";
 
-/** 有要你决定的维度、要新增全剧维度、要选新剧的维度基准，或预览本身没就绪时，才需要让用户核对。 */
+/** 新剧有多个基准可选，且选哪个会有差别：按当前基准，到达的各集只要有一集不是「完全一致」就有差别。
+ *  全部一致（编号、顺序、两端、依据都相同）说明各集和基准是同一套维度，选哪个结果都一样，不必打扰用户。 */
+function baselineMatters(g: AttributePlan['groups'][number]) {
+  return (g.baseline_options?.length ?? 0) > 1 && !(g.alignment && g.alignment.episodes.length > 0 && g.alignment.episodes.every(ep => ep.comparison === 'identical'));
+}
+
+/** 有要你决定的维度、要新增全剧维度、新剧基准选哪个会有差别，或预览本身没就绪时，才需要让用户核对。 */
 export function needsAttributeReview(plan: AttributePlan, ready: boolean) {
-  return !ready || plan.groups.some(g => (g.baseline_options?.length ?? 0) > 1 || !!g.alignment && (!g.alignment.ready || g.alignment.series_changes.added.length > 0 || g.alignment.episodes.some(ep => ep.decisions.length > 0)));
+  return !ready || plan.groups.some(g => baselineMatters(g) || !!g.alignment && (!g.alignment.ready || g.alignment.series_changes.added.length > 0 || g.alignment.episodes.some(ep => ep.decisions.length > 0)));
 }
 
 export function AttributePlanEditor({ plan, busy, nameOf, groupLabel, onChoices }: {
@@ -28,7 +34,8 @@ export function AttributePlanEditor({ plan, busy, nameOf, groupLabel, onChoices 
       {shown.length > 1 && groupLabel && <b>{groupLabel(g.group_id)}</b>}
       {(g.baseline_options?.length ?? 0) > 1 && <label className="field">新剧的人物属性维度从哪来
         <select aria-label="新剧的维度基准" value={JSON.stringify(choiceFor(g.group_id).baseline ?? g.baseline ?? g.baseline_options![0])} disabled={busy}
-          onChange={e => update(g.group_id, { baseline: JSON.parse(e.target.value) })}>
+          // 换基准后要决定的维度整套都变了，旧决定会被服务端判为无效：清空，由新预览按新基准给默认
+          onChange={e => update(g.group_id, { baseline: JSON.parse(e.target.value), decisions: [] })}>
           {g.baseline_options!.map(b => <option key={JSON.stringify(b)} value={JSON.stringify(b)}>{b.kind === 'default' ? '系统默认维度' : `复制「${nameOf(b.project_id)}」的维度`}</option>)}
         </select></label>}
       {g.alignment && <AlignmentDecisions preview={g.alignment} choices={choiceFor(g.group_id).decisions} disabled={busy} onChoose={c => choose(g.group_id, c)}/>}

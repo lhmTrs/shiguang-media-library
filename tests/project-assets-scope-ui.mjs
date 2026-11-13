@@ -7,6 +7,7 @@ import os from 'node:os';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import Database from 'better-sqlite3';
 import { chromium, expect } from '@playwright/test';
 import { projectInBar } from './helpers/path-bar.mjs';
 
@@ -516,6 +517,10 @@ try {
   });
 
   await check('返工2·维度弹窗在删除预览等待中被切集关闭：之后不再发出旧集的保存', async () => {
+    // 已统一的剧在集里不能改维度（合同 v1 · A1）；这个场景只在还没统一的旧剧里存在：临时摘掉对齐标记，测完放回
+    const db = new Database(path.join(temp, 'data', 'library.sqlite')); const mark = db.prepare('SELECT * FROM series_attribute_alignment WHERE id=?').get(s.id);
+    db.prepare('DELETE FROM series_attribute_alignment WHERE id=?').run(s.id);
+    try {
     let release; fake.prGate = new Promise(r => release = r); fake.prHits = 0; reqLog.length = 0;
     await work().getByRole('button', { name: '更多资产操作' }).click(); await work().getByRole('menuitem', { name: '人物属性维度…' }).click();
     const dlg = page.getByRole('dialog', { name: '人物属性维度' }); await dlg.getByLabel('第 1 个维度名称').fill('改过的维度名');
@@ -524,6 +529,7 @@ try {
     fake.prGate = null; release(); await page.waitForTimeout(1500);
     assert.deepEqual(reqLog.filter(r => r.method !== 'GET' && /\/attribute-config$/.test(r.path)), [], '已关闭的弹窗不应再发出保存');
     await keyStep('上一集：第1集', eps[0].id);
+    } finally { const cols = Object.keys(mark); db.prepare(`INSERT INTO series_attribute_alignment (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map(c => mark[c])); db.close(); }
   });
 
   await check('返工2·只有已归档人物有分数时删全剧维度：仍要确认并带确认凭证', async () => {

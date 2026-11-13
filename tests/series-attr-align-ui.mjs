@@ -40,16 +40,18 @@ function alignmentPreview(choices = []) {
     series_changes: { added: adding ? [{ item_ids: ['it-fame'], dimension: dim('d-fame', '财运', '破财', '发财'), impact: impact(12) }] : [], dimension_count_before: 6, dimension_count_after: adding ? 7 : 6, min: 3, max: 8 },
     total_impact: { project_count: 2, people: 2, archived_people: 0, scored_cells: 54, manual_clear_cells: 0 }, blockers: [] };
 }
+const withRealPlan = async (previewPath, previewBody, body) => { const real = strip(body); const pv = await api(previewPath, previewBody);
+  const plan = pv.attribute_plan; if (plan?.preview_token) Object.assign(real, { attribute_preview_token: plan.preview_token, attribute_choices: plan.choices }); return real; };
 async function installMocks() {
   // A1：生效配置。已统一时集入口返回全剧作用域与配置凭证
   await page.route(u => /^\/api\/project-assets\/projects\/[^/]+\/attribute-config$/.test(new URL(u).pathname), async route => {
     if (route.request().method() !== 'GET' || !fake.aligned) return route.fallback();
-    const res = await route.fetch(); const data = await res.json();
+    const res = await route.fetch(); const data = await res.json(); fake.realToken = data.config_token; // 合入的后端会校验凭证，转发保存时换回真实凭证
     return route.fulfill({ json: { ...data, series_id: S.id, config_scope: 'series', alignment_status: 'aligned', config_editable: false, config_token: 'cfg-tok' } });
   });
   await page.route(u => /^\/api\/project-assets\/assets\/[^/]+\/attributes$/.test(new URL(u).pathname), async route => {
     if (route.request().method() !== 'PATCH') return route.fallback();
-    const body = route.request().postDataJSON(); fake.patches.push(body); return route.continue({ postData: JSON.stringify(strip(body)) });
+    const body = route.request().postDataJSON(); fake.patches.push(body); const real = strip(body); if (fake.realToken) real.config_token = fake.realToken; return route.continue({ postData: JSON.stringify(real) });
   });
   // A2：剧对齐
   await page.route(u => /^\/api\/project-series\/[^/]+\/attribute-alignment(\/preview|\/confirm)?$/.test(new URL(u).pathname), async route => {
@@ -77,7 +79,7 @@ async function installMocks() {
   });
   await page.route(u => new URL(u).pathname === '/api/project-series/moves', async route => {
     const body = route.request().postDataJSON(); fake.moves.push(body);
-    const res = await route.fetch({ postData: JSON.stringify(strip(body)) }); const data = await res.json();
+    const res = await route.fetch({ postData: JSON.stringify(await withRealPlan('/project-series/moves/preview', { target: body.target, items: body.items }, body)) }); const data = await res.json();
     return route.fulfill({ status: res.status(), json: res.ok() && body.attribute_preview_token ? { ...data, can_undo: false, undo_disabled_reason: 'ATTRIBUTE_CONFIGURATION_CHANGED' } : data });
   });
   await page.route(u => new URL(u).pathname === '/api/project-series/organize/preview', async route => {
@@ -85,7 +87,7 @@ async function installMocks() {
     return route.fulfill({ json: { ready: true, conflicts: [], attribute_plan: fake.organizePlan(body) } });
   });
   await page.route(u => new URL(u).pathname === '/api/project-series/organize', async route => {
-    const body = route.request().postDataJSON(); fake.organizes.push(body); return route.continue({ postData: JSON.stringify(strip(body)) });
+    const body = route.request().postDataJSON(); fake.organizes.push(body); return route.continue({ postData: JSON.stringify(await withRealPlan('/project-series/organize/preview', { groups: body.groups }, body)) });
   });
 }
 
