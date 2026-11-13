@@ -50,18 +50,22 @@ try {
     await page.reload(); await expect(heading('穿越计')).toBeVisible();
   });
 
-  await check('剧里一次点击新建季、新建剧里的第 1、2 集；当前集卡给出素材使用等入口和分享给 Agent', async () => {
+  await check('剧里一次点击新建季、新建剧里的第 1、2 集；新卡闪一下；右键菜单给出打开四个页面与分享给 Agent；卡片同高、不再有卡内快捷入口', async () => {
     await pf().getByRole('button', { name: '新建季', exact: true }).click(); await expect(card('打开 第 1 季')).toBeVisible();
     await pf().getByRole('button', { name: '新建第 1 集（剧里）' }).click(); await expect(card('穿越计 第 1 集')).toBeVisible();
     await pf().getByRole('button', { name: '新建第 2 集（剧里）' }).click(); await expect(card('穿越计 第 2 集')).toBeVisible();
-    const links = pf().getByRole('navigation', { name: '第 2 集的快捷入口' });
-    for (const name of ['素材使用', '项目资产', '生成视频', '分镜']) await expect(links.getByRole('button', { name, exact: true })).toBeVisible();
-    await expect(links.getByRole('button', { name: /分享给 Agent/ })).toBeVisible();
+    await expect(pf().locator('.pf-episode[data-flash]')).toHaveCount(1);
     await expect(toast()).toContainText('已新建「穿越计 第2集」');
+    await expect(pf().getByRole('navigation', { name: /快捷入口/ })).toHaveCount(0);
+    const heights = await pf().locator('.pf-card').evaluateAll(els => [...new Set(els.map(e => Math.round(e.getBoundingClientRect().height)))]);
+    assert.deepEqual(heights, [64], '所有卡片同高：' + JSON.stringify(heights));
+    await card('穿越计 第 2 集').click({ button: 'right' });
+    for (const name of ['打开素材使用', '打开项目资产', '打开生成视频', '打开分镜', '分享给 Agent…']) await expect(menu().getByRole('menuitem', { name: new RegExp('^' + name) })).toBeVisible();
+    await page.keyboard.press('Escape'); await page.mouse.click(5, 5); await expect(menu()).toHaveCount(0);
   });
 
   await check('进入第 1 季新建它的第 1 集；面包屑回到剧', async () => {
-    await card('打开 第 1 季').dblclick(); await expect(heading('第 1 季')).toBeVisible();
+    await card('打开 第 1 季').click(); await expect(heading('第 1 季')).toBeVisible();
     await pf().getByRole('button', { name: '新建第 1 集（第 1 季）' }).click(); await expect(card('穿越计 第 1 季 第 1 集')).toBeVisible();
     await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '穿越计' }).click(); await expect(heading('穿越计')).toBeVisible();
   });
@@ -95,7 +99,7 @@ try {
 
   await check('根目录新建未分组项目，右键「放进剧…」放到穿越计剧里：先填号（默认第 3 集），之后出现在剧里', async () => {
     await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); await expect(heading('项目')).toBeVisible();
-    await pf().getByRole('button', { name: '新建项目', exact: true }).click();
+    await pf().getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menu', { name: '操作' }).getByRole('menuitem', { name: /新建项目/ }).click();
     const e = page.getByRole('dialog', { name: '新建项目' }); await e.getByLabel('项目名称').fill('番外合集'); await e.getByRole('button', { name: '保存项目' }).click();
     await expect(card('番外合集')).toBeVisible();
     await rightClick('番外合集'); await menu().getByRole('menuitem', { name: '放进剧…' }).click();
@@ -105,10 +109,26 @@ try {
     await expect(card('打开剧 穿越计')).toContainText('4 集');
   });
 
-  await check('剧里点第 3 集的「素材使用」：跳到素材使用页并打开这一集', async () => {
+  await check('习惯性双击空剧：只进入，第二下不会点中「新建季」或「新建第 1 集」', async () => {
+    if (!(await heading('项目').isVisible())) await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click();
+    await expect(heading('项目')).toBeVisible();
+    await pf().getByRole('button', { name: '新建剧', exact: true }).click();
+    const d = page.getByRole('dialog', { name: '新建剧' }); await d.getByLabel('剧名').fill('空剧'); await d.getByRole('button', { name: '新建剧', exact: true }).click();
+    await expect(heading('空剧')).toBeVisible(); await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click();
+    await page.waitForTimeout(700);
+    // 模拟双击的第二下正好落在新页面的「新建季」「新建第 1 集」上：进入后立即对它们派发 detail=2 的点击。
+    await card('打开剧 空剧').click(); await expect(heading('空剧')).toBeVisible();
+    for (const name of ['新建季', '新建第 1 集（剧里）']) await pf().getByRole('button', { name, exact: true }).dispatchEvent('click', { detail: 2 });
+    await page.waitForTimeout(500);
+    await expect(pf().locator('.pf-folder')).toHaveCount(0); await expect(pf().locator('.pf-episode')).toHaveCount(0);
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); await page.waitForTimeout(700);
+  });
+
+  await check('习惯性双击文件夹：进入剧，第二下不会选中或打开新页面上的卡；双击第 3 集打开素材使用', async () => {
     await card('打开剧 穿越计').dblclick(); await expect(heading('穿越计')).toBeVisible();
-    await card('穿越计 第 3 集').click();
-    await pf().getByRole('navigation', { name: '第 3 集的快捷入口' }).getByRole('button', { name: '素材使用' }).click();
+    await page.waitForTimeout(300); await expect(page).toHaveURL(/#\/projects/); await expect(pf().locator('.pf-episode[data-selected]')).toHaveCount(0);
+    await page.waitForTimeout(400);
+    await card('穿越计 第 3 集').dblclick();
     await expect(page).toHaveURL(/#\/project-usage/); await expect(page.getByRole('region', { name: '项目素材篮' }).getByRole('heading', { name: '番外合集', exact: true })).toBeVisible();
   });
 

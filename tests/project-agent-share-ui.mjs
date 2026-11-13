@@ -97,20 +97,19 @@ try {
     });
   });
   await page.goto(origin + '/#/projects');
-  // 分享入口在目录页当前集卡的快捷入口里（SERIES-P1 拆页后）。
+  // 分享入口在目录页集卡片的右键菜单里（目录页改版 R2），打开后在对话框里选择复制方式。
   const folders = page.locator('.pf');
   const cardOf = name => folders.getByRole('button', { name: new RegExp('^' + name + '(（当前项目）)?$') });
-  const linksOf = name => folders.getByRole('navigation', { name: name + '的快捷入口' });
+  const linksOf = name => page.getByRole('dialog', { name: '分享给 Agent · ' + name });
+  const openShare = async name => { await cardOf(name).click({ button: 'right' }); await page.getByRole('menu', { name: '操作' }).getByRole('menuitem', { name: '分享给 Agent…' }).click(); await expect(linksOf(name)).toBeVisible(); };
   const share = scope => scope.getByRole('button', { name: '分享给 Agent', exact: true });
   const copyLink = scope => scope.getByRole('button', { name: '复制接入链接', exact: true });
-  await cardOf(a.name).click();
+  await cardOf(a.name).click(); await openShare(a.name);
   await share(linksOf(a.name)).click();
   await copyLink(linksOf(a.name)).click();
   await expect(linksOf(a.name).getByRole('textbox', { name: '接入链接' })).toHaveValue(origin + guidePath(a.id));
-  // 窄屏下分享面板会盖住相邻卡片：先 Esc 关掉面板，再切到乙。
-  await page.keyboard.press('Escape'); await expect(linksOf(a.name).getByRole('textbox', { name: '接入链接' })).toHaveCount(0);
-  await cardOf(b.name).click();
-  await expect(linksOf(a.name)).toHaveCount(0);
+  await linksOf(a.name).getByRole('button', { name: '完成', exact: true }).click(); await expect(linksOf(a.name)).toHaveCount(0);
+  await cardOf(b.name).click(); await openShare(b.name);
   await expect(copyLink(linksOf(b.name))).toHaveCount(0);
   await share(linksOf(b.name)).click();
   await linksOf(b.name).getByRole('button', { name: '复制 Markdown 说明', exact: true }).click();

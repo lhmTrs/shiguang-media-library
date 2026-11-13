@@ -1,6 +1,6 @@
 import './project-folders.css';
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { Check, ChevronRight, FileUp, Folder, FolderKanban, MoreHorizontal, Plus, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileUp, Folder, FolderKanban, MoreHorizontal, Plus, X } from "lucide-react";
 import { useFeedbackToast } from '../global-feedback';
 import { ProjectEditor, type ProjectRequest } from '../ProjectManager';
 import { TimelineImportDialog } from '../TimelineImportDialog';
@@ -10,7 +10,8 @@ import { Modal } from './Modal';
 import { OrganizeDialog } from './OrganizeDialog';
 import { buildTree, errorText, seasonName, seriesApi, type Container, type GroupedProject, type MoveConflict, type MoveItem, type MoveTarget, type Season, type Series, type SeriesNode } from './model';
 
-// 目录式项目页（SERIES-P1，原型 ⑤⑥⑦⑨）：根目录 = 剧文件夹 + 未分组项目；剧里先季后散放集；季里是集。
+// 目录式项目页（SERIES-P1，原型 ⑤⑥⑦⑨；改版 R1/R2/R4）：根目录 = 剧文件夹 + 未分组项目；剧里先季后散放集；季里是集。
+// 卡片一律矮卡片；剧 / 季单击进入；集单击选中、双击打开素材使用、右键打开其他页面与整理操作。
 export type FolderPage = 'usage' | 'assets' | 'videos' | 'storyboard';
 export type ProjectFoldersProps = {
   projects: GroupedProject[]; series: Series[]; seriesChanged: () => void;
@@ -21,7 +22,7 @@ export type ProjectFoldersProps = {
 };
 type Loc = { level: 'root' } | { level: 'series'; seriesId: string } | { level: 'season'; seriesId: string; seasonId: string };
 type Sort = 'updated' | 'name' | 'created';
-type MenuBody = { kind: 'episode'; project: GroupedProject; container: Container | null } | { kind: 'season'; season: Season; node: SeriesNode } | { kind: 'series'; node: SeriesNode };
+type MenuBody = { kind: 'episode'; project: GroupedProject; container: Container | null } | { kind: 'season'; season: Season; node: SeriesNode } | { kind: 'series'; node: SeriesNode } | { kind: 'new' };
 type Menu = { x: number; y: number } & MenuBody;
 type NumberRow = { project: GroupedProject; episode_no: number };
 type Dialog =
@@ -32,7 +33,8 @@ type Dialog =
   | { type: 'episodeName'; node: SeriesNode; container: Container; expected: number }
   | { type: 'project'; project: GroupedProject | null }
   | { type: 'xml' }
-  | { type: 'organize' };
+  | { type: 'organize' }
+  | { type: 'share'; project: GroupedProject };
 type Toast = { text: string; undo?: string };
 
 const LOC_KEY = 'shiguang.projectFolders.loc', SORT_KEY = 'shiguang.projectFolders.sort', PENDING_KEY = 'shiguang.projectFolders.pendingSeries', DRAG_TYPE = 'text/x-shiguang-projects';
@@ -46,7 +48,10 @@ const nextNo = (c: Container) => c.season ? c.season.next_episode_no : c.series.
 /** 新建时系统起的名字；不一样就在卡片上用小字显示项目原名。 */
 const autoName = (c: Container, p: GroupedProject) => c.season ? `${c.series.name} 第${c.season.season_no}季 第${p.episode_no}集` : `${c.series.name} 第${p.episode_no}集`;
 const targetOf = (c: Container): MoveTarget => ({ series_id: c.series.id, season_id: c.season?.id ?? null });
-const FolderIcon = () => <svg className="pf-folder-icon" width="34" height="28" viewBox="0 0 34 28" aria-hidden="true"><path d="M2 5a3 3 0 0 1 3-3h8l3 3h13a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3z"/></svg>;
+/** 双击习惯：进入文件夹后紧跟的第二下点击 / 双击不应落到新页面的卡片上。 */
+const NAV_GUARD_MS = 600;
+const FLASH_MS = 1200;
+const FolderIcon = () => <svg className="pf-folder-icon" width="22" height="18" viewBox="0 0 34 28" aria-hidden="true"><path d="M2 5a3 3 0 0 1 3-3h8l3 3h13a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3z"/></svg>;
 
 export function ProjectFolders({ projects, series, seriesChanged, activeId, select, request, changed, openPage, libraryId = '' }: ProjectFoldersProps) {
   const locKey = libraryId ? `${LOC_KEY}:${libraryId}` : '', pendingKey = libraryId ? `${PENDING_KEY}:${libraryId}` : '';
@@ -76,9 +81,13 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const [selected, setSelected] = useState<string[]>([]), anchor = useRef<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null), [dialog, setDialog] = useState<Dialog | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [toast, setToast] = useState<Toast | null>(null);
-  const [dropKey, setDropKey] = useState('');
+  const [dropKey, setDropKey] = useState(''), [dragCount, setDragCount] = useState(0);
+  const [flash, setFlash] = useState<string[]>([]), navAt = useRef(0);
+  const flashCards = (ids: string[]) => setFlash(ids);
+  useEffect(() => { if (!flash.length) return; document.querySelector('.pf [data-flash]')?.scrollIntoView?.({ block: 'nearest' }); const t = setTimeout(() => setFlash([]), FLASH_MS); return () => clearTimeout(t); }, [flash]);
   useFeedbackToast(error, { source: '项目管理' });
-  const setLoc = (next: Loc) => { setLocState(next); if (locKey) writeSession(locKey, next); setSelected([]); anchor.current = null; setMenu(null); };
+  const setLoc = (next: Loc) => { navAt.current = Date.now(); setLocState(next); if (locKey) writeSession(locKey, next); setSelected([]); anchor.current = null; setMenu(null); };
+  const justNavigated = () => Date.now() - navAt.current < NAV_GUARD_MS;
   const setSort = (s: Sort) => { setSortState(s); writeSession(SORT_KEY, s); };
 
   const node = loc.level === 'root' ? undefined : tree.series.find(n => n.series.id === loc.seriesId);
@@ -100,6 +109,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const visible: GroupedProject[] = loc.level === 'root' ? sortedUngrouped : loc.level === 'series' ? node?.root.episodes ?? [] : seasonContainer?.episodes ?? [];
 
   function clickCard(e: MouseEvent, p: GroupedProject) {
+    if (e.detail > 1 && justNavigated()) return;
     if (e.metaKey || e.ctrlKey) { setSelected(s => s.includes(p.id) ? s.filter(id => id !== p.id) : [...s, p.id]); anchor.current = p.id; return; }
     if (e.shiftKey && anchor.current) {
       const a = visible.findIndex(v => v.id === anchor.current), b = visible.findIndex(v => v.id === p.id);
@@ -117,7 +127,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     const items: MoveItem[] = rows.map(r => ({ project_id: r.project.id, expected_revision: r.project.membership_revision ?? 0, ...(r.episode_no != null && target.series_id ? { episode_no: r.episode_no } : {}) }));
     try {
       const receipt = await api.move(target, items);
-      setDialog(null); setSelected([]); refresh();
+      setDialog(null); setSelected([]); refresh(); flashCards(target.season_id ? [target.season_id] : target.series_id ? ['series:' + target.series_id] : rows.map(r => r.project.id));
       setToast({ text: target.series_id ? `已把 ${rows.length} 集移到「${targetName}」` : `已把 ${rows.length} 个项目移出剧`, undo: receipt.can_undo ? receipt.request_id : undefined });
     } catch (e) {
       const conflicts = (e as { details?: { conflicts?: MoveConflict[] } }).details?.conflicts;
@@ -141,20 +151,20 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const dropProps = (key: string, target: MoveTarget, name: string, container: Container | null) => ({
     onDragOver: (e: DragEvent) => { if (e.dataTransfer.types.includes(DRAG_TYPE)) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropKey(key); } },
     onDragLeave: () => setDropKey(k => k === key ? '' : k),
-    onDrop: (e: DragEvent) => { e.preventDefault(); setDropKey(''); startMove(target, name, container, dragIds(e)); },
+    onDrop: (e: DragEvent) => { e.preventDefault(); setDropKey(''); setDragCount(0); startMove(target, name, container, dragIds(e)); },
     'data-drop': dropKey === key ? 'over' : undefined,
   });
   const dragProps = (p: GroupedProject) => ({
     draggable: !busy,
-    onDragStart: (e: DragEvent) => { const ids = selected.includes(p.id) ? selected : [p.id]; if (!selected.includes(p.id)) setSelected([p.id]); e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ids)); e.dataTransfer.effectAllowed = 'move'; },
-    onDragEnd: () => setDropKey(''),
+    onDragStart: (e: DragEvent) => { const ids = selected.includes(p.id) ? selected : [p.id]; if (!selected.includes(p.id)) setSelected([p.id]); setDragCount(ids.length); e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ids)); e.dataTransfer.effectAllowed = 'move'; },
+    onDragEnd: () => { setDropKey(''); setDragCount(0); },
   });
 
   // —— 新建 ——
   function createEpisode(n: SeriesNode, c: Container, name?: string) {
     const expected = nextNo(c);
     void run(async () => {
-      try { const r = await api.createEpisode(n.series, c.season, expected, undefined, name); setDialog(null); refresh(r.project.id); select(r.project.id); setSelected([r.project.id]); setToast({ text: `已新建「${r.project.name}」` }); }
+      try { const r = await api.createEpisode(n.series, c.season, expected, undefined, name); setDialog(null); refresh(r.project.id); select(r.project.id); setSelected([r.project.id]); flashCards([r.project.id]); setToast({ text: `已新建「${r.project.name}」` }); }
       catch (e) {
         const code = (e as { code?: string }).code;
         if (code === 'PROJECT_NAME_CONFLICT') { setDialog({ type: 'episodeName', node: n, container: c, expected }); return; }
@@ -163,7 +173,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
       }
     });
   }
-  const createSeason = (n: SeriesNode) => void run(async () => { const s = await api.createSeason(n.series); seriesChanged(); setToast({ text: `已新建「${seasonName(s)}」` }); });
+  const createSeason = (n: SeriesNode) => void run(async () => { const s = await api.createSeason(n.series); seriesChanged(); flashCards([s.id]); setToast({ text: `已新建「${seasonName(s)}」` }); });
 
   // —— 菜单动作 ——
   function swapEpisode(p: GroupedProject, c: Container, direction: 'previous' | 'next') {
@@ -180,37 +190,50 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   const deleteSeries = (n: SeriesNode) => { if (window.confirm(`删除剧“${n.series.name}”？只有没有任何集时才能删除。`)) void run(async () => { await api.deleteSeries(n.series); if (pending?.series.id === n.series.id) setPending(null); setLoc({ level: 'root' }); seriesChanged(); }); };
   const deleteSeason = (s: Season) => { if (window.confirm(`删除「${seasonName(s)}」？只有空季才能删除。`)) void run(async () => { await api.deleteSeason(s); seriesChanged(); }); };
   const undo = (id: string) => void run(async () => { await api.undoMove(id); setToast({ text: '已撤销这次移动' }); refresh(); });
+  /** 菜单按实际大小放：放不下就往上挪，再不够就贴着窗口边、在菜单里滚动（max-height 由样式限制）。 */
+  const placeMenu = (el: HTMLDivElement | null) => {
+    if (!el || !menu) return;
+    const margin = 8, w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = Math.max(margin, Math.min(menu.x, window.innerWidth - w - margin)) + 'px';
+    el.style.top = Math.max(margin, Math.min(menu.y, window.innerHeight - h - margin)) + 'px';
+  };
   const openMenu = (e: MouseEvent, m: MenuBody) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, ...m }); };
 
-  // —— 卡片 ——
+  // —— 卡片（R1/R2/R4：矮卡片，状态各用一种手段） ——
+  const containerLabel = (c: Container) => c.season ? `${c.series.name} ${seasonName(c.season)}` : c.series.name;
+  const counts = (p: GroupedProject) => p.candidates || p.used ? [p.candidates ? `候选 ${p.candidates}` : '', p.used ? `已使用 ${p.used}` : ''].filter(Boolean).join(' · ') : '暂无素材';
+  const episodeSub = (p: GroupedProject, c: Container | null) => [c && p.name !== autoName(c, p) ? p.name : '', !c && p.software ? softwareNames[p.software] : '', counts(p)].filter(Boolean).join(' · ');
   const episodeCard = (p: GroupedProject, c: Container | null) => {
     const current = p.id === activeId, picked = selected.includes(p.id), title = c ? `第 ${p.episode_no} 集` : p.name;
-    return <div key={p.id} className="pf-card pf-episode" data-selected={picked || undefined} data-current={current || undefined} {...dragProps(p)}
+    // 只单击选中当前这一集时，绿框已经说明一切；多选（或选中的不是当前集）才显示浅绿底和小勾。
+    const pickedMark = picked && (selected.length > 1 || !current);
+    return <div key={p.id} className="pf-card pf-episode" data-selected={pickedMark || undefined} data-current={current || undefined} data-flash={flash.includes(p.id) || undefined} {...dragProps(p)}
       onContextMenu={e => openMenu(e, { kind: 'episode', project: p, container: c })}>
-      <button type="button" className="pf-card-main" aria-pressed={picked} aria-label={(c ? `${containerLabel(c)} ${title}` : title) + (current ? '（当前项目）' : '')} onClick={e => clickCard(e, p)}>
-        <b>{title}{current && <span className="pf-current">当前</span>}</b>
-        {c && p.name !== autoName(c, p) && <small className="pf-origin" title={p.name}>{p.name}</small>}
-        <small>素材 候选 {p.candidates} · 已使用 {p.used}</small>
-        {!c && <span className="pf-tag">{softwareNames[p.software] || '其他'}</span>}
+      <button type="button" className="pf-card-main" aria-pressed={picked} title="双击打开素材使用 · 右键更多"
+        aria-label={(c ? `${containerLabel(c)} ${title}` : title) + (current ? '（当前项目）' : '')}
+        onClick={e => clickCard(e, p)} onDoubleClick={e => { if (justNavigated() || e.metaKey || e.ctrlKey || e.shiftKey) return; openPage('usage', p.id); }}>
+        <b>{title}</b><small>{episodeSub(p, c)}</small>
       </button>
-      {current && <nav className="pf-links" aria-label={`${title}的快捷入口`}>{pages.map(x => <button type="button" key={x.page} onClick={() => openPage(x.page, p.id)}>{x.name}</button>)}<AgentShare projectId={p.id} projectName={p.name} disabled={busy}/></nav>}
+      {pickedMark && <span className="pf-tick" aria-hidden="true"><Check size={11} strokeWidth={3}/></span>}
+      <span className="pf-more" aria-hidden="true"><MoreHorizontal size={15}/></span>
     </div>;
   };
-  const containerLabel = (c: Container) => c.season ? `${c.series.name} ${seasonName(c.season)}` : c.series.name;
-  const addCard = (label: ReactNode, sub: string, onClick: () => void, aria: string) =>
-    <button type="button" className="pf-card pf-add" aria-label={aria} disabled={busy} onClick={onClick}><Plus size={18}/><span>{label}</span><small>{sub}</small></button>;
-  const seriesCard = (n: SeriesNode) =>
-    <div key={n.series.id} className="pf-card pf-folder" {...dropProps('series:' + n.series.id, { series_id: n.series.id, season_id: null }, n.series.name, n.root)} onContextMenu={e => openMenu(e, { kind: 'series', node: n })}>
-      <button type="button" className="pf-card-main" aria-label={`打开剧 ${n.series.name}`} onDoubleClick={() => setLoc({ level: 'series', seriesId: n.series.id })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); setLoc({ level: 'series', seriesId: n.series.id }); } }}>
-        <FolderIcon/><b>{n.series.name}</b><small>{n.seasons.length ? `${n.seasons.length} 季 · ` : ''}{n.episodeCount} 集 · {softwareNames[n.series.software] || '未指定'}</small>
+  const addCard = (label: ReactNode, onClick: () => void, aria: string, sub?: string) =>
+    <button type="button" className="pf-card pf-add" aria-label={aria} title={sub} disabled={busy} onClick={e => { if (e.detail > 1 && justNavigated()) return; onClick(); }}><Plus size={16}/><span>{label}</span></button>;
+  const folderCard = (key: string, flashKey: string, name: string, sub: string, aria: string, enter: () => void, drop: ReturnType<typeof dropProps>, menuBody: MenuBody) =>
+    <div key={key} className="pf-card pf-folder" data-flash={flash.includes(flashKey) || undefined} {...drop} onContextMenu={e => openMenu(e, menuBody)}>
+      <button type="button" className="pf-card-main" aria-label={aria} onClick={e => { if (e.detail > 1 && justNavigated()) return; enter(); }}>
+        <FolderIcon/><span className="pf-text"><b>{name}</b><small>{drop['data-drop'] && dragCount ? `松手移入 ${dragCount} 集` : sub}</small></span>
+        <ChevronRight className="pf-chev" size={18} aria-hidden="true"/>
       </button>
     </div>;
-  const seasonCard = (n: SeriesNode, c: Container) =>
-    <div key={c.key} className="pf-card pf-folder" {...dropProps('season:' + c.season!.id, targetOf(c), containerLabel(c), c)} onContextMenu={e => openMenu(e, { kind: 'season', season: c.season!, node: n })}>
-      <button type="button" className="pf-card-main" aria-label={`打开 ${seasonName(c.season!)}`} onDoubleClick={() => setLoc({ level: 'season', seriesId: n.series.id, seasonId: c.season!.id })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); setLoc({ level: 'season', seriesId: n.series.id, seasonId: c.season!.id }); } }}>
-        <FolderIcon/><b>{seasonName(c.season!)}</b><small>季号 {c.season!.season_no} · {c.episodes.length} 集</small>
-      </button>
-    </div>;
+  const seriesCard = (n: SeriesNode) => folderCard(n.series.id, 'series:' + n.series.id, n.series.name,
+    [n.seasons.length ? `${n.seasons.length} 季` : '', `${n.episodeCount} 集`, n.series.software ? softwareNames[n.series.software] : ''].filter(Boolean).join(' · '),
+    `打开剧 ${n.series.name}`, () => setLoc({ level: 'series', seriesId: n.series.id }),
+    dropProps('series:' + n.series.id, { series_id: n.series.id, season_id: null }, n.series.name, n.root), { kind: 'series', node: n });
+  const seasonCard = (n: SeriesNode, c: Container) => folderCard(c.key, c.season!.id, seasonName(c.season!), `${c.episodes.length} 集`,
+    `打开 ${seasonName(c.season!)}`, () => setLoc({ level: 'season', seriesId: n.series.id, seasonId: c.season!.id }),
+    dropProps('season:' + c.season!.id, targetOf(c), containerLabel(c), c), { kind: 'season', season: c.season!, node: n });
 
   const crumbs = <nav className="pf-crumbs" aria-label="位置">
     <button type="button" onClick={() => setLoc({ level: 'root' })} {...(loc.level !== 'root' ? dropProps('crumb:root', { series_id: null, season_id: null }, '', null) : {})}>项目</button>
@@ -227,27 +250,35 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     </>;
   } else if (loc.level === 'series') {
     body = <>
-      <section aria-label="季"><h3 className="pf-section">季</h3><div className="pf-grid">{node.seasons.map(c => seasonCard(node, c))}{addCard('新建季', `默认「第 ${node.series.next_season_no} 季」，可改名`, () => createSeason(node), '新建季')}</div></section>
-      <section aria-label="直接放在剧里的集"><h3 className="pf-section">直接放在剧里的集{selected.length > 1 ? ` · 已选 ${selected.length} 集` : ''}</h3><div className="pf-grid" tabIndex={-1} onKeyDown={gridKeys}>{node.root.episodes.map(p => episodeCard(p, node.root))}{addCard(`新建第 ${node.series.next_episode_no} 集`, '放在剧里，不进任何季', () => createEpisode(node, node.root), `新建第 ${node.series.next_episode_no} 集（剧里）`)}</div></section>
+      <section aria-label="季"><h3 className="pf-section">季</h3><div className="pf-grid">{node.seasons.map(c => seasonCard(node, c))}{addCard('新建季', () => createSeason(node), '新建季', `默认「第 ${node.series.next_season_no} 季」，可改名`)}</div></section>
+      <section aria-label="直接放在剧里的集"><h3 className="pf-section">直接放在剧里的集{selected.length > 1 ? ` · 已选 ${selected.length} 集` : ''}</h3><div className="pf-grid" tabIndex={-1} onKeyDown={gridKeys}>{node.root.episodes.map(p => episodeCard(p, node.root))}{addCard(`新建第 ${node.series.next_episode_no} 集`, () => createEpisode(node, node.root), `新建第 ${node.series.next_episode_no} 集（剧里）`, '放在剧里，不进任何季')}</div></section>
     </>;
   } else if (seasonContainer) {
-    body = <section aria-label={seasonName(seasonContainer.season!) + '的集'}><h3 className="pf-section">{seasonContainer.episodes.length} 集{selected.length > 1 ? ` · 已选 ${selected.length} 集` : ''}</h3><div className="pf-grid" tabIndex={-1} onKeyDown={gridKeys}>{seasonContainer.episodes.map(p => episodeCard(p, seasonContainer))}{addCard(`新建第 ${seasonContainer.season!.next_episode_no} 集`, `沿用${softwareNames[node.series.software] || '剧的设置'}`, () => createEpisode(node, seasonContainer), `新建第 ${seasonContainer.season!.next_episode_no} 集（${seasonName(seasonContainer.season!)}）`)}</div></section>;
+    body = <section aria-label={seasonName(seasonContainer.season!) + '的集'}><h3 className="pf-section">{seasonContainer.episodes.length} 集{selected.length > 1 ? ` · 已选 ${selected.length} 集` : ''}</h3><div className="pf-grid" tabIndex={-1} onKeyDown={gridKeys}>{seasonContainer.episodes.map(p => episodeCard(p, seasonContainer))}{addCard(`新建第 ${seasonContainer.season!.next_episode_no} 集`, () => createEpisode(node, seasonContainer), `新建第 ${seasonContainer.season!.next_episode_no} 集（${seasonName(seasonContainer.season!)}）`, `沿用${softwareNames[node.series.software] || '剧的设置'}`)}</div></section>;
   }
 
   const title = loc.level === 'root' || !node ? '项目' : seasonContainer ? seasonName(seasonContainer.season!) : node.series.name;
   return <div className="project-manager pf" aria-busy={busy}>
-    <header className="project-heading"><div className="project-page-title"><h1>{title}</h1>{loc.level === 'root' && <span className="project-count">{projects.length}</span>}{node && loc.level === 'series' && <small className="pf-meta">{node.seasons.length ? `${node.seasons.length} 季 · ` : ''}{node.episodeCount} 集 · {softwareNames[node.series.software] || '未指定'}</small>}</div>
+    <header className="project-heading"><div className="project-page-title"><h1>{title}</h1>{loc.level === 'root' && <span className="project-count">{projects.length}</span>}{node && loc.level === 'series' && <small className="pf-meta">{[node.seasons.length ? `${node.seasons.length} 季` : '', `${node.episodeCount} 集`, node.series.software ? softwareNames[node.series.software] : ''].filter(Boolean).join(' · ')}</small>}</div>
       <div className="project-heading-actions">
         {loc.level === 'root' && !empty && <><label className="pf-sort">排序<select aria-label="项目排序" value={sort} onChange={e => setSort(e.target.value as Sort)}><option value="updated">最近修改</option><option value="name">名称</option><option value="created">创建时间</option></select></label>
           {tree.ungrouped.length > 0 && <button className="plain" onClick={() => setDialog({ type: 'organize' })}>整理旧项目</button>}
-          <button className="plain" onClick={() => setDialog({ type: 'project', project: null })}><Plus size={16}/>新建项目</button><button className="plain" onClick={() => setDialog({ type: 'xml' })}><FileUp size={16}/>从达芬奇 XML 新建</button><button className="primary" onClick={() => setDialog({ type: 'series' })}><Plus size={16}/>新建剧</button></>}
+          <button className="plain" aria-haspopup="menu" aria-expanded={menu?.kind === 'new'} onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ kind: 'new', x: r.left, y: r.bottom + 4 }); }}><Plus size={16}/>新建<ChevronDown size={14}/></button><button className="primary" onClick={() => setDialog({ type: 'series' })}><Plus size={16}/>新建剧</button></>}
         {node && loc.level === 'series' && <><button className="plain" disabled={busy} onClick={() => setDialog({ type: 'series', series: node.series })}>改剧名</button><button className="icon-button" aria-label={`${node.series.name}的更多操作`} title="更多操作" onClick={e => openMenu(e, { kind: 'series', node })}><MoreHorizontal size={17}/></button></>}
         {seasonContainer && <button className="icon-button" aria-label={`${seasonName(seasonContainer.season!)}的更多操作`} title="更多操作" onClick={e => openMenu(e, { kind: 'season', season: seasonContainer.season!, node: node! })}><MoreHorizontal size={17}/></button>}
       </div></header>
     {loc.level !== 'root' && crumbs}
     <div className="pf-body">{body}</div>
-    {menu && <div className="pf-menu" role="menu" aria-label="操作" style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 260) }} onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') setMenu(null); }}>
+    {menu && <div className="pf-menu" role="menu" aria-label="操作" ref={placeMenu} style={{ left: menu.x, top: menu.y }} onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') setMenu(null); }}>
+      {menu.kind === 'new' && <>
+        <button role="menuitem" onClick={() => { setMenu(null); setDialog({ type: 'project', project: null }); }}><Plus size={14}/> 新建项目</button>
+        <button role="menuitem" onClick={() => { setMenu(null); setDialog({ type: 'xml' }); }}><FileUp size={14}/> 从达芬奇 XML 新建</button>
+      </>}
       {menu.kind === 'episode' && (() => { const c = menu.container, list = c?.episodes ?? [], i = list.findIndex(e => e.id === menu.project.id); return <>
+        {pages.map((x, k) => <button role="menuitem" key={x.page} disabled={busy} onClick={() => { setMenu(null); openPage(x.page, menu.project.id); }}>打开{x.name}{k === 0 && <small className="pf-kbd">双击</small>}</button>)}
+        <hr/>
+        <button role="menuitem" disabled={busy} onClick={() => { setMenu(null); setDialog({ type: 'share', project: menu.project }); }}>分享给 Agent…</button>
+        <hr/>
         {c && <><button role="menuitem" disabled={busy || i <= 0} onClick={() => swapEpisode(menu.project, c, 'previous')}>往前移{i > 0 && <small>和第 {list[i - 1].episode_no} 集交换</small>}</button>
         <button role="menuitem" disabled={busy || i >= list.length - 1} onClick={() => swapEpisode(menu.project, c, 'next')}>往后移{i < list.length - 1 && <small>和第 {list[i + 1].episode_no} 集交换</small>}</button>
         <hr/></>}
@@ -280,6 +311,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     {dialog?.type === 'episodeName' && <NameDialog expected={dialog.expected} busy={busy} close={() => setDialog(null)} save={name => createEpisode(dialog.node, dialog.container, name)}/>}
     {dialog?.type === 'project' && <ProjectEditor project={dialog.project} request={request} close={() => setDialog(null)} saved={id => { setDialog(null); refresh(id); }} importXml={dialog.project ? undefined : () => setDialog({ type: 'xml' })}/>}
     {dialog?.type === 'organize' && <OrganizeDialog ungrouped={tree.ungrouped} series={series} api={api} close={() => setDialog(null)} done={summary => { setDialog(null); refresh(); setToast({ text: summary }); }}/>}
+    {dialog?.type === 'share' && <Modal label={`分享给 Agent · ${dialog.project.name}`} close={() => setDialog(null)} busy={false}><div className="modal-body pf-share"><p className="muted pf-hint">选择复制方式，把这一集的接入说明交给 Agent。</p><AgentShare projectId={dialog.project.id} projectName={dialog.project.name}/></div><div className="modal-footer"><button type="button" className="plain" onClick={() => setDialog(null)}>完成</button></div></Modal>}
     {dialog?.type === 'xml' && <TimelineImportDialog key="create-from-xml" request={request} close={() => setDialog(null)} changed={id => { setDialog(null); refresh(id); }}/>}
   </div>;
 }
