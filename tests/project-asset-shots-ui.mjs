@@ -8,6 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {chromium,expect} from '@playwright/test';
 import {syntheticSource} from './helpers/storyboard-fixture.mjs';
 import * as M from '../server/storyboard/shared/model.mjs';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 const root=path.resolve(import.meta.dirname,'..'),evidence=path.resolve(process.env.ASSET_SHOTS_EVIDENCE||'collab/results/ASSET-SHOT-LINKS-20261104/browser-'+Date.now()),dist=path.resolve(process.env.ASSET_SHOTS_DIST||'dist');await fs.mkdir(evidence,{recursive:false});
 const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'asset-shots-ui-')),socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));const origin='http://127.0.0.1:'+port;
 let logs='',browser,context,page,cookie,token,passed=false;const checks=[],errors=[],external=[],held=new Set();
@@ -16,7 +17,7 @@ async function api(p,body,method){const r=await fetch(origin+'/api'+p,{method:me
 async function check(name,fn){await fn();checks.push(name);console.log('PASS '+name);}
 const work=()=>page.getByRole('region',{name:'项目资产库'}),board=()=>page.getByRole('region',{name:'分镜设计工作台'}),links=()=>work().getByRole('region',{name:'关联镜号'});
 async function nav(name){await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name,exact:true}).click();}
-async function selectAsset(project,kind,name){await nav('项目资产');await page.getByLabel('资产所属项目').selectOption(project);await work().getByRole('tab',{name:kind,exact:true}).click();await expect(work().getByRole('complementary',{name:'当前项目资产列表'})).toHaveAttribute('aria-busy','false');await work().locator('.ca-card').filter({hasText:name}).click();await expect(work().getByRole('heading',{name,exact:true})).toBeVisible();}
+async function selectAsset(project,kind,name){await nav('项目资产');await selectProjectInBar(page, project);await work().getByRole('tab',{name:kind,exact:true}).click();await expect(work().getByRole('complementary',{name:'当前项目资产列表'})).toHaveAttribute('aria-busy','false');await work().locator('.ca-card').filter({hasText:name}).click();await expect(work().getByRole('heading',{name,exact:true})).toBeVisible();}
 async function openLinks(){await work().getByRole('button',{name:'关联镜号',exact:true}).click();await expect(links()).toHaveAttribute('aria-busy','false');}
 async function highlighted(id,number){const row=board().locator('tr[data-shot="'+id+'"]');await expect(row).toHaveClass('sb-active-row');await expect(row.getByLabel('选择镜'+number,{exact:true})).toBeChecked();await expect(board().locator('tr.sb-active-row')).toHaveCount(1);await expect(board().getByLabel('搜索镜号或内容')).toHaveValue('');await expect.poll(()=>row.evaluate(el=>{const box=el.getBoundingClientRect(),container=el.closest('.sb-table-scroll').getBoundingClientRect();return box.top>=container.top&&box.bottom<=container.bottom;})).toBe(true);}
 try{

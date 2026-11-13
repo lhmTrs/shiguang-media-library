@@ -11,6 +11,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-autocrop-')), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -89,7 +90,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await installMocks();
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
 
   await check('没调整过的默认图：打开「调整头像」自动框到头部，只是建议；点完成才保存为 auto，撤销连来源一起恢复', async () => {
     const panel = await openCrop('阿青');
@@ -106,7 +107,7 @@ try {
   await check('调过的裁切和旧记录不自动框；点「重新框到头部」才请求，用户拖动后提交 manual', async () => {
     for (const source of ['manual', null]) {
       mock.source.set(hero.ids[0], source); mock.calls.length = 0;
-      await page.reload(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+      await page.reload(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
       const panel = await openCrop('阿青'); await page.waitForTimeout(300);
       assert.deepEqual(mock.calls, [], 'no automatic request for ' + source); await expect(panel.getByRole('status')).toHaveCount(0);
       await panel.getByRole('button', { name: '重新框到头部' }).click(); await expect(panel.getByRole('status')).toHaveText('已自动框到头部，可以再拖');
@@ -120,7 +121,7 @@ try {
   });
 
   await check('识别结果晚于用户拖动返回：直接丢弃，不改框', async () => {
-    await reset(hero.a, hero.ids[0], 'untouched'); await page.reload(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible();
+    await reset(hero.a, hero.ids[0], 'untouched'); await page.reload(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible();
     mock.delay = 1500; mock.calls.length = 0;
     const panel = await openCrop('阿青'); await expect(panel.getByRole('status')).toHaveText('正在找头部…');
     await panel.locator('.ca-quick-cropbox [tabindex]').first().focus(); await page.keyboard.press('ArrowUp');

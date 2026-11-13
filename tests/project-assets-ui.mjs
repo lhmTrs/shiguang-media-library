@@ -5,6 +5,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar, showPublicAssets, projectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(process.env.CREATIVE_TEST_PROJECT_ROOT || path.resolve(import.meta.dirname, '..')), evidence = path.resolve(process.env.CREATIVE_TEST_EVIDENCE || 'collab/results/PROJECT-ASSET-LIBRARY-20261104/browser');
 await fs.mkdir(evidence, { recursive: true });
@@ -41,7 +42,7 @@ try {
  context.on('request', r => { const u = new URL(r.url()); if (u.protocol.startsWith('http') && u.origin !== origin) external.push(u.origin + u.pathname); });
  page = await context.newPage(); page.on('pageerror', e => errors.push(e.message)); await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible();
  await check('原生入口、项目选择和人物长文本保存', async () => {
-  await page.getByLabel('资产所属项目').selectOption(a.id); await create('陈川'); await work().getByLabel('基础信息', { exact: true }).fill('35岁，普通上班族。\n不改写用户剧情。'); await work().getByLabel('性格与表演', { exact: true }).fill('表达克制，先照顾别人。'); await save(); await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(a.id); await work().locator('.ca-card').filter({ hasText: '陈川' }).click(); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('35岁，普通上班族。\n不改写用户剧情。');
+  await selectProjectInBar(page, a.id); await create('陈川'); await work().getByLabel('基础信息', { exact: true }).fill('35岁，普通上班族。\n不改写用户剧情。'); await work().getByLabel('性格与表演', { exact: true }).fill('表达克制，先照顾别人。'); await save(); await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, a.id); await work().locator('.ca-card').filter({ hasText: '陈川' }).click(); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('35岁，普通上班族。\n不改写用户剧情。');
  });
  await check('多造型、参考职责、图片排序、默认代表图和头像裁切', async () => {
   await expect(work().locator('.ca-card')).toHaveCount(2); await work().getByRole('button', { name: '新增造型' }).click(); await work().locator('details.ca-look-config summary').click(); await work().getByLabel('造型名称', { exact: true }).fill('上班造型'); await work().getByLabel('造型类型（逗号分隔，可多选自定义）').fill('职业，日常'); await bind(); await bind(1); await openImage(0); await dialog().getByLabel('锁定内容', { exact: true }).fill('脸部、体态，保持角色辨识度'); await dialog().getByLabel('忽略内容', { exact: true }).fill('背景与图片文字'); await dialog().getByRole('button', { name: '图片后移' }).click(); await closeImage(); await save();
@@ -54,12 +55,15 @@ try {
  let original;
  await check('跨项目复制可改名，默认关系保留，副本独立', async () => {
   original = (await api('/project-assets/assets?project_id=' + a.id)).items[0];
-  await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(b.id); await dialog().getByLabel('复制后人物名称').fill('陈川乙'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('陈川乙');
+  await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(b.id); await dialog().getByLabel('复制后人物名称').fill('陈川乙'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0);
+  // 顶栏统一：复制到别的项目不替用户切项目，留在原处提示；从顶栏切过去再打开副本
+  await expect(work()).toContainText('在顶部切到该项目即可查看'); await expect(projectInBar(page)).toHaveAttribute('data-project', a.id); await expect(nameInput()).toHaveValue('陈川');
+  await selectProjectInBar(page, b.id); await work().locator('.ca-card').filter({ hasText: '陈川乙' }).click(); await expect(nameInput()).toHaveValue('陈川乙');
   const copy = (await api('/project-assets/assets?project_id=' + b.id)).items[0]; assert.notEqual(copy.id, original.id); assert.equal(copy.images[0].media_asset_id, original.images[0].media_asset_id); assert.equal(copy.looks.length, 2); assert.equal(copy.source.asset_id, original.id);
   await work().getByLabel('人物名称').fill('副本独立修改'); await save(); assert.equal((await api('/project-assets/assets/' + original.id)).name, '陈川');
  });
  await check('公共人物创建和复制、名称冲突明确可见', async () => {
-  const scopes = (await api('/project-assets/scopes')).items, pub = scopes.find(p => p.project_kind === 'public'); await page.getByLabel('资产所属项目').selectOption(pub.id); await create('公共角色'); await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(a.id); await dialog().getByLabel('复制后人物名称').fill('陈川'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(work().getByRole('alert').first()).toContainText('同名'); await dialog().getByLabel('复制后人物名称').fill('公共角色副本'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('公共角色副本');
+  const scopes = (await api('/project-assets/scopes')).items, pub = scopes.find(p => p.project_kind === 'public'); await selectProjectInBar(page, a.id); await showPublicAssets(page); /* 当前项目是甲：复制到甲时在页内打开副本 */ await create('公共角色'); await detailMenu('复制到其他项目'); await dialog().getByLabel('目标项目').selectOption(a.id); await dialog().getByLabel('复制后人物名称').fill('陈川'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(work().getByRole('alert').first()).toContainText('同名'); await dialog().getByLabel('复制后人物名称').fill('公共角色副本'); await dialog().getByRole('button', { name: '确认复制', exact: true }).click(); await expect(dialog()).toHaveCount(0); await expect(nameInput()).toHaveValue('公共角色副本');
  });
  await check('两个编辑版本发生冲突时保留本地输入', async () => {
   const current = (await api('/project-assets/assets?project_id=' + a.id)).items.find(a => a.name === '公共角色副本'); const changed = await api('/project-assets/assets/' + current.id, { asset: { ...current, base_info: '后台新版本' }, expected_revision: current.revision }, 'PUT');
@@ -67,7 +71,7 @@ try {
   assert.equal(changed.base_info, '后台新版本'); page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '载入最新资料' }).click(); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('后台新版本'); await work().getByLabel('基础信息', { exact: true }).fill('冲突已核对'); await save();
  });
  await check('画廊不自动选中、关闭详情、放弃修改', async () => {
-  await page.getByLabel('资产所属项目').selectOption(b.id); await page.getByLabel('资产所属项目').selectOption(a.id); await expect(work().locator('.ca-card').first()).toBeVisible(); await expect(work().locator('.ca-detail')).toHaveCount(0);
+  await selectProjectInBar(page, b.id); await selectProjectInBar(page, a.id); await expect(work().locator('.ca-card').first()).toBeVisible(); await expect(work().locator('.ca-detail')).toHaveCount(0);
   await work().locator('.ca-card').filter({ hasText: '陈川' }).first().click(); await work().getByLabel('基础信息', { exact: true }).fill('临时输入'); await expect(work().locator('.ca-savebar')).toContainText('有未保存的修改');
   page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '放弃修改' }).click(); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('35岁，普通上班族。\n不改写用户剧情。'); await expect(work().getByRole('button', { name: '保存资料', exact: true })).toBeDisabled();
   await work().getByRole('button', { name: '关闭详情' }).click(); await expect(work().locator('.ca-detail')).toHaveCount(0);

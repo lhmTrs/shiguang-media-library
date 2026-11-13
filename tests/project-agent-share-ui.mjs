@@ -8,6 +8,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect } from '@playwright/test';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'project-agent-share-'));
@@ -117,7 +118,7 @@ try {
   console.log('PASS 窄屏切换项目后复制内容对应当前项目，剪贴板失败可手动复制');
 
   await page.goto(origin + '/#/storyboards');
-  await page.getByLabel('分镜所属项目').selectOption(b.id);
+  await selectProjectInBar(page, b.id);
   await expect(page.getByTestId('save-status')).toHaveText('已保存到数据库');
   const hideDetail = page.getByRole('button', { name: '关闭镜头详情', exact: true });
   if (await hideDetail.isVisible()) await hideDetail.click();
