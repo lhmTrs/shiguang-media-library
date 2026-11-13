@@ -847,14 +847,14 @@ function App() {
     navigate(routes[page]);
   }
   selectSeasonSettingsProject.current = selectKnownProject;
-  async function openSeasonSettings(seasonId: string, projectId: string) {
-    if (!projectLibrary.current || !seasonId || !projectId) return;
+  async function openSeasonSettings(seasonId: string, projectId: string, signal: AbortSignal) {
+    if (signal.aborted || !projectLibrary.current || !seasonId || !projectId) return;
     const libraryId = projectLibrary.current;
     const ticket = ++codexNavigation.current;
-    const isCurrent = () => ticket === codexNavigation.current && projectLibrary.current === libraryId;
+    const isCurrent = () => !signal.aborted && ticket === codexNavigation.current && projectLibrary.current === libraryId;
     try {
       const context = await api<{ project: { id: string }; season: { id: string } | null }>(
-        `/projects/${encodeURIComponent(projectId)}/asset-context`,
+        `/projects/${encodeURIComponent(projectId)}/asset-context`, undefined, undefined, { signal },
       );
       if (!isCurrent()) return;
       if (context?.project?.id !== projectId || context.season?.id !== seasonId) {
