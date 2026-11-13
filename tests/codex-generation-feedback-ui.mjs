@@ -1,38 +1,38 @@
 // Fresh library + synthetic app-server only. Never invokes a real model.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import net from 'node:net';
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
 import {chromium,expect} from '@playwright/test';
+import {codexTemplateUiFixture} from './helpers/codex-template-ui-fixture.mjs';
 import {fixture,inputs} from './helpers/prompt-lifecycle.mjs';
 
-const root=path.resolve(import.meta.dirname,'..'),dist=path.resolve(process.env.GENERATION_TEST_DIST||'dist');
-const evidence=path.resolve(process.env.GENERATION_TEST_EVIDENCE||'collab/results/CODEX-GENERATION-FEEDBACK-20261104/browser');
+const {evidence,temporary,origin,child,exited,logs,serveCandidate}=await codexTemplateUiFixture({
+ name:'codex-generate-feedback',distEnv:'GENERATION_TEST_DIST',evidenceEnv:'GENERATION_TEST_EVIDENCE',readOnly:true,
+});
 const baseline=process.env.GENERATION_TEST_BASELINE==='1';
-await fs.mkdir(evidence,{recursive:true});
-const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'codex-generate-feedback-')),mock=path.join(temporary,'fake-codex'),trace=path.join(temporary,'trace.jsonl');
-await fs.writeFile(mock,'#!'+process.execPath+'\n'+await fs.readFile('tests/helpers/fake-codex.mjs','utf8'),{mode:0o700});
-const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));const origin=`http://127.0.0.1:${port}`;
-let logs='',browser,page,cookie,token,passed=false;const checks=[],errors=[],external=[],contexts=[];
-const child=spawn(process.execPath,['server/index.mjs'],{cwd:root,env:{...process.env,PORT:String(port),NODE_ENV:'production',MEDIA_DATA_DIR:path.join(temporary,'data'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_READONLY_FILES:'1',SHIGUANG_AUDIO_ANALYSIS:'0',MEDIA_CODEX_BIN:mock,CODEX_FAKE_TRACE:trace,PATH:path.join(temporary,'no-tools')},stdio:['ignore','pipe','pipe']});
-child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);const exited=new Promise(r=>child.once('exit',r));
+let browser,page,cookie,token,passed=false;const checks=[],errors=[],external=[],contexts=[];
 async function api(p,body,method){const r=await fetch(origin+'/api'+p,{method:method||(body?'POST':'GET'),headers:{cookie,origin,'x-local-token':token,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});assert.ok(r.ok,p);return r.json();}
 const chat=()=>page.getByRole('region',{name:'Codex 图文对话'}),button=()=>chat().locator('.codex-generate-button'),feedback=()=>chat().locator('.codex-generation-feedback');
+const connectRoute='**/api/prompt-codex/connect';
+const connection=()=>chat().locator('.codex-connection');
+const reconnect=()=>chat().locator('.codex-header-actions').getByRole('button',{name:'重新连接',exact:true});
 let project,template;
 async function open(){
  const context=await browser.newContext({viewport:{width:1440,height:1000}});contexts.push(context);
  await context.addInitScript(id=>{localStorage.setItem('shiguang.refreshSeconds','0');localStorage.setItem('shiguang.activeProject',id)},project.id);
- await context.route(origin+'/**',route=>{const u=new URL(route.request().url());if(u.pathname==='/')return route.fulfill({path:path.join(dist,'index.html')});if(u.pathname.startsWith('/assets/'))return route.fulfill({path:path.resolve(dist,'.'+u.pathname)});return route.continue();});
- context.on('request',r=>{const u=new URL(r.url());if(u.protocol.startsWith('http')&&u.origin!==origin)external.push(u.origin+u.pathname)});
+ await serveCandidate(context,external);
  page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/prompt-templates');await expect(button()).toBeEnabled();
- await chat().locator('.codex-connect-button').click();await expect(chat().locator('.codex-connection')).toContainText('已连接');return context;
+ if(baseline)await chat().locator('.codex-connect-button').click();
+ else{
+  await expect(connection()).toHaveText(/^\s*(尚未连接|已连接)\s*$/);
+  if((await connection().textContent()).trim()==='尚未连接')await reconnect().click();
+ }
+ await expect(connection()).toHaveText('已连接');return context;
 }
 async function check(name,fn){await fn();checks.push(name);console.log('PASS '+name)}
 async function snapshot(name){await button().scrollIntoViewIfNeeded();await page.screenshot({path:path.join(evidence,name+'.png')})}
 try{
- await expect.poll(()=>logs,{timeout:20000}).toContain(origin);const session=await fetch(origin+'/api/session');cookie=session.headers.get('set-cookie').split(';')[0];token=(await session.json()).token;
+ await expect.poll(logs,{timeout:20000}).toContain(origin);const session=await fetch(origin+'/api/session');cookie=session.headers.get('set-cookie').split(';')[0];token=(await session.json()).token;
  template=await api('/prompt-templates',fixture());await api('/prompt-templates/'+template.id+'/draft',{template_revision:1,expected_revision:0,values:inputs},'PUT');project=await api('/projects',{name:'生成反馈合成项目'});
  browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
  await check(baseline?'Baseline reproduces a silent draft-save stop next to the generate button':'Draft-save failure is visible beside the clicked button and sends no generation',async()=>{
@@ -48,7 +48,7 @@ try{
   const context=await open();let creates=0,turns=0;let release;
   await context.route('**/api/prompt-codex/conversations',async route=>{if(route.request().method()!=='POST')return route.continue();creates++;await new Promise(r=>release=r);await route.continue()});
   context.on('request',r=>{if(r.method()==='POST'&&/\/turns$/.test(r.url()))turns++});
-  await page.clock.install();await button().click();await expect(feedback()).toContainText('正在保存模板对话');await page.clock.fastForward(9000);await expect(feedback()).toContainText('9 秒');await expect(feedback()).toContainText('处理较慢');await button().dispatchEvent('click');assert.equal(creates,1);await snapshot('slow-save');
+  await page.clock.install();await button().click();await expect(feedback()).toContainText('正在保存模板对话');await expect.poll(()=>creates).toBe(1);await page.clock.fastForward(9000);await expect(feedback()).toContainText('9 秒');await expect(feedback()).toContainText('处理较慢');await button().dispatchEvent('click');assert.equal(creates,1);await snapshot('slow-save');
   await context.route('**/api/prompt-codex/conversations?*',route=>route.fulfill({status:503,json:{error:'合成历史列表故障'}}));release();await expect(chat().locator('.codex-status')).toHaveText('已完成');assert.equal(turns,1);await expect(feedback()).toContainText('已完成');await context.close();
  });
  await check('An explicit generation rejection is shown next to the button and can be corrected without replay',async()=>{
@@ -72,21 +72,49 @@ try{
   await feedback().getByRole('button',{name:'重试原提交',exact:true}).click();await expect(feedback()).not.toContainText('提交结果待确认');await expect(chat().locator('.codex-status')).toHaveText('已完成');assert.equal(bodies.length,2);assert.deepEqual(bodies[0],bodies[1]);await context.close();
  });
  await check('Failed connection and missing project explain the blocked action at the bottom of the panel',async()=>{
-  const context=await open();await chat().getByRole('button',{name:'断开',exact:true}).click();await context.route('**/api/prompt-codex/connect',route=>route.fulfill({status:503,json:{error:'合成本机 Codex 不可用'}}));
+  const context=await open();
+  let statusReads=0;const writes=[];
+  context.on('request',r=>{if(r.method()==='POST'&&new URL(r.url()).pathname.startsWith('/api/prompt-codex/'))writes.push(new URL(r.url()).pathname)});
+  await context.route('**/api/prompt-codex/status',route=>{
+   statusReads++;return route.fulfill({status:503,json:{error:'合成本机 Codex 不可用'}});
+  });
   await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');await expect(button()).toBeEnabled();
+  await expect(connection()).toHaveText('连接失败');assert.equal(statusReads,1);assert.deepEqual(writes,[]);
   // 顶栏统一后不能再把项目清空：让项目列表真的为空（宿主没有当前项目），再看发送保护
   await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
  });
- await check('Unsupported-tool failure is explained next to follow-up; failed reconnect preserves input and a later explicit send reconnects once',async()=>{
+ await check('Unsupported-tool failure is explained next to follow-up; explicit reconnect preserves input and never sends it',async()=>{
   const toolTemplate=await api('/prompt-templates',{...fixture(),name:'合成工具错误模板'});await api('/prompt-templates/'+toolTemplate.id+'/draft',{template_revision:1,expected_revision:0,values:{...inputs,主题:'合成工具断连测试'}},'PUT');
   const context=await open();await page.locator('.prompt-template-list').getByRole('button').filter({hasText:'合成工具错误模板'}).click();await button().click();
   await expect(chat().locator('.codex-status')).toHaveText('失败',{timeout:12000});const inline=chat().locator('.codex-composer-feedback');await expect(inline).toHaveAttribute('role','alert');await expect(inline).toContainText('被拦截：外部工具');await expect(inline).toContainText('test_tools.private_lookup');
-  await expect(chat().locator('.codex-connection')).toContainText('尚未连接');const input=chat().getByLabel('Codex 追问内容'),send=()=>chat().getByRole('button',{name:'发送追问',exact:true});await input.fill('为什么停止，请直接用文字解释');
-  let submits=0,connects=0;context.on('request',r=>{if(r.method()==='POST'&&/\/turns$/.test(r.url()))submits++;if(new URL(r.url()).pathname==='/api/prompt-codex/connect')connects++});
-  await context.route('**/api/prompt-codex/connect',route=>route.fulfill({status:503,json:{error:'合成重连失败，请检查本机服务'}}));await send().click();await expect(inline).toContainText('合成重连失败');await expect(inline).toContainText('尚未发送追问');await expect(input).toHaveValue('为什么停止，请直接用文字解释');assert.equal(submits,0);await snapshot('followup-reconnect-error');
-  await context.unroute('**/api/prompt-codex/connect');await send().click();await expect(chat().locator('.codex-status').last()).toHaveText('已完成');assert.equal(submits,1);assert.equal(connects,2);await expect(input).toHaveValue('');
+  await expect(connection()).toHaveText('连接失败');
+  const input=chat().getByLabel('Codex 追问内容'),send=()=>chat().getByRole('button',{name:'发送追问',exact:true});
+  const followup='为什么停止，请直接用文字解释';await input.fill(followup);
+  let submits=0,connects=0;
+  context.on('request',r=>{
+   if(r.method()!=='POST')return;
+   if(/\/turns$/.test(r.url()))submits++;
+   if(new URL(r.url()).pathname==='/api/prompt-codex/connect')connects++;
+  });
+  await expect(send()).toBeDisabled();
+  await input.press('Control+Enter');await expect(inline).toContainText('尚未连接，请点击“重新连接”');
+  await expect(input).toHaveValue(followup);assert.equal(submits,0);assert.equal(connects,0);
+  await context.route(connectRoute,route=>route.fulfill({status:503,json:{error:'合成重连失败，请检查本机服务'}}));
+  await inline.getByRole('button',{name:'重新连接',exact:true}).click();await expect(inline).toContainText('合成重连失败');
+  await expect(send()).toBeDisabled();await expect(input).toHaveValue(followup);assert.equal(submits,0);assert.equal(connects,1);await snapshot('followup-reconnect-error');
+  await context.unroute(connectRoute);await inline.getByRole('button',{name:'重新连接',exact:true}).click();
+  await expect(connection()).toHaveText('已连接');await expect(send()).toBeEnabled();await expect(input).toHaveValue(followup);assert.equal(submits,0);assert.equal(connects,2);
+  await send().click();await expect(chat().locator('.codex-status').last()).toHaveText('已完成');assert.equal(submits,1);assert.equal(connects,2);await expect(input).toHaveValue('');
   const id=await chat().locator('.codex-history-list>button.selected').getAttribute('data-conversation-id'),saved=await api('/prompt-codex/conversations/'+id);assert.equal(saved.turns.length,2);assert.equal(saved.turns[0].error_code,'UNEXPECTED_TOOL_REQUEST');assert.equal(saved.turns[1].request.text,'为什么停止，请直接用文字解释');assert.equal(saved.turns[1].actual.contextRestored,true);
-  await input.fill('连接已断开时保留这条追问');await context.route('**/api/prompt-codex/conversations/*/turns',route=>route.fulfill({status:503,json:{code:'CODEX_DISCONNECTED',error:'请先连接 Codex'}}));await send().click();await expect(inline).toContainText('请先连接 Codex');await expect(inline).not.toContainText('提交结果待确认');await expect(input).toHaveValue('连接已断开时保留这条追问');await expect(send()).toBeEnabled();
+  await input.fill('连接已断开时保留这条追问');
+  await context.route('**/api/prompt-codex/conversations/*/turns',async route=>{
+   // Drop the real fake-Codex connection between the read-only status check and POST.
+   await api('/prompt-codex/disconnect',{});await route.continue();
+  });
+  await send().click();await expect(inline).toContainText('请先连接 Codex');
+  await expect(inline).not.toContainText('提交结果待确认');await expect(input).toHaveValue('连接已断开时保留这条追问');
+  await expect(send()).toBeDisabled();await expect(inline.getByRole('button',{name:'重新连接',exact:true})).toBeEnabled();
+  assert.equal(submits,2);assert.equal(connects,2);assert.equal((await api('/prompt-codex/conversations/'+id)).turns.length,2);
   await page.setViewportSize({width:390,height:1000});await input.scrollIntoViewIfNeeded();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(evidence,'followup-error-mobile.png')});await context.close();
  });
  }
@@ -94,6 +122,6 @@ try{
 }catch(e){await page?.screenshot({path:path.join(evidence,'failure.png')}).catch(()=>{});await fs.writeFile(path.join(evidence,'failure.txt'),e.stack);throw e;}
 finally{
  for(const c of contexts)await c.close().catch(()=>{});await browser?.close();if(child.exitCode===null&&!child.signalCode)child.kill('SIGTERM');let timer;try{await Promise.race([exited,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Application did not close')),15000))])}finally{clearTimeout(timer)}
- const known=logs.includes('APPLICATION_CLOSED_KNOWN');await fs.writeFile(path.join(evidence,'server.log'),logs);assert.ok(known);
+ const known=logs().includes('APPLICATION_CLOSED_KNOWN');await fs.writeFile(path.join(evidence,'server.log'),logs());assert.ok(known);
  if(passed)await fs.rm(temporary,{recursive:true,force:true});await fs.writeFile(path.join(evidence,'result.json'),JSON.stringify({passed,baseline,checks,errors,external,realModelCalls:0,applicationClosedKnown:known,browserClosed:!browser?.isConnected(),tempRemoved:passed,...(!passed?{retained:temporary}:{})},null,2));
 }

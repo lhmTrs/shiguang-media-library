@@ -1,61 +1,95 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import net from 'node:net';
-import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
 import {chromium,expect} from '@playwright/test';
+import Database from 'better-sqlite3';
+import {codexTemplateUiFixture} from './helpers/codex-template-ui-fixture.mjs';
 import {fixture,inputs} from './helpers/prompt-lifecycle.mjs';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 
-const root=path.resolve(import.meta.dirname,'..'),evidence=path.resolve(process.env.CODEX_TEST_EVIDENCE||path.join(root,'collab/results/CODEX-PROMPT-CHAT-20261104'));
-const dist=path.resolve(process.env.CODEX_TEST_DIST||path.join(root,'dist'));
-await fs.mkdir(evidence,{recursive:true});const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'codex-ui-'));
-const mock=path.join(temporary,'fake-codex'),trace=path.join(temporary,'rpc-trace.jsonl');await fs.writeFile(mock,'#!'+process.execPath+'\n'+await fs.readFile(path.join(root,'tests/helpers/fake-codex.mjs'),'utf8'),{mode:0o700});
-const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));const origin=`http://127.0.0.1:${port}`;
-let logs='',browser,page,cookie='',token='',passed=false;const checks=[],errors=[],external=[];
-const child=spawn(process.execPath,['server/index.mjs'],{cwd:root,env:{...process.env,PORT:String(port),NODE_ENV:'production',MEDIA_DATA_DIR:path.join(temporary,'data'),MEDIA_PERSONAL_ITEM_DIR:path.join(temporary,'personal_item'),CODEX_HOME:path.join(temporary,'mock-codex-home'),CODEX_FAKE_IMAGE_FILES:'1',MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_READONLY_FILES:'0',SHIGUANG_AUDIO_ANALYSIS:'0',MEDIA_CODEX_BIN:mock,CODEX_FAKE_TRACE:trace,PATH:path.join(temporary,'no-tools')},stdio:['ignore','pipe','pipe']});child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);const exited=new Promise(r=>child.once('exit',r));
+const {evidence,temporary,trace,origin,child,exited,logs,serveCandidate}=await codexTemplateUiFixture({
+ name:'prompt-codex-ui',distEnv:'CODEX_TEST_DIST',evidenceEnv:'CODEX_TEST_EVIDENCE',imageFiles:true,
+});
+let browser,page,cookie='',token='',passed=false;
+const checks=[],errors=[],external=[];
+const connectRoute='**/api/prompt-codex/connect';
+const reconnect=panel=>panel.locator('.codex-header-actions').getByRole('button',{name:'重新连接',exact:true});
+const emptyProjects=url=>['/api/projects','/api/project-series'].includes(url.pathname);
 async function api(p,body,method){const r=await fetch(origin+'/api'+p,{method:method||(body?'POST':'GET'),headers:{cookie,origin,'x-local-token':token,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const value=await r.json();assert.ok(r.ok,JSON.stringify(value));return value;}
 async function check(name,fn){await fn();checks.push(name);console.log('PASS '+name);}
 async function download(button){const event=page.waitForEvent('download');await button.click();return fs.readFile(await(await event).path());}
-async function serveCandidate(context){await context.route(origin+'/**',async route=>{const url=new URL(route.request().url());if(url.pathname==='/')return route.fulfill({path:path.join(dist,'index.html')});if(url.pathname.startsWith('/assets/')){const file=path.resolve(dist,'.'+decodeURIComponent(url.pathname));assert.ok(file.startsWith(dist+path.sep));return route.fulfill({path:file});}return route.continue();});}
+async function traceRows(){return (await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse);}
+const generationCount=async()=>(await traceRows()).filter(row=>row.method==='turn/start').length;
 try{
- await expect.poll(()=>logs,{timeout:20000}).toContain(origin);const session=await fetch(origin+'/api/session'),identity=await session.json();cookie=session.headers.get('set-cookie').split(';')[0];token=identity.token;
+ await expect.poll(logs,{timeout:20000}).toContain(origin);const session=await fetch(origin+'/api/session'),identity=await session.json();cookie=session.headers.get('set-cookie').split(';')[0];token=identity.token;
  const template=await api('/prompt-templates',fixture());await api('/prompt-templates/'+template.id+'/draft',{template_revision:1,expected_revision:0,values:inputs},'PUT');
  const projectA=await api('/projects',{name:'生图项目甲'}),projectB=await api('/projects',{name:'生图项目乙'});
  await check('Host session/token protection also covers Codex, image and streaming endpoints; no process before connect',async()=>{
-  assert.equal((await fetch(origin+'/api/prompt-codex/status')).status,401);assert.equal((await fetch(origin+'/api/prompt-codex/connect',{method:'POST',headers:{cookie,'content-type':'application/json'},body:'{}'})).status,403);
+  for(const endpoint of ['status','images/synthetic-id','conversations/synthetic-id/events']){
+   assert.equal((await fetch(origin+'/api/prompt-codex/'+endpoint)).status,401,endpoint);
+  }
+  assert.equal((await fetch(origin+'/api/prompt-codex/connect',{method:'POST',headers:{cookie,'content-type':'application/json'},body:'{}'})).status,403);
   assert.equal((await api('/prompt-codex/status')).connected,false);await assert.rejects(fs.access(trace));
  });
- await check('Default picture folder registration is explicit, idempotent and isolated from application data',async()=>{
-  const first=await api('/prompt-codex/default-library',{}),again=await api('/prompt-codex/default-library',{});assert.equal(first.rootId,again.rootId);assert.equal(path.basename(first.directory),'picture');const roots=await api('/roots');assert.equal(roots.length,1);assert.equal(roots[0].kind,'photo');assert.equal(roots[0].path,first.directory);assert.equal((await api('/prompt-codex/status')).connected,false);
+ let pictureRoot;
+ await check('Default picture folder registration is explicit, idempotent and hidden from root management',async()=>{
+  const directory=path.join(temporary,'personal_item','picture');
+  await assert.rejects(fs.stat(directory),{code:'ENOENT'});
+  const before=(await api('/reconcile')).roots;
+  const first=await api('/prompt-codex/default-library',{}),again=await api('/prompt-codex/default-library',{});
+  assert.ok(first.rootId);assert.deepEqual(again,first);assert.equal(first.directory,directory);
+  assert.equal(await fs.realpath(directory),directory);assert.ok((await fs.stat(directory)).isDirectory());
+  const registered=(await api('/reconcile')).roots;
+  const added=registered.filter(root=>!before.some(prior=>prior.id===root.id));
+  assert.equal(added.length,1);assert.equal(added[0].id,first.rootId);assert.equal(added[0].path,directory);
+  // Neither the management projection nor reconcile exposes the managed root's kind.
+  const db=new Database(path.join(temporary,'data','library.sqlite'),{readonly:true,fileMustExist:true});
+  try{
+   const row=db.prepare('SELECT kind FROM roots WHERE id=?').get(first.rootId);
+   assert.equal(row?.kind,'photo');
+  }finally{db.close();}
+  // Management hides the managed root. Codex still sees it as an online photo/mixed destination.
+  for(const endpoint of ['/roots','/roots/all']){
+   assert.ok((await api(endpoint)).every(root=>root.id!==first.rootId&&root.path!==directory),endpoint);
+  }
+  const destinations=await api('/prompt-codex/library-destinations');
+  assert.deepEqual(destinations.filter(root=>root.id===first.rootId),[{id:first.rootId,name:'picture'}]);
+  const refused=await fetch(origin+'/api/roots/'+first.rootId+'/retire',{method:'POST',headers:{cookie,origin,'x-local-token':token,'content-type':'application/json'},body:'{}'});
+  assert.equal(refused.status,403);assert.equal((await refused.json()).code,'MANAGED_ROOT_PROTECTED');
+  assert.equal((await api('/prompt-codex/status')).connected,false);await assert.rejects(fs.access(trace),{code:'ENOENT'});
+  pictureRoot=first;
  });
  browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
- const context=await browser.newContext({viewport:{width:1680,height:1100},acceptDownloads:true});await serveCandidate(context);await context.addInitScript(()=>localStorage.setItem('shiguang.refreshSeconds','0'));context.on('request',r=>{const u=new URL(r.url());if(u.protocol.startsWith('http')&&u.origin!==origin)external.push(r.url());});page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(origin);await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'提示词模板',exact:true}).click();
+ const context=await browser.newContext({viewport:{width:1680,height:1100},acceptDownloads:true});await serveCandidate(context,external);await context.addInitScript(()=>localStorage.setItem('shiguang.refreshSeconds','0'));page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(origin);await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'提示词模板',exact:true}).click();
  const app=page.getByRole('region',{name:'提示词模板工作台'}),chat=page.getByRole('region',{name:'Codex 图文对话'}),button=name=>chat.getByRole('button',{name,exact:true});let conversationId;
  const current=()=>api('/prompt-codex/conversations/'+conversationId);
  await check('Explicit connection reads model catalog and only supported reasoning levels; no generation on connect',async()=>{
   // 没有可用项目时不能生成：项目列表真的为空（顶栏统一后不能再把项目清空），恢复后在层级栏选项目甲
-  await page.context().route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(chat.locator('.codex-generate-button')).toBeDisabled();
-  await page.context().unroute(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname));await page.reload();await selectProjectInBar(page, projectA.id);
+  await context.route(emptyProjects,r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(chat.locator('.codex-generate-button')).toBeDisabled();await expect(chat.locator('.codex-generate-action')).toContainText('请先在顶部选择项目');
+  await context.unroute(emptyProjects);await page.reload();await selectProjectInBar(page, projectA.id);
   await expect(chat.getByLabel('Codex 输出偏好')).toHaveValue('mixed');assert.deepEqual(await chat.getByLabel('Codex 输出偏好').locator('option').evaluateAll(options=>options.map(o=>({value:o.value,text:o.textContent}))),[{value:'mixed',text:'图文'},{value:'image',text:'只生成图片'}]);
-  await button('连接 Codex').click();await expect(chat.locator('.codex-connection')).toContainText('已连接');await expect(chat.getByLabel('Codex 对话模型')).toHaveValue('synthetic-a');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('high');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),4);
+  await reconnect(chat).click();await expect(chat.locator('.codex-connection')).toHaveText('已连接');await expect(chat.getByLabel('Codex 对话模型')).toHaveValue('synthetic-a');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('high');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),4);
   await chat.getByLabel('Codex 对话模型').selectOption('synthetic-b');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('medium');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),2);
-  await chat.getByLabel('Codex 对话模型').selectOption('synthetic-a');await chat.getByLabel('Codex 推理强度').selectOption('max');const calls=(await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse);assert.equal(calls.filter(c=>c.method==='turn/start').length,0);
+  await chat.getByLabel('Codex 对话模型').selectOption('synthetic-a');await chat.getByLabel('Codex 推理强度').selectOption('max');assert.equal(await generationCount(),0);
  });
  await check('Mixed output streams, ordered text/two images/text, exact model/effort, safe Markdown, image downloads and preview',async()=>{
   await chat.getByLabel('Codex 输出偏好').selectOption('mixed');await expect(chat.getByLabel('Codex 追问内容')).toHaveCount(0);const preview=await app.getByLabel('完整提示词内容').textContent();await chat.locator('.codex-generate-button').click();await expect(chat.getByTestId('codex-turn-1')).toContainText('合成回答');await selectProjectInBar(page, projectB.id);
   await expect(chat.locator('.codex-status')).toHaveText('已完成');conversationId=(await api('/prompt-codex/conversations?template_id='+template.id))[0].id;
   const turn=(await current()).turns[0];assert.equal(turn.request.text,'');assert.equal((await current()).context.prompt,preview);assert.equal(turn.request.model,'synthetic-a');assert.equal(turn.actual.model,'synthetic-a');assert.equal(turn.actual.effort,'max');assert.deepEqual(turn.blocks.map(b=>b.type),['text','image','image','text']);await expect(chat.locator('.codex-image img')).toHaveCount(2);assert.equal(await page.evaluate(()=>window.bad),undefined);assert.deepEqual(external,[]);
   assert.equal(turn.request.project_id,projectA.id);assert.equal(turn.actual.pictureProject.id,projectA.id);for(const block of turn.blocks.filter(b=>b.type==='image'))assert.ok(block.library.relativePath.startsWith('生图项目甲--'+projectA.id+path.sep));await expect(chat.getByTestId('codex-turn-1')).toContainText('图片所属项目：生图项目甲');
-  for(const block of turn.blocks.filter(b=>b.type==='image')){assert.equal(block.library.status,'ready');const asset=await api('/assets/'+block.library.assetId);assert.equal(asset.kind,'photo');assert.ok(asset.path.includes(path.sep+'personal_item'+path.sep+'picture'+path.sep));assert.equal(asset.root_id,block.library.rootId);const source=await fetch(origin+'/api/prompt-codex/images/'+block.attachmentId,{headers:{cookie}});assert.deepEqual(await fs.readFile(asset.path),Buffer.from(await source.arrayBuffer()));}await expect(chat.locator('figcaption').first()).toContainText('已自动入库 picture');
-  const traceRows=(await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse),start=traceRows.find(c=>c.method==='thread/start');assert.equal(start.config.model_reasoning_effort,'max');assert.equal(start.config['features.shell_tool'],false);
+  for(const block of turn.blocks.filter(b=>b.type==='image')){assert.equal(block.library.status,'ready');const asset=await api('/assets/'+block.library.assetId);assert.equal(asset.kind,'photo');assert.equal(asset.path,path.join(pictureRoot.directory,block.library.relativePath));assert.equal(asset.root_id,pictureRoot.rootId);assert.equal(block.library.rootId,pictureRoot.rootId);const source=await fetch(origin+'/api/prompt-codex/images/'+block.attachmentId,{headers:{cookie}});assert.deepEqual(await fs.readFile(asset.path),Buffer.from(await source.arrayBuffer()));}await expect(chat.locator('figcaption').first()).toContainText('已自动入库 picture');
+  const start=(await traceRows()).find(c=>c.method==='thread/start');assert.equal(start.config.model_reasoning_effort,'max');assert.equal(start.config['features.shell_tool'],false);
   const image=turn.blocks.find(b=>b.type==='image'),response=await fetch(origin+'/api/prompt-codex/images/'+image.attachmentId,{headers:{cookie}});assert.equal(response.headers.get('content-type'),'image/png');assert.ok(response.headers.get('content-security-policy').includes('sandbox'));const bytes=Buffer.from(await response.arrayBuffer());
   const event=page.waitForEvent('download');await chat.locator('.codex-image').first().getByRole('link',{name:'下载',exact:true}).click();assert.deepEqual(await fs.readFile(await(await event).path()),bytes);await chat.locator('.codex-image').first().getByRole('button',{name:'放大'}).click();await expect(page.getByRole('dialog',{name:'Codex 图片预览'}).locator('img')).toBeVisible();await page.getByRole('button',{name:'关闭 Codex 面板'}).click();
   await chat.screenshot({path:path.join(evidence,'codex-mixed.png')});
  });
  await check('Image library dialog requires confirmation, copies exact bytes into a registered synthetic root and refuses overwrite',async()=>{
   const photoRoot=path.join(temporary,'synthetic-photos');await fs.mkdir(photoRoot);const registered=await api('/roots',{path:photoRoot,kind:'photo'});await expect.poll(async()=>{const jobs=(await api('/jobs')).jobs;return jobs.every(j=>j.status!=='running');}).toBe(true);
+  for(const endpoint of ['/roots','/roots/all']){
+   const roots=await api(endpoint);
+   assert.ok(roots.some(root=>root.id===registered.root.id),endpoint);
+   assert.ok(roots.every(root=>root.id!==pictureRoot.rootId),endpoint);
+  }
   const image=(await current()).turns[0].blocks.find(b=>b.type==='image');const bytes=Buffer.from(await(await fetch(origin+'/api/prompt-codex/images/'+image.attachmentId,{headers:{cookie}})).arrayBuffer());
   const sendCopy=body=>fetch(origin+'/api/prompt-codex/images/'+image.attachmentId+'/add-to-library',{method:'POST',headers:{cookie,origin,'x-local-token':token,'content-type':'application/json'},body:JSON.stringify(body)});
   assert.equal((await sendCopy({root_id:registered.root.id})).status,400);
@@ -74,7 +108,12 @@ try{
   await button('删除对话').click();await button('已删除对话').click();await expect(button('恢复对话')).toBeVisible();assert.equal((await api('/prompt-codex/conversations/'+slow.id)).turns.length,1);await button('恢复对话').click();await button('正常对话').click();
  });
  await check('Reconnect creates no generation, stored conversation can continue with recovered context',async()=>{
-  await chat.locator('[data-conversation-id="'+conversationId+'"]').click();const countBefore=(await fs.readFile(trace,'utf8')).split('\n').filter(l=>l.includes('"method":"turn/start"')).length;await button('重新连接').click();assert.equal((await fs.readFile(trace,'utf8')).split('\n').filter(l=>l.includes('"method":"turn/start"')).length,countBefore);
+  await chat.locator('[data-conversation-id="'+conversationId+'"]').click();const countBefore=await generationCount();
+  const [receipt]=await Promise.all([
+   page.waitForResponse(response=>response.url()===origin+'/api/prompt-codex/connect'&&response.request().method()==='POST'),
+   reconnect(chat).click(),
+  ]);
+  assert.ok(receipt.ok());await expect(chat.locator('.codex-connection')).toHaveText('已连接');assert.equal(await generationCount(),countBefore);
   await chat.getByLabel('Codex 追问内容').fill('恢复后继续');await button('发送追问').click();await expect(chat.getByTestId('codex-turn-4').locator('.codex-status')).toHaveText('已完成');assert.ok((await current()).turns[3].actual.contextRestored);
  });
  await check('Version-2 complete backup includes images, previews/reimports identical rows, version-1 template backups remain accepted',async()=>{
@@ -88,10 +127,53 @@ try{
  await check('Recent-task panel renders Codex generation jobs with counts and status without crashing',async()=>{
   await page.setViewportSize({width:1680,height:1100});await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'全部素材',exact:true}).click();await page.getByRole('button',{name:'添加素材目录',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'素材目录与任务'});await expect(dialog).toContainText('Codex 生成');await expect(dialog).toContainText('已停止');assert.deepEqual(errors,[]);await dialog.getByRole('button',{name:'关闭窗口',exact:true}).click();
  });
- await check('Bottom action reconnects when needed and starts one fresh exact-template conversation; refresh never resends',async()=>{
+ await check('Explicit reconnect enables one fresh exact-template generation; a disconnected send and refresh never replay it',async()=>{
   const definition=await api('/prompt-templates/'+template.id);await api('/prompt-templates/'+template.id+'/draft',{template_revision:definition.revision,expected_revision:definition.draft.revision,values:{...inputs,主题:'新模板本轮完整内容'}},'PUT');
-  const context2=await browser.newContext({viewport:{width:1440,height:1000}});await serveCandidate(context2);await context2.addInitScript(id=>localStorage.setItem('shiguang.activeProject',id),projectA.id);
-  try{await context2.addInitScript(()=>localStorage.setItem('shiguang.refreshSeconds','0'));const freshPage=await context2.newPage();let connectCalls=0;await context2.route('**/api/prompt-codex/status',route=>route.fulfill({json:{connected:false,authenticated:false,models:[],accountType:null,active:0}}));await context2.route('**/api/prompt-codex/connect',async route=>{connectCalls++;await new Promise(r=>setTimeout(r,400));await route.continue();});await freshPage.goto(origin+'/#/prompt-templates');const workspace=freshPage.getByRole('region',{name:'提示词模板工作台'}),panel=freshPage.getByRole('region',{name:'Codex 图文对话'});await expect(panel.locator('.codex-connection')).toContainText('尚未连接');await expect(panel.getByLabel('Codex 输出偏好')).toHaveValue('mixed');const text=await workspace.getByLabel('完整提示词内容').textContent(),before=(await fs.readFile(trace,'utf8')).split('\n').filter(l=>l.includes('"method":"turn/start"')).length,generate=panel.locator('.codex-generate-button');await expect(generate).toBeEnabled();await generate.click();await expect(panel.locator('.codex-connection')).toContainText('正在连接');await expect(generate).toBeDisabled();await generate.dispatchEvent('click');await expect(panel.locator('.codex-turn')).toHaveCount(1);await expect(panel.locator('.codex-status')).toHaveText('已完成');const id=await panel.locator('.codex-history-list>button.selected').getAttribute('data-conversation-id'),latest=await api('/prompt-codex/conversations/'+id);assert.equal(latest.context.prompt,text);assert.equal(latest.turns.length,1);assert.equal(latest.turns[0].request.text,'');assert.equal(latest.turns[0].request.output,'mixed');assert.equal(connectCalls,1);await freshPage.reload();await expect(panel.locator('.codex-turn')).toHaveCount(1);const after=(await fs.readFile(trace,'utf8')).split('\n').filter(l=>l.includes('"method":"turn/start"')).length;assert.equal(after,before+1);await freshPage.screenshot({path:path.join(evidence,'direct-template-completed.png')});}finally{await context2.close();}
+  await api('/prompt-codex/disconnect',{});
+  const context2=await browser.newContext({viewport:{width:1440,height:1000}});
+  let releaseConnect;
+  const connectGate=new Promise(resolve=>releaseConnect=resolve);
+  try{
+   await serveCandidate(context2,external);
+   await context2.addInitScript(id=>{
+    localStorage.setItem('shiguang.activeProject',id);
+    localStorage.setItem('shiguang.refreshSeconds','0');
+   },projectA.id);
+   const freshPage=await context2.newPage();freshPage.on('pageerror',e=>errors.push(e.message));
+   const writes=[];
+   context2.on('request',r=>{const pathname=new URL(r.url()).pathname;if(r.method()==='POST'&&pathname.startsWith('/api/prompt-codex/'))writes.push(pathname)});
+   await context2.route(connectRoute,async route=>{await connectGate;await route.continue()});
+   await freshPage.goto(origin+'/#/prompt-templates');
+   const workspace=freshPage.getByRole('region',{name:'提示词模板工作台'}),panel=freshPage.getByRole('region',{name:'Codex 图文对话'});
+   const connection=panel.locator('.codex-connection'),generate=panel.locator('.codex-generate-button');
+   const preview=workspace.getByLabel('完整提示词内容');
+   await expect(connection).toHaveText('连接失败');await expect(panel.getByLabel('Codex 输出偏好')).toHaveValue('mixed');
+   await expect(preview).toContainText('新模板本轮完整内容');
+   const text=await preview.textContent(),before=await generationCount();
+   await generate.click();
+   await expect(panel.locator('.codex-generation-feedback')).toContainText('Codex 连接已断开，请点击重新连接');
+   await expect(generate).toBeEnabled();
+   assert.deepEqual(writes,[]);assert.equal(await generationCount(),before);await expect(preview).toHaveText(text);
+
+   const connectPath='/api/prompt-codex/connect';
+   await reconnect(panel).click();
+   await expect(connection).toHaveText('正在连接…');await expect(generate).toBeDisabled();
+   await generate.dispatchEvent('click');
+   await expect.poll(()=>writes.slice()).toEqual([connectPath]);
+   releaseConnect();
+   await expect(connection).toHaveText('已连接');await expect(generate).toBeEnabled();
+   assert.deepEqual(writes,[connectPath]);assert.equal(await generationCount(),before);
+   await generate.click();
+   await expect(panel.locator('.codex-turn')).toHaveCount(1);await expect(panel.locator('.codex-status')).toHaveText('已完成');
+   const id=await panel.locator('.codex-history-list>button.selected').getAttribute('data-conversation-id');
+   const latest=await api('/prompt-codex/conversations/'+id);
+   assert.equal(latest.context.prompt,text);assert.equal(latest.turns.length,1);
+   assert.equal(latest.turns[0].request.text,'');assert.equal(latest.turns[0].request.output,'mixed');
+   await freshPage.reload();await expect(panel.locator('.codex-turn')).toHaveCount(1);await expect(connection).toHaveText('已连接');
+   assert.deepEqual(writes,[connectPath,'/api/prompt-codex/conversations','/api/prompt-codex/conversations/'+id+'/turns']);
+   assert.equal(await generationCount(),before+1);
+   await freshPage.screenshot({path:path.join(evidence,'direct-template-completed.png')});
+  }finally{releaseConnect();await context2.close();}
  });
  await check('Image-only first generation sends the appended preference, renders returned image blocks and fits desktop/mobile',async()=>{
   await page.goto(origin+'/#/prompt-templates');await page.reload();await button('Codex 新对话').click();await app.getByLabel('主题',{exact:true}).fill('仅图片首次生成合成场景');await chat.getByLabel('Codex 输出偏好').selectOption('image');await chat.locator('.codex-generate-button').click();await expect(chat.locator('.codex-status')).toHaveText('已完成');
@@ -103,5 +185,5 @@ try{
  await context.close();passed=true;
 }catch(e){await page?.screenshot({path:path.join(evidence,'ui-failure.png')}).catch(()=>{});await fs.writeFile(path.join(evidence,'ui-failure.txt'),e.stack);throw e;}
 finally{
- await browser?.close();if(child.exitCode===null&&!child.signalCode)child.kill('SIGTERM');let timer;try{await Promise.race([exited,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Application did not close normally')),15000))]);}finally{clearTimeout(timer);}const known=logs.includes('APPLICATION_CLOSED_KNOWN');await fs.writeFile(path.join(evidence,'ui-server.log'),logs);assert.ok(known);const methods=await fs.readFile(trace,'utf8').catch(()=>'');await fs.writeFile(path.join(evidence,'synthetic-rpc-trace.txt'),methods);if(passed)await fs.rm(temporary,{recursive:true,force:true});await fs.writeFile(path.join(evidence,'ui-result.json'),JSON.stringify({passed,checks,errors,external,realModelCalls:0,resources:{browserClosed:!browser?.isConnected(),applicationClosedKnown:known,ownedMockClosed:known,tempRemoved:passed,...(!passed?{retainedEvidenceDirectory:temporary}:{})},scope:'Real integrated media HTTP/React/SQLite/SSE, disposable subprocess JSON-RPC mock; no paid model or image generation.'},null,2));
+ await browser?.close();if(child.exitCode===null&&!child.signalCode)child.kill('SIGTERM');let timer;try{await Promise.race([exited,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Application did not close normally')),15000))]);}finally{clearTimeout(timer);}const known=logs().includes('APPLICATION_CLOSED_KNOWN');await fs.writeFile(path.join(evidence,'ui-server.log'),logs());assert.ok(known);const methods=await fs.readFile(trace,'utf8').catch(()=>'');await fs.writeFile(path.join(evidence,'synthetic-rpc-trace.txt'),methods);if(passed)await fs.rm(temporary,{recursive:true,force:true});await fs.writeFile(path.join(evidence,'ui-result.json'),JSON.stringify({passed,checks,errors,external,realModelCalls:0,resources:{browserClosed:!browser?.isConnected(),applicationClosedKnown:known,ownedMockClosed:known,tempRemoved:passed,...(!passed?{retainedEvidenceDirectory:temporary}:{})},scope:'Real integrated media HTTP/React/SQLite/SSE, disposable subprocess JSON-RPC mock; no paid model or image generation.'},null,2));
 }
