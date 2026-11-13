@@ -8,6 +8,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-quick-cover-')), images = path.join(temp, '合成照片'); await fs.mkdir(images);
@@ -49,7 +50,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0')); await context.addInitScript(() => { window.__clipWrites = 0; const c = navigator.clipboard; if (c?.write) { const w = c.write.bind(c); c.write = (...a) => { window.__clipWrites++; return w(...a); }; } });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { if (r.method() === 'PUT' && /\/api\/project-assets\/assets\/[^/]+$/.test(new URL(r.url()).pathname)) puts++; });
-  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+  await page.goto(origin + '/#/project-assets'); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id);
   await expect(wrap('阿青')).toBeVisible(); await expect(wrap('苏禾')).toBeVisible();
 
   await check('悬停卡片出现「复制」；人物只复制原图文件，本机不可用时说明原因、不写 PNG；场景仍复制整张图（PNG，原尺寸）；没有默认图的不显示复制', async () => {
@@ -138,7 +139,7 @@ try {
 
   await check('撤销遇到本窗口未保存草稿先拦下且保留撤销；图片已归档或换图时不写入（ASSETS-QUICK-COVER-2 反例）', async () => {
     const other = async fn => { const a = await asset(hero.id); fn(a); return api('/project-assets/assets/' + hero.id, { asset: a, expected_revision: a.revision }, 'PUT'); };
-    const fresh = async () => { await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await expect(wrap('阿青')).toBeVisible(); };
+    const fresh = async () => { await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(wrap('阿青')).toBeVisible(); };
     const cropOnCard = async () => {
       await wrap('阿青').click({ button: 'right' }); await page.getByRole('menuitem', { name: '调整头像…' }).click();
       const panel = page.getByRole('dialog', { name: '调整阿青的头像' }); await panel.locator('.ca-quick-cropbox [tabindex]').first().focus();

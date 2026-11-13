@@ -9,3 +9,11 @@ export async function selectProjectInBar(page, projectId, { programmatic = false
   await option.waitFor();
   if (programmatic) await option.dispatchEvent('click'); else await option.click();
 }
+
+// 顶栏统一（TOPBAR-UNIFY）：项目资产页的公共人物库改为页内切换；切回当前项目用同一组按钮。
+export async function showPublicAssets(page, on = true) {
+  const group = page.getByRole('group', { name: '看哪里的资产' });
+  await (on ? group.getByRole('button', { name: '公共人物库' }) : group.getByRole('button').first()).click();
+}
+/** 顶栏当前项目 ID（层级栏根节点 data-project；未选项目时为 null）。 */
+export const projectInBar = page => page.locator('.ppb').first();

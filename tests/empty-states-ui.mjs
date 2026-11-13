@@ -28,7 +28,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-  await page.goto(origin + '/#/project-assets'); await expect(assets()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+  await page.goto(origin + '/#/project-assets'); await expect(assets()).toBeVisible(); await selectProjectInBar(page, project.id);
 
   await check('人物为空：新建卡是白底实线，写「还没有人物 / 拖入图片或点击新建」；不显示筛选和计数', async () => {
     await expect(addCard()).toContainText('还没有人物'); await expect(addCard()).toContainText('拖入图片或点击新建');
@@ -50,7 +50,7 @@ try {
   await check('FE1-R1 反例：资产列表读取 503 时不显示「还没有人物」、不收筛选；关掉错误后仍不显示；重读成功确认零条后才显示', async () => {
     let fail = 1;
     await page.route(url => url.pathname === '/api/project-assets/assets', route => { if (route.request().method() === 'GET' && fail > 0) { fail--; return route.fulfill({ status: 503, json: { error: '服务暂时不可用' } }); } return route.fallback(); });
-    await page.reload(); await expect(assets()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+    await page.reload(); await expect(assets()).toBeVisible(); await selectProjectInBar(page, project.id);
     const alert = assets().getByRole('alert'); await expect(alert).toContainText('服务暂时不可用');
     await expect(addCard()).toHaveText('新建人物'); await expect(assets().getByRole('group', { name: '筛选' })).toBeVisible();
     await alert.getByRole('button', { name: '关闭错误' }).click(); await expect(alert).toHaveCount(0);
@@ -62,7 +62,7 @@ try {
 
   await check('有了第一个人物：筛选和计数回来，新建卡只写「新建人物」', async () => {
     await api('/project-assets/assets', { project_id: project.id, kind: 'character', name: '阿青' });
-    await page.reload(); await expect(assets()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id);
+    await page.reload(); await expect(assets()).toBeVisible(); await selectProjectInBar(page, project.id);
     await expect(assets().locator('.ca-card-wrap')).toHaveCount(1);
     await expect(addCard()).toHaveText('新建人物'); await expect(assets().getByRole('group', { name: '筛选' })).toBeVisible(); await expect(assets().locator('.ca-count')).toContainText('1 个人物');
     assert.equal(await addCard().evaluate(el => getComputedStyle(el).borderTopStyle), 'solid');

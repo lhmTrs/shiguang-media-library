@@ -129,14 +129,14 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
  const connecting=connectionPhase==='connecting',checking=connectionPhase==='checking';
  const connectionTitle={checking:'正在检查连接…',idle:'尚未连接',connecting:connection.connecting?'后台正在连接…':'正在连接…',connected:'已连接', 'login-required':'需要本机登录',empty:'未读取到可用模型',failed:'连接失败',unknown:'连接结果待确认'}[connectionPhase];
  const connectionDetail=connecting?(connectionSeconds>=8?'连接较慢，正在等待本机 Codex 响应，请勿重复点击。':(connection.connecting?'后台正在连接…确认登录并读取模型列表。':'正在建立本机连接、确认登录并读取模型列表…'))+' 已等待 '+connectionSeconds+' 秒。':connectionPhase==='connected'?'连接成功 · '+(connection.accountType==='chatgpt'?'ChatGPT 登录':connection.accountType==='apiKey'?'API 登录':'本机已授权')+' · 已读取 '+connection.models.length+' 个可用模型。'+(generating?'正在生成，结果会自动保存。':conversation?.turns.length?'对话已保存，可继续追问。':'点击下方「使用 Codex 生成」发送完整提示词。'):connectionPhase==='login-required'?'已连接本机 Codex，但尚未登录。请在本机 Codex 登录后点击重新连接。':connectionPhase==='empty'?'已确认本机登录，但没有可用模型。请检查账号模型权限，再点击重新连接。':connectionPhase==='checking'?'正在读取当前连接状态，不会发起生成。':connectionError||'后台连接未就绪。请检查本机安装与登录状态，再点击“重新连接”；输入不会自动发送。';
- const sendBlockedReason=template?.deleted_at?'当前模板已删除，请先在上方恢复模板。':!conversation&&!template?'请先在左侧选择模板；没有模板时，可点击上方「新建模板」或「选用内置模板」。':!conversation&&!canGenerate?'请先完成上方模板输入：'+(templateIssue||'检查并补全必填项。'):!selectedProject?'请先在顶部选择图片所属项目。':unconfirmed?'上次提交结果尚未确认，请先检查提交结果。':templateBusy?'模板正在处理，请稍候。':busy?(connecting?'正在连接 Codex，请稍候。':checking?'正在检查连接状态，请稍候。':'正在处理，请稍候。'):connecting?'后台正在连接…':checking?'正在读取连接状态…':!connection.connected?'尚未连接，请点击“重新连接”':!connection.authenticated?'请先在本机 Codex 登录后点击“重新连接”':!connection.models.length?'没有可用模型，请检查权限后点击“重新连接”':!selectedModel?'请先选择一个可用的对话模型。':'';
+ const sendBlockedReason=template?.deleted_at?'当前模板已删除，请先在上方恢复模板。':!conversation&&!template?'请先在左侧选择模板；没有模板时，可点击上方「新建模板」或「选用内置模板」。':!conversation&&!canGenerate?'请先完成上方模板输入：'+(templateIssue||'检查并补全必填项。'):!selectedProject?'请先在顶部选择项目。':unconfirmed?'上次提交结果尚未确认，请先检查提交结果。':templateBusy?'模板正在处理，请稍候。':busy?(connecting?'正在连接 Codex，请稍候。':checking?'正在检查连接状态，请稍候。':'正在处理，请稍候。'):connecting?'后台正在连接…':checking?'正在读取连接状态…':!connection.connected?'尚未连接，请点击“重新连接”':!connection.authenticated?'请先在本机 Codex 登录后点击“重新连接”':!connection.models.length?'没有可用模型，请检查权限后点击“重新连接”':!selectedModel?'请先选择一个可用的对话模型。':'';
  const sendHint=sendBlockedReason;
  async function generateFromTemplate(){
   if(unconfirmed)throw Error('上次提交结果尚未确认，请先点击「检查提交结果」。');
   sendProgress('正在准备生成…');
   const snapshot=templateRef.current;
   if(!snapshot||!canGenerate||snapshot.deleted_at)throw Error(templateIssue||'请先选择模板并完整填写必填项');
-  if(!selectedProject)throw Error('请先在顶部选择图片所属项目');const projectId=selectedProject.id;
+  if(!selectedProject)throw Error('请先在顶部选择项目');const projectId=selectedProject.id;
   if(generating)throw Error('请先等待或停止当前生成');
   loadSeq.current++;
   const status=await checkConnection();
@@ -152,7 +152,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
   if(unconfirmed)throw Error('上次提交结果尚未确认，请先点击「检查提交结果」。');
   if(!fresh&&sendBlockedReason)throw Error(sendBlockedReason);
   let usedModel=fresh?.model||selectedModel,usedEffort=fresh?.effort??effort;
-  const projectId=fresh?.projectId||selectedProject?.id;if(!projectId)throw Error('请先在顶部选择图片所属项目');
+  const projectId=fresh?.projectId||selectedProject?.id;if(!projectId)throw Error('请先在顶部选择项目');
   let head=fresh?null:current.current;
   const text=fresh?'':retry?retry.request.text:draft;
   if(!fresh&&head?.turns.length&&!retry&&!text.trim())throw Error('请填写追问内容');
@@ -219,7 +219,7 @@ export function CodexChat({active,request,template,values,canGenerate,templateIs
     </div>}
    </div>
   </div>
-  <div className="codex-generate-action"><p>{template?.deleted_at?'当前模板已删除，请先恢复模板。':!canGenerate?(templateIssue||'请先选择模板并填写上方必填项。'):!selectedProject?'请先在顶部选择图片所属项目。':templateBusy?'模板正在处理，请稍候。':'将上方完整提示词直接发送给 Codex，回答自动保存。'}</p>
+  <div className="codex-generate-action"><p>{template?.deleted_at?'当前模板已删除，请先恢复模板。':!canGenerate?(templateIssue||'请先选择模板并填写上方必填项。'):!selectedProject?'请先在顶部选择项目。':templateBusy?'模板正在处理，请稍候。':'将上方完整提示词直接发送给 Codex，回答自动保存。'}</p>
    {renderFeedback('codex-generation-feedback')}
    <button className="prompt-primary codex-generate-button" disabled={templateBusy||busy||generating||!!unconfirmed||!canGenerate||!selectedProject||!!template?.deleted_at} aria-busy={busy||generating} onClick={()=>void run(generateFromTemplate)}>{busy||generating?<LoaderCircle size={20} className="codex-connection-spinner"/>:<Zap size={20}/>} {connecting?'正在连接 Codex…':busy?'正在提交…':generating?'正在生成…':unconfirmed?'请先检查提交结果':'使用 Codex 生成'}</button></div>
   {stopImpact&&<CodexStopConfirmation impact={stopImpact} busy={busy} close={()=>setStopImpact(null)} submit={()=>void run(async()=>{try{await stopCodexTask(request,stopImpact,true);}finally{setStopImpact(null);}await reload();})}/>}

@@ -1,6 +1,5 @@
 import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
@@ -13,7 +12,6 @@ import {CharacterAttributes} from './CharacterAttributes';
 import {AttributeConfig} from './AttributeConfig';
 import {AttributePopover} from './AttributePopover';
 import {ReferenceImageImport,ReferencePreview} from './ReferenceImageImport';
-import {ProjectSelector} from '../ProjectSelector';
 import {ReferenceImageViewer} from './ReferenceImageViewer';
 import {CropBox,type Crop} from './CropBox';
 import {useImageDesktopAction, capability, actionPending, skippedText, revealDispatched, type ImageCapabilities, type ImageCopyMode, type ImageSelectionItem} from './image-desktop';
@@ -138,12 +136,12 @@ const autoNote = (before: Asset, saved: Asset, id: string) => saved.images.find(
 function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span className="ca-avatar">{b ? <CroppedImage binding={b}/> : a.name.slice(0, 1)}</span>; }
 function Cover({ a }: { a: Asset }) { const b = coverOf(a); return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
-export function AssetLibrary({ focusProject, active, projectSelectorHost, request, activeProject, selectProject, refreshSeconds, onSettings, onOpenShot }: ProjectAssetProps) {
+export function AssetLibrary({ focusProject, active, request, activeProject, refreshSeconds, onSettings, onOpenShot, registerProjectSwitchGuard }: ProjectAssetProps) {
   const api = <T = any,>(url: string, body?: unknown, method?: string) => request<T>('/project-assets' + url, body, method);
   // v2：新画廊默认卡片显示，不沿用旧版窄列表时期保存的“列表”偏好。
   const prefKey = 'shiguang.creative.preferences.v2';
   const remembered = () => readMemory().display ? readStored<{ kind: Kind; layout: string }>(prefKey, { kind: 'character', layout: 'grid' }, (v): v is { kind: Kind; layout: string } => !!v && typeof v === 'object' && ['character', 'scene', 'prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout)) : { kind: 'character' as Kind, layout: 'grid' };
-  const [scopes, setScopes] = useState<Scope[]>([]), [scope, setScope] = useState(() => readMemory().display ? readStored('shiguang.creative.lastScope.v1', activeProject, (v): v is string => typeof v === 'string') : activeProject);
+  const [scopes, setScopes] = useState<Scope[]>([]), [scope, setScope] = useState(activeProject);
   const readScopePrefs = (id: string) => readMemory().display ? readStored('shiguang.creative.scope.v2.' + id, { ...remembered(), archived: false }, (v): v is { kind: Kind; layout: string; archived: boolean } => !!v && typeof v === 'object' && ['character','scene','prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout) && typeof (v as any).archived === 'boolean') : { kind: 'character' as Kind, layout: 'grid', archived: false };
   const [kind, setKind] = useState<Kind>(() => readScopePrefs(scope).kind), [layout, setLayout] = useState(() => readScopePrefs(scope).layout), [q, setQ] = useState(''), [archived, setArchived] = useState(() => readScopePrefs(scope).archived), [page, setPage] = useState(1);
   const [rows, setRows] = useState<Asset[]>([]), [total, setTotal] = useState(0), [draft, setDraft] = useState<Asset | null>(null), [base, setBase] = useState(''), [lookId, setLookId] = useState('');
@@ -263,15 +261,39 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   const owner = draft ? scopes.find(s => s.id === draft.project_id) : null;
   const run = async (label: string, fn: () => Promise<void>) => { if (busy) return; setBusy(label); setError(''); try { await fn(); } catch (e: any) { setError(e.message || '操作失败'); } finally { setBusy(''); } };
   const canLeave = () => (!scriptDirtyRef.current || window.confirm('剧本尚未保存，确定切换吗？未保存内容仍保留在当前页面。')) && (!dirtyRef.current || window.confirm('当前修改尚未保存，确定放弃这些修改吗？'));
-  function changeScope(next: string) {
-    if (next === scope || !canLeave()) return;
+  // 顶栏统一（TOPBAR-UNIFY）：资产页范围 = 顶栏的当前项目，或页内切到的公共人物库。
+  // 切项目由宿主先调用登记的保护（下方 registerProjectSwitchGuard），通过后这里只负责重置，不再二次询问。
+  /** 复制完成后：目标是顶栏当前项目或公共库时在页内打开副本，否则留在原处提示去哪里看。 */
+  async function afterCopy(a: Asset, done: string) {
+    const target = scopes.find(x => x.id === a.project_id);
+    setModal(null);
+    if (a.project_id !== activeProject && target?.project_kind !== 'public') { setNotice(`${done}：已放进「${target?.name ?? '目标项目'}」。在顶部切到该项目即可查看`); return; }
+    setScope(a.project_id); install(a); setKind('character'); setArchived(false); setQ(''); setPage(1); setNotice(done);
+    if (a.project_id === scope) await loadList();
+  }
+  function applyScope(next: string) {
+    if (next === scopeRef.current) return;
     const pref = readScopePrefs(next); selectionGeneration.current++; setDetailLoading(false); generation.current++; healthGeneration.current++; scopeRef.current = next;
     setScope(next); setRows([]); setTotal(0); setListLoading(!!next && active);
     setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setError(''); setNotice('');
     if(scopes.find(s=>s.id===next)?.project_kind==='public')setScriptView(false);
     setKind(scopes.find(s => s.id === next)?.project_kind === 'public' ? 'character' : pref.kind); setLayout(pref.layout); setArchived(pref.archived); setPage(1); setQ('');
-    if (scopes.find(s => s.id === next)?.project_kind === 'normal') selectProject(next);
   }
+  const publicId = scopes.find(s => s.project_kind === 'public')?.id ?? '';
+  const currentScope = scopes.find(s => s.id === activeProject && s.project_kind === 'normal');
+  /** 页内「本集 ｜ 公共人物库」切换：走同一套离开确认，只改资产页范围，不改全局当前项目。 */
+  function showPublic(on: boolean) {
+    const next = on ? publicId : activeProject;
+    if (!next || next === scope || busy || modal || dropJob || !canLeave()) return;
+    applyScope(next);
+  }
+  // 宿主切项目前问一次：忙碌、对话框、图片导入中直接拦下；有未保存的资产或剧本修改时沿用原确认文案。
+  const switchGuard = useRef<() => boolean>(() => true);
+  switchGuard.current = () => {
+    if (busy || modal || dropJob) { setNotice('项目资产正在处理（' + (busy || (dropJob ? '图片导入' : '对话框未关闭')) + '），完成后再切换项目'); return false; }
+    return canLeave();
+  };
+  useEffect(() => { if (!registerProjectSwitchGuard) return; registerProjectSwitchGuard(() => switchGuard.current()); return () => registerProjectSwitchGuard(null); }, [registerProjectSwitchGuard]);
   function install(a: Asset) { if (draftRef.current?.id !== a.id || draftRef.current?.kind !== a.kind) setVersions([]); if (draftRef.current?.id !== a.id || draftRef.current?.revision !== a.revision) setHealth([]); setDraft(a); setBase(JSON.stringify(a)); setLookId(old => draftIdRef.current === a.id && a.looks.some(l => l.id === old) ? old : a.default_look_id ?? a.looks.find(l => !l.archived_at)?.id ?? ''); setConflict(null); }
   const edit = (fn: (a: Asset) => void) => setDraft(old => { if (!old || old.archived_at) return old; const next = structuredClone(old); fn(next); return next; });
   // The last list query that came back successfully, with its own count. "Empty" is only shown when that confirmed
@@ -299,11 +321,13 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     void api<{ items: Scope[]; storage: string }>('/scopes').then(r => {
       if (!live) return;
       setScopes(r.items); setScopesKnown(true);
-      if (!r.items.some(p => p.id === scopeRef.current)) setScope(activeProject && r.items.some(p => p.id === activeProject) ? activeProject : r.items.find(s => s.project_kind === 'normal')?.id || r.items[0]?.id || '');
+      // 当前项目还没确定或已不存在时留空，不自动落到别的项目或公共库
+      if (!r.items.some(p => p.id === scopeRef.current)) { const next = activeProject && r.items.some(p => p.id === activeProject) ? activeProject : ''; scopeRef.current = next; setScope(next); }
     }).catch(e => { if (live) setScopesError(e.message); });
     return () => { live = false; };
   }, [active, activeProject,scopesRetry]);
-  useEffect(() => { if (lastActiveProject.current === activeProject) return; lastActiveProject.current = activeProject; if (activeProject && activeProject !== scope && !dirtyRef.current && !scriptDirtyRef.current) { changeScope(activeProject); } }, [activeProject]);
+  // 当前项目变了（宿主已问过保护）：跟过去；在公共人物库里换集也回到那一集
+  useEffect(() => { if (lastActiveProject.current === activeProject) return; lastActiveProject.current = activeProject; applyScope(activeProject); }, [activeProject]);
   useEffect(() => {
     let live = true;
     setRows([]); setTotal(0); setListLoading(false);
@@ -322,7 +346,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     }).catch(e => { if (live && scopeRef.current === scope && draftIdRef.current === draft.id) setError(e.message); });
     return () => { live = false; };
   }, [active, scope]);
-  useEffect(() => { if (readMemory().display) { saveStored(prefKey, { kind, layout }); saveStored('shiguang.creative.lastScope.v1', scope); if (scope) saveStored('shiguang.creative.scope.v2.' + scope, { kind, layout, archived }); } }, [kind, layout, scope, archived]);
+  useEffect(() => { if (readMemory().display) { saveStored(prefKey, { kind, layout }); if (scope) saveStored('shiguang.creative.scope.v2.' + scope, { kind, layout, archived }); } }, [kind, layout, scope, archived]);
   useEffect(() => { if (!active || !draft) return; let live = true; void loadHealth(draft).catch(e => { if (live) setError(e.message); }); return () => { live = false; healthGeneration.current++; }; }, [active, draft?.id, draft?.revision]);
   useEffect(() => { const before = (e: BeforeUnloadEvent) => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', before); return () => window.removeEventListener('beforeunload', before); }, []);
   useEffect(() => {
@@ -345,7 +369,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
     return () => { document.body.style.overflow = previous; };
   }, [!!modal || !!imageId || !!dropJob]);
   const lastFocusProject=useRef(-1);
-  useEffect(()=>{if(active&&focusProject?.id&&lastFocusProject.current!==focusProject.request){lastFocusProject.current=focusProject.request;if(scope!==focusProject.id)changeScope(focusProject.id);}},[active,focusProject?.request]);
+  useEffect(()=>{if(active&&focusProject?.id&&lastFocusProject.current!==focusProject.request){lastFocusProject.current=focusProject.request;if(scope!==focusProject.id&&canLeave())applyScope(focusProject.id);}},[active,focusProject?.request]);
   useEffect(() => {
     if (!active || modal?.type !== 'history' || !draft) return;
     let live = true; setVersions([]);
@@ -926,10 +950,13 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
   }
 
   return <section className="ca-workspace ca-v2" aria-label="项目资产库" aria-busy={!!busy}>
-    {active && projectSelectorHost && createPortal(<ProjectSelector projects={scopes} value={scope} disabled={!!busy||!!modal||!!dropJob} onChange={changeScope} label="资产所属项目" caption="资产所属" allowEmpty={false}/>, projectSelectorHost)}
     <header className="ca-head">
       <div className="ca-head-row">
-        <div className="ca-head-title"><h1>项目资产</h1>{publicScope && <span className="ca-scope-note"><Globe2 size={13}/>公共人物可复制到任意项目</span>}</div>
+        <div className="ca-head-title"><h1>项目资产</h1>
+          {!!publicId && <div className="ca-scope-switch" role="group" aria-label="看哪里的资产">
+            <button type="button" aria-pressed={!publicScope} disabled={!currentScope || !!busy || !!modal || !!dropJob} title={currentScope?.name} onClick={() => showPublic(false)}><FolderKanban size={13} aria-hidden="true"/><span>{currentScope?.name ?? '未选项目'}</span></button>
+            <button type="button" aria-pressed={publicScope} disabled={!!busy || !!modal || !!dropJob} onClick={() => showPublic(true)}><Globe2 size={13} aria-hidden="true"/><span>公共人物库</span></button>
+          </div>}</div>
         {!scriptView && <div className="ca-head-tools">
           <label className="ca-search"><Search size={15} aria-hidden="true"/><input aria-label="搜索资产" placeholder={'搜索' + labels[kind]} value={q} onChange={e => { setQ(e.target.value); setPage(1); }}/></label>
           <button className="ca-primary" disabled={!scope || !!busy} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
@@ -947,6 +974,7 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
           </div>
         </div>}
       </div>
+      {publicScope && <p className="ca-public-note" role="note"><Globe2 size={13} aria-hidden="true"/>正在看公共人物库：这里的人物所有项目都能复制使用。顶栏的当前项目没有变{currentScope ? <>，点「{currentScope.name}」回到它的资产</> : null}。</p>}
       <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++; setDetailLoading(false);setModal(null);setScriptView(true);}}>剧本</button></div>
     </header>
     {(error||scopesError) && <div className="ca-alert" role="alert">{error||scopesError}{scopesError&&<button onClick={()=>retryScopes(n=>n+1)}>重试项目范围</button>}<button aria-label="关闭错误" onClick={() => {setError('');if(scopesKnown)setScopesError('');}}><X size={14}/></button></div>}{notice && <div className="ca-notice" role="status">{notice}<button aria-label="关闭通知" onClick={() => setNotice('')}><X size={14}/></button></div>}
@@ -1148,6 +1176,6 @@ export function AssetLibrary({ focusProject, active, projectSelectorHost, reques
       {modal.type === 'history' && draft && <div className="ca-form"><p>创建于 {date(draft.created_at)} · 当前 V{draft.revision}</p>{draft.source ? <div className="ca-source"><strong>复制来源：{draft.source.project_name} / {draft.source.asset_name}</strong><p>来源 V{draft.source.revision} · {date(draft.source.copied_at)}</p><small>当前副本独立编辑；共用的原图片文件仍受素材库可用性影响。</small></div> : <p className="ca-muted">在当前项目创建</p>}<code>{draft.id}</code><h3>数据版本</h3>{!versions.length && <p className="ca-muted">正在读取版本…</p>}{versions.map(v => <div className="ca-version" key={v.id}><strong>V{v.version}</strong><span>{v.summary} · {date(v.created_at)}</span><button onClick={() => void run('正在读取版本…', async () => { setModal({ type: 'version', data: await api('/assets/' + draft.id + '/versions/' + v.version) }); })}>查看</button></div>)}</div>}
       {modal.type === 'version' && <pre>{JSON.stringify(modal.data, null, 2)}</pre>}{modal.type === 'usage' && <>{modal.rows.map((r: any) => <p key={r.id}>{scopes.find(s => s.id === r.project_id)?.name} / {r.name}{r.archived_at ? '（归档）' : ''} · {r.look_id ? '造型图片' : '资产参考图'}</p>)}{!modal.rows.length && <p>尚无已保存的库内使用记录</p>}</>}
       {modal.type === 'compare' && <><div className="ca-compare"><section><h3>本地编辑</h3><pre>{JSON.stringify(draft, null, 2)}</pre></section><section><h3>数据库最新 V{modal.latest.revision}</h3><pre>{JSON.stringify(modal.latest, null, 2)}</pre></section></div><p>请核对资料。合并以当前本地内容为基础，采用最新版本号后仍需再次保存；再次发生更新时仍会阻止覆盖。</p><button onClick={() => { edit(a => { a.revision = modal.latest.revision; }); setConflict(null); setModal(null); setNotice('已保留本地内容，请完成核对后点击保存'); }}>保留本地内容，进入核对保存</button></>}
-    </fieldset></div><footer>{modal.type === 'media' && <div className="ca-pagination ca-media-pagination"><span>第 {mediaPage} / {Math.max(1, Math.ceil(mediaTotal / 40))} 页</span><button disabled={!!busy || mediaLoading || mediaPage === 1} onClick={() => setMediaPage(v => v - 1)}>上一页</button><button disabled={!!busy || mediaLoading || mediaPage * 40 >= mediaTotal} onClick={() => setMediaPage(v => v + 1)}>下一页</button></div>}{modal.type === 'create' && <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在创建资产…', async () => { const a = await api<Asset>('/assets', { project_id: scope, kind, name: modal.name }); install(a); setModal(null); setArchived(false); setQ(''); await loadList(); })}>创建并编辑</button>}{modal.type === 'copy' && <>{modal.pending ? <button onClick={() => void run('正在查询复制结果…', async () => { const r = await api<any>('/copies/' + modal.request_id); if (r.completed) { setScope(r.asset.project_id); install(r.asset); setModal(null); setNotice('人物已复制'); } else setModal({ ...modal, pending: false }); })}>查询复制结果</button> : <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在复制人物…', async () => { try { const a = await api<Asset>('/assets/' + modal.source.id + '/copy', { project_id: modal.project_id, name: modal.name, base_info: modal.base_info, performance_info: modal.performance_info, source_revision: modal.source_revision, request_id: modal.request_id }); setScope(a.project_id); if (scopes.find(s => s.id === a.project_id)?.project_kind === 'normal') selectProject(a.project_id); install(a); setKind('character'); setArchived(false); setQ(''); setPage(1); setModal(null); setNotice('已复制人物，副本可独立编辑'); if (a.project_id === scope) await loadList(); } catch (e: any) { if (!/同名|已经更新|无效|归档/.test(e.message)) setModal({ ...modal, pending: true }); throw e; } })}><Copy size={15}/>确认复制</button>}</>}<button disabled={!!busy} onClick={() => setModal(null)}>关闭</button></footer></div></div>}
+    </fieldset></div><footer>{modal.type === 'media' && <div className="ca-pagination ca-media-pagination"><span>第 {mediaPage} / {Math.max(1, Math.ceil(mediaTotal / 40))} 页</span><button disabled={!!busy || mediaLoading || mediaPage === 1} onClick={() => setMediaPage(v => v - 1)}>上一页</button><button disabled={!!busy || mediaLoading || mediaPage * 40 >= mediaTotal} onClick={() => setMediaPage(v => v + 1)}>下一页</button></div>}{modal.type === 'create' && <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在创建资产…', async () => { const a = await api<Asset>('/assets', { project_id: scope, kind, name: modal.name }); install(a); setModal(null); setArchived(false); setQ(''); await loadList(); })}>创建并编辑</button>}{modal.type === 'copy' && <>{modal.pending ? <button onClick={() => void run('正在查询复制结果…', async () => { const r = await api<any>('/copies/' + modal.request_id); if (r.completed) await afterCopy(r.asset, '人物已复制'); else setModal({ ...modal, pending: false }); })}>查询复制结果</button> : <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在复制人物…', async () => { try { const a = await api<Asset>('/assets/' + modal.source.id + '/copy', { project_id: modal.project_id, name: modal.name, base_info: modal.base_info, performance_info: modal.performance_info, source_revision: modal.source_revision, request_id: modal.request_id }); await afterCopy(a, '已复制人物，副本可独立编辑'); } catch (e: any) { if (!/同名|已经更新|无效|归档/.test(e.message)) setModal({ ...modal, pending: true }); throw e; } })}><Copy size={15}/>确认复制</button>}</>}<button disabled={!!busy} onClick={() => setModal(null)}>关闭</button></footer></div></div>}
   </section>;
 }

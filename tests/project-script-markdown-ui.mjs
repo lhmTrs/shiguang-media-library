@@ -6,6 +6,7 @@ import net from 'node:net';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
+import { selectProjectInBar } from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-script-md-'));
@@ -56,7 +57,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { const u = new URL(r.url()); if (u.origin !== origin && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) external.push(r.url()); });
-  const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); await expect(work()).toBeVisible(); await page.getByLabel('资产所属项目').selectOption(project.id); await work().getByRole('tab', { name: '剧本', exact: true }).click(); await expect(script()).toBeVisible(); };
+  const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await work().getByRole('tab', { name: '剧本', exact: true }).click(); await expect(script()).toBeVisible(); };
   await open();
 
   await check('空剧本直接进入编辑；输入 Markdown 后停在编辑，「阅读」在保存前不能点；大纲同时认「## 标题」和「1. 场二」', async () => {

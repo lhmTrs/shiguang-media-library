@@ -649,8 +649,11 @@ function App() {
   const [projectUsageBusy, setProjectUsageBusy] = useState(false);
   useEffect(() => { if (view !== "projectUsage") setProjectUsageBusy(false); }, [view]);
   const [storyboardShotFocus,setStoryboardShotFocus]=useState<ShotFocus|null>(null),[storyboardDirty,setStoryboardDirty]=useState(false);
-  const [projectAssetSelectorHost, setProjectAssetSelectorHost] = useState<HTMLElement | null>(null);
-  useEffect(()=>{const host=projectAssetSelectorHost;if(!host)return;const cancel=()=>cancelCodexNavigation();host.addEventListener('change',cancel,true);return()=>host.removeEventListener('change',cancel,true);},[projectAssetSelectorHost,cancelCodexNavigation]);
+  const assetProjectSwitchGuard = useRef<(() => boolean) | null>(null);
+  const registerProjectSwitchGuard = useCallback((guard: (() => boolean) | null) => {
+    assetProjectSwitchGuard.current = guard;
+  }, []);
+  const openStoryboardTaskProject = useRef<(id: string) => boolean>(() => false);
   const codexTasks=useCodexTasks(api,setNotice),promptWorkspace=useRef<PromptWorkspaceHandle>(null);
   const openUploadTasks=()=>{cancelCodexNavigation();setWorkspaceInitialTab('audio');setUploadTasksOpen(true);};
   const closeUploadTasks=()=>{cancelCodexNavigation();setUploadTasksOpen(false);};
@@ -660,8 +663,8 @@ function App() {
       const [detail,session]=await Promise.all([api<GenerationTask>('/storyboard-generation/tasks/'+encodeURIComponent(task.taskId)),api<{instanceId:string}>('/session')]);if(!isCurrent())return;
       if(detail.taskId!==task.taskId||detail.projectId!==task.projectId)throw Error('分镜任务目标不符，未跳转');
       await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
-      if(storyboardDirty&&activeProject!==detail.projectId&&!confirm('当前分镜有未保存草稿，切换后保留在原项目。继续查看目标任务？'))throw Error('已取消跳转，原分镜草稿保留');
-      activateProject(detail.projectId);setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
+      if (!openStoryboardTaskProject.current(detail.projectId)) return;
+      setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
     }
     if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
     if(!promptWorkspace.current)throw Error('工作台暂未就绪，请重试');
@@ -799,7 +802,8 @@ function App() {
       setNotice("请等待当前项目的操作完成，再切换项目");
       return false;
     }
-    return !storyboardDirty || confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？");
+    if (storyboardDirty && !confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？")) return false;
+    return assetProjectSwitchGuard.current?.() ?? true;
   }
   function activateProject(id: string) {
     if (!projectLibrary.current || id === activeProject) return;
@@ -811,11 +815,19 @@ function App() {
     setActiveProject(id);
   }
   function selectKnownProject(id: string) {
-    if ((id && !projects.some(project => project.id === id)) || !projectChangeAllowed(id)) return false;
+    if (!projects.some(project => project.id === id)) return false;
     cancelCodexNavigation();
+    if (!projectChangeAllowed(id)) return false;
     activateProject(id);
     return true;
   }
+  // Async task navigation may outlive the render in which it started.
+  // Read current guards before opening a task, including retained history.
+  openStoryboardTaskProject.current = id => {
+    if (!projectChangeAllowed(id)) return false;
+    activateProject(id);
+    return true;
+  };
   function projectsChanged(id?: string) {
     if (id && id !== activeProject && projectChangeAllowed(id)) {
       cancelCodexNavigation();
@@ -1958,17 +1970,15 @@ function App() {
           </div>
           <BackgroundReadStatus/>
           <div className="topbar-actions">
-          {["projectAssets", "storyboard", "promptTemplates"].includes(view) ?
-            <div className="topbar-project-slot" ref={setProjectAssetSelectorHost}/> :
-            <div className="topbar-project-slot">
-              <ProjectPathBar projects={projectDirectory?.projects ?? projects} series={projectDirectory?.series ?? []}
-                value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
-                disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
-                onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
-            </div>}
+          <div className="topbar-project-slot">
+            <ProjectPathBar projects={projects} series={projectDirectory?.series ?? []}
+              value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
+              disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
+              onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
+          </div>
           <CodexTaskEntry controller={codexTasks}/>
           <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
-            if(projectId){if(!projectChangeAllowed(projectId))return;activateProject(projectId);if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
+            if(projectId){if(!selectKnownProject(projectId))return;if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
             else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
           }}/>
           <div className="file-check-entry">
@@ -1997,10 +2007,10 @@ function App() {
           </div>
         </header>
         {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
-        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} projectSelectorHost={projectAssetSelectorHost} request={api} activeProject={activeProject} selectProject={activateProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!projectChangeAllowed(target.projectId))return;activateProject(target.projectId);setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
-        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onTaskViewing={codexTasks.viewed}/>
-        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={activateProject} onStoryboard={()=>navigate("storyboard")}/>
-        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} selectProject={activateProject} projectSelectorHost={projectAssetSelectorHost} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
+        <ProjectAssetWorkspace focusProject={projectAssetFocus} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} onTaskViewing={codexTasks.viewed}/>
+        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
+        <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
           {projectDirectory ? <ProjectFolders projects={projectDirectory.projects} series={projectDirectory.series}
