@@ -35,9 +35,12 @@ export function FolderOperations({action, active, folders, projectId, request, c
   const batchItems = batch && shown && 'items' in shown ? shown.items || [] : [];
   const sameHere = batchItems.filter(i => i.folderId === destination), movable = batchItems.filter(i => i.folderId !== destination);
   const destName = destination === 'root' ? '项目根目录' : folders.find(f => f.id === destination)?.name || '所选文件夹';
-  /** 服务端明确只有预览、执行没有登记：这笔已结束（文件没动），可以重新核对，不再锁住后续移动、不给回滚。 */
+  /**
+   * 读取时只有预览、执行还没登记。只代表读的那一刻：之前发出的执行请求仍可能晚到并开始，所以仍算未结清、保留原编号和锁；
+   * 用户点「放下这笔」由服务端原子作废（之后同编号执行一律拒绝）并回 cancelled，才解锁。不给回滚（canRecover 为准）。
+   */
   const notStarted = (r: OperationReceipt | null) => !!r && r.status === 'unknown' && (r.phase === 'preview' || r.errorCode === 'OPERATION_NOT_STARTED');
-  const pending = (r: OperationReceipt | null) => !r || r.status === 'running' || r.status === 'unknown' && !notStarted(r);
+  const pending = (r: OperationReceipt | null) => !r || r.status === 'running' || r.status === 'unknown';
   const unresolved = !!mutation.current && pending(receipt);
   // 执行中某次进度查询失败（网络中断）：保留最后已知状态，按退避自动再查原编号，也可以手动「重新查询」；不重发执行
   const [pollFail, setPollFail] = useState(0);
@@ -51,6 +54,8 @@ export function FolderOperations({action, active, folders, projectId, request, c
   useEffect(() => { onPending(busy || unresolved); }, [busy, unresolved, onPending]);
   function receive(next: OperationReceipt) {
     if (next.requestId !== mutation.current?.requestId) throw Error('操作回执编号不匹配，请查询原请求。');
+    // 服务端确认已放下（作废回应本身或之后 GET 读到）：这笔结束、文件没动，回到核对前，保留所选视频和目标
+    if (next.status === 'cancelled') { restart(); if (!action) setReopened(false); report('已放下这笔，文件没有改动；可以重新核对。', 'success'); return; }
     setReceipt(next);
     if (next.status === 'unknown' && !notStarted(next) && !seen.current.has(next.requestId + 'unknown')) { seen.current.add(next.requestId + 'unknown'); report(next.error || '原文件夹操作结果待核对，请查询原请求；不会重新提交。'); }
     if (['ready', 'failed'].includes(next.status) && !seen.current.has(next.requestId + next.status)) {
@@ -75,7 +80,19 @@ export function FolderOperations({action, active, folders, projectId, request, c
     if (receipt?.status !== 'running' || busy || error || pollFail >= POLL_RETRIES) return;
     const timer = setTimeout(() => void query(), pollFail ? Math.min(1600 * 2 ** pollFail, 20000) : 1600); return () => clearTimeout(timer);
   }, [receipt, busy, error, pollFail]);
-  /** 只核对过、没有执行：回到核对前，保留所选视频和目标，重新核对。 */
+  /** 放下只核对过、还没执行的这笔：按原编号请服务端作废。回 cancelled 才解锁；执行已先登记就继续跟踪原编号。回应丢失可再点或查询，不重发执行。 */
+  async function abandon() {
+    const original = mutation.current;
+    if (!original || inFlight.current) return;
+    inFlight.current = true; setBusy(true); setError('');
+    try {
+      const next = await original.api<OperationReceipt>(base + `/operations/${encodeURIComponent(original.requestId)}/abandon`, {}, 'POST');
+      receive(next);
+      if (next.status !== 'cancelled') report(next.status === 'ready' ? '执行已经先开始并完成了，没有放下。' : '执行刚刚已经开始，没有放下；继续跟踪原请求。', next.status === 'ready' ? 'success' : 'error');
+    } catch (e) { report(`放下结果尚未确认：${(e as Error).message}。可以再点一次，或查询原请求；不会重新提交移动。`); }
+    finally { inFlight.current = false; setBusy(false); }
+  }
+  /** 回到核对前（已放下）：清掉原编号与回执，保留所选视频和目标。 */
   function restart() { mutation.current = null; setReceipt(null); setPlan(null); setConfirmed(false); setError(''); setPollFail(0); }
   const pollNote = receipt?.status === 'running' && pollFail > 0 ? `暂时没读到最新进度（已重试 ${pollFail} 次），${pollFail >= POLL_RETRIES ? '请检查连接后点「重新查询」' : '会自动再试，也可以点「重新查询」'}；不会重新提交移动。` : '';
   function invalidate() { setPlan(null); setConfirmed(false); }
@@ -132,11 +149,11 @@ export function FolderOperations({action, active, folders, projectId, request, c
   const moving = lastKind === 'move-videos' || lastKind === 'move-video';
   /** 状态文字：执行中就是执行中；只有真的确认不了才说「结果待核对」，只有预览没执行说「尚未开始」。 */
   const statusText = (r: OperationReceipt) => r.status === 'ready' ? '已完成' : r.status === 'failed' ? '失败' : r.status === 'running' ? (moving ? '正在移动…' : '正在处理…')
-    : r.phase === 'preview' || r.errorCode === 'OPERATION_NOT_STARTED' ? '尚未开始' : '结果待核对';
+    : r.status === 'cancelled' ? '已放下' : r.phase === 'preview' || r.errorCode === 'OPERATION_NOT_STARTED' ? '尚未开始' : '结果待核对';
   const itemText: Record<string, string> = {ready: '已移动', 'not-run': receipt?.status === 'running' ? '等待完成' : '没有执行', 'rolled-back': '已退回原处', failed: '失败', unknown: '待核对'};
   const nameOf = (id: string) => batchItems.find(i => i.id === id)?.name || id;
   return <>
-    {!shown && unresolved && <div className="pv-task pv-op-background" role="status"><p>{receipt?.status === 'running' ? <>{receipt.description || '文件夹操作'} · {statusText(receipt)}完成前不能开始新的移动。{pollNote && <> {pollNote}</>}</> : <>文件夹操作结果待核对 · {mutation.current?.requestId}</>}</p>
+    {!shown && unresolved && <div className="pv-task pv-op-background" role="status"><p>{receipt?.status === 'running' ? <>{receipt.description || '文件夹操作'} · {statusText(receipt)}完成前不能开始新的移动。{pollNote && <> {pollNote}</>}</> : <>{notStarted(receipt) ? '移动尚未开始，等你放下或查询' : '文件夹操作结果待核对'} · {mutation.current?.requestId}</>}</p>
       <button type="button" onClick={() => setReopened(true)}>查看进度</button>{(receipt?.status !== 'running' || !!pollNote) && <button type="button" disabled={busy} onClick={() => void query()}>{receipt?.status === 'running' ? '重新查询' : '查询原文件夹操作'}</button>}{receipt?.status === 'unknown' && receipt.canRecover === true && <button type="button" disabled={busy} onClick={() => void query(true)}>恢复原操作（回滚）</button>}</div>}
     {active && shown && <Modal title={title} className={shown.kind === 'create' ? 'pv-folder-create-modal' : 'pv-folder-operation-modal'} locked={busy && !mutation.current} onClose={close}>
       {batch && !receipt && <div className="pv-operation-object pv-batch-object"><Film size={20} aria-hidden="true"/><div><span>操作对象 · {batchItems.length + skippedUp.length} 个{destination ? `，其中 ${movable.length} 个会移动` : ''}</span>
@@ -148,7 +165,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
       {error && <p className="pv-error" role="alert">{error}</p>}
       {receipt ? <div className="pv-task" role="status"><p><strong>{batch && receipt.status === 'ready' ? `已移动 ${(receipt.items || []).filter(x => x.status === 'ready').length || movable.length} 个到「${destName}」` : `${receipt.description} · ${statusText(receipt)}`}</strong></p>
         {receipt.status === 'running' && <><progress aria-label="正在移动"/><small>可以先关掉，移动会在后台完成；完成前不能开始新的移动。</small>{pollNote && <small className="pv-op-poll-note" role="alert">{pollNote}</small>}</>}
-        {notStarted(receipt) && <small>这笔只核对过影响，没有执行，文件没有改动。可以重新核对后再确认。</small>}
+        {notStarted(receipt) && <small>读取时这笔还只核对过、没有执行，文件没有改动。可以放下这笔重新核对；在放下之前，下一笔移动先不开始。</small>}
         {batch && !!receipt.items?.length && <ul className="pv-batch-items">{receipt.items.map(x => <li key={x.sourceId} data-state={x.status}><span>{x.name || nameOf(x.sourceId)}</span><small>{itemText[x.status] || x.status}{x.error ? `：${x.error}` : ''}</small></li>)}</ul>}
         {receipt.status === 'ready' && batch && <small>采用关系没有变化{affected.length ? '（覆盖的同名视频已按确认解除采用）' : ''}。</small>}
         {receipt.status !== 'ready' && receipt.status !== 'running' && <code>{receipt.requestId}</code>}
@@ -182,7 +199,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
         : <button type="button" onClick={close}>{receipt ? '返回列表' : '取消'}</button>}
         {receipt?.status === 'running' ? (pollNote ? <button type="button" disabled={busy} onClick={() => void query()}>重新查询</button> : null)
         : receipt?.status === 'ready' && batch && onOpenFolder && destination ? null
-        : receipt && notStarted(receipt) ? (action ? <button type="button" className="pv-primary" disabled={busy} onClick={restart}>重新核对</button> : null)
+        : receipt && notStarted(receipt) ? <><button type="button" disabled={busy} onClick={() => void query()}>查询原文件夹操作</button><button type="button" className="pv-primary" disabled={busy} onClick={() => void abandon()}>放下这笔，重新核对</button></>
         : receipt ? <><button type="button" disabled={busy} onClick={() => void query()}>查询原文件夹操作</button>{receipt.status === 'unknown' && receipt.canRecover === true && <button type="button" disabled={busy} onClick={() => void query(true)}>恢复原操作（回滚）</button>}</> : <>
           <button type="button" className={plan ? undefined : 'pv-primary'} disabled={busy || readOnly || shown.kind === 'rename-folder' && !name.trim() || batch && (!destination || !movable.length)} onClick={() => void preview()}>{busy ? '正在核对…' : plan ? '重新核对影响' : batch ? `核对 ${movable.length} 个视频的移动影响` : '核对操作影响'}{!busy && <ArrowRight size={15} aria-hidden="true"/>}</button>
           {plan && <button type="button" className={shown.kind === 'delete-folder' || affected.length ? 'pv-danger' : 'pv-primary'} disabled={busy || !plan.ready || !!affected.length && !confirmed || readOnly} onClick={() => void commit()}>{(shown.kind === 'delete-folder' || !!affected.length) && <AlertTriangle size={15} aria-hidden="true"/>}{batch ? `确认移动 ${movable.length} 个` : '确认执行'}{shown.kind === 'delete-folder' && mode === 'trash' ? '并移到废纸篓' : ''}</button>}

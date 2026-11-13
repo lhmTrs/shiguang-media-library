@@ -169,7 +169,7 @@ export type OperationPlan = {
   conflicts: {key: string; name: string; sourceName: string; targetName: string; targetVideoId?: string; adoptedShots: AdoptedShot[]; choice?: ConflictChoice}[];
   affectedShots: AdoptedShot[]; files: number; folders: number; ready: boolean;
 };
-export type OperationReceipt = {requestId: string; status: 'running' | 'ready' | 'failed' | 'unknown'; description: string; error?: string; folderId?: string;
+export type OperationReceipt = {requestId: string; status: 'running' | 'ready' | 'failed' | 'unknown' | 'cancelled'; description: string; error?: string; folderId?: string;
   /** move-videos：逐项结果；执行中各项都是 not-run（后端不给逐项进度）。 */
   items?: { sourceId: string; name?: string; status: BatchItemStatus; unboundShotIds?: string[]; error?: string }[];
   /** 只有预览、执行没有登记：status=unknown, phase=preview, errorCode=OPERATION_NOT_STARTED。 */
