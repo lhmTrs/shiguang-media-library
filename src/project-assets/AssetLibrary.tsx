@@ -9,6 +9,7 @@ import {AssociatedShots} from './AssociatedShots';
 import {contextUnavailable, ownerLabel, scopePath, type AssetContext, type AssetOwner, type ScopedItem, type ScopedList} from './scoped';
 import {ScopeOverrides, withEffective, type AppendHandlers, type AppendPreview, type OverrideField, type ScoreDimension} from './ScopeOverrides';
 import {ImpactPreview, type ImpactPreviewData} from './ImpactPreview';
+import {SeasonSettings} from './SeasonSettings';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -519,7 +520,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   };
   // 第二期 P2a 第 4 步：全剧里的归档（资产 / 造型 / 图片）和本集资产提升到全剧，都先看影响再确认
   type ImpactState = { kind: 'archive' | 'promotion'; assetId: string; target?: { type: 'asset' | 'look' | 'image'; id: string }; replacement: string | null; data: ImpactPreviewData; label: string };
-  const [impactState, setImpactState] = useState<ImpactState | null>(null);
+  const [impactState, setImpactState] = useState<ImpactState | null>(null), [seasonOpen, setSeasonOpen] = useState(false);
   async function previewArchive(target: { type: 'asset' | 'look' | 'image'; id: string }, label: string, replacement: string | null = null) {
     const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
     await run('正在核对归档影响…', async () => {
@@ -586,7 +587,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     if ('asset' in r && r.asset) { const { asset: saved, ...meta } = r; setMetas(old => ({ ...old, [saved.id]: { ...old[saved.id], ...meta } })); return saved; }
     return r as Asset;
   }
-  async function save() { if (!draft || draft.archived_at || scopeLock || importActivity.current.size) return; await run('正在保存资产…', async () => { try { const a = await writeAsset(draft.id, draft, draft.revision); install(a); await loadList(); const adopted=a.images.some(b=>!b.archived_at&&importedBindings.current.has(b.id));a.images.forEach(b=>importedBindings.current.delete(b.id));setNotice((adopted?(a.kind==='character'?'已绑定到造型 · ':'已绑定参考图片 · '):'')+'已保存 · V'+a.revision); } catch (e: any) { if (e.message.includes('已经更新') || e.code === 'ASSET_STALE') setConflict(await readAsset(draft.id)); throw e; } }); }
+  async function save() { if (!draft || draft.archived_at || scopeLock || importActivity.current.size) return; await run('正在保存资产…', async () => { try { const a = await writeAsset(draft.id, draft, draft.revision); install(a); await loadList(); const adopted=a.images.some(b=>!b.archived_at&&importedBindings.current.has(b.id));a.images.forEach(b=>importedBindings.current.delete(b.id));setNotice((adopted?(a.kind==='character'?'已绑定到造型 · ':'已绑定参考图片 · '):'')+'已保存 · V'+a.revision); } catch (e: any) { if (e.message.includes('已经更新') || e.code === 'ASSET_STALE') setConflict(await readAsset(draft.id)); if (e.code === 'ASSET_IN_USE' && Array.isArray(e.details?.shots) && e.details.shots.length) throw Error('还有镜头明确绑定了要归档或替换的造型 / 图片：' + e.details.shots.map((x: any) => '镜 ' + x.number).join('、') + '。请先在分镜里处理这些镜头，再保存'); throw e; } }); }
   // ---- Card quick actions: copy the default image, change it, adjust the avatar crop. ----
   // The default image and crop only change how a card shows, so they save at once (with 撤销);
   // everything else keeps the draft + 「保存」 flow. Each save starts from the stored record, so
@@ -1138,7 +1139,8 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
             {/* 第二期 P2a：当前项目属于某部剧时才有「全剧」；顶栏不变，只改资产页看的层级 */}
             {!!assetCtx?.series && <button type="button" aria-pressed={!publicScope && seriesView} disabled={!!busy || !!modal || !!dropJob} title={'「' + assetCtx.series.name + '」全剧共享的资产'} onClick={() => showSeries(true)}><Layers size={13} aria-hidden="true"/><span>全剧</span></button>}
             {!!publicId && <button type="button" aria-pressed={publicScope} disabled={!!busy || !!modal || !!dropJob} onClick={() => { if (seriesView) setSeriesView(false); showPublic(true); }}><Globe2 size={13} aria-hidden="true"/><span>公共人物库</span></button>}
-          </div>}</div>
+          </div>}
+          {!!assetCtx?.season && !publicScope && <button type="button" className="ca-season-entry" disabled={!!busy || !!modal || !!dropJob} onClick={() => { if (canLeave()) setSeasonOpen(true); }}>{assetCtx.season.name}设定</button>}</div>
         {!scriptView && <div className="ca-head-tools">
           <label className="ca-search"><Search size={15} aria-hidden="true"/><input aria-label="搜索资产" placeholder={'搜索' + labels[kind]} value={q} onChange={e => { setQ(e.target.value); setPage(1); }}/></label>
           <button className="ca-primary" disabled={!scope || !!busy} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
@@ -1353,6 +1355,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
       </div></div>
       <footer>{(() => { const todo = dropJob.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown')), checkOnly = todo.length > 0 && todo.every(i => i.state === 'unknown'); return todo.length && !(dropJob.mode === 'attach' && dropJob.kind === 'character' && !dropJob.lookId) ? <button className="ca-primary" disabled={dropJob.running || !!busy && !dropJob.running} onClick={() => void runDropJob()}>{dropJob.running ? '正在处理…' : checkOnly ? '核对结果' : todo.some(i => i.state !== 'waiting') ? '继续处理' : dropJob.mode === 'create' ? `新建 ${todo.length} 个${labels[dropJob.kind]}` : '添加图片'}</button> : null; })()}<button disabled={dropJob.running} onClick={closeDropJob}>{dropJob.items.some(i => i.state === 'done') ? '完成' : '取消'}</button></footer>
     </div></div>}
+    {seasonOpen && assetCtx?.season && assetCtx.series && <SeasonSettings api={api} base={scopePath('season', assetCtx.season.id)} seasonName={assetCtx.season.name} seriesName={assetCtx.series.name} onClose={() => setSeasonOpen(false)} onChanged={() => { void loadList(); const d = draftRef.current; if (d && scopeBaseRef.current) void openAsset(d.id, true); }}/>}
     {impactState && <ImpactPreview title={impactState.kind === 'archive' ? '归档' + impactState.label : '把' + impactState.label + '提升到全剧'} confirmLabel={impactState.kind === 'archive' ? '确认归档' : '确认提升'}
       intro={impactState.kind === 'archive' ? <>归档后，下面这些季和集里的显示会按预览回退；这些层上相关的单独设置会失效（记录留在操作历史里）。明确引用它的镜头需要先在分镜里处理。</> : <>提升后它变成整部剧共享：原来的造型、图片、版本和镜头引用都保持不变，只是归属从本集变成全剧，其他集也能看到它。</>}
       data={impactState.data} nameOf={impactNameOf} busy={!!busy} replacement={impactState.replacement}

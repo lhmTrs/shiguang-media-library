@@ -30,7 +30,7 @@ const switchTo = name => scopeSwitch().getByRole('button', { name, exact: true }
 async function pickEpisode(id) { await projectInBar(page).getByRole('navigation', { name: '当前项目' }).getByRole('button').last().click(); await projectInBar(page).locator(`.ppb-option[data-target-project="${id}"]`).click(); await expect(projectInBar(page)).toHaveAttribute('data-project', id); }
 
 // —— 作用域接口替身（合同 v1 形状）——
-const fake = { mode: 'contract', ctx: {}, shared: [], local: {}, writes: [], seriesAttrs: { asset_id: '', series_id: 'series', config_revision: 3, attribute_revision: 1, scores: { 'd-wealth': { value: 20, source: 'manual', reason: null, updated_at: 0 } } } };
+const fake = { seasonOverrides: [], mode: 'contract', ctx: {}, shared: [], local: {}, writes: [], seriesAttrs: { asset_id: '', series_id: 'series', config_revision: 3, attribute_revision: 1, scores: { 'd-wealth': { value: 20, source: 'manual', reason: null, updated_at: 0 } } } };
 const caps = (own) => ({ edit_base: own, create_override: !own, append: !own, promote: own, archive: own });
 const item = (asset, owner) => ({ asset, owner, capabilities: caps(owner.type === 'project'), effective: {}, context_token: 'ctx-token', cover: null, look_count: asset.looks?.length ?? 0 });
 async function routeScoped(route) {
@@ -92,6 +92,8 @@ async function routeScoped(route) {
       return route.fulfill({ json: { ...a, request_id: body.request_id } }); }
     return route.fulfill({ json: a });
   }
+  const so = url.pathname.match(/^\/api\/project-assets\/scopes\/season\/([^/]+)\/overrides$/);
+  if (so) return route.fulfill({ json: { scope: { type: 'season', id: so[1] }, context_token: 'season-token', total: fake.seasonOverrides.length, page: 1, items: fake.seasonOverrides } });
   const cfg = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/attribute-config$/);
   if (cfg) { fake.cfgReads = [...(fake.cfgReads || []), url.search]; } if (cfg) return route.fulfill({ json: { series_id: 'series', revision: 3, source: 'user', updated_at: 0, dimensions: [{ id: 'd-wealth', name: '财力', negative_label: '贫', positive_label: '富', neutral_label: '中' }] } });
   const w = url.pathname.match(/^\/api\/project-assets\/scopes\/(series|season|episode)\/([^/]+)\/assets\/([^/]+)(\/overrides)?$/);
@@ -100,6 +102,11 @@ async function routeScoped(route) {
     const body = route.request().postDataJSON(); fake.writes.push({ method, path: url.pathname, body });
     const hit = fake.shared.find(x => x.asset.id === w[3]) || Object.values(fake.local).flat().find(x => x.asset.id === w[3]);
     if (!hit) return route.fulfill({ status: 404, json: { error: '不在这个作用域' } });
+    if (w[4] && w[1] === 'season') {
+      const key = body.field.key + ':' + (body.field.look_id ?? ''); fake.seasonOverrides = fake.seasonOverrides.filter(r => r.asset.id !== w[3] || r.field.key + ':' + (r.field.look_id ?? '') !== key);
+      if (body.action === 'set') fake.seasonOverrides.push({ asset: { id: hit.asset.id, name: hit.asset.name, kind: hit.asset.kind }, field: body.field, value: body.value, source: { type: 'season', id: w[2], revision: 1 }, override: { value: body.value, revision: 1 }, parent: { value: hit.asset.default_look_id, source: { type: 'series', id: 'series', revision: 1 } }, write_token: 'wt-season' });
+      return route.fulfill({ json: hit });
+    }
     if (w[4]) { // 本集覆盖：set / inherit
       const eff = fake.effective[w[3]], f = body.field.key === 'default_look' ? eff.default_look : body.field.key === 'attribute_score' ? eff.attribute_scores[body.field.dimension_id] : eff.default_images[body.field.look_id ?? 'null'];
       if (body.action === 'set') { f.value = body.field.key === 'attribute_score' ? { ...body.value, source: 'manual', reason: null, updated_at: Date.now() } : body.value; f.override = { value: f.value, revision: (f.override?.revision ?? 0) + 1 }; f.source = { type: 'episode', id: w[2], revision: 1 }; }
@@ -319,6 +326,19 @@ try {
     const pv = fake.writes.filter(x => x.path.endsWith('/archive-impact')).at(-1); assert.deepEqual({ target: pv.body.target, rep: pv.body.replacement_id }, { target: { type: 'look', id: 'look-a' }, rep: 'look-b' });
     assert.equal(fake.writes.filter(x => x.path.endsWith('/archive')).at(-1).body.preview_token, 'arch-look-b');
     await scopeSwitch().getByRole('button').first().click();
+  });
+
+  await check('本季设定：列出本季已有设置；新增本季默认造型走季层覆盖，恢复全剧后清空', async () => {
+    await work().getByRole('button', { name: '第 1 季设定' }).click();
+    const dlg = page.getByRole('dialog', { name: '第 1 季 · 本季设定' }); await expect(dlg).toContainText('这一季还没有单独设置');
+    await dlg.getByLabel('选择资产').selectOption({ label: '李四' }); await dlg.getByLabel('选择设置项').selectOption({ index: 1 });
+    await dlg.getByLabel('选择本季的值').selectOption({ label: '夜行服' }); await dlg.getByRole('button', { name: '设为本季' }).click();
+    const row = dlg.getByRole('row').filter({ hasText: '李四' }); await expect(row).toContainText('默认造型'); await expect(row).toContainText('夜行服');
+    const w = fake.writes.filter(x => x.path.includes('/scopes/season/') && x.path.endsWith('/overrides')).at(-1);
+    assert.deepEqual({ field: w.body.field, action: w.body.action, ctx: w.body.context_token }, { field: { key: 'default_look' }, action: 'set', ctx: 'season-token' });
+    await dlg.getByRole('button', { name: '恢复全剧：李四 默认造型' }).click(); await expect(dlg).toContainText('这一季还没有单独设置');
+    assert.equal(fake.writes.filter(x => x.path.includes('/scopes/season/')).at(-1).body.action, 'inherit');
+    await dlg.getByRole('button', { name: '关闭' }).click(); await expect(dlg).toHaveCount(0);
   });
 
   await check('项目不在任何剧里：没有「全剧」，按原接口读取', async () => {

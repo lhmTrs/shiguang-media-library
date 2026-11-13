@@ -758,3 +758,14 @@
 .ca-v2 .ca-impact-blockers{list-style:none;padding:8px 10px!important;border:1px solid color-mix(in srgb,#d0432f 35%,var(--line));border-radius:8px;background:color-mix(in srgb,#d0432f 6%,var(--c-fff));color:color-mix(in srgb,#d0432f 70%,var(--c-24292c))}
 .ca-v2 .ca-impact-blockers li{display:flex;gap:6px;align-items:flex-start}
 .ca-v2 .ca-impact-scopes>li{margin-bottom:6px}
+/* 第二期 P2a 第 5 步：本季设定 */
+.ca-v2 .ca-season-entry{height:32px;padding:0 12px;border:1px dashed color-mix(in srgb,var(--green) 40%,var(--line));border-radius:8px;background:transparent;color:var(--c-24292c);font:13px inherit;cursor:pointer}
+.ca-v2 .ca-season{width:min(760px,calc(100vw - 32px))}
+.ca-v2 .ca-season-body{display:flex;flex-direction:column;gap:12px;font-size:13px}
+.ca-v2 .ca-season-body h3{margin:4px 0 6px;font-size:13px}
+.ca-v2 .ca-season-table{width:100%;border-collapse:collapse}
+.ca-v2 .ca-season-table th{text-align:left;font-size:11px;color:var(--muted);font-weight:600;padding:4px 6px}
+.ca-v2 .ca-season-table td{padding:6px;border-top:1px solid var(--line);vertical-align:middle}
+.ca-v2 .ca-season-table button{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
+.ca-v2 .ca-season-pick{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ca-v2 .ca-season-pick select{height:30px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);padding:0 8px;max-width:240px}
