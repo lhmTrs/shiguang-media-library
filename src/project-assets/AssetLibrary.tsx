@@ -1,11 +1,12 @@
 import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
-import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn } from 'lucide-react';
+import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn, Layers } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
 import {imageNamePreset} from '../import-presets.mjs';
 import './asset-library.css';
 import {AssociatedShots} from './AssociatedShots';
+import {contextUnavailable, ownerLabel, scopePath, type AssetContext, type AssetOwner, type ScopedItem, type ScopedList} from './scoped';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -134,7 +135,7 @@ function displayChanges(before: Asset, after: Asset): DisplayChangeEntry[] {
 // 换默认图时后端在同一次保存里给首次成为默认、从未调整过的图自动框头部；提示里说出来，撤销会一起恢复。
 const autoNote = (before: Asset, saved: Asset, id: string) => saved.images.find(b => b.id === id)?.crop_source === 'auto' && before.images.find(b => b.id === id)?.crop_source !== 'auto' ? '，头像已自动框到头部' : '';
 function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span className="ca-avatar">{b ? <CroppedImage binding={b}/> : a.name.slice(0, 1)}</span>; }
-function Cover({ a }: { a: Asset }) { const b = coverOf(a); return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
+function Cover({ a, binding }: { a: Asset; binding?: Binding | null }) { const b = binding === undefined ? coverOf(a) : binding; return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
 export function AssetLibrary({ focusProject, active, request, activeProject, refreshSeconds, onSettings, onOpenShot, registerProjectSwitchGuard }: ProjectAssetProps) {
   const api = <T = any,>(url: string, body?: unknown, method?: string) => request<T>('/project-assets' + url, body, method);
@@ -240,13 +241,19 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   }
   const dirty = !!draft && JSON.stringify(draft) !== base, dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const lastActiveProject = useRef(activeProject);
-  const scopeRef = useRef(scope); scopeRef.current = scope;
+  const scopeRef = useRef(scope); scopeRef.current = scope; const scopeBaseRef = useRef('');
   const healthGeneration = useRef(0);
   const generation = useRef(0), drag = useRef<string | null>(null), draftIdRef = useRef(draft?.id); draftIdRef.current = draft?.id;
   const draftRef = useRef(draft); draftRef.current = draft;
   const lookRef=useRef(lookId);lookRef.current=lookId;
   const selectionGeneration = useRef(0);
-  const listContext = `${active}:${scope}:${kind}:${q}:${archived}:${page}`;
+  // 第二期 P2a：当前项目所属的剧 / 季（读不到 = 后端还没有作用域接口或项目未归剧，保持原有行为）
+  const [assetCtx, setAssetCtx] = useState<AssetContext | null>(null), [seriesView, setSeriesView] = useState(false);
+  const [metas, setMetas] = useState<Record<string, Omit<ScopedItem<Asset>, 'asset'>>>({});
+  /** 当前是否按作用域读写：项目属于某部剧，且不在公共人物库。 */
+  const scoped = !!assetCtx?.series && scopes.find(x => x.id === scope)?.project_kind !== 'public' && assetCtx.project.id === scope;
+  const scopeBase = scoped ? (seriesView ? scopePath('series', assetCtx!.series!.id) : scopePath('episode', assetCtx!.project.id)) : ''; scopeBaseRef.current = scopeBase;
+  const listContext = `${active}:${scope}:${kind}:${q}:${archived}:${page}:${scopeBase}`;
   const listContextRef = useRef(listContext); listContextRef.current = listContext;
   const importedBindings=useRef(new Set<string>()),importActivity=useRef(new Set<string>());
   const importBusy=(working:boolean,owner:string)=>{if(working){importActivity.current.add(owner);setNotice('');setBusy('正在导入图片…');}else{importActivity.current.delete(owner);setBusy(old=>old==='正在导入图片…'&&!importActivity.current.size?'':old);}};
@@ -259,6 +266,10 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   }
   const publicScope = scopes.find(s => s.id === scope)?.project_kind === 'public';
   const owner = draft ? scopes.find(s => s.id === draft.project_id) : null;
+  // 第二期 P2a 第 1 步：继承资产（集视图）和全剧视图先只读；本集覆盖与全剧编辑在下一步接入，后端同样会拒绝越权写入
+  const draftOwner: AssetOwner | undefined = draft && scopeBase ? metas[draft.id]?.owner : undefined;
+  const scopeLock = !draft || !scopeBase ? '' : seriesView ? '全剧资料的编辑会在下一步接入，现在可以查看。' : draftOwner?.type === 'series' ? '这是全剧共享的资产：本集还不能直接修改（下一步支持本集默认图、默认造型和评分覆盖）。要改资料，请切到「全剧」。' : '';
+  const locked = !!draft?.archived_at || !!scopeLock;
   const run = async (label: string, fn: () => Promise<void>) => { if (busy) return; setBusy(label); setError(''); try { await fn(); } catch (e: any) { setError(e.message || '操作失败'); } finally { setBusy(''); } };
   const canLeave = () => (!scriptDirtyRef.current || window.confirm('剧本尚未保存，确定切换吗？未保存内容仍保留在当前页面。')) && (!dirtyRef.current || window.confirm('当前修改尚未保存，确定放弃这些修改吗？'));
   // 顶栏统一（TOPBAR-UNIFY）：资产页范围 = 顶栏的当前项目，或页内切到的公共人物库。
@@ -281,6 +292,24 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   }
   const publicId = scopes.find(s => s.project_kind === 'public')?.id ?? '';
   const currentScope = scopes.find(s => s.id === activeProject && s.project_kind === 'normal');
+  useEffect(() => {
+    if (!active || !activeProject) { setAssetCtx(null); return; }
+    let live = true;
+    request<AssetContext>('/projects/' + encodeURIComponent(activeProject) + '/asset-context').then(c => { if (live) setAssetCtx(c?.project?.id === activeProject ? c : null); })
+      .catch(e => { if (!live) return; setAssetCtx(null); if (!contextUnavailable(e)) setError('读取项目所属的剧和季失败：' + (e.message || '请稍后重试')); });
+    return () => { live = false; };
+  }, [active, activeProject]);
+  // 换项目回到「第 N 集」；不在任何剧里时「全剧」不可选
+  useEffect(() => { setSeriesView(false); }, [activeProject]);
+  useEffect(() => { if (!assetCtx?.series) setSeriesView(false); }, [assetCtx?.series?.id]);
+  /** 页内「第 N 集 ｜ 全剧」切换：走同一套离开确认，只改资产页看的层级。 */
+  function showSeries(on: boolean) {
+    if (on === seriesView && !publicScope) return;
+    if (busy || modal || dropJob || !canLeave()) return;
+    if (publicScope) applyScope(activeProject);
+    selectionGeneration.current++; generation.current++; setDetailLoading(false);
+    setDraft(null); setBase(''); setRows([]); setTotal(0); setPage(1); setQ(''); setPickedAssets([]); setSeriesView(on);
+  }
   /** 页内「本集 ｜ 公共人物库」切换：走同一套离开确认，只改资产页范围，不改全局当前项目。 */
   function showPublic(on: boolean) {
     const next = on ? publicId : activeProject;
@@ -300,12 +329,21 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   // result belongs to the query on screen and was itself zero (FE1-R1: a failed read is not empty; FE2-R3: coming
   // back to a kind while its reload is pending must not reuse the cleared rows as "zero").
   const [listOk, setListOk] = useState<{ key: string; total: number } | null>(null);
-  const listKey = [scope, kind, q, archived, page].join('|');
+  const listKey = [scope, kind, q, archived, page, scopeBase].join('|');
   async function loadList() {
     if (!active || !scope) return;
     const ticket = ++generation.current, context = listContext, key = listKey; setListLoading(true);
     try {
-      const result = await api<{ items: Asset[]; total: number }>('/assets?' + new URLSearchParams({ project_id: scope, kind, q, archived: String(archived), page: String(page) }));
+      const params = new URLSearchParams({ kind, q, archived: String(archived), page: String(page) });
+      if (scopeBase) {
+        const result = await api<ScopedList<Asset>>(scopeBase + '/assets?' + params);
+        if (ticket !== generation.current || scopeRef.current !== scope || listContextRef.current !== context) return;
+        setMetas(old => { const next = { ...old }; for (const { asset, ...meta } of result.items) next[asset.id] = meta; return next; });
+        setRows(result.items.map(i => i.asset)); setTotal(result.total); setListOk({ key, total: result.total });
+        return;
+      }
+      params.set('project_id', scope);
+      const result = await api<{ items: Asset[]; total: number }>('/assets?' + params);
       if (ticket !== generation.current || scopeRef.current !== scope || listContextRef.current !== context) return;
       // 画廊优先：不再自动打开第一项，由使用者点选后在右侧查看详情。
       setRows(result.items); setTotal(result.total); setListOk({ key, total: result.total });
@@ -333,7 +371,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     setRows([]); setTotal(0); setListLoading(false);
     if (active) { setError(''); void loadList().catch(e => { if (live) setError(e.message); }); }
     return () => { live = false; generation.current++; };
-  }, [active, scope, kind, q, archived, page]);
+  }, [active, scope, kind, q, archived, page, scopeBase]);
   useEffect(() => {
     if (!active || !draft || draft.project_id !== scope || dirty || busy || modal) return;
     let live = true;
@@ -400,7 +438,15 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     const ticket = ++selectionGeneration.current, project = scope; setDetailLoading(true); setError('');
     // The old detail stays on screen but must not take input while it is being replaced (keyboard included).
     if (detailRef.current?.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
-    try { const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a); }
+    const base = scopeBase;
+    try {
+      if (base) {
+        const r = await api<ScopedItem<Asset>>(base + '/assets/' + id);
+        if (ticket === selectionGeneration.current && project === scopeRef.current && base === scopeBaseRef.current) { const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } })); install(asset); }
+        return;
+      }
+      const a = await api<Asset>('/assets/' + id); if (ticket === selectionGeneration.current && project === scopeRef.current && a.project_id === project) install(a);
+    }
     catch (e: any) { if (ticket === selectionGeneration.current) setError(e.message || '读取资料失败'); }
     finally { if (ticket === selectionGeneration.current) setDetailLoading(false); }
   }
@@ -659,7 +705,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
 
   /* ------------------------------------------------ 从访达拖入图片：新建或添加参考图 */
   const fileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
-  const dropBlocked = () => !active || scriptView || !!busy || !!modal || !!dropJob || !scope || !!imageId;
+  const dropBlocked = () => !active || scriptView || !!busy || !!modal || !!dropJob || !scope || !!imageId || !!scopeBase && seriesView;
   function readDropFiles(e: React.DragEvent): File[] | null {
     if (Array.from(e.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) { setError('请拖入图片文件，暂不支持文件夹'); return null; }
     const files = Array.from(e.dataTransfer.files);
@@ -681,6 +727,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     e.preventDefault(); e.stopPropagation(); dragDepth.current = 0; setDragTarget('');
     if (dropBlocked()) { setError('请先完成当前操作，再拖入图片'); return; }
     if (a.archived_at) { setError('已归档的资料不能添加图片，请先恢复'); return; }
+    if (scopeBase && (seriesView || metas[a.id]?.owner.type === 'series')) { setError('全剧共享的资产暂不能直接拖入图片：在本集追加造型和图片会在下一步接入'); return; }
     if (draft?.id === a.id && dirty) { setError('当前资料有未保存的修改，请先保存或放弃修改，再拖入图片'); return; }
     const files = readDropFiles(e); if (!files) return;
     await run('正在读取资料…', async () => {
@@ -830,7 +877,8 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   });
 
   /* ------------------------------------------------------------------ 界面 */
-  const visibleRows = rows.filter(a => a.project_id === scope && (!missingOnly || !coverOf(a)));
+  const coverFor = (a: Asset) => { const c = metas[a.id]?.cover as Binding | undefined; return scopeBase && c && typeof c === 'object' && 'media_asset_id' in c ? c : coverOf(a); };
+  const visibleRows = rows.filter(a => (scopeBase ? true : a.project_id === scope) && (!missingOnly || !coverFor(a)));
   // Truly empty (this kind has nothing yet, not a search or filter result): no filters or count, and the add card says so.
   const trulyEmpty = !!scope && scopesKnown && listOk?.key === listKey && listOk.total === 0 && !listLoading && !archived && !q.trim() && total === 0 && !rows.length;
   // A filter that hides picked characters drops them, so ⌘C never copies what is not shown (same as the video page).
@@ -857,7 +905,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   const dialogImage = imageId ? images.find(b => b.id === imageId) ?? null : null;
   const dialogHealth = dialogImage ? health.find(h => h.id === dialogImage.id) : undefined;
   const cropAspect = draft?.kind === 'character' ? 3 / 4 : 16 / 10; // 与画廊卡片封面比例一致
-  const imageLocked = (b?: Binding | null) => !!draft?.archived_at || !!currentLook?.archived_at || !!b?.archived_at;
+  const imageLocked = (b?: Binding | null) => locked || !!currentLook?.archived_at || !!b?.archived_at;
   const activeImageIds = images.filter(b => !b.archived_at).map(b => b.id);
   const jump = (id: string) => { const node = detailScroll.current?.querySelector('#' + id) as HTMLElement | null; node?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); };
   const switchKind = (k: Kind) => {
@@ -953,13 +1001,15 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
     <header className="ca-head">
       <div className="ca-head-row">
         <div className="ca-head-title"><h1>项目资产</h1>
-          {!!publicId && <div className="ca-scope-switch" role="group" aria-label="看哪里的资产">
-            <button type="button" aria-pressed={!publicScope} disabled={!currentScope || !!busy || !!modal || !!dropJob} title={currentScope?.name} onClick={() => showPublic(false)}><FolderKanban size={13} aria-hidden="true"/><span>{currentScope?.name ?? '未选项目'}</span></button>
-            <button type="button" aria-pressed={publicScope} disabled={!!busy || !!modal || !!dropJob} onClick={() => showPublic(true)}><Globe2 size={13} aria-hidden="true"/><span>公共人物库</span></button>
+          {(!!publicId || !!assetCtx?.series) && <div className="ca-scope-switch" role="group" aria-label="看哪里的资产">
+            <button type="button" aria-pressed={!publicScope && !seriesView} disabled={!currentScope || !!busy || !!modal || !!dropJob} title={currentScope?.name} onClick={() => { if (seriesView) showSeries(false); else showPublic(false); }}><FolderKanban size={13} aria-hidden="true"/><span>{currentScope?.name ?? '未选项目'}</span></button>
+            {/* 第二期 P2a：当前项目属于某部剧时才有「全剧」；顶栏不变，只改资产页看的层级 */}
+            {!!assetCtx?.series && <button type="button" aria-pressed={!publicScope && seriesView} disabled={!!busy || !!modal || !!dropJob} title={'「' + assetCtx.series.name + '」全剧共享的资产'} onClick={() => showSeries(true)}><Layers size={13} aria-hidden="true"/><span>全剧</span></button>}
+            {!!publicId && <button type="button" aria-pressed={publicScope} disabled={!!busy || !!modal || !!dropJob} onClick={() => { if (seriesView) setSeriesView(false); showPublic(true); }}><Globe2 size={13} aria-hidden="true"/><span>公共人物库</span></button>}
           </div>}</div>
         {!scriptView && <div className="ca-head-tools">
           <label className="ca-search"><Search size={15} aria-hidden="true"/><input aria-label="搜索资产" placeholder={'搜索' + labels[kind]} value={q} onChange={e => { setQ(e.target.value); setPage(1); }}/></label>
-          <button className="ca-primary" disabled={!scope || !!busy} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
+          <button className="ca-primary" disabled={!scope || !!busy || (!!scopeBase && seriesView)} title={scopeBase && seriesView ? '在全剧新建会在下一步接入' : undefined} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
           <div className="ca-menu-wrap"><button className="ca-icon-button" aria-label="更多资产操作" aria-haspopup="menu" aria-expanded={menu === 'page'} onClick={() => setMenu(m => m === 'page' ? '' : 'page')}><MoreHorizontal size={17}/></button>
             {menu === 'page' && <div className="ca-menu" role="menu">
               {kind === 'character' && <button role="menuitem" disabled={!!busy} onClick={() => { setMenu(''); if (!canLeave()) return; setModal({ type: 'import', source_project: scopes.find(s => s.id !== scope)?.id ?? '', source_rows: [], selected: '' }); }}><Copy size={15}/>从项目／公共库复制</button>}
@@ -974,6 +1024,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
           </div>
         </div>}
       </div>
+      {!publicScope && seriesView && assetCtx?.series && <p className="ca-public-note ca-series-note" role="note"><Layers size={13} aria-hidden="true"/>正在看「{assetCtx.series.name}」全剧的资产：这里的改动影响所有没有单独覆盖的集。顶栏的当前项目没有变，点「{currentScope?.name ?? '当前集'}」回到它的资产。只在某一集的资产不在这里显示。</p>}
       {publicScope && <p className="ca-public-note" role="note"><Globe2 size={13} aria-hidden="true"/>正在看公共人物库：这里的人物所有项目都能复制使用。顶栏的当前项目没有变{currentScope ? <>，点「{currentScope.name}」回到它的资产</> : null}。</p>}
       <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++; setDetailLoading(false);setModal(null);setScriptView(true);}}>剧本</button></div>
     </header>
@@ -998,10 +1049,10 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
             {!clipCap.available && <small className="ca-pickbar-reason">{clipCap.reason}</small>}
           </div>}
           <div className={'ca-cards ca-' + layout + (kind === 'character' ? ' ca-portrait' : ' ca-landscape') + (pickedAssets.length ? ' is-picking' : '')}>
-            {visibleRows.map(a => { const cover = coverOf(a), imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
+            {visibleRows.map(a => { const cover = coverFor(a), owner = scopeBase ? metas[a.id]?.owner : undefined, imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
               onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else if (!alreadyOpen(a.id)) void openAsset(a.id); }} onDoubleClick={e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; const c = coverOf(a); if (c) setImageViewer({ src: bindingSrc(c), name: c.last_known_name || a.name, from: 'card' }); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
-              <Cover a={a}/>
-              <span className="ca-card-body"><strong>{a.name}</strong><small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
+              <Cover a={a} binding={cover}/>
+              <span className="ca-card-body"><strong>{a.name}</strong>{owner && <span className={'ca-owner-src ' + (owner.type === 'series' ? 'is-series' : 'is-local')}>{ownerLabel(owner)}</span>}<small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
               </span>
               {dragTarget === a.id && <span className="ca-card-drop">添加为“{a.name}”的参考图</span>}
@@ -1011,7 +1062,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
                 <button type="button" className="ca-card-more" aria-label={a.name + '的更多操作'} aria-haspopup="menu" data-quick-trigger onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setQuick(q => q?.id === a.id && q.mode === 'menu' ? null : { id: a.id, mode: 'menu', x: r.right - 196, y: r.bottom + 6 }); }}><MoreHorizontal size={15}/></button>
               </span>
             </div>; })}
-            {!archived && (() => { const off = !scope || !!busy || publicScope && kind !== 'character'; return <button className={'ca-card ca-card-add' + (trulyEmpty ? ' is-empty' : '')} disabled={off} onClick={() => void create()}><Plus size={18}/>{trulyEmpty ? <span><strong>还没有{labels[kind]}</strong>{!off && <small>拖入图片或点击新建</small>}</span> : <span>新建{labels[kind]}</span>}</button>; })()}
+            {!archived && (() => { const off = !scope || !!busy || publicScope && kind !== 'character' || !!scopeBase && seriesView; return <button className={'ca-card ca-card-add' + (trulyEmpty ? ' is-empty' : '')} disabled={off} onClick={() => void create()}><Plus size={18}/>{trulyEmpty ? <span><strong>还没有{labels[kind]}</strong>{!off && <small>拖入图片或点击新建</small>}</span> : <span>新建{labels[kind]}</span>}</button>; })()}
           </div>
           {scopesKnown && !listLoading && !rows.length && !error && !scopesError && (archived || !scope) && empty(scope ? '暂无归档' + labels[kind] : '请先选择项目')}
           {missingOnly && !listLoading && !!rows.length && !visibleRows.length && empty('本页的' + labels[kind] + '都已有参考图')}
@@ -1029,12 +1080,12 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
           <div className="ca-detail-head">
             <Avatar a={draft}/>
             <div className="ca-detail-title">
-              <input className="ca-name-input" aria-label={labels[draft.kind] + '名称'} value={draft.name} disabled={!!draft.archived_at} onChange={e => { const v = e.target.value; edit(a => { a.name = v; }); }}/>
+              <input className="ca-name-input" aria-label={labels[draft.kind] + '名称'} value={draft.name} disabled={locked} onChange={e => { const v = e.target.value; edit(a => { a.name = v; }); }}/>
               <span className="ca-owner-tag">{owner?.project_kind === 'public' ? <><Globe2 size={12}/>公共人物</> : <><FolderKanban size={12}/>项目{labels[draft.kind]} · {owner?.name || '所属项目读取中'}</>}</span>
             </div>
             <div className="ca-menu-wrap"><button className="ca-icon-button" aria-label="资料操作" aria-haspopup="menu" aria-expanded={menu === 'detail'} onClick={() => setMenu(m => m === 'detail' ? '' : 'detail')}><MoreHorizontal size={17}/></button>
               {menu === 'detail' && <div className="ca-menu" role="menu">
-                {draft.kind === 'character' && <button role="menuitem" disabled={!!busy || dirty || !!draft.archived_at} title={dirty ? '请先保存当前修改' : undefined} onClick={() => { setMenu(''); void openCopy(); }}><Copy size={15}/>复制到其他项目</button>}
+                {draft.kind === 'character' && <button role="menuitem" disabled={!!busy || dirty || locked} title={dirty ? '请先保存当前修改' : undefined} onClick={() => { setMenu(''); void openCopy(); }}><Copy size={15}/>复制到其他项目</button>}
                 <button role="menuitem" onClick={() => { setMenu(''); setModal({ type: 'history' }); }}><History size={15}/>来源与版本（V{draft.revision}）</button>
                 <hr/>
                 <button role="menuitem" title={draft.storyboard_protected ? '属于当前分镜清单，请重新初始化后移出清单再归档' : dirty ? '请先保存当前修改' : undefined} disabled={!!busy || dirty || !!draft.storyboard_protected} onClick={() => { setMenu(''); void toggleArchive(); }}><Archive size={15}/>{draft.archived_at ? '恢复' : '归档'}</button>
@@ -1043,13 +1094,14 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
             <button className="ca-icon-button" aria-label="关闭详情" disabled={!!busy} onClick={closeDetail}><X size={17}/></button>
           </div>
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
+          {!!scopeLock && !draft.archived_at && <div className="ca-archive-note ca-scope-lock" role="status"><Layers size={15}/>{scopeLock}</div>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。在右上角“⋯”中选择“恢复”后可继续编辑。</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}
           <nav className="ca-detail-nav" aria-label="详情分区">{([['ca-sec-info', '资料'], ['ca-sec-refs', draft.kind === 'character' ? '造型与参考图' : '参考图'], ...(draft.kind === 'character' && owner?.project_kind !== 'public' ? [['ca-sec-attrs', '属性']] : []), ...(draft.kind === 'character' ? [['ca-sec-voice', '语音']] : []), ['ca-sec-shots', '出场镜头']] as [string, string][]).map(([id, l]) => <button type="button" key={id} onClick={() => jump(id)}>{l}</button>)}</nav>
           <div className="ca-detail-scroll" ref={detailScroll}>
             <section className="ca-sec" id="ca-sec-info" aria-label="资料">
               <h3>资料</h3>
-              <fieldset disabled={!!draft.archived_at} className="ca-form ca-edit-fields">
+              <fieldset disabled={locked} className="ca-form ca-edit-fields">
                 <Field label={draft.kind === 'character' ? '基础信息' : '自由描述'} long rows={3} value={draft.base_info} onChange={v => edit(a => { a.base_info = v; })}/>
                 {draft.kind === 'character' ? <><Field label="性格与表演" long rows={3} value={draft.performance_info} onChange={v => edit(a => { a.performance_info = v; })}/><label className="ca-field"><span>默认造型</span><select aria-label="默认造型" value={draft.default_look_id ?? ''} onChange={e => { const v = e.target.value; edit(a => { a.default_look_id = v || null; }); }}>{!draft.looks.some(l => !l.archived_at) && <option value="">待完善</option>}{draft.looks.filter(l => !l.archived_at).map(l => <option value={l.id} key={l.id}>{l.name}</option>)}</select></label></>
                   : <div className="ca-field-grid">{detailFields[draft.kind].map(k => <Field key={k} label={k} long rows={2} value={draft.details[k] ?? ''} onChange={v => edit(a => { a.details[k] = v; })}/>)}</div>}
@@ -1059,11 +1111,11 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
             <section className="ca-sec" id="ca-sec-refs" aria-label={draft.kind === 'character' ? '造型与参考图' : '参考图'}>
               <h3>{draft.kind === 'character' ? '造型与参考图' : '参考图'} <small>第一张是代表图 · 拖动排序 · 黄点表示参考职责未确认 · 保存后生效</small></h3>
               {draft.kind === 'character' && <>
-                <div className="ca-look-list">{draft.looks.map(l => <button type="button" key={l.id} className={l.id === lookId ? 'selected' : ''} aria-pressed={l.id === lookId} onClick={() => setLookId(l.id)}>{l.id === draft.default_look_id && <Star size={12} className="ca-star" aria-label="默认造型"/>}{l.name}{l.archived_at ? '（归档）' : ''}<span className="ca-count-chip">{draft.images.filter(b => b.look_id === l.id && !b.archived_at).length}</span></button>)}<button type="button" disabled={!!draft.archived_at} onClick={() => { const id = crypto.randomUUID(); edit(a => { a.looks.push({ id, name: '新造型', description: '', tags: [], default_image_id: null, archived_at: null }); a.default_look_id ??= id; }); setLookId(id); }}><Plus size={14}/>新增造型</button></div>
+                <div className="ca-look-list">{draft.looks.map(l => <button type="button" key={l.id} className={l.id === lookId ? 'selected' : ''} aria-pressed={l.id === lookId} onClick={() => setLookId(l.id)}>{l.id === draft.default_look_id && <Star size={12} className="ca-star" aria-label="默认造型"/>}{l.name}{l.archived_at ? '（归档）' : ''}<span className="ca-count-chip">{draft.images.filter(b => b.look_id === l.id && !b.archived_at).length}</span></button>)}<button type="button" disabled={locked} onClick={() => { const id = crypto.randomUUID(); edit(a => { a.looks.push({ id, name: '新造型', description: '', tags: [], default_image_id: null, archived_at: null }); a.default_look_id ??= id; }); setLookId(id); }}><Plus size={14}/>新增造型</button></div>
                 {!draft.looks.length && empty('先新增造型，再绑定参考图片')}
                 {currentLook && <>
-                  <div className="ca-look-summary"><span>{currentLook.description || '没有造型说明'}</span>{currentLook.tags.map(t => <span key={t} className="ca-pill">{t}</span>)}{currentLook.id !== draft.default_look_id && !currentLook.archived_at && <button type="button" className="ca-link-button" disabled={!!draft.archived_at} onClick={() => edit(a => { a.default_look_id = lookId; })}>设为默认造型</button>}</div>
-                  <details className="ca-look-config" key={currentLook.id}><summary><span>造型设置</span><small>名称、说明、类型、排序与归档</small></summary><div className="ca-look-form"><fieldset className="ca-look-fields ca-edit-fields" disabled={!!draft.archived_at || !!currentLook.archived_at}><Field label="造型名称" placeholder="例如：日常造型、工作造型、雨夜造型" value={currentLook.name} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.name = v; })}/><Field label="造型说明" long placeholder="描述这套造型的使用情境与外观特点。例如：工作时穿着，深色外套，衣角略有磨损。" value={currentLook.description} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.description = v; })}/><Tags key={currentLook.id} value={currentLook.tags} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.tags = v; })}/></fieldset><div className="ca-actions"><button disabled={!!draft.archived_at || !!currentLook.archived_at} aria-label="造型上移" onClick={() => edit(a => { const i = a.looks.findIndex(l => l.id === lookId); if (i > 0) [a.looks[i - 1], a.looks[i]] = [a.looks[i], a.looks[i - 1]]; })}><ArrowUp size={14}/>上移</button><button disabled={!!draft.archived_at || !!currentLook.archived_at} aria-label="造型下移" onClick={() => edit(a => { const i = a.looks.findIndex(l => l.id === lookId); if (i >= 0 && i < a.looks.length - 1) [a.looks[i + 1], a.looks[i]] = [a.looks[i], a.looks[i + 1]]; })}><ArrowDown size={14}/>下移</button><button disabled={!!draft.archived_at || !!currentLook.archived_at || currentLook.id === draft.default_look_id} onClick={() => edit(a => { a.default_look_id = lookId; })}>设为默认造型</button><button disabled={!!draft.archived_at} onClick={() => { if (!currentLook.archived_at && currentLook.id === draft.default_look_id && draft.looks.some(l => !l.archived_at && l.id !== lookId)) { setError('请先将其他造型设为默认，再归档当前造型'); return; } edit(a => { const l = a.looks.find(l => l.id === lookId)!; l.archived_at = l.archived_at ? null : Date.now(); if (l.archived_at && a.default_look_id === l.id) a.default_look_id = null; if (!l.archived_at && !a.default_look_id) a.default_look_id = l.id; }); }}>{currentLook.archived_at ? '恢复造型' : '归档造型'}</button></div></div></details>
+                  <div className="ca-look-summary"><span>{currentLook.description || '没有造型说明'}</span>{currentLook.tags.map(t => <span key={t} className="ca-pill">{t}</span>)}{currentLook.id !== draft.default_look_id && !currentLook.archived_at && <button type="button" className="ca-link-button" disabled={locked} onClick={() => edit(a => { a.default_look_id = lookId; })}>设为默认造型</button>}</div>
+                  <details className="ca-look-config" key={currentLook.id}><summary><span>造型设置</span><small>名称、说明、类型、排序与归档</small></summary><div className="ca-look-form"><fieldset className="ca-look-fields ca-edit-fields" disabled={locked || !!currentLook.archived_at}><Field label="造型名称" placeholder="例如：日常造型、工作造型、雨夜造型" value={currentLook.name} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.name = v; })}/><Field label="造型说明" long placeholder="描述这套造型的使用情境与外观特点。例如：工作时穿着，深色外套，衣角略有磨损。" value={currentLook.description} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.description = v; })}/><Tags key={currentLook.id} value={currentLook.tags} onChange={v => edit(a => { a.looks.find(l => l.id === lookId)!.tags = v; })}/></fieldset><div className="ca-actions"><button disabled={locked || !!currentLook.archived_at} aria-label="造型上移" onClick={() => edit(a => { const i = a.looks.findIndex(l => l.id === lookId); if (i > 0) [a.looks[i - 1], a.looks[i]] = [a.looks[i], a.looks[i - 1]]; })}><ArrowUp size={14}/>上移</button><button disabled={locked || !!currentLook.archived_at} aria-label="造型下移" onClick={() => edit(a => { const i = a.looks.findIndex(l => l.id === lookId); if (i >= 0 && i < a.looks.length - 1) [a.looks[i + 1], a.looks[i]] = [a.looks[i], a.looks[i + 1]]; })}><ArrowDown size={14}/>下移</button><button disabled={locked || !!currentLook.archived_at || currentLook.id === draft.default_look_id} onClick={() => edit(a => { a.default_look_id = lookId; })}>设为默认造型</button><button disabled={locked} onClick={() => { if (!currentLook.archived_at && currentLook.id === draft.default_look_id && draft.looks.some(l => !l.archived_at && l.id !== lookId)) { setError('请先将其他造型设为默认，再归档当前造型'); return; } edit(a => { const l = a.looks.find(l => l.id === lookId)!; l.archived_at = l.archived_at ? null : Date.now(); if (l.archived_at && a.default_look_id === l.id) a.default_look_id = null; if (!l.archived_at && !a.default_look_id) a.default_look_id = l.id; }); }}>{currentLook.archived_at ? '恢复造型' : '归档造型'}</button></div></div></details>
                   {currentLook.archived_at && <p className="ca-muted">该造型已归档，图片不显示；恢复造型后可继续编辑。</p>}
                 </>}
               </>}
@@ -1087,17 +1139,17 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
                   <span className="ca-tile-name" title={name}>{name}</span>
                 </div>; })}</div>
                 {!images.length && empty('还没有参考图片，可以在下方导入，或从访达拖到这里')}
-                <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || !!draft.archived_at} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||!!draft.archived_at} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
+                <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
             {draft.kind === 'character' && owner?.project_kind !== 'public' && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion}/></section>}
-            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={!!draft.archived_at||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
+            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头"><AssociatedShots key={draft.id} assetId={draft.id} active={active} request={request} onOpen={onOpenShot}/></section>
           </div>
           <footer className={'ca-savebar' + (dirty ? ' is-dirty' : '')}>
             <span className="ca-save-status" role="status"><i aria-hidden="true"/>{dirty ? '有未保存的修改' : '已保存'} · V{draft.revision} · 更新于 {date(draft.updated_at)}</span>
-            {dirty && <button type="button" disabled={!!busy || !!draft.archived_at} onClick={discard}><Undo2 size={15}/>放弃修改</button>}
-            <button type="button" className="ca-primary" aria-label="保存资料" disabled={!!busy || !dirty || !!draft.archived_at} onClick={() => void save()}><Save size={15}/>保存</button>
+            {dirty && <button type="button" disabled={!!busy || locked} onClick={discard}><Undo2 size={15}/>放弃修改</button>}
+            <button type="button" className="ca-primary" aria-label="保存资料" disabled={!!busy || !dirty || locked} onClick={() => void save()}><Save size={15}/>保存</button>
           </footer>
         </aside>}
       </div>
@@ -1137,7 +1189,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
             <button aria-label="图片后移" disabled={imageLocked(dialogImage) || activeImageIds.indexOf(dialogImage.id) < 0 || activeImageIds.indexOf(dialogImage.id) >= activeImageIds.length - 1} onClick={() => moveImage(dialogImage.id, 1)}><ArrowRight size={14}/>后移</button>
             <button disabled={imageLocked(dialogImage)} onClick={() => { setImageId(null); setMediaQ(''); setMediaPage(1); setModal({ type: 'media', replace_id: dialogImage.id }); }}>重新选择</button>
             {dialogHealth?.state === 'changed' && <button disabled={imageLocked(dialogImage)} onClick={() => edit(a => { a.images.find(i => i.id === dialogImage.id)!.accept_current = true; })}>确认采用当前内容</button>}
-            <button className="ca-danger-text" disabled={!!draft.archived_at || !!currentLook?.archived_at} onClick={() => { const b = dialogImage; if (!b.archived_at && b.id === representative && images.some(i => !i.archived_at && i.id !== b.id)) { setError('请先选择另一张默认代表图，再解绑当前图片'); return; } edit(a => { const image = a.images.find(i => i.id === b.id)!; image.archived_at = image.archived_at ? null : Date.now(); if (image.archived_at && representative === b.id) setDefault(a, null); if (!image.archived_at && !representative) setDefault(a, image.id); }); }}>{dialogImage.archived_at ? '恢复绑定' : '解绑归档'}</button>
+            <button className="ca-danger-text" disabled={locked || !!currentLook?.archived_at} onClick={() => { const b = dialogImage; if (!b.archived_at && b.id === representative && images.some(i => !i.archived_at && i.id !== b.id)) { setError('请先选择另一张默认代表图，再解绑当前图片'); return; } edit(a => { const image = a.images.find(i => i.id === b.id)!; image.archived_at = image.archived_at ? null : Date.now(); if (image.archived_at && representative === b.id) setDefault(a, null); if (!image.archived_at && !representative) setDefault(a, image.id); }); }}>{dialogImage.archived_at ? '恢复绑定' : '解绑归档'}</button>
           </div>
           <details className="ca-crop" open={cropOpen} onToggle={e => setCropOpen((e.currentTarget as HTMLDetailsElement).open)}><summary>封面裁切与库内使用</summary>{(() => { const h = detailHead?.id === dialogImage.id ? detailHead.head : 'idle'; return <div className="ca-head-row-detail"><button type="button" className="ca-head-reframe" disabled={imageLocked(dialogImage) || !headRetry(h) || !!dialogHealth && dialogHealth.state !== 'available'} onClick={() => { setCropOpen(true); void reframeDetail(dialogImage); }}><ScanFace size={14}/>重新框到头部</button>{h !== 'idle' && <span className={'ca-head-hint is-inline' + (h === 'found' ? ' is-found' : h === 'loading' ? '' : ' is-miss')} role="status">{h === 'found' ? '已框到头部，可以再拖；点下方「保存」后生效' : headText[h]}</span>}</div>; })()}<p className="ca-muted">在图片上拖动框调整位置，拖四个角缩放（最多 3 倍）；也可以用下面的滑块微调。卡片封面按裁切框显示；头像按方形比例显示，使用相同的位置和缩放参数，框外内容也可能出现在头像里，以下方预览为准。</p>{(['x','y','zoom'] as const).map(k => <label key={k} className="ca-field"><span>{k === 'x' ? '水平位置' : k === 'y' ? '垂直位置' : '缩放'}</span><input disabled={imageLocked(dialogImage)} aria-label={'裁切' + k} type="range" min={k === 'zoom' ? 1 : 0} max={k === 'zoom' ? 3 : 100} step={k === 'zoom' ? .05 : 1} value={dialogImage.crop[k]} onChange={e => { const v = Number(e.target.value); dragDetail(dialogImage.id, c => ({ ...c, [k]: v })); }}/></label>)}<span className="ca-crop-previews"><span className="ca-crop-preview-item"><span className="ca-crop-card-preview" style={{ aspectRatio: String(cropAspect) }}><CroppedImage binding={dialogImage} alt="卡片封面预览"/></span><small>卡片封面</small></span><span className="ca-crop-preview-item"><span className="ca-avatar ca-crop-preview"><CroppedImage binding={dialogImage} alt="头像裁切预览"/></span><small>方形头像</small></span></span><button onClick={() => void run('正在查询使用位置…', async () => { const rows = await api<any[]>('/media/' + dialogImage.media_asset_id + '/usage'); setImageId(null); setModal({ type: 'usage', rows }); })}>查看库内使用位置</button></details>
           <p className="ca-muted">修改在点击详情栏下方“保存”后生效。</p>

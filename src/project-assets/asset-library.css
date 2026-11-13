@@ -714,3 +714,8 @@
 .ca-attr-locked{margin:0 0 6px;font-size:12px}
 .ca-v2 .ca-detail.is-loading>*:not(.ca-detail-loading){pointer-events:none}
 .ca-v2 .ca-detail-loading{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--soft);border-bottom:1px solid var(--line)}
+/* 第二期 P2a：卡片来源（全剧 / 只在本集）、全剧视图提示 */
+.ca-v2 .ca-owner-src{display:inline-block;align-self:flex-start;margin:2px 0 1px;padding:0 6px;border-radius:5px;font-size:11px;font-weight:600;line-height:18px}
+.ca-v2 .ca-owner-src.is-series{background:color-mix(in srgb,var(--green) 14%,var(--c-fff));color:color-mix(in srgb,var(--green) 70%,var(--c-24292c))}
+.ca-v2 .ca-owner-src.is-local{background:color-mix(in srgb,#d98a2b 16%,var(--c-fff));color:color-mix(in srgb,#b0611a 70%,var(--c-24292c))}
+.ca-v2 .ca-series-note{border-color:color-mix(in srgb,#d98a2b 35%,var(--line));background:color-mix(in srgb,#d98a2b 8%,var(--c-fff))}
