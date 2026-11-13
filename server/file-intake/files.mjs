@@ -67,6 +67,45 @@ export async function selectionHash(file,{signal}={}) {
   } finally {await handle.close();}
 }
 
+async function firstSelectionProof(file,{signal}) {
+  signal?.throwIfAborted();
+  const st=await fs.lstat(file.path),identity=stamp(st);
+  if(!st.isFile()||st.isSymbolicLink()||!same({...identity,ctimeMs:file.identity.ctimeMs},file.identity))
+    throw error('INTAKE_SOURCE_CHANGED','原文件在选择后发生变化，请重新选择');
+  // Refresh ctime once before opening the file. The hash checks the exact
+  // path, parent and descriptor around the read with no retry on mutation.
+  const selectionSha256=await selectionHash({...file,identity},{signal});
+  return {identity,selectionSha256};
+}
+
+const preparationMessages={
+  permission:'没有权限读取原文件，未开始收纳；请检查文件访问权限后重新选择。',
+  missing:'找不到原文件，未开始收纳；请检查文件位置后从访达重新选择。',
+  'source-changed':'原文件在选择后发生变化，未开始收纳；请从访达重新选择。',
+  cancelled:'原文件核验已取消，未开始收纳。',
+  unknown:'原文件核验未完成，未开始收纳；请从访达重新选择。',
+};
+
+function preparationFailure(cause,stage,file) {
+  const rawCode=cause?.code;
+  const code=typeof rawCode==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode)?rawCode:null;
+  const receiptStage=stage==='read-handoff'||stage==='save-handoff';
+  let reason='unknown';
+  if(cause?.name==='AbortError'||code==='ABORT_ERR')reason='cancelled';
+  else if(code==='EACCES'||code==='EPERM')reason='permission';
+  else if(!receiptStage&&(code==='ENOENT'||code==='ENOTDIR'))reason='missing';
+  else if(!receiptStage&&['INTAKE_SOURCE_CHANGED','ELOOP','ESTALE'].includes(code))reason='source-changed';
+
+  let message=preparationMessages[reason];
+  if(receiptStage&&reason!=='cancelled')message=reason==='permission'
+    ?'没有权限访问文件任务回执，未开始收纳；请检查文件任务目录的访问权限。'
+    :'无法保存或读取文件任务回执，未开始收纳；请从访达重新选择。';
+  const diagnostic={reason,code,stage,...(file?{fileId:file.id,fileName:file.name}:{})};
+  const failure=Object.assign(new Error(message),{code:code??'INTAKE_PREPARATION_FAILED',diagnostic});
+  if(reason==='cancelled')failure.name='AbortError';
+  return failure;
+}
+
 // Probe only the verified file descriptor. Restrict both protocols and
 // demuxers: selecting a media file must not open paths or network playlists.
 async function audioDuration(file,{signal}={}) {
@@ -159,22 +198,38 @@ export class Receipts {
     return result;
   }
   async handoff(files,{deferFingerprint=false}={}) {
-    const id=randomUUID(), value={id,createdAt:Date.now(),preparation:'checking',files:await inspectSelection(files)};
-    await this.write('handoffs',id,value,{exclusive:true});
+    let selected;
+    try {selected=await inspectSelection(files);}
+    catch(e){if(e.code==='INTAKE_VIDEO_ONLY')throw e;throw preparationFailure(e,'inspect-selection');}
+    const id=randomUUID(), value={id,createdAt:Date.now(),preparation:'checking',files:selected};
+    try {await this.write('handoffs',id,value,{exclusive:true});}
+    catch(e){throw preparationFailure(e,'save-handoff');}
     return deferFingerprint?value:this.prepareHandoff(id);
   }
   async prepareHandoff(id,{signal}={}) {
-    const value=await this.read('handoffs',id);
+    let value;
+    try {value=await this.read('handoffs',id);}
+    catch(e){throw preparationFailure(e,'read-handoff');}
     if(value.preparation!=='checking')return value;
+    let stage='fingerprint',item;
     try {
       for(const file of value.files){
-        file.selectionSha256=await selectionHash(file,{signal});
-        if(file.mediaKind==='audio')file.durationSec=await audioDuration(file,{signal});
+        stage='fingerprint';item=file;
+        Object.assign(file,await firstSelectionProof(file,{signal}));
+        if(file.mediaKind==='audio'){
+          stage='audio-duration';
+          file.durationSec=await audioDuration(file,{signal});
+        }
       }
+      signal?.throwIfAborted();
+      stage='save-handoff';item=undefined;
       value.preparation='ready';await this.write('handoffs',id,value);return value;
     } catch(e) {
-      value.preparation='failed';value.preparationError='原文件核验未完成，未开始收纳；请从访达重新选择。';
-      await this.write('handoffs',id,value);throw e;
+      const failure=preparationFailure(e,stage,item);
+      value.preparation='failed';value.preparationError=failure.message;value.preparationDiagnostic=failure.diagnostic;
+      try {await this.write('handoffs',id,value);}
+      catch(e){failure.receiptDiagnostic=preparationFailure(e,'save-handoff').diagnostic;}
+      throw failure;
     }
   }
 }
