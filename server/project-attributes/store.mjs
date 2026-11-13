@@ -71,8 +71,12 @@ export class ProjectAttributes {
       projectId, series_id, seasonId, membership?.revision ?? 0, alignment.revision,
       config_scope, config_owner_id, config.revision,
     ]);
+    const editable = !this.assets.lib.migrating && (config_scope === 'project' || editSeries);
+    const locks = this.assets.generationLocks;
+    const generationLocked = editable && locks && (config_scope === 'project'
+      ? locks.isLocked?.(projectId) : locks.isSeriesLocked?.(series_id));
     return { ...config, project_id: projectId, series_id, config_scope, config_owner_id,
-      alignment_status: alignment.status, config_editable: !this.assets.lib.migrating && (config_scope === 'project' || editSeries), config_token };
+      alignment_status: alignment.status, config_editable: editable && !generationLocked, config_token };
   }
 
   assertConfigToken(config, token, required = true) {

@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import express from 'express';
 import { creativeFixture, confirmAttributePlan, moveWithAttributePlan } from './helpers/creative-fixture.mjs';
+import { digest } from '../server/project-assets/model.mjs';
 import { DEFAULT_DIMENSIONS } from '../server/project-attributes/model.mjs';
 import { projectAssetRouter } from '../server/project-assets/router.mjs';
 import { projectSeriesRouter } from '../server/project-series/router.mjs';
@@ -141,6 +142,8 @@ test('A2: a changed score, a generation lock, and a failed receipt never leave a
   const next = f.preview(drama), board = new StoryboardDatabase(f.lib, f.store).init(), generation = new GenerationStore(f.lib, board).init();
   const stamp = generation.assetSnapshot(ep.id).assetStamp;
   f.db.prepare('INSERT INTO sb_generation_locks VALUES(?,?,?,?,?)').run(ep.id, randomUUID(), 1, Date.now(), Date.now());
+  assert.equal(f.attrs.getConfig(ep.id).config_editable, false);
+  assert.equal(f.store.scoped.attributeConfig('series', drama.id).config_editable, false);
   assert.throws(() => f.confirm(drama, next), {status: 423, code: 'STORYBOARD_GENERATION_LOCKED'});
   f.db.prepare('DELETE FROM sb_generation_locks WHERE id=?').run(ep.id);
   f.db.exec(`CREATE TEMP TRIGGER reject_align_receipt BEFORE INSERT ON project_series_requests WHEN NEW.kind='attribute-alignment'
@@ -293,4 +296,58 @@ test('A3: different groups entering the same series share one dimension-limit ca
   assert.equal(f.attrs.getConfig(f.a.id).dimensions.length, 7);
   assert.equal(f.attrs.getScores(a.id).scores[axis].value, 20);
   assert.equal(f.attrs.getScores(b.id).scores[axis].value, 50);
+});
+
+test('A4: restore rejects transplanted history and success receipts stripped of their evidence', async t => {
+  const f = await setup(t), drama = f.makeSeries('合成历史归属', {legacy: true}), ep = f.episode(drama);
+  const asset = await f.character(ep, '合成受保护人物');
+  const configured = f.put(ep, [{...DEFAULT_DIMENSIONS[0], criterion: '不兼容的旧依据'}, ...DEFAULT_DIMENSIONS.slice(1)]);
+  f.patch(asset, configured.dimensions[0].id, 42);
+  const receipt = f.confirm(drama, f.preview(drama));
+  const snapshot = f.store.backup();
+  const change = apply => {
+    const draft = structuredClone(snapshot);
+    apply(draft);
+    const {format, schema_version, checksum, ...contents} = draft;
+    draft.checksum = digest(contents);
+    return draft;
+  };
+  const row = draft => draft.project_attributes.project_attribute_history.find(entry => entry.project_id === ep.id);
+  const first = change(draft => { row(draft).project_id = f.b.id; });
+  const second = change(draft => {
+    const entry = row(draft);
+    const data = JSON.parse(entry.data_json);
+    entry.project_id = f.b.id;
+    data.before_configs[0].project_id = f.b.id;
+    data.before_configs[0].config_owner_id = f.b.id;
+    entry.data_json = JSON.stringify(data);
+  });
+  const third = change(draft => {
+    draft.project_attributes.series_attribute_alignment = [];
+    draft.project_attributes.project_attribute_history = [];
+  });
+  const fourth = change(draft => { delete draft.project_attributes; });
+  for (const invalid of [first, second, third, fourth]) {
+    await assert.rejects(f.store.restore(invalid), /人物属性备份记录无效/);
+  }
+  assert.equal(f.attrs.alignment.history('project', f.b.id).items.length, 0);
+  assert.deepEqual(f.series.request(receipt.request_id), {found: true, result: receipt});
+  assert.equal(f.attrs.alignment.history('project', ep.id, {}, receipt.history_id).legacy_scores[0].scores[configured.dimensions[0].id].value, 42);
+});
+
+test('A1: adding an episode invalidates a previous series removal confirmation even without new scores', async t => {
+  const f = await setup(t), drama = f.makeSeries('合成删轴目标'), ep = f.episode(drama);
+  const asset = await f.character(ep, '合成已有评分');
+  const first = f.attrs.getConfig(ep.id).dimensions[0];
+  f.patch(asset, first.id, 42);
+  const writes = f.store.scopedWrites, scoped = f.store.scoped;
+  const context_token = scoped.scope('series', drama.id).context_token;
+  const {config_token, revision, dimensions} = scoped.attributeConfig('series', drama.id);
+  const request = {context_token, config_token, expected_revision: revision};
+  const preview = writes.configRemovalPreview('series', drama.id, {...request, remove: [first.id]});
+  const incoming = f.episode(drama, 2);
+  assert.throws(() => writes.patchConfig('series', drama.id, {...request, request_id: randomUUID(),
+    dimensions: dimensions.slice(1), removal_confirmation: {token: preview.token}}), {code: 'REMOVAL_PREVIEW_STALE'});
+  assert.equal(f.attrs.getScores(asset.id).scores[first.id].value, 42);
+  assert.equal(f.attrs.getConfig(incoming.id).dimensions[0].id, first.id);
 });

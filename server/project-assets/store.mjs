@@ -4,7 +4,7 @@ import path from 'node:path';
 import { CREATIVE_TABLES, ensureCreativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2 } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
-import { snapshotAttributes, validateAttributes, restoreAttributes, assertRestoreAlignment } from '../project-attributes/backup.mjs';
+import { snapshotAttributes, validateAttributes, validateAlignmentLinks, restoreAttributes, assertRestoreAlignment } from '../project-attributes/backup.mjs';
 import { snapshotSeries, validateSeriesBackup, restoreSeriesBackup } from '../project-series/backup.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
 import { explicitAssetShots } from '../storyboard/asset-references.mjs';
@@ -347,7 +347,6 @@ export class ProjectAssets {
       if (!valid) throw fault('备份资产归属无效');
     }
     validateScopedAssetBackup(t, input.project_series);
-    if (Object.hasOwn(input, 'project_attributes')) validateAttributes(input.project_attributes, input.projects, assets, input.project_series, t.series_attribute_configs);
     for (const l of looks.values()) if (assets.get(l.asset_id)?.kind !== 'character') throw fault('备份造型归属无效');
     for (const b of t.creative_image_bindings) if (!assets.has(b.asset_id) || b.look_id !== null && looks.get(b.look_id)?.asset_id !== b.asset_id || !/^[a-f0-9]{64}$/.test(b.expected_sha256)) throw fault('备份图片归属或摘要无效');
     const versionKeys = new Set();
@@ -364,6 +363,9 @@ export class ProjectAssets {
     }
     for (const a of assets.values()) if (!versionKeys.has(a.id + '/' + a.revision)) throw fault('备份缺少当前版本');
     for (const c of t.creative_asset_copy_records) if (!assets.has(c.target_id) || !/^[a-f0-9]{64}$/.test(c.request_hash)) throw fault('备份复制记录无效');
+    if (Object.hasOwn(input, 'project_attributes'))
+      validateAttributes(input.project_attributes, input.projects, assets, input.project_series, t.series_attribute_configs, t.creative_asset_versions);
+    else validateAlignmentLinks(input.project_series);
     return input;
   }
   async restore(input) {

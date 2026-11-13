@@ -16,7 +16,7 @@ const newTables = ['series_attribute_alignment', 'project_attribute_history'];
 const allTables = Object.keys(ATTRIBUTE_TABLES);
 const oldTables = allTables.filter(table => !newTables.includes(table));
 
-export function validateAttributes(input, projects, assets, directory, sharedConfigs = []) {
+export function validateAttributes(input, projects, assets, directory, sharedConfigs = [], versions = []) {
   if (!hasFields(input, allTables) && !hasFields(input, oldTables)) throw invalid();
   const series = new Set((directory?.project_series ?? []).map(row => row.id));
   const members = new Map((directory?.project_series_members ?? []).map(row => [row.id, row.series_id]));
@@ -26,7 +26,15 @@ export function validateAttributes(input, projects, assets, directory, sharedCon
     !hasFields(row, ['id', 'revision']) || !series.has(row.id) || !isRevision(row.revision) || row.revision < 1)) throw invalid();
   const aligned = new Set(markers.map(row => row.id));
   const normalProjects = new Set(projects.filter(p => p.project_kind === 'normal').map(p => p.id));
-  const configs = new Map();
+  const owners = new Map();
+  for (const row of versions) {
+    const old = JSON.parse(row.snapshot);
+    if (old.kind === 'character' && idOK(old.project_id) && (old.owner_type ?? 'project') === 'project') {
+      if (!owners.has(row.asset_id)) owners.set(row.asset_id, new Set());
+      owners.get(row.asset_id).add(old.project_id);
+    }
+  }
+  const history = new Map(), configs = new Map();
   for (const [table, fields] of Object.entries(ATTRIBUTE_TABLES)) {
     const rows = input[table] ?? [], seen = new Set();
     if (!Array.isArray(rows) || rows.length > 100000) throw invalid();
@@ -35,7 +43,12 @@ export function validateAttributes(input, projects, assets, directory, sharedCon
       seen.add(row.id);
       if (table === 'series_attribute_alignment') continue;
       if (table === 'project_attribute_history') {
-        validateHistory(row);
+        const data = validateHistory(row, assets, owners);
+        const group = history.get(row.history_id) ?? {requestId: row.request_id, kind: row.kind, seriesId: row.series_id, rows: new Map()};
+        if (group.requestId !== row.request_id || group.kind !== row.kind || group.seriesId !== row.series_id ||
+            group.rows.has(row.project_id)) throw invalid();
+        group.rows.set(row.project_id, data);
+        history.set(row.history_id, group);
         continue;
       }
       const projectId = row.project_id ?? row.id;
@@ -62,6 +75,43 @@ export function validateAttributes(input, projects, assets, directory, sharedCon
       }
     }
   }
+  validateAlignmentLinks(directory, new Map(markers.map(row => [row.id, row.revision])), series, history);
+}
+
+export function validateAlignmentLinks(directory, markers = new Map(), series = new Set(), history = new Map()) {
+  const requests = new Map((directory?.project_series_requests ?? []).map(row => [row.id, row]));
+  for (const [id, row] of requests) {
+    const result = JSON.parse(row.result_json);
+    if (row.kind === 'attribute-alignment') {
+      const event = history.get(result.history_id);
+      const summary = event?.rows.get(null);
+      if (!summary || event.kind !== 'attribute_alignment' || event.requestId !== id ||
+          event.seriesId !== result.series_id || summary.after_config.revision !== result.config_revision ||
+          event.rows.size - 1 !== result.episodes_updated ||
+          series.has(result.series_id) && markers.get(result.series_id) !== result.alignment_revision) throw invalid();
+    }
+    for (const historyId of result.attribute_history_ids ?? []) {
+      const event = history.get(historyId);
+      if (!event || !['series_move','series_exit'].includes(event.kind) || event.requestId !== id ||
+          !['move','organize'].includes(row.kind)) throw invalid();
+    }
+  }
+  for (const [historyId, event] of history) {
+    const row = requests.get(event.requestId);
+    if (!row) throw invalid();
+    const result = JSON.parse(row.result_json);
+    if (event.kind === 'attribute_alignment') {
+      if (row.kind !== 'attribute-alignment' || result.history_id !== historyId) throw invalid();
+      continue;
+    }
+    if (!result.attribute_history_ids?.includes(historyId)) throw invalid();
+    const exit = event.kind === 'series_exit', summary = event.rows.has(null);
+    if (exit ? summary || event.rows.size !== 1 : !summary || event.rows.size < 2) throw invalid();
+    for (const projectId of event.rows.keys()) {
+      if (projectId !== null && !result.changes.some(change => change.project_id === projectId &&
+        (exit ? change.before.series_id === event.seriesId && change.after.series_id === null : change.after.series_id === event.seriesId))) throw invalid();
+    }
+  }
 }
 
 function validScore(score) {
@@ -71,7 +121,7 @@ function validScore(score) {
     : score.source === 'ai' && isScore(score.value) && textField(score.reason, 200, '评分依据') === score.reason;
 }
 
-function validateHistory(row) {
+function validateHistory(row, assets, owners) {
   if (!idOK(row.id) || !idOK(row.series_id) || row.project_id !== null && !idOK(row.project_id) ||
       !isRevision(row.created_at) || typeof row.data_json !== 'string') throw invalid();
   let data;
@@ -94,7 +144,15 @@ function validateHistory(row) {
       if (Object.hasOwn(config, key) && config[key] !== null && !idOK(config[key])) throw invalid();
     }
   }
-  const targetIds = new Set(data.after_config.dimensions.map(axis => axis.id));
+  const [before] = data.before_configs, after = data.after_config;
+  if (row.project_id === null) {
+    if (before.project_id != null || before.series_id !== row.series_id || after.series_id !== row.series_id ||
+        after.project_id != null || row.kind === 'series_exit') throw invalid();
+  } else if (before.project_id !== row.project_id ||
+      (row.kind === 'series_exit' ? before.series_id !== row.series_id || after.project_id !== row.project_id || after.series_id != null
+        : after.series_id !== row.series_id || after.project_id != null ||
+          row.kind === 'attribute_alignment' && before.series_id !== row.series_id)) throw invalid();
+  const targetIds = new Set(after.dimensions.map(axis => axis.id));
   const mapping = new Map();
   for (const item of data.mappings) {
     if (!hasFields(item, ['source_dimension_id','target_dimension_id']) || typeof item.source_dimension_id !== 'string' ||
@@ -103,11 +161,14 @@ function validateHistory(row) {
   }
   const seen = new Set();
   for (const item of data.legacy_scores) {
+    const asset = assets.get(item?.asset_id);
     if (!hasFields(item, ['asset_id','scores']) || !idOK(item.asset_id) || seen.has(item.asset_id) ||
+        asset?.kind !== 'character' || (asset.project_id !== row.project_id && !owners.get(item.asset_id)?.has(row.project_id)) ||
         !isRecord(item.scores) || Object.entries(item.scores).some(([id, score]) => mapping.get(id) !== null || !validScore(score))) throw invalid();
     seen.add(item.asset_id);
   }
   if (row.project_id === null && (data.mappings.length || data.legacy_scores.length)) throw invalid();
+  return data;
 }
 
 export function assertRestoreAlignment(current, incoming) {
