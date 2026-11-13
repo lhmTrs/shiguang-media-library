@@ -159,11 +159,16 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
     const deadline = Date.now() + VERIFY_TOTAL_MS;
     for (let i = 0; i < 6 && alive.current && Date.now() < deadline; i++) {
       if (isNewForAttempt(jobRef.current)) return;
-      const seq = ++readSeq.current, controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Math.max(0, Math.min(VERIFY_READ_MS, deadline - Date.now())));
-      try {const value = await api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job', undefined, undefined, {signal: controller.signal}); if (!alive.current) return; if (isNewForAttempt(value.job)) {acceptJob(value.job, seq); return;}}
-      catch { /* 超时或读取失败：继续下一次，直到时间上限 */ }
-      finally {clearTimeout(timer);}
+      const seq = ++readSeq.current, controller = new AbortController(), wait = Math.max(0, Math.min(VERIFY_READ_MS, deadline - Date.now()));
+      // 整个请求（包括请求函数内部的会话恢复等等待）与剩余时间赛跑；signal 只能中止网络读取，管不到那些等待。
+      // 到期就不再等它：中止底层读取，迟到的结果直接丢弃，之后由可信的状态轮询接回。
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const read = api.current<{job: InstallJob | null}>(INTAKE_API + '/install/job', undefined, undefined, {signal: controller.signal}).then(value => ({value}), () => null);
+      const result = await Promise.race([read, new Promise<'timeout'>(r => {timer = setTimeout(() => r('timeout'), wait);})]);
+      clearTimeout(timer);
+      if (result === 'timeout') controller.abort();
+      else if (result && alive.current && isNewForAttempt(result.value.job)) {acceptJob(result.value.job, seq); return;}
+      if (!alive.current) return;
       const rest = deadline - Date.now(); if (rest <= 0) break;
       await new Promise(r => setTimeout(r, Math.min(1000, rest)));
     }

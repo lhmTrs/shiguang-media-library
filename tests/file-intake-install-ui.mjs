@@ -71,7 +71,7 @@ try {
   await fs.writeFile(path.join(temp, 'index.html'), '<html><div id="root"></div><script type="module" src="/fixture.tsx"></script></html>');
   await fs.writeFile(path.join(temp, 'fixture.tsx'), `import React from 'react';import{createRoot}from'react-dom/client';import{FileTaskEntry}from${JSON.stringify(path.join(root, 'src/file-intake/index.ts'))};import{GlobalFeedback}from${JSON.stringify(path.join(root, 'src/global-feedback.tsx'))};
 import ${JSON.stringify(path.join(root, 'src/style.css'))};import ${JSON.stringify(path.join(root, 'src/themes.css'))};import ${JSON.stringify(path.join(root, 'src/library-workspace.css'))};
-const request=async(url,body,method,options)=>{const response=await fetch('/api'+url,{method:method||(body===undefined?'GET':'POST'),headers:{'content-type':'application/json','x-local-token':'synthetic-token'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:options?.signal});const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error),{...value,status:response.status});return value;};
+const request=async(url,body,method,options)=>{if(window.__hangJobRead&&url==='/file-intake/install/job'&&body===undefined)return new Promise(()=>{});const response=await fetch('/api'+url,{method:method||(body===undefined?'GET':'POST'),headers:{'content-type':'application/json','x-local-token':'synthetic-token'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:options?.signal});const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error),{...value,status:response.status});return value;};
 createRoot(document.getElementById('root')).render(<><div className="app library-workspace"><main><header className="topbar library-topbar"><div className="breadcrumb">合成页面</div><div className="topbar-actions"><FileTaskEntry request={request} onView={()=>{}}/></div></header></main></div><GlobalFeedback/></>);`);
   server = await createServer({configFile: false, root: temp, envDir: temp, cacheDir: path.join(temp, '.vite'), esbuild: {jsx: 'automatic'}, resolve: {alias: {react: path.join(root, 'node_modules/react'), 'react-dom': path.join(root, 'node_modules/react-dom'), 'lucide-react': path.join(root, 'node_modules/lucide-react')}}, server: {host: '127.0.0.1', port: 0, hmr: false, fs: {allow: [root, temp]}}, logLevel: 'error'});
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, '');
@@ -219,6 +219,16 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     const took = Date.now() - started; assert.ok(took < 15000, '核对应在时间上限内结束，实际 ' + took + 'ms');
     assert.deepEqual(posts, ['/install/job'], '核对期间不重复发起安装');
     hung.release();
+  });
+
+  await check('核对读取卡在请求函数内部（如会话恢复，不理会中止信号）：仍在时间上限内结束并允许重试', async () => {
+    fresh(); await reload(); await open(); await page.evaluate(() => { window.__hangJobRead = true; });
+    fixture.post = 'drop-before'; const started = Date.now(); await installButton().click();
+    await expect(state()).toContainText('正在核对这次安装是否已开始');
+    await expect(state()).toContainText('没有确认这次安装', {timeout: 16000}); await expect(installButton()).toBeEnabled();
+    const took = Date.now() - started; assert.ok(took < 14000, '核对应在 12 秒上限附近结束，实际 ' + took + 'ms');
+    assert.deepEqual(posts, ['/install/job'], '核对期间不重复发起安装');
+    await page.evaluate(() => { window.__hangJobRead = false; });
   });
 
   await check('窄屏与深色主题：安装状态不溢出', async () => {
