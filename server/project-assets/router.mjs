@@ -56,6 +56,10 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   const scopeWrite = (method, suffix, action) =>
     route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));
   const writes = store.scopedWrites;
+  scopeWrite('get', '/assets/:assetId/versions', (type, id, req) =>
+    store.scoped.versions(type, id, req.params.assetId));
+  scopeWrite('get', '/assets/:assetId/versions/:version', (type, id, req) =>
+    store.scoped.versions(type, id, req.params.assetId, req.params.version));
   scopeWrite('post', '/names/check', (type, id, req) => writes.checkNames(type, id, req.body));
   scopeWrite('post', '/assets', (type, id, req) => writes.create(type, id, req.body));
   scopeWrite('put', '/assets/:assetId', (type, id, req) => writes.save(type, id, req.params.assetId, req.body));
@@ -89,8 +93,14 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('post', '/assets/:id/archive', req => store.archive(req.params.id, req.body.archived === true, req.body.expected_revision));
   route('get', '/assets/:id/health', req => store.health(req.params.id));
   route('get', '/assets/:id/shots', req => store.associatedShots(req.params.id));
-  route('get', '/assets/:id/versions', req => store.versions(req.params.id));
-  route('get', '/assets/:id/versions/:version', req => store.version(req.params.id, req.params.version));
+  route('get', '/assets/:id/versions', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.versions(req.params.id);
+  });
+  route('get', '/assets/:id/versions/:version', req => {
+    store.localAsset(store.head(req.params.id));
+    return store.version(req.params.id, req.params.version);
+  });
   route('get', '/assets/:id/copy-preview', req => store.copyPreview(req.params.id, req.query.project_id));
   route('post', '/assets/:id/copy', req => store.copy(req.params.id, req.body));
   route('get', '/copies/:id', req => store.copyStatus(req.params.id));

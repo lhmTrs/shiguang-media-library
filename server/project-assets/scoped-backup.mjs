@@ -61,6 +61,11 @@ export function validateScopedAssetBackup(tables, directory) {
       throw invalid();
     }
   }
+  for (const row of tables.creative_asset_override_clocks) {
+    if (!['season', 'episode'].includes(row.scope_type) || assets.get(row.asset_id)?.owner_type !== 'series' ||
+        !/^(default_look|default_image(?::[a-f0-9-]{36})?|attribute_score:[a-f0-9-]{36})$/i.test(row.field_key) ||
+        row.id !== digest([row.scope_type, row.scope_id, row.asset_id, row.field_key])) throw invalid();
+  }
   for (const row of tables.creative_asset_scope_requests) {
     // Historic receipts can outlive a deleted scope; lookup rechecks visibility.
     if (!['episode', 'season', 'series'].includes(row.scope_type) ||

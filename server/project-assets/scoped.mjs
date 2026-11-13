@@ -220,6 +220,17 @@ export class ScopedProjectAssets {
     return this.#item(scope, this.#visibleRow(scope, assetId), new Map());
   }
 
+  versions(type, id, assetId, version) {
+    return this.#snapshot(() => {
+      const scope = this.scope(type, id);
+      const row = this.#visibleRow(scope, assetId);
+      // Promotion can leave old snapshots with a source episode's private data.
+      const owns = type === 'series' || type === 'episode' && row.owner_type === 'project';
+      if (!owns) throw notFound();
+      return version === undefined ? this.store.versions(row.id) : this.store.version(row.id, version);
+    });
+  }
+
   #attributeConfig(type, id) {
     if (type === 'project') return this.store.attributes.configDTO(this.store.attributes.config(id));
     const row = this.db.prepare('SELECT revision,data_json FROM series_attribute_configs WHERE id=?').get(id);
@@ -266,14 +277,17 @@ export class ScopedProjectAssets {
   #overrideLayers(scope, row) {
     if (row.owner_type !== 'series') return [];
     const layers = [];
-    if (scope.season_id) layers.push({ type: 'season', id: scope.season_id, fields: new Map() });
-    if (scope.type === 'episode') layers.push({ type: 'episode', id: scope.id, fields: new Map() });
+    if (scope.season_id) layers.push({ type: 'season', id: scope.season_id, fields: new Map(), clocks: new Map() });
+    if (scope.type === 'episode') layers.push({ type: 'episode', id: scope.id, fields: new Map(), clocks: new Map() });
     if (!layers.length) return layers;
     const terms = layers.map(() => '(scope_type=? AND scope_id=?)').join(' OR ');
     const rows = this.db.prepare(`SELECT scope_type,scope_id,field_key,value_json,revision,created_at,updated_at
       FROM creative_asset_overrides WHERE asset_id=? AND (${terms})`).all(row.id, ...layers.flatMap(layer => [layer.type, layer.id]));
     const byType = new Map(layers.map(layer => [layer.type, layer]));
     for (const override of rows) byType.get(override.scope_type).fields.set(override.field_key, override);
+    const clocks = this.db.prepare(`SELECT scope_type,field_key,updated_at FROM creative_asset_override_clocks
+      WHERE asset_id=? AND (${terms})`).all(row.id, ...layers.flatMap(layer => [layer.type, layer.id]));
+    for (const clock of clocks) byType.get(clock.scope_type).clocks.set(clock.field_key, clock.updated_at);
     return layers;
   }
 
@@ -307,7 +321,8 @@ export class ScopedProjectAssets {
         const stored = layer.fields.get(key), value = stored ? parseOverride(stored.value_json) : undefined;
         override = stored && valid(value) ? { value, revision: Number(stored.revision) } : null;
         if (override) current = { value, source: source(layer.type, layer.id, override.revision) };
-        return [layer.type, layer.id, stored ? [stored.revision, stored.created_at, stored.updated_at, stored.value_json, targetRevision(value)] : null];
+        return [layer.type, layer.id, layer.clocks.get(key) ?? null,
+          stored ? [stored.revision, stored.created_at, stored.updated_at, stored.value_json, targetRevision(value)] : null];
       });
       return {
         ...current, override, parent,

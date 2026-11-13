@@ -98,8 +98,11 @@ test('删除后同毫秒重建的覆盖拒绝旧令牌', async t => {
       write_token: detail.effective.default_look.write_token, field: { key: 'default_look' }, action,
       ...(action === 'set' && {value: second.id}),
     });
-    const first = set('set', f.scoped.detail('episode', f.episode.id, asset.id));
+    const initial = f.scoped.detail('episode', f.episode.id, asset.id);
+    const first = set('set', initial);
     const reverted = set('inherit', first);
+    assert.notEqual(initial.effective.default_look.write_token, reverted.effective.default_look.write_token);
+    assert.throws(() => set('set', initial), { code: 'ASSET_STALE' });
     const recreated = set('set', reverted);
     assert.notEqual(first.effective.default_look.write_token, recreated.effective.default_look.write_token);
     assert.throws(() => set('inherit', first), { code: 'ASSET_STALE' });

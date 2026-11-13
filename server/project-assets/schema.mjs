@@ -15,6 +15,7 @@ export const CREATIVE_TABLES = {
   ...LEGACY_CREATIVE_TABLES,
   creative_assets: { ...LEGACY_CREATIVE_TABLES.creative_assets, project_id: 'optional_ref', owner_type: 'key', owner_id: 'ref' },
   creative_asset_overrides: { id: 'hash_id', scope_type: 'key', scope_id: 'ref', asset_id: 'ref', field_key: 'key', value_json: 'text', revision: 'integer', created_at: 'integer', updated_at: 'integer' },
+  creative_asset_override_clocks: { id: 'hash_id', scope_type: 'key', scope_id: 'ref', asset_id: 'ref', field_key: 'key', created_at: 'integer', updated_at: 'integer' },
   creative_asset_scope_requests: { id: 'id', scope_type: 'key', scope_id: 'ref', request_hash: 'key', result_json: 'text', created_at: 'integer', updated_at: 'integer' },
   series_attribute_configs: { id: 'id', revision: 'integer', data_json: 'text', created_at: 'integer', updated_at: 'integer' },
   series_character_attributes: { id: 'id', series_id: 'ref', revision: 'integer', data_json: 'text', created_at: 'integer', updated_at: 'integer' },
@@ -40,6 +41,7 @@ export const creativeIndexes = {
   creative_images_asset: ['creative_image_bindings', 'asset_id'],
   creative_images_media: ['creative_image_bindings', 'media_asset_id'],
   creative_scope_override_asset: ['creative_asset_overrides', 'asset_id'],
+  creative_scope_clock_asset: ['creative_asset_override_clocks', 'asset_id'],
 };
 
 export function creativeSchema(mysql, tables = CREATIVE_TABLES) {

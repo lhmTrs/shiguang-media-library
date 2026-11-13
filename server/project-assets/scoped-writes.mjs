@@ -459,6 +459,12 @@ export class ScopedAssetWrites {
           (id,scope_type,scope_id,asset_id,field_key,value_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`)
           .run(rowId, type, id, assetId, fieldKey, canonical(value), now, now);
       }
+      const clock = this.db.prepare('SELECT updated_at FROM creative_asset_override_clocks WHERE id=?').get(rowId);
+      if (clock) this.db.prepare('UPDATE creative_asset_override_clocks SET updated_at=? WHERE id=?')
+        .run(Math.max(scope.operation_at, clock.updated_at + 1), rowId);
+      else this.db.prepare(`INSERT INTO creative_asset_override_clocks
+        (id,scope_type,scope_id,asset_id,field_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(rowId, type, id, assetId, fieldKey, scope.operation_at, scope.operation_at);
       return this.reads.detailInTransaction(scope, assetId);
     });
   }
