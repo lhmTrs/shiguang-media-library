@@ -54,7 +54,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
     setSaving(true); setError('');
     try {
       const next = scopedUrl
-        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
+        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, ...(config.config_token ? { config_token: config.config_token } : {}), expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
         : await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes, ...(config.config_token ? { config_token: config.config_token } : {}) });
       if (next.asset_id !== assetId) throw Error('保存回执不属于当前人物，请重新打开后核对');
       setAttrs(next); setDraft(null); setEdited(new Set()); setNotice('属性已保存');
@@ -62,6 +62,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
       const code = errCode(e);
       if (code === 'ASSET_SCOPE_CHANGED') { setError('这部剧的归组刚变了，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
       else if (code === 'ASSET_STALE') { setError('全剧评分或维度刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
+      else if (code === 'ATTRIBUTE_CONTEXT_STALE') { setError('这部剧的成员或维度刚有变化，已重新读取；你的改动还在、没有保存，请核对后再保存'); void load(true); }
       else if (code === 'ATTRIBUTE_STALE' || code === 'CONFIG_STALE') { setError(code === 'CONFIG_STALE' ? '属性维度刚被修改，已重新读取；你的改动还在，请核对后再保存' : '这个人物的属性刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
       else setError((e as Error).message || '保存失败，改动仍保留');
     } finally { setSaving(false); }

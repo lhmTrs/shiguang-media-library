@@ -125,12 +125,14 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const locked = saving || !!stale || !!merge || !!review;
   const blocked = !config || config.project_id !== projectId || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
 
+  /** 编辑所依据的那次读取的配置凭证；合并到新版本后 config 换成新版本，凭证随之更新，但仍要用户再点保存。 */
+  const ctx = () => config?.config_token ? { config_token: config.config_token } : {};
   async function put(meaning: string[], preserve: string[], token?: string) {
     // 弹窗已关闭（切集 / 切视图 / 关掉）：等待中的预览回来后不再发出新的保存；已发出的保存由回执核对
     if (!alive.current) return;
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
-    const next = await api.saveConfig({ expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
+    const next = await api.saveConfig({ expected_revision: config.revision, ...ctx(), dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
     if (next.project_id !== projectId) throw Error('保存回执不属于当前项目');
     // The save is settled for its own project either way; an unmounted dialog must not touch whatever is open now.
     if (!alive.current) return;
@@ -140,7 +142,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   async function toFinal(set: string[], preserve: string[], meaning: string[], message = '', gen = generation.current) {
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     if (!set.length) { await put(meaning, preserve); return; }
-    const pv = await api.removalPreview({ expected_revision: config.revision, remove: set });
+    const pv = await api.removalPreview({ expected_revision: config.revision, ...ctx(), remove: set });
     if (!alive.current) return;
     if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
     const affected = pv.affected.filter(touched);
@@ -160,7 +162,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       const changed = rows.filter(r => r.id && base.has(r.id) && wording(outOf(r)) !== wording(base.get(r.id)!)).map(r => r.id!);
       if (changed.length) {
         // Read-only probe: which of the reworded dimensions actually have scores.
-        const probe = await api.removalPreview({ expected_revision: config.revision, remove: changed });
+        const probe = await api.removalPreview({ expected_revision: config.revision, ...ctx(), remove: changed });
         if (!alive.current) return;
         if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
         const scored = probe.affected.filter(touched);
@@ -170,7 +172,10 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     } catch (e) {
       const code = errCode(e);
       if (code === 'SERIES_MANAGED') { setManaged(true); return; }
-      if (code === 'CONFIG_STALE') { try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
+      if (code === 'CONFIG_STALE' || code === 'ATTRIBUTE_CONTEXT_STALE') {
+        try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null);
+        setError(code === 'CONFIG_STALE' ? '维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。' : '这部剧的成员或维度刚有变化（例如有集加入、移出或刚统一），你的改动还在、没有保存。请选择下面的处理方式后再保存。');
+      }
       else if ((code === 'REMOVAL_PREVIEW_STALE' || code === 'DIMENSION_REMOVAL_CONFIRM') && review?.stage === 'final') {
         try { await toFinal(review.set, review.preserve, review.meaning, '删除影响刚变了（下面是最新人数），请重新确认'); } catch (e2) { setReview(null); setError((e2 as Error).message || '请再点一次保存'); }
       }
@@ -205,7 +210,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       <div className="ca-modal-content">
         {error && <div className="ca-alert" role="alert">{error}</div>}
         {stale && <div className="ca-attr-confirm" role="group" aria-label="配置已更新">
-          <b>别处已把配置更新到第 {stale.revision} 版（你打开时是第 {config?.revision} 版）。</b>
+          <b>{stale.revision !== config?.revision ? `别处已把配置更新到第 ${stale.revision} 版（你打开时是第 ${config?.revision} 版）。` : '配置所在的剧或成员刚有变化，维度内容可能相同，但需要你按最新情况再确认一次。'}</b>
           <div className="ca-attr-confirm-actions"><button type="button" onClick={() => { setConfig(stale); setRows(stale.dimensions.map(toRow)); setStale(null); setReview(null); setError(''); setNote('已换成最新配置，你的改动已放弃'); }}>放弃我的改动，用新配置</button>
             <button type="button" className="ca-primary" onClick={() => startMerge(stale)}>保留我的改动，与新版本合并</button></div>
         </div>}

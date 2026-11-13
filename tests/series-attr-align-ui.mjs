@@ -79,6 +79,7 @@ async function installMocks() {
   });
   await page.route(u => new URL(u).pathname === '/api/project-series/moves', async route => {
     const body = route.request().postDataJSON(); fake.moves.push(body);
+    if (fake.staleMoveOnce) { fake.staleMoveOnce = false; return route.fulfill({ status: 409, json: { error: '维度、评分或归组已变化，请重新预览', code: 'ATTRIBUTE_ALIGNMENT_STALE' } }); }
     const res = await route.fetch({ postData: JSON.stringify(await withRealPlan('/project-series/moves/preview', { target: body.target, items: body.items }, body)) }); const data = await res.json();
     return route.fulfill({ status: res.status(), json: res.ok() && body.attribute_preview_token ? { ...data, can_undo: false, undo_disabled_reason: 'ATTRIBUTE_CONFIGURATION_CHANGED' } : data });
   });
@@ -87,7 +88,7 @@ async function installMocks() {
     return route.fulfill({ json: { ready: true, conflicts: [], attribute_plan: fake.organizePlan(body) } });
   });
   await page.route(u => new URL(u).pathname === '/api/project-series/organize', async route => {
-    const body = route.request().postDataJSON(); fake.organizes.push(body); return route.continue({ postData: JSON.stringify(await withRealPlan('/project-series/organize/preview', { groups: body.groups }, body)) });
+    const body = route.request().postDataJSON(); fake.organizes.push(body); if (fake.dropOrganizeOnce) { fake.dropOrganizeOnce = false; return route.abort('connectionreset'); } return route.continue({ postData: JSON.stringify(await withRealPlan('/project-series/organize/preview', { groups: body.groups }, body)) });
   });
 }
 
@@ -98,7 +99,7 @@ try {
   const q = await api(`/project-series/${S.id}/seasons`, { request_id: rid() });
   for (let i = 1; i <= 2; i++) eps.push((await api(`/project-series/${S.id}/episodes`, { season_id: q.id, expected_episode_no: i, request_id: rid() })).project);
   solo = await api('/projects', { name: '独立短片' });
-  for (const n of ['新剧_1', '新剧_2']) await api('/projects', { name: n });
+  for (const n of ['新剧_1', '新剧_2', '孤剧_1', '孤剧_2']) await api('/projects', { name: n });
   await api('/project-assets/assets', { project_id: eps[0].id, kind: 'character', name: '卖油郎' });
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
@@ -185,12 +186,55 @@ try {
     await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click().catch(() => {});
     await pf().getByRole('button', { name: '整理旧项目' }).click();
     const dlg = page.getByRole('dialog', { name: '整理旧项目' }); await expect(dlg).toContainText('新剧');
+    for (const n of ['孤剧_1', '孤剧_2']) await dlg.getByRole('checkbox', { name: '归入 ' + n }).uncheck(); // 孤剧留给后面的 R5
     await dlg.getByRole('button', { name: /^归组 \d+ 个项目/ }).click();
     const base = dlg.getByLabel('新剧的维度基准'); await expect(base).toBeVisible();
     await base.selectOption({ label: '复制「新剧_1」的维度' });
     await expect.poll(() => fake.organizePreviews.at(-1)?.attribute_choices?.[0]?.baseline?.kind).toBe('episode');
     await dlg.getByRole('button', { name: /^归组 \d+ 个项目/ }).click(); await expect(dlg).toHaveCount(0);
     const o = fake.organizes.at(-1); assert.ok(o.attribute_preview_token?.startsWith('og-')); assert.equal(o.attribute_choices[0].baseline.kind, 'episode');
+  });
+
+  await check('R5 整理只勾一个自定义维度的项目建剧：当前基准是那一集、比较为一致，但「系统默认」可能不同 → 仍要选基准', async () => {
+    fake.organizePlan = body => { const g = body.groups.find(x => x.target.new_series); const items = g.items.map(i => i.project_id);
+      const baseline = items.length === 1 ? { kind: 'episode', project_id: items[0] } : { kind: 'default' };
+      return { preview_token: 'og-' + fake.organizePreviews.length, can_undo: false, choices: body.attribute_choices ?? [{ group_id: g.group_id, baseline, decisions: [] }],
+        groups: [{ group_id: g.group_id, mode: 'map_to_series', target_series_id: null, baseline_options: [{ kind: 'default' }, ...items.map(id => ({ kind: 'episode', project_id: id }))], baseline,
+          alignment: { ...alignmentPreview(), ready: true, preview_token: 'x', episodes: items.map(id => ({ project_id: id, project_name: '孤剧_1', membership_revision: 0, comparison: 'identical', automatic: [], decisions: [], target_only_dimensions: [] })), series_changes: { added: [], dimension_count_before: 6, dimension_count_after: 6, min: 3, max: 8 } } }] }; };
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click().catch(() => {});
+    await pf().getByRole('button', { name: '整理旧项目' }).click();
+    const before = fake.organizes.length; const dlg = page.getByRole('dialog', { name: '整理旧项目' }); await dlg.getByRole('checkbox', { name: '归入 孤剧_2' }).uncheck();
+    await dlg.getByRole('button', { name: /^归组 1 个项目/ }).click();
+    await expect(dlg.getByLabel('新剧的维度基准')).toBeVisible(); assert.equal(fake.organizes.length, before, '要选基准时不应直接归组');
+  });
+
+  await check('R3 整理结果待核对：维度选择整块锁住，「用原请求重新提交」原样重发', async () => {
+    const dlg = page.getByRole('dialog', { name: '整理旧项目' }); fake.dropOrganizeOnce = true; const before = fake.organizes.length;
+    await dlg.getByRole('button', { name: /^归组 1 个项目/ }).click();
+    await expect(dlg.getByRole('alert')).toContainText('结果待核对'); await expect(dlg).toContainText('已锁定');
+    await expect(dlg.getByLabel('新剧的维度基准')).toBeDisabled(); await expect(dlg.getByRole('button', { name: '返回修改' })).toHaveCount(0);
+    await dlg.getByRole('button', { name: '用原请求重新提交' }).click(); await expect(dlg).toHaveCount(0);
+    const [first, again] = fake.organizes.slice(before); assert.ok(first && again, '应发出一次、再原样重发一次');
+    assert.equal(again.request_id, first.request_id); assert.deepEqual(again.attribute_choices, first.attribute_choices); assert.equal(again.attribute_preview_token, first.attribute_preview_token);
+  });
+
+  await check('R4 移动确认遇到凭证过期：不带旧凭证再发，先按屏幕上的选择重新预览，用户看过后用新凭证确认', async () => {
+    fake.movePlan = body => ({ preview_token: 'mv-' + fake.movePreviews.length, can_undo: false, choices: body.attribute_choices ?? [{ group_id: 'move', decisions: [{ item_id: 'it-x', action: 'retain_legacy' }] }],
+      groups: [{ group_id: 'move', mode: 'map_to_series', target_series_id: S.id, alignment: { ...alignmentPreview(), episodes: [{ project_id: eps[1].id, project_name: '第2集', membership_revision: 0, comparison: 'needs_review', automatic: [],
+        decisions: [{ item_id: 'it-x', source_dimension_id: 'x', source_dimension: dim('x', '名望', '无名', '显赫'), reason: 'missing_in_series', allowed_actions: ['retain_legacy', 'add_to_series'], eligible_targets: [], suggested_choice: { item_id: 'it-x', action: 'retain_legacy' }, impact: impact(1) }], target_only_dimensions: [] }] } }] });
+    const name = (await api('/projects')).find(p => p.id === eps[1].id).name;
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click().catch(() => {});
+    await pf().getByRole('button', { name: new RegExp('^' + name) }).first().click({ button: 'right' }); await page.getByRole('menuitem', { name: '放进剧…' }).click();
+    await page.getByRole('dialog', { name: '移到…' }).getByRole('button', { name: '移动' }).click();
+    const nums = page.getByRole('dialog').filter({ has: page.getByRole('button', { name: '保存' }) }); if (await nums.count()) await nums.getByRole('button', { name: '保存' }).click();
+    const map = page.getByRole('dialog', { name: /放进「穿越计」/ }); await expect(map).toContainText('名望');
+    const firstToken = fake.movePreviews.length; fake.staleMoveOnce = true; const moves = fake.moves.length;
+    await map.getByRole('button', { name: '确认放进剧' }).click();
+    await expect(map.getByRole('alert')).toContainText('已按最新情况重新核对'); await expect(map).toBeVisible();
+    assert.equal(fake.moves.length, moves + 1, '过期后不应自动再提交'); assert.ok(fake.movePreviews.length > firstToken, '过期后应重新预览');
+    assert.deepEqual(fake.movePreviews.at(-1).attribute_choices?.[0]?.decisions, [{ item_id: 'it-x', action: 'retain_legacy' }], '按屏幕上的选择重新预览');
+    await map.getByRole('button', { name: '确认放进剧' }).click(); await expect(map).toHaveCount(0);
+    const [stale, fresh] = fake.moves.slice(-2); assert.notEqual(fresh.attribute_preview_token, stale.attribute_preview_token); assert.equal(fresh.attribute_preview_token, 'mv-' + fake.movePreviews.length);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

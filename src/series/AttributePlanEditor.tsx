@@ -5,10 +5,13 @@ import { AlignmentDecisions } from "./AlignmentDecisions";
 import { mergeChoices, type AlignmentChoice } from "./alignment";
 import type { AttributeGroupChoice, AttributePlan } from "./model";
 
-/** 新剧有多个基准可选，且选哪个会有差别：按当前基准，到达的各集只要有一集不是「完全一致」就有差别。
- *  全部一致（编号、顺序、两端、依据都相同）说明各集和基准是同一套维度，选哪个结果都一样，不必打扰用户。 */
+/** 新剧有多个基准可选时，只有确定所有选项等价才跳过：当前基准是「系统默认」，且到达的每一集都和它完全一致
+ *  （编号、顺序、两端、依据都相同）。这时每个「复制某集」也就是系统默认那一套，选哪个都一样。
+ *  当前基准是某一集时不能这样推：那一集和自己当然一致，「系统默认」却可能不同（例如只归入一集自定义维度的项目）。 */
 function baselineMatters(g: AttributePlan['groups'][number]) {
-  return (g.baseline_options?.length ?? 0) > 1 && !(g.alignment && g.alignment.episodes.length > 0 && g.alignment.episodes.every(ep => ep.comparison === 'identical'));
+  if ((g.baseline_options?.length ?? 0) <= 1) return false;
+  const current = g.baseline ?? g.baseline_options![0];
+  return !(current.kind === 'default' && g.alignment && g.alignment.episodes.length > 0 && g.alignment.episodes.every(ep => ep.comparison === 'identical'));
 }
 
 /** 有要你决定的维度、要新增全剧维度、新剧基准选哪个会有差别，或预览本身没就绪时，才需要让用户核对。 */

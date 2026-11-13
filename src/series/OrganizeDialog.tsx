@@ -82,9 +82,14 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
     }
     await send({ ...build(), ...(plan ? { attribute_preview_token: plan.preview_token, attribute_choices: plan.choices } : {}) });
   }
-  const rePreviewAttr = (choices: AttributeGroupChoice[]) => { setBusy(true); setStatus(null);
-    void api.previewOrganize(build().groups, choices).then(pv => { if (pv.attribute_plan) setAttr({ plan: pv.attribute_plan, ready: pv.ready }); })
-      .catch(e => setStatus({ tone: 'error', text: errorText(e) })).finally(() => setBusy(false)); };
+  // 改选后重新预览：以服务端回显和新凭证为准。回来的是冲突、或已没有维度计划时，旧凭证作废，回到归组表显示真实冲突。
+  // 失败时界面仍显示上一次成功核对的选择（选择框受回显控制），确认用的也是那一次的凭证，两者一致。
+  const rePreviewAttr = (choices: AttributeGroupChoice[]) => { if (locked) return; setBusy(true); setStatus(null);
+    void api.previewOrganize(build().groups, choices).then(pv => {
+      if (pv.conflicts?.length) { setAttr(null); markConflicts(pv.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); return; }
+      if (!pv.attribute_plan) { setAttr(null); setStatus({ tone: 'error', text: '情况刚变了，这次归组不再涉及维度对应。请核对后再点一次归组。' }); return; }
+      setAttr({ plan: pv.attribute_plan, ready: pv.ready });
+    }).catch(e => setStatus({ tone: 'error', text: errorText(e) + '（选择没有改动，仍按上一次核对的执行）' })).finally(() => setBusy(false)); };
   async function send(req: OrganizeRequest & { attribute_preview_token?: string; attribute_choices?: AttributeGroupChoice[] }) {
     pending.current = req;
     setBusy(true); setStatus(null);
@@ -92,9 +97,10 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
     catch (e) {
       const err = e as { status?: number; code?: string; details?: { conflicts?: OrganizeConflict[] } };
       if (err.status && err.status < 500) {
-        pending.current = null; setUnknown(false);
-        if (err.code === 'SERIES_ORGANIZE_CONFLICT' && err.details?.conflicts?.length) { setAttr(null); markConflicts(err.details.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); }
-        else if (err.code === 'ATTRIBUTE_ALIGNMENT_STALE' || err.code === 'ATTRIBUTE_PREVIEW_REQUIRED') { setAttr(null); setStatus({ tone: 'error', text: errorText(e) + '（整批都没有写入，请再点一次归组重新核对）' }); }
+        // 被拒绝：这次的维度凭证一律作废，下一次归组重新预览，不会再带旧凭证
+        pending.current = null; setUnknown(false); setAttr(null);
+        if (err.code === 'SERIES_ORGANIZE_CONFLICT' && err.details?.conflicts?.length) { markConflicts(err.details.conflicts); setStatus({ tone: 'error', text: '有冲突，整批都没有写入。改好标红的项后再提交。' }); }
+        else if (['ATTRIBUTE_ALIGNMENT_STALE', 'ATTRIBUTE_PREVIEW_REQUIRED', 'ATTRIBUTE_CONTEXT_STALE'].includes(err.code ?? '')) setStatus({ tone: 'error', text: '维度或分数刚有变化，整批都没有写入。请再点一次归组，按最新情况重新核对。' });
         else setStatus({ tone: 'error', text: errorText(e) + '（整批都没有写入）' });
       } else { setUnknown(true); await recheck(req); }
     } finally { setBusy(false); }
@@ -104,8 +110,8 @@ export function OrganizeDialog({ ungrouped, series, api, close, done }: { ungrou
     <form className="pf-organize" onSubmit={e => { e.preventDefault(); if ((unknown || !invalid) && !busy) void submit(); }}>
       <div className="modal-body">
         {attr ? <>
-          <p className="muted pf-hint">归组后，这些集改用所在剧的人物属性维度。核对下面的维度对应后再归组：</p>
-          <AttributePlanEditor plan={attr.plan} busy={busy} nameOf={id => ungrouped.find(p => p.id === id)?.name ?? '某一集'} groupLabel={id => { const g = groups.find(x => x.key === id); return g?.existing?.name ?? (g?.name.trim() || '新剧'); }} onChoices={rePreviewAttr}/>
+          <p className="muted pf-hint">{unknown ? '上次归组的结果还没核对到。下面是那次提交的维度选择，已锁定；只能核对或用原请求重新提交。' : '归组后，这些集改用所在剧的人物属性维度。核对下面的维度对应后再归组：'}</p>
+          <AttributePlanEditor plan={attr.plan} busy={locked} nameOf={id => ungrouped.find(p => p.id === id)?.name ?? '某一集'} groupLabel={id => { const g = groups.find(x => x.key === id); return g?.existing?.name ?? (g?.name.trim() || '新剧'); }} onChoices={rePreviewAttr}/>
         </> : !groups.length ? <p className="muted pf-hint">没找到能归到同一部剧的项目。项目名结尾带集号（如「某剧_12」「某剧3」）才会被建议；也可以在项目卡片上右键「放进剧…」。</p> : <>
           <p className="muted pf-hint">按项目名找到 {groups.length} 组。核对剧名和集号后一次归组；项目名、素材、分镜、视频都不变。</p>
           {groups.map((g, i) => <fieldset key={g.key} className="pf-og" disabled={locked}>
