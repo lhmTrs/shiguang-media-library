@@ -143,16 +143,21 @@ try {
     const saved = await page.evaluate(() => { const k = Object.keys(sessionStorage).find(x => x.startsWith('shiguang.projectFolders.loc:')); return k ? JSON.parse(sessionStorage.getItem(k)) : null; });
     assert.equal(saved.level, 'series');
     await page.goto(origin + '/#/all'); await expect(pf()).toHaveCount(0);
-    await page.goto(origin + '/#/projects'); await expect(heading('续集')).toBeVisible();
+    // 项目页跟着顶栏走：回来时进到当前项目所在的那一层；新建的剧在列表请求挂起期间也不能丢——回到最外层仍能直接进入
+    await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); await expect(heading('项目')).toBeVisible();
+    await pf().getByRole('button', { name: '打开剧 续集' }).click(); await expect(heading('续集')).toBeVisible();
     holdSeries = false; releaseSeries?.(); releaseSeries = null;
     await page.waitForTimeout(600); await expect(heading('续集')).toBeVisible();
     await expect(pf().getByRole('navigation', { name: '位置' })).toContainText('续集');
   });
 
-  await check('真正被删除的剧仍回退：停在「续集」时它在别处被删，刷新后回到根目录', async () => {
+  await check('真正被删除的剧仍回退：停在「续集」时它在别处被删，刷新后不再停在它里面', async () => {
     const list = await api('/project-series'), target = list.find(x => x.name === '续集');
     await api(`/project-series/${target.id}`, { expected_revision: target.revision }, 'DELETE');
-    await page.reload(); await expect(heading('项目')).toBeVisible(); await expect(card('打开剧 续集')).toHaveCount(0);
+    // 项目页跟着顶栏走：刷新后进到当前项目那一层；关键是不再停在已被删掉的「续集」里，最外层也没有它
+    await page.reload(); await expect(pf()).toBeVisible(); await expect(heading('续集')).toHaveCount(0);
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); await expect(heading('项目')).toBeVisible(); await expect(card('打开剧 续集')).toHaveCount(0);
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

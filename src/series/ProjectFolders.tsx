@@ -72,7 +72,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   useEffect(() => {
     try { sessionStorage.removeItem(LOC_KEY); sessionStorage.removeItem(PENDING_KEY); } catch { /* 旧版本未分库的记录，丢弃 */ }
     if (loadedFor.current === libraryId) return;
-    loadedFor.current = libraryId;
+    loadedFor.current = libraryId; locatedFor.current = ''; // 换库：按新库的当前项目重新定位
     setLocState(locKey ? readSession<Loc>(locKey, { level: 'root' }) : { level: 'root' });
     setPendingState(pendingKey ? readSession<PendingSeries | null>(pendingKey, null) : null);
     setSelected([]); setMenu(null);
@@ -108,6 +108,22 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     if (loc.level !== 'root' && !node) setLoc({ level: 'root' });
     else if (loc.level === 'season' && node && !seasonContainer) setLoc({ level: 'series', seriesId: node.series.id });
   }, [loc, node, seasonContainer]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 项目页跟着顶栏走（方案 A）：进入项目页、或顶栏换了当前项目时，打开当前项目所在的那一层（季 / 剧 / 最外层），
+  // 并高亮、滚到它的卡片。在页里手动换目录不会被拉回；在当前层里点卡片换当前项目不跳也不闪；把当前集拖到别处也不跟。
+  const locatedFor = useRef('');
+  useEffect(() => {
+    if (!activeId || locatedFor.current === activeId) return;
+    const p = projects.find(x => x.id === activeId); if (!p) return; // 列表还没到：等数据到了再定位
+    const sNode = p.series_id ? tree.series.find(n => n.series.id === p.series_id) : undefined;
+    if (p.series_id && !sNode) return; // 剧的数据还没到
+    const entry = !locatedFor.current; locatedFor.current = activeId;
+    const target: Loc = !sNode ? { level: 'root' }
+      : p.season_id && sNode.seasons.some(c => c.season?.id === p.season_id) ? { level: 'season', seriesId: sNode.series.id, seasonId: p.season_id }
+      : { level: 'series', seriesId: sNode.series.id };
+    const same = JSON.stringify(target) === JSON.stringify(loc);
+    if (!same) setLoc(target);
+    if (!same || entry) flashCards([p.id]);
+  }, [activeId, projects, tree]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 8000); return () => clearTimeout(t); }, [toast]);
   useEffect(() => { if (!menu) return; const close = () => setMenu(null); window.addEventListener('click', close); window.addEventListener('blur', close); return () => { window.removeEventListener('click', close); window.removeEventListener('blur', close); }; }, [menu]);
 

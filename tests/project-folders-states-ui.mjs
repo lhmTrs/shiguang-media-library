@@ -54,6 +54,7 @@ try {
       page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
       await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); // 项目页会进到当前项目那一层，先回最外层
       await pf().getByRole('button', { name: '打开剧 穿越计' }).click(); await pf().getByRole('button', { name: '打开 第 1 季' }).click();
       await ep(2).hover(); await page.waitForTimeout(150);
       const hover = await contrastOf(ep(2));
@@ -82,6 +83,7 @@ try {
     await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
     page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
     await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); // 项目页会进到当前项目那一层，先回最外层
     await pf().getByRole('button', { name: '打开剧 穿越计' }).click(); await pf().getByRole('button', { name: '打开 第 1 季' }).click();
     await ep(2).click({ button: 'right' }); await expect(menu()).toBeVisible();
     const box = await menu().boundingBox(); assert.ok(box.y >= 0 && box.y + box.height <= 600, '菜单越界：' + JSON.stringify(box));
@@ -97,6 +99,7 @@ try {
     await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
     page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
     await page.goto(origin + '/#/projects'); await expect(pf()).toBeVisible();
+    await pf().getByRole('navigation', { name: '位置' }).getByRole('button', { name: '项目' }).click(); // 项目页会进到当前项目那一层，先回最外层
     await pf().getByRole('button', { name: '打开剧 穿越计' }).click(); await pf().getByRole('button', { name: '打开 第 1 季' }).click();
     await ep(1).scrollIntoViewIfNeeded(); await ep(1).click({ button: 'right' }); await expect(menu()).toBeVisible();
     const box = await menu().boundingBox(); assert.ok(box.y >= 0 && box.y + box.height <= 360, '菜单越界：' + JSON.stringify(box));
