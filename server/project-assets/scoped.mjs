@@ -220,6 +220,17 @@ export class ScopedProjectAssets {
     return this.#item(scope, this.#visibleRow(scope, assetId), new Map());
   }
 
+  episodeShots(type, id, assetId) {
+    return this.#snapshot(() => {
+      const scope = this.scope(type, id);
+      if (type !== 'episode') throw notFound();
+      const row = this.#visibleRow(scope, assetId);
+      const board = this.store.storyboards;
+      if (!board) throw fault('分镜模块尚未就绪，请稍后重试', 503);
+      return board.assetShots(row.id, scope.id);
+    });
+  }
+
   versions(type, id, assetId, version) {
     return this.#snapshot(() => {
       const scope = this.scope(type, id);

@@ -71,6 +71,8 @@ test('分镜初始化在同剧复用共享人物 ID，备份保留引用，引�
   assert.equal(board.preview(f.episode.id, input).assets.find(row => row.name === '陈川').id, shared.asset.id);
   const { project, revision } = board.initialize(f.episode.id, input);
   assert.equal(project.characters[0].id, shared.asset.id);
+  assert.equal(f.scoped.episodeShots('episode', f.episode.id, shared.asset.id).items.length, 1);
+  assert.throws(() => f.scoped.episodeShots('episode', f.a.id, shared.asset.id), { status: 404 });
   const edited = structuredClone(project);
   edited.scenes[0].shots[0].action = '修改后的合成动作。';
   assert.equal(board.save(f.episode.id, { project: edited, expected_revision: revision }).project.characters[0].id, shared.asset.id);

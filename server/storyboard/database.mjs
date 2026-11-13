@@ -31,9 +31,12 @@ export class StoryboardDatabase {
     return {project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],asset_stamp:digest(linked.map(a=>[a.id,a.revision,a.name]))};
   }
   read(projectId) { this.project(projectId); const row=this.head(projectId); if(!row) throw fault('此项目尚未初始化分镜',404); return this.hydrate(row); }
-  assetShots(assetId) {
-    const asset=this.assets.head(assetId),row=asset.project_id===null?null:this.head(asset.project_id);
-    const result={projectId:asset.project_id,documentId:row?.id??null,documentTitle:row?.title??'',revision:row?.revision??null,initialized:!!row,listed:false,items:[]};
+  assetShots(assetId, projectId) {
+    const asset=this.assets.head(assetId);
+    const target=projectId??asset.project_id;
+    if(target!==null&&!this.canUseAsset(target,asset))throw fault('当前项目中没有该资产',404);
+    const row=target===null?null:this.head(target);
+    const result={projectId:target,documentId:row?.id??null,documentTitle:row?.title??'',revision:row?.revision??null,initialized:!!row,listed:false,items:[]};
     if(!row)return result;
     const project=JSON.parse(row.document_json);if(!project.asset_manifest?.[asset.kind]?.some(a=>a.id===asset.id))return result;
     result.listed=true;const rows=M.timeline(project),dialogues=new Map(rows.flatMap(r=>(r.shot.dialogue??[]).map(d=>[r.shot.id+'/'+d.id,d])));

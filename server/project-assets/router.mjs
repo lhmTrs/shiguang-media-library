@@ -56,6 +56,8 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   const scopeWrite = (method, suffix, action) =>
     route(method, scoped + suffix, req => action(req.params.scopeType, req.params.scopeId, req));
   const writes = store.scopedWrites;
+  scopeWrite('get', '/assets/:assetId/shots', (type, id, req) =>
+    store.scoped.episodeShots(type, id, req.params.assetId));
   scopeWrite('get', '/assets/:assetId/versions', (type, id, req) =>
     store.scoped.versions(type, id, req.params.assetId));
   scopeWrite('get', '/assets/:assetId/versions/:version', (type, id, req) =>
