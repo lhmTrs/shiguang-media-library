@@ -179,7 +179,7 @@
 /* One navigation/action layout for library and all three workspaces. */
 .library-workspace .library-topbar{min-height:64px;gap:12px;flex-wrap:nowrap}
 .library-topbar .topbar-actions{display:flex;align-items:center;gap:8px;min-width:0;margin-left:auto}
-.library-topbar .topbar-project-slot{max-width:520px;min-width:0;flex:0 1 auto;display:flex;align-items:center}
+.library-topbar .topbar-project-slot{max-width:640px;min-width:0;flex:0 1 auto;display:flex;align-items:center}
 .library-workspace .library-topbar .topbar-actions>button,.library-topbar .topbar-actions>.account-entry>.account-button{box-sizing:border-box;height:36px;min-height:36px;font-size:12px;display:inline-flex;align-items:center}
 .library-topbar .topbar-actions>.icon-button{width:36px;padding:8px;flex-shrink:0}
 .library-topbar .topbar-actions>.account-entry{margin-left:auto}
