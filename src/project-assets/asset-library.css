@@ -735,3 +735,8 @@
 .ca-v2 .ca-src-tag{display:inline-block;padding:0 6px;border-radius:5px;font-size:11px;font-weight:600;line-height:18px;background:var(--soft);color:var(--c-24292c)}
 .ca-v2 .ca-src-tag.is-episode{background:color-mix(in srgb,#d98a2b 16%,var(--c-fff));color:color-mix(in srgb,#b0611a 70%,var(--c-24292c))}
 .ca-v2 .ca-src-tag.is-series{background:color-mix(in srgb,var(--green) 14%,var(--c-fff));color:color-mix(in srgb,var(--green) 70%,var(--c-24292c))}
+.ca-v2 .ca-score-overrides{display:flex;flex-direction:column;gap:6px}
+.ca-v2 .ca-score-row input{width:72px;height:28px;box-sizing:border-box;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:13px inherit}
+.ca-v2 .ca-score-row>button:not(.ca-override-reset){height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);font:12px inherit;cursor:pointer}
+.ca-v2 .ca-score-now{display:inline-flex;align-items:baseline;gap:6px;min-width:120px;font-variant-numeric:tabular-nums;font-weight:600}
+.ca-v2 .ca-score-now small{font-weight:400;font-size:11px;color:var(--muted)}

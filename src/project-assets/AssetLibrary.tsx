@@ -7,7 +7,7 @@ import {imageNamePreset} from '../import-presets.mjs';
 import './asset-library.css';
 import {AssociatedShots} from './AssociatedShots';
 import {contextUnavailable, ownerLabel, scopePath, type AssetContext, type AssetOwner, type ScopedItem, type ScopedList} from './scoped';
-import {ScopeOverrides, withEffective, type OverrideField} from './ScopeOverrides';
+import {ScopeOverrides, withEffective, type OverrideField, type ScoreDimension} from './ScopeOverrides';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -274,6 +274,15 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   /** 集视图里继承自全剧的资产：基础字段只读，默认造型 / 默认图在「本集设置」里覆盖。 */
   const inheritedHere = !!draftMeta && !seriesView && draftOwner?.type === 'series';
   const scopeLock = !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
+  // 集视图共享人物的评分维度：按人物读（服务端按归属返回剧级维度），版本与详情里的 attribute_config_revision 对齐才可改分
+  const [scopeDims, setScopeDims] = useState<{ revision: number; dims: ScoreDimension[] } | null>(null);
+  useEffect(() => {
+    setScopeDims(null); if (!inheritedHere || draft?.kind !== 'character' || !scopeBase) return; let live = true;
+    api<{ revision: number; dimensions: ScoreDimension[] }>(scopeBase + '/attribute-config?asset_id=' + encodeURIComponent(draft.id)).then(c => { if (live) setScopeDims({ revision: c.revision, dims: c.dimensions ?? [] }); }).catch(e => { if (live) setError('评分维度读取失败：' + (e.message || '请稍后重试')); });
+    return () => { live = false; };
+  }, [inheritedHere, draft?.id, draft?.kind, scopeBase]);
+  const effectiveConfigRevision = (draftMeta?.effective as { attribute_config_revision?: number } | undefined)?.attribute_config_revision;
+  const dimsAligned = !!scopeDims && (effectiveConfigRevision === undefined || effectiveConfigRevision === scopeDims.revision);
   /** 全剧视图里归档 / 解绑造型和图片要先看影响范围（P2a 第 4 步接入），这里暂不开放。 */
   const archiveViaPreview = !!scopeBase && seriesView;
   const locked = !!draft?.archived_at || !!scopeLock;
@@ -463,14 +472,14 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   /** 本集设置：默认造型 / 默认图的设置或恢复上层。返回更新后的详情；作用域或版本已变时重读并说明。 */
-  async function applyOverride(field: OverrideField, action: 'set' | 'inherit', value: string | null, writeToken: string) {
+  async function applyOverride(field: OverrideField, action: 'set' | 'inherit', value: unknown, writeToken: string) {
     const d = draftRef.current, base = scopeBaseRef.current; if (!d || !base) return;
     await run(action === 'set' ? '正在保存本集设置…' : '正在恢复上层…', async () => {
       try {
         const r = await api<ScopedItem<Asset>>(base + '/assets/' + d.id + '/overrides', { request_id: crypto.randomUUID(), context_token: metas[d.id]?.context_token ?? assetCtx?.context_token, write_token: writeToken, field, action, ...(action === 'set' ? { value } : {}) }, 'PATCH');
         const { asset, ...meta } = r; setMetas(old => ({ ...old, [asset.id]: { ...old[asset.id], ...meta } }));
         if (draftRef.current?.id === asset.id) install(withEffective(asset, meta));
-        await loadList(); setNotice(action === 'set' ? '已保存本集设置，只影响这一集' : '已恢复上层设置');
+        await loadList(); setNotice(action === 'set' ? '已保存本集设置，只影响这一集' : field.key === 'attribute_score' ? '已恢复全剧评分' : '已恢复上层设置');
       } catch (e: any) {
         if (['ASSET_SCOPE_CHANGED', 'ASSET_STALE', 'ASSET_IMPACT_CHANGED'].includes(e.code)) { void openAsset(d.id, true); throw Error((e.code === 'ASSET_SCOPE_CHANGED' ? '这一集的所属剧或季刚变了' : '这份资料刚在别处更新过') + '，已重新读取，请核对后再设置'); }
         throw e;
@@ -1130,7 +1139,7 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
           </div>
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
           {!!scopeLock && !draft.archived_at && <div className="ca-archive-note ca-scope-lock" role="status"><Layers size={15}/>{scopeLock}</div>}
-          {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
+          {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} dims={dimsAligned ? scopeDims!.dims : undefined} dimsNote={scopeDims && !dimsAligned ? '评分维度刚在全剧改过，请重新打开这个人物后再改分' : ''} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。在右上角“⋯”中选择“恢复”后可继续编辑。</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}
           <nav className="ca-detail-nav" aria-label="详情分区">{([['ca-sec-info', '资料'], ['ca-sec-refs', draft.kind === 'character' ? '造型与参考图' : '参考图'], ...(draft.kind === 'character' && owner?.project_kind !== 'public' ? [['ca-sec-attrs', '属性']] : []), ...(draft.kind === 'character' ? [['ca-sec-voice', '语音']] : []), ['ca-sec-shots', '出场镜头']] as [string, string][]).map(([id, l]) => <button type="button" key={id} onClick={() => jump(id)}>{l}</button>)}</nav>
@@ -1178,7 +1187,8 @@ export function AssetLibrary({ focusProject, active, request, activeProject, ref
                 <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary><ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/><details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
-            {draft.kind === 'character' && owner?.project_kind !== 'public' && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion}/></section>}
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
+            {draft.kind === 'character' && !!scopeBase && draftOwner?.type === 'series' && !seriesView && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><h3>属性</h3><p className="ca-muted">这是全剧共享的人物：评分在上方「本集设置」里按维度覆盖，没有覆盖的维度沿用全剧。</p></section>}
             {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头"><AssociatedShots key={draft.id} assetId={draft.id} active={active} request={request} onOpen={onOpenShot}/></section>
           </div>
