@@ -111,6 +111,9 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   // 项目页跟着顶栏走（方案 A）：进入项目页、或顶栏换了当前项目时，打开当前项目所在的那一层（季 / 剧 / 最外层），
   // 并高亮、滚到它的卡片。在页里手动换目录不会被拉回；在当前层里点卡片换当前项目不跳也不闪；把当前集拖到别处也不跟。
   const locatedFor = useRef('');
+  // 本页里点卡片 / 新建集换的当前项目：卡片就在眼前，不跳不闪。顶栏或别处换的：同层也要闪一下并滚到它（可能在屏外）
+  const selfSelect = useRef('');
+  const selectHere = (id: string) => { selfSelect.current = id; select(id); };
   useEffect(() => {
     if (!activeId || locatedFor.current === activeId) return;
     const p = projects.find(x => x.id === activeId); if (!p) return; // 列表还没到：等数据到了再定位
@@ -120,9 +123,10 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
     const target: Loc = !sNode ? { level: 'root' }
       : p.season_id && sNode.seasons.some(c => c.season?.id === p.season_id) ? { level: 'season', seriesId: sNode.series.id, seasonId: p.season_id }
       : { level: 'series', seriesId: sNode.series.id };
-    const same = JSON.stringify(target) === JSON.stringify(loc);
+    const same = JSON.stringify(target) === JSON.stringify(loc), fromHere = selfSelect.current === activeId;
+    selfSelect.current = '';
     if (!same) setLoc(target);
-    if (!same || entry) flashCards([p.id]);
+    if (!same || entry || !fromHere) flashCards([p.id]);
   }, [activeId, projects, tree]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 8000); return () => clearTimeout(t); }, [toast]);
   useEffect(() => { if (!menu) return; const close = () => setMenu(null); window.addEventListener('click', close); window.addEventListener('blur', close); return () => { window.removeEventListener('click', close); window.removeEventListener('blur', close); }; }, [menu]);
@@ -142,7 +146,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
       const a = visible.findIndex(v => v.id === anchor.current), b = visible.findIndex(v => v.id === p.id);
       if (a >= 0 && b >= 0) { setSelected(visible.slice(Math.min(a, b), Math.max(a, b) + 1).map(v => v.id)); return; }
     }
-    setSelected([p.id]); anchor.current = p.id; if (p.id !== activeId) select(p.id);
+    setSelected([p.id]); anchor.current = p.id; if (p.id !== activeId) selectHere(p.id);
   }
   function gridKeys(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && visible.length) { e.preventDefault(); setSelected(visible.map(v => v.id)); }
@@ -191,7 +195,7 @@ export function ProjectFolders({ projects, series, seriesChanged, activeId, sele
   function createEpisode(n: SeriesNode, c: Container, name?: string) {
     const expected = nextNo(c);
     void run(async () => {
-      try { const r = await api.createEpisode(n.series, c.season, expected, undefined, name); setDialog(null); refresh(r.project.id); select(r.project.id); setSelected([r.project.id]); flashCards([r.project.id]); setToast({ text: `已新建「${r.project.name}」` }); }
+      try { const r = await api.createEpisode(n.series, c.season, expected, undefined, name); setDialog(null); refresh(r.project.id); selectHere(r.project.id); setSelected([r.project.id]); flashCards([r.project.id]); setToast({ text: `已新建「${r.project.name}」` }); }
       catch (e) {
         const code = (e as { code?: string }).code;
         if (code === 'PROJECT_NAME_CONFLICT') { setDialog({ type: 'episodeName', node: n, container: c, expected }); return; }

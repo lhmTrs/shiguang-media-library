@@ -38,6 +38,10 @@ try {
   const direct = (await api(`/project-series/${s.id}/episodes`, { season_id: null, expected_episode_no: 1, request_id: rid() })).project;
   const solo = await api('/projects', { name: '独立短片' });
   const other = await api('/project-series', { name: '另一部', software: 'jianying', request_id: rid() });
+  // 一季 32 集：小窗口里后面的集在屏外
+  const long = await api('/project-series', { name: '长剧', software: 'jianying', request_id: rid() });
+  const lq = await api(`/project-series/${long.id}/seasons`, { request_id: rid() });
+  const longEps = []; for (let i = 1; i <= 32; i++) longEps.push((await api(`/project-series/${long.id}/episodes`, { season_id: lq.id, expected_episode_no: i, request_id: rid() })).project);
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -74,6 +78,19 @@ try {
     await page.waitForTimeout(1500); // 等进入时的高亮结束
     await epButton(/第 2 集$/).click(); await expect(epButton(/第 2 集（当前项目）$/)).toBeVisible();
     await expect(title()).toHaveText('第 1 季'); await expect(pf().locator('.pf-card[data-flash]')).toHaveCount(0);
+  });
+
+  await check('反例：顶栏切到同一层里屏外的集 → 不跳层，但滚到它并闪一下；本页点卡片仍不闪', async () => {
+    await page.setViewportSize({ width: 1100, height: 600 });
+    await goTo(longEps[0].id, '长剧 1 1'); await expect(title()).toHaveText('第 1 季'); await expect(crumbs()).toContainText('长剧');
+    const last = epButton(/^长剧 第 1 季 第 32 集/); await expect(last).not.toBeInViewport();
+    await page.waitForTimeout(1500); // 等进入时的高亮结束
+    await goTo(longEps[31].id, '长剧 1 32'); await expect(title()).toHaveText('第 1 季');
+    await expect(epButton(/^长剧 第 1 季 第 32 集（当前项目）$/)).toBeInViewport({ timeout: 2500 });
+    await expect(pf().locator('.pf-card[data-current][data-flash]')).toHaveCount(1);
+    await page.waitForTimeout(1500);
+    await epButton(/^长剧 第 1 季 第 31 集$/).click(); await expect(epButton(/^长剧 第 1 季 第 31 集（当前项目）$/)).toBeVisible();
+    await expect(pf().locator('.pf-card[data-flash]')).toHaveCount(0); await expect(title()).toHaveText('第 1 季');
   });
 
   if (errors.length) throw Error('页面不应出现脚本错误：' + errors.join(' / '));
