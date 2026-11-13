@@ -296,6 +296,13 @@ test('A3: different groups entering the same series share one dimension-limit ca
   assert.equal(f.attrs.getConfig(f.a.id).dimensions.length, 7);
   assert.equal(f.attrs.getScores(a.id).scores[axis].value, 20);
   assert.equal(f.attrs.getScores(b.id).scores[axis].value, 50);
+  const broken = f.store.backup();
+  broken.project_attributes.project_attribute_history = broken.project_attributes.project_attribute_history
+    .filter(row => row.history_id !== done.attribute_history_ids[0] || row.project_id !== f.a.id);
+  const {format, schema_version, checksum, ...contents} = broken;
+  broken.checksum = digest(contents);
+  await assert.rejects(f.store.restore(broken), /人物属性备份记录无效/);
+
 });
 
 test('A4: restore rejects transplanted history and success receipts stripped of their evidence', async t => {
@@ -327,7 +334,12 @@ test('A4: restore rejects transplanted history and success receipts stripped of 
     draft.project_attributes.project_attribute_history = [];
   });
   const fourth = change(draft => { delete draft.project_attributes; });
-  for (const invalid of [first, second, third, fourth]) {
+  const fifth = change(draft => {
+    const entry = row(draft), data = JSON.parse(entry.data_json);
+    data.legacy_scores = [];
+    entry.data_json = JSON.stringify(data);
+  });
+  for (const invalid of [first, second, third, fourth, fifth]) {
     await assert.rejects(f.store.restore(invalid), /人物属性备份记录无效/);
   }
   assert.equal(f.attrs.alignment.history('project', f.b.id).items.length, 0);
@@ -350,4 +362,18 @@ test('A1: adding an episode invalidates a previous series removal confirmation e
     dimensions: dimensions.slice(1), removal_confirmation: {token: preview.token}}), {code: 'REMOVAL_PREVIEW_STALE'});
   assert.equal(f.attrs.getScores(asset.id).scores[first.id].value, 42);
   assert.equal(f.attrs.getConfig(incoming.id).dimensions[0].id, first.id);
+});
+
+
+test('A3: a storyboard lock starting after preview returns the existing 423 and does not move the project', async t => {
+  const f = await setup(t), drama = f.makeSeries('合成生成锁归组');
+  const board = new StoryboardDatabase(f.lib, f.store).init();
+  new GenerationStore(f.lib, board).init();
+  const assignment = confirmAttributePlan(f.series, 'move', {
+    request_id: randomUUID(), target: root(drama), items: [item(f, f.a, 1)],
+  });
+  f.db.prepare('INSERT INTO sb_generation_locks VALUES(?,?,?,?,?)').run(f.a.id, randomUUID(), 1, Date.now(), Date.now());
+  assert.throws(() => f.series.move(assignment), {status: 423, code: 'STORYBOARD_GENERATION_LOCKED'});
+  assert.equal(f.series.membership(f.a.id).series_id, null);
+  assert.deepEqual(f.series.request(assignment.request_id), {found: false});
 });

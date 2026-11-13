@@ -72,7 +72,7 @@ export class AttributeAlignment {
 
   episode(projectId) {
     const effective = this.attributes.effectiveConfig(projectId);
-    const { config_token, ...config } = effective;
+    const { config_token, config_editable, ...config } = effective;
     return {
       project_id: projectId, project_name: this.assets.project(projectId).name,
       membership_revision: this.directory.membership(projectId).revision,
@@ -189,7 +189,7 @@ export class AttributeAlignment {
           this.attributes.saveScores(project_id, record.id, { revision: record.revision, scores });
         if (Object.keys(omitted).length) legacy.push({asset_id: record.id, scores: omitted});
       }
-      const { config_token, ...before } = episodes.get(project_id).config;
+      const before = episodes.get(project_id).config;
       this.writeHistory(project_id, seriesId, historyId, requestId, kind, [before], config, mappings, legacy, this.episodeImpact(records, project_id));
     }
     const { revision, source, updated_at, dimensions } = result.target;

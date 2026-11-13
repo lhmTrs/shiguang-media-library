@@ -85,9 +85,11 @@ export function validateAlignmentLinks(directory, markers = new Map(), series = 
     if (row.kind === 'attribute-alignment') {
       const event = history.get(result.history_id);
       const summary = event?.rows.get(null);
+      const kept = event && [...event.rows.values()].reduce((n, data) =>
+        n + data.legacy_scores.reduce((sum, entry) => sum + Object.keys(entry.scores).length, 0), 0);
       if (!summary || event.kind !== 'attribute_alignment' || event.requestId !== id ||
           event.seriesId !== result.series_id || summary.after_config.revision !== result.config_revision ||
-          event.rows.size - 1 !== result.episodes_updated ||
+          event.rows.size - 1 !== result.episodes_updated || kept !== result.scores_retained_in_history ||
           series.has(result.series_id) && markers.get(result.series_id) !== result.alignment_revision) throw invalid();
     }
     for (const historyId of result.attribute_history_ids ?? []) {
@@ -107,6 +109,10 @@ export function validateAlignmentLinks(directory, markers = new Map(), series = 
     if (!result.attribute_history_ids?.includes(historyId)) throw invalid();
     const exit = event.kind === 'series_exit', summary = event.rows.has(null);
     if (exit ? summary || event.rows.size !== 1 : !summary || event.rows.size < 2) throw invalid();
+    if (!exit) {
+      const arriving = result.changes.filter(change => change.after.series_id === event.seriesId && change.before.series_id !== event.seriesId);
+      if (arriving.length !== event.rows.size - 1 || arriving.some(change => !event.rows.has(change.project_id))) throw invalid();
+    }
     for (const projectId of event.rows.keys()) {
       if (projectId !== null && !result.changes.some(change => change.project_id === projectId &&
         (exit ? change.before.series_id === event.seriesId && change.after.series_id === null : change.after.series_id === event.seriesId))) throw invalid();
