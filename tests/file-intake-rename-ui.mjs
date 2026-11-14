@@ -67,7 +67,8 @@ async function routeApi(route) {
       return respond({code: 'INTAKE_CONFIRM_FAILED', error: '合成：整批未受理', accepted: false, requestId: body.requestId, resolvedFolders: fail}, 409);
     }
     const items = body.fileIds.map(id => {const t = body.targets.find(x => x.fileId === id); return {...fx.handoff.files.find(f => f.id === id), destination: clone(t.destination), ...(t.nameMode ? {nameMode: t.nameMode} : {}), plannedFileName: t.nameMode ? previewName(t).name : undefined, copiedBytes: 0, status: 'queued'};});
-    const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items, revealWhenDone: !!body.revealWhenDone};
+    const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items, revealWhenDone: !!body.revealWhenDone, ...(body.prompt ? {prompt: clone(body.prompt)} : {})};
+    if (fx.receipt === 'prompt-dropped') delete batch.prompt;
     if (fx.receipt === 'reveal-flipped') batch.revealWhenDone = !batch.revealWhenDone;
     if (fx.receipt === 'reveal-missing') delete batch.revealWhenDone; // older receipt shape: nothing to compare
     fx.handoff.batchId = batch.id; fx.batches.unshift(batch);
@@ -89,7 +90,11 @@ async function routeApi(route) {
 async function fresh(configure = () => {}) {
   await context?.close(); fx = setup(); configure(fx);
   context = await browser.newContext({viewport: {width: 760, height: 690}}); context.setDefaultTimeout(5000);
-  await context.addInitScript(() => {window.nativeMessages = []; window.webkit = {messageHandlers: {intake: {postMessage: v => window.nativeMessages.push(v)}, intakeAppearance: {postMessage: () => {}}}};});
+  await context.addInitScript(() => {
+    window.nativeMessages = []; window.clipboardReads = 0; window.clip = {reply: {kind: 'empty'}, delay: 0};
+    window.webkit = {messageHandlers: {intake: {postMessage: v => window.nativeMessages.push(v)}, intakeAppearance: {postMessage: () => {}},
+      readClipboardText: {postMessage: v => {window.clipboardReads++; if (v !== 'read') throw Error('bad clipboard message'); return new Promise(r => setTimeout(() => r(window.clip.reply), window.clip.delay));}}}};
+  });
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.protocol.startsWith('http') && url.origin !== origin) {external.push(url.href); return route.abort();}
@@ -271,6 +276,56 @@ try {
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'nf-a'});
     assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'nf-b'});
+  });
+
+  await check('prompt: one click fills it from the clipboard, all selected; folds into one line; sent with the batch', async () => {
+    await fresh();
+    const text = '【镜头 A3 · 4 秒】近景，雨夜街口。示例提示词';
+    await page.evaluate(t => {window.clip = {reply: {kind: 'text', text: t}, delay: 0};}, text);
+    assert.equal(await page.evaluate(() => window.clipboardReads), 0); // nothing is read until the button is clicked
+    await page.getByRole('button', {name: '粘贴提示词', exact: true}).click();
+    const box = page.getByRole('textbox', {name: '提示词', exact: true});
+    await expect(box).toHaveValue(text); await expect(box).toBeFocused();
+    assert.equal(await box.evaluate(e => e.selectionStart === 0 && e.selectionEnd === e.value.length), true);
+    assert.equal(await page.evaluate(() => window.clipboardReads), 1);
+    await page.locator('.fi-vfile strong').click(); // click elsewhere: folds
+    await expect(page.locator('.fi-prompt-line')).toContainText('已附 ' + Array.from(text).length + ' 字');
+    await shot('4-prompt');
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(fx.confirmBodies[0].prompt, {text});
+    await expect(page.getByRole('region', {name: '收完以后', exact: true})).toContainText('已附提示词');
+    // A receipt without the prompt that was sent is not this window's.
+    await fresh(f => {f.receipt = 'prompt-dropped';});
+    await page.evaluate(t => {window.clip = {reply: {kind: 'text', text: t}, delay: 0};}, text);
+    await page.getByRole('button', {name: '粘贴提示词', exact: true}).click(); await page.locator('.fi-vfile strong').click();
+    await confirmButton().click(); await expect(page.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible();
+  });
+
+  await check('prompt fallbacks: empty, too long, no shell, late reply after typing; 不附了 and 去掉; only project videos', async () => {
+    await fresh();
+    const add = () => page.getByRole('button', {name: '粘贴提示词', exact: true}).click();
+    const box = () => page.getByRole('textbox', {name: '提示词', exact: true});
+    await add(); await expect(box()).toHaveValue(''); await expect(box()).toBeFocused(); // empty clipboard: empty box
+    await page.getByRole('button', {name: '不附了', exact: true}).click(); await expect(box()).toHaveCount(0);
+    await page.evaluate(() => {window.clip = {reply: {kind: 'tooLong', length: 12345}, delay: 0};});
+    await add(); await expect(page.locator('.fi-prompt')).toContainText('剪贴板里有 12345 字，超过 1 万字没有自动填'); await expect(box()).toHaveValue('');
+    await page.getByRole('button', {name: '不附了', exact: true}).click();
+    await page.evaluate(() => {window.clip = {reply: {kind: 'text', text: '晚到的剪贴板'}, delay: 400};});
+    await add(); await box().pressSequentially('我自己打的'); await pause(600);
+    await expect(box()).toHaveValue('我自己打的'); // the late clipboard reply did not overwrite typing
+    await page.locator('.fi-vfile strong').click(); await page.getByRole('button', {name: '去掉', exact: true}).click();
+    await expect(page.getByRole('button', {name: '粘贴提示词', exact: true})).toBeVisible();
+    // No native shell (plain browser): an empty box for ⌘V.
+    await page.evaluate(() => {delete window.webkit.messageHandlers.readClipboardText;});
+    await add(); await expect(box()).toHaveValue(''); await box().fill('手动粘贴的提示词'); await page.locator('.fi-vfile strong').click();
+    // Moved to the general video library: the prompt cannot go there, so 收纳 waits.
+    await page.getByRole('button', {name: '单独设置 dy_0612_2241.mov', exact: true}).click();
+    const panel = page.getByRole('dialog', {name: '收纳设置 dy_0612_2241.mov', exact: true});
+    await panel.getByRole('group', {name: '收纳范围 v1', exact: true}).getByRole('button', {name: '视频素材', exact: true}).click();
+    await panel.getByRole('button', {name: '完成', exact: true}).click();
+    await expect(page.locator('.fi-body > .fi-error')).toContainText('提示词只能附给项目里的视频'); await expect(confirmButton()).toBeDisabled();
+    await page.locator('.fi-body > .fi-error').getByRole('button', {name: '去掉提示词', exact: true}).click(); await expect(confirmButton()).toBeEnabled();
+    await confirmButton().click(); await expect(accepted()).toBeVisible(); assert.equal('prompt' in fx.confirmBodies[0], false);
   });
 
   await check('photos keep the grouped list; no Finder option; name preview errors are shown', async () => {

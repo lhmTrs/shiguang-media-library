@@ -10,7 +10,7 @@ import {intakeSession} from './session';
 import {TargetEditor, initialDestination, submittedDestination, type DestinationDraft} from './TargetEditor';
 import {barDefault, stem, suggestAll} from './routing.mjs';
 import {CategoryPopover, FolderPopover, GroupHeader, Popover, ProjectPicker, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
-import {VideoDestination} from './VideoForm';
+import {PromptField, VideoDestination, promptLength} from './VideoForm';
 import {newFolderProblem} from './TargetEditor';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type ImageProposal, type IntakeBatch, type IntakeRequest, type MediaKind, type NamePreviewItem, type RoutingOptions} from './types';
 import './file-intake.css';
@@ -57,7 +57,7 @@ function syncAppearance() {
 /** Standalone native/browser confirmation entry. It never boots the full App. */
 export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [api, setApi] = useState<IntakeRequest | null>(null), [handoff, setHandoff] = useState<Handoff | null>(null);
-  const [selected, setSelected] = useState<string[]>([]), [mode, setMode] = useState<'copy' | 'move'>('copy'), [standardNames, setStandardNames] = useState(false), [reveal, setReveal] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]), [mode, setMode] = useState<'copy' | 'move'>('copy'), [standardNames, setStandardNames] = useState(false), [reveal, setReveal] = useState(false), [promptText, setPromptText] = useState('');
   const [options, setOptions] = useState<RoutingOptions | null>(null), [optionsError, setOptionsError] = useState(''), [optionsReload, setOptionsReload] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [proposals, setProposals] = useState<Record<string, ProposalState>>({});
   const [names, setNames] = useState<Record<string, NamePreviewItem & {for?: string}>>({}), [namesError, setNamesError] = useState('');
@@ -120,6 +120,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         setMode(saved?.mode || prefs?.mode || 'copy');
         setStandardNames(saved?.version === 2 ? !!saved.standardNames : !!prefs?.standardNames);
         setReveal(saved?.version === 2 && saved.revealWhenDone !== undefined ? saved.revealWhenDone : !!prefs?.revealWhenDone);
+        setPromptText(saved?.version === 2 ? saved.prompt?.text || '' : '');
         if (saved) setDrafts(Object.fromEntries(value.files.map(f => {
           const d = saved.version === 2 ? saved.targets.find(t => t.fileId === f.id)?.destination || null : {kind: 'video' as const, scope: 'project' as const, projectId: saved.projectId, folderId: saved.folderId};
           return [f.id, {destination: d, manual: true, fileName: d?.fileName}];
@@ -219,7 +220,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // 收完在访达中显示 only applies to one video; it is remembered, and greyed out with the reason otherwise.
   const singleVideo = rows.length === 1 && rows[0].file.mediaKind === 'video', anyVideo = rows.some(r => r.file.mediaKind === 'video');
   const checking = handoff?.preparation === 'checking', prepFailed = handoff?.preparation === 'failed';
-  const canConfirm = !loading && !busy && !checking && !prepFailed && !!api && files.length > 0 && !pending && !(mode === 'move' && !handoff?.canTrash);
+  // A prompt goes with the whole batch and only to project videos (the server refuses anything else).
+  const hasPrompt = !!promptText.trim();
+  const promptProblem = !hasPrompt ? '' : rows.some(r => !(r.destination?.kind === 'video' && r.destination.scope === 'project')) ? '提示词只能附给项目里的视频：请把去处改回项目，或者去掉提示词'
+    : promptLength(promptText) > 200000 ? '提示词太长了（超过 20 万字），请删减后再收纳' : '';
+  const canConfirm = !loading && !busy && !checking && !prepFailed && !!api && files.length > 0 && !pending && !promptProblem && !(mode === 'move' && !handoff?.canTrash);
 
   async function reconcile() {
     if (!api || sending.current) return; sending.current = true; setBusy(true); setError('');
@@ -274,7 +279,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   confirmRef.current = () => {(document.activeElement as HTMLElement | null)?.blur?.(); setTimeout(() => latestConfirm.current(), 0);};
   async function confirm() {
     if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || unknown || handoff.batchId || batch || !canConfirm) return;
-    const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}),
+    const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}), ...(hasPrompt ? {prompt: {text: promptText.trim()}} : {}),
       targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
@@ -455,6 +460,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <div className="fi-form-name">{renameBox}{nameLine(r)}
         {singleNameError && <small className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「更多设置…」手动起名。' : ''}</small>}
         {r.problem && <small className="fi-error" role="alert">{r.problem}</small>}</div>
+      <span className="fi-form-label fi-form-label-top">提示词</span>
+      <PromptField value={promptText} locked={locked} problem={promptProblem} onChange={setPromptText}/>
       <span className="fi-form-label">收完后</span>
       <label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={reveal} onChange={e => setReveal(e.target.checked)}/>在访达中显示这个文件</label>
     </div>
@@ -473,6 +480,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         </li>)}</ul>
       </section>;
     })}
+    <div className="fi-form"><span className="fi-form-label fi-form-label-top">提示词</span>
+      <PromptField value={promptText} locked={locked} problem={promptProblem} onChange={setPromptText}/></div>
     <div className="fi-vreveal"><label className="fi-check-inline fi-check-off"><input type="checkbox" disabled checked={false}/>收完在访达中显示</label><small>只在收纳 1 个视频时生效</small></div>
   </div>;
   const countLabel = (n: number) => {const kinds = new Set(files.map(f => f.mediaKind)); return kinds.size === 1 ? n + (files[0].mediaKind === 'photo' ? ' 张照片' : files[0].mediaKind === 'audio' ? ' 个音频' : ' 个视频') : n + ' 个文件';};
@@ -513,6 +522,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
             {singleNameError && <p className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「改去处…」在「文件名」里手动起名。' : ''}</p>}
           </div>
         </div> : groups.map(renderGroup)}
+        {hasPrompt && !singleVideoForm && !videoForm && !locked && <p className="fi-error" role="alert">{promptProblem || '这批文件不在视频收纳界面里，提示词没有地方显示'}<button className="fi-link" onClick={() => setPromptText('')}>去掉提示词</button></p>}
         {removed.length > 0 && <p className="fi-removed-line">已移除 {removed.length} 个{removed.map(f => <button key={f.id} className="fi-link" disabled={locked} aria-label={'恢复 ' + f.name} onClick={() => setSelected(old => [...old, f.id])}>恢复 {f.name}</button>)}</p>}
         {namesError && standardNames && <p className="fi-muted">暂时算不出新名字；确认后仍会按规范命名。</p>}
         {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}>{!locked && <div className="fi-scrim" aria-hidden="true"/>}{editor(r)}</div> : null;})()}
@@ -521,10 +531,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         <CheckCircle2 size={40}/>
         <p className="fi-accepted" role="status">任务已接收，请在网页顶栏“文件任务”查看后续进度。</p>
         <p className="fi-muted">这不代表已经收完。复制、核验、登记都在后台进行，关掉窗口也不影响。遇到重名或内容相同的文件，会在「文件任务」里请你选择。</p>
-        {oneVideoReceipt && (batch.items[0].plannedFileName || batch.revealWhenDone) && <section className="fi-after" aria-label="收完以后">
+        {oneVideoReceipt && (batch.items[0].plannedFileName || batch.revealWhenDone || batch.prompt?.text) && <section className="fi-after" aria-label="收完以后">
           <strong>收完以后</strong>
           {batch.items[0].plannedFileName && <span>新名字 <b>{batch.items[0].plannedFileName}</b></span>}
           {batch.revealWhenDone && <span>收完会打开访达，选中这个文件</span>}
+          {batch.prompt?.text && <span>已附提示词（{promptLength(batch.prompt.text)} 字）</span>}
         </section>}
         <BatchDetails batch={batch}/>
       </div>}

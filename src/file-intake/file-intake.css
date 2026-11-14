@@ -237,7 +237,7 @@
 .fi-simple .fi-after b{overflow-wrap:anywhere}
 
 /* 右键收纳改版：视频一行一项（放到 / 文件夹 / 名字 / 收完后），文件夹平铺成按钮 */
-.fi-simple .fi-vform{display:flex;flex-direction:column;gap:14px;max-width:720px;margin:0 auto;padding:4px 8px}
+.fi-simple .fi-vform{display:flex;flex-direction:column;gap:14px;width:100%;max-width:720px;margin:0 auto;padding:4px 8px}
 .fi-simple .fi-vfile{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--fi-line);min-width:0}
 .fi-simple .fi-vfile-icon{width:36px;height:36px;border-radius:8px;background:var(--fi-soft);display:flex;align-items:center;justify-content:center;color:var(--fi-muted);flex:none}
 .fi-simple .fi-vfile>strong{font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -286,3 +286,12 @@
 .fi-simple .fi-vreveal{display:flex;align-items:center;gap:10px;font-size:13px}
 .fi-root.fi-simple .fi-vreveal small{display:inline;font-size:12px}
 .fi-simple .fi-kbd{margin-left:8px;padding:0 4px;border:1px solid color-mix(in srgb,currentColor 45%,transparent);border-radius:4px;font:inherit;font-size:11px;opacity:.85}
+.fi-simple .fi-prompt{display:flex;flex-direction:column;gap:6px;min-width:0}
+.fi-root.fi-simple .fi-prompt-add{align-self:flex-start}
+.fi-root.fi-simple .fi-prompt-box{width:100%;min-height:104px;max-height:240px;padding:8px 10px;border:1.5px solid var(--fi-accent);border-radius:8px;font:inherit;font-size:13px;line-height:1.6;resize:vertical;color:var(--fi-text);background:var(--fi-bg)}
+.fi-simple .fi-prompt-meta{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fi-muted)}
+.fi-simple .fi-prompt-line{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 10px;border:1px solid var(--fi-line);border-radius:8px;background:var(--fi-page)}
+.fi-simple .fi-prompt-count{flex:none;font-size:12px;font-weight:600;color:var(--fi-accent)}
+.fi-simple .fi-prompt-head{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-prompt-line .fi-link,.fi-root.fi-simple .fi-prompt-line .fi-link-muted{flex:none;font-size:12px}
+.fi-simple .fi-prompt small{font-size:12px}

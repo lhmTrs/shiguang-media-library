@@ -36,12 +36,14 @@ export type IntakeBatch = {
   version?:2;id: string; projectId: string; projectName: string; folderId: string; folderName: string; mode: 'copy' | 'move';
   createdAt: number | string; updatedAt: number | string;
   canAcknowledge?: boolean; acknowledged?: boolean; acknowledgedAt?: number; resultKey?: string;
-  status: 'queued' | 'running' | 'waiting' | 'completed' | 'partial' | 'interrupted'; items: IntakeItem[]; revealWhenDone?: boolean;
+  status: 'queued' | 'running' | 'waiting' | 'completed' | 'partial' | 'interrupted'; items: IntakeItem[]; revealWhenDone?: boolean; prompt?: IntakePrompt;
 };
 export type LegacyConfirmInput = {version?:undefined;requestId: string; projectId: string; folderId: string; mode: 'copy' | 'move'; fileIds: string[]};
-export type UnifiedConfirmInput = {version:2;requestId:string;mode:'copy'|'move';fileIds:string[];targets:{fileId:string;destination:IntakeDestination;nameMode?:NameMode}[];standardNames?:boolean;revealWhenDone?:boolean};
+export type UnifiedConfirmInput = {version:2;requestId:string;mode:'copy'|'move';fileIds:string[];targets:{fileId:string;destination:IntakeDestination;nameMode?:NameMode}[];standardNames?:boolean;revealWhenDone?:boolean;prompt?:IntakePrompt};
 export type ConfirmInput = LegacyConfirmInput | UnifiedConfirmInput;
 export type ResolveInput = {choice: 'import' | 'reuse' | 'overwrite' | 'cancel'; candidateId?: string; confirmUnbind?: true; adoptionStamp?: string; applyRemaining?: true};
+/** 收纳时附上的提示词：整批共用，只给项目视频。 */
+export type IntakePrompt = {text: string; title?: string};
 export type IntakeView = (projectId: string, videoId?: string) => void | Promise<void>;
 export const INTAKE_API = '/file-intake';
 export const errorMessage = (error: unknown) => {
@@ -68,6 +70,7 @@ export const encoded = (id: string) => encodeURIComponent(id);
 export function sameTarget(batch: IntakeBatch, input: ConfirmInput) {
   const requested = new Set(input.fileIds), received = new Set(batch.items.map(item => item.id));
   return batch.id === input.requestId && (input.version===2 ? batch.version===2 && input.targets.every(t=>{const item=batch.items.find(i=>i.id===t.fileId);return destinationKey(t.destination)===destinationKey(item?.destination)&&(t.nameMode||'keep')===(item?.nameMode||'keep');}) : batch.version!==2 && batch.projectId === input.projectId && batch.folderId === input.folderId) && batch.mode === input.mode && (input.version !== 2 || typeof batch.revealWhenDone !== 'boolean' || !!input.revealWhenDone === batch.revealWhenDone)
+    && (input.version !== 2 || (input.prompt?.text ?? '') === (batch.prompt?.text ?? ''))
     && requested.size === input.fileIds.length && received.size === batch.items.length && requested.size === received.size
     && [...requested].every(id => received.has(id));
 }

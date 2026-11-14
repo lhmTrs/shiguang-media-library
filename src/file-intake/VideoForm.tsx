@@ -113,3 +113,51 @@ function PendingFolder({name, folders, locked, onRename, onExisting, onDrop}: {
       onKeyDown={e => {if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey)) {e.preventDefault(); settle(); ref.current?.blur();} else if (e.key === 'Escape') {e.preventDefault(); e.stopPropagation(); onDrop();}}}/>
   </label>;
 }
+
+type ClipboardReply = {kind: 'text'; text: string} | {kind: 'empty'} | {kind: 'tooLong'; length: number};
+type ClipboardBridge = {postMessage: (message: 'read') => Promise<ClipboardReply>};
+const clipboardBridge = () => (window as Window & {webkit?: {messageHandlers?: {readClipboardText?: ClipboardBridge}}}).webkit?.messageHandlers?.readClipboardText;
+export const promptLength = (text: string) => Array.from(text.trim()).length;
+
+/**
+ * 提示词: a quiet 「＋ 粘贴提示词」 until used. Clicking it asks the native shell for the clipboard text once
+ * (only on that click); text arrives in the box, fully selected, so a wrong clipboard is seen at once.
+ * No shell, no text, refused or failed: an empty box for ⌘V. Leaving the box folds it into one line.
+ */
+export function PromptField({value, locked, problem, onChange}: {value: string; locked: boolean; problem?: string; onChange: (text: string) => void}) {
+  const [open, setOpen] = useState(false), [notice, setNotice] = useState(''), [reading, setReading] = useState(false);
+  const box = useRef<HTMLTextAreaElement>(null), request = useRef(0), edited = useRef(false), alive = useRef(true);
+  useEffect(() => () => {alive.current = false;}, []);
+  const focusBox = (selectAll: boolean) => requestAnimationFrame(() => {box.current?.focus(); if (selectAll) box.current?.select();});
+  async function start() {
+    const id = ++request.current; edited.current = false; setNotice(''); setOpen(true); onChange('');
+    const bridge = clipboardBridge();
+    if (!bridge) {focusBox(false); return;}
+    setReading(true);
+    try {
+      const reply = await bridge.postMessage('read');
+      // A late reply never overwrites what was typed meanwhile, nor a newer request.
+      if (!alive.current || id !== request.current || edited.current) return;
+      if (reply?.kind === 'text' && typeof reply.text === 'string' && reply.text.trim()) {onChange(reply.text); focusBox(true); return;}
+      if (reply?.kind === 'tooLong') setNotice('剪贴板里有 ' + reply.length + ' 字，超过 1 万字没有自动填。确实是提示词的话，请直接 ⌘V 粘贴。');
+    } catch { /* No clipboard: fall back to the empty box. */ }
+    finally {if (alive.current && id === request.current) setReading(false);}
+    if (alive.current && id === request.current && !edited.current) focusBox(false);
+  }
+  const fold = () => {if (!value.trim()) {onChange(''); setOpen(false);} else setOpen(false); setNotice('');};
+  const length = promptLength(value);
+  return <div className="fi-prompt">
+    {open ? <>
+      <textarea ref={box} aria-label="提示词" className="fi-prompt-box" value={value} disabled={locked} placeholder={reading ? '正在读取剪贴板…' : '在这里 ⌘V 粘贴提示词'}
+        onChange={e => {edited.current = true; onChange(e.target.value);}} onBlur={fold}/>
+      <span className="fi-prompt-meta"><span>{length} 字</span><span>· ⌘V 粘贴，点别处收起</span><span className="fi-grow"/>
+        <button type="button" className="fi-link-muted" disabled={locked} onMouseDown={e => e.preventDefault()} onClick={() => {request.current++; onChange(''); setOpen(false); setNotice('');}}>不附了</button></span>
+    </> : value.trim() ? <div className="fi-prompt-line">
+      <span className="fi-prompt-count">已附 {length} 字</span><span className="fi-prompt-head" title={value}>{value.trim().replace(/\s+/g, ' ')}</span>
+      <button type="button" className="fi-link" disabled={locked} onClick={() => {setOpen(true); focusBox(false);}}>改</button>
+      <button type="button" className="fi-link-muted" disabled={locked} onClick={() => onChange('')}>去掉</button>
+    </div> : <button type="button" className="fi-chip fi-chip-new fi-prompt-add" disabled={locked} onClick={() => void start()}><Plus size={13} aria-hidden="true"/>粘贴提示词</button>}
+    {notice && <small className="fi-warn-text" role="status">{notice}</small>}
+    {problem && <small className="fi-error" role="alert">{problem}</small>}
+  </div>;
+}
