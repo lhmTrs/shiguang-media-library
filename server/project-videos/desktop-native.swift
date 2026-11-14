@@ -33,7 +33,7 @@ func request() throws -> [String: Any] {
           let version = value["protocol"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(), version.doubleValue == Double(protocolVersion),
           let operation = value["operation"] as? String,
-          ["capabilities", "clipboard-version", "copy-files", "reveal-files"].contains(operation)
+          ["capabilities", "clipboard-version", "copy-files", "reveal-files", "open-folder"].contains(operation)
     else { throw NativeFailure("NATIVE_PROTOCOL_ERROR") }
     return value
 }
@@ -71,6 +71,16 @@ func files(_ value: [String: Any]) throws -> [NSURL] {
     }
 }
 
+func verifyIdentity(_ file: String, _ value: Any?, directory: Bool) throws {
+    var info = stat()
+    guard let expected = value as? [String: String],
+          file.hasPrefix("/"), !file.utf8.contains(0), file.utf8.count <= 8192,
+          lstat(file, &info) == 0,
+          (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG),
+          String(info.st_dev) == expected["dev"], String(info.st_ino) == expected["ino"]
+    else { throw NativeFailure(directory ? "FOLDER_UNAVAILABLE" : "FILE_UNAVAILABLE") }
+}
+
 func changeCount(_ value: Any?) throws -> Int {
     guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
           number.doubleValue.isFinite, number.doubleValue >= 0,
@@ -101,9 +111,19 @@ do {
         emit(["ok": true, "ack": "written", "count": urls.count, "changeCount": pasteboard.changeCount])
     case "reveal-files":
         let urls = try files(value)
+        if let identity = value["identity"] {
+            guard urls.count == 1, let file = (value["paths"] as? [String])?.first else { throw NativeFailure("INVALID_FILES") }
+            try verifyIdentity(file, identity, directory: false)
+        }
         NSWorkspace.shared.activateFileViewerSelecting(urls.map { $0 as URL })
         // This void API acknowledges dispatch, never observed Finder selection.
         emit(["ok": true, "ack": "dispatched", "count": urls.count])
+    case "open-folder":
+        guard let folder = value["target"] as? String else { throw NativeFailure("FOLDER_UNAVAILABLE") }
+        try verifyIdentity(folder, value["identity"], directory: true)
+        guard NSWorkspace.shared.open(URL(fileURLWithPath: folder, isDirectory: true))
+        else { throw NativeFailure("FOLDER_OPEN_FAILED") }
+        emit(["ok": true, "ack": "dispatched"])
     default:
         throw NativeFailure("NATIVE_PROTOCOL_ERROR")
     }

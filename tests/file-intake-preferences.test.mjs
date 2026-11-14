@@ -24,7 +24,7 @@ test('v1 routing migrates; accepted library choices preserve project history and
   assert.equal(restored.themeId,'midnight');
   assert.deepEqual(restored.snapshot(projects,(_p,id)=>id===folderB).routingPreferences,{
     lastProjectId:{photo:b,video:b},lastVideoFolderByProject:{[a]:'root',[b]:folderB},
-    lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},lastAudioKind:'sfx',mode:'move',standardNames:true,
+    lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},lastAudioKind:'sfx',mode:'move',standardNames:true,revealWhenDone:false,
   });
   assert.equal(restored.snapshot([{id:b,archived:true}]).routingPreferences.lastProjectId.video,null);
 });

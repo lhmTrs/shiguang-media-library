@@ -63,7 +63,8 @@ try {
   assert.deepEqual(options.photoCategories,[{id:'',name:'待确认',relativePath:''}]);
   const choice={fileId:h.files[0].id,nameMode:'standard',destination:{kind:'video',scope:'project',projectId:project.id,folderId:'root'}};
   assert.deepEqual((await api('/file-intake/handoffs/'+handoff.id+'/name-preview',{targets:[choice]})).items,
-    [{fileId:choice.fileId,proposedFileName:project.name+'_001.mp4',proposedNumber:1}]);
+    [{fileId:choice.fileId,proposedFileName:project.name+'_001.mp4',proposedNumber:1,
+      nameParts:[{role:'project',text:project.name},{role:'number',text:'001'},{role:'ext',text:'.mp4'}]}]);
   await assert.rejects(fs.access(path.join(dir,'personal_item','video')),{code:'ENOENT'});
   assert.deepEqual(await api('/file-intake/theme'),{themeId:null});
   const themeUrl=origin+'/api/file-intake/theme';
@@ -86,11 +87,29 @@ try {
   const cross=await fetch(origin+'/api/file-intake/status',{headers:{cookie,Origin:'https://untrusted.invalid'}});assert.equal(cross.status,403);
   await assert.rejects(api('/file-intake/handoffs/'+randomUUID()+'/confirm',{...input,requestId:randomUUID(),path:file}),e=>e.status>=400);
   checks.push('no unauthenticated/cross-origin write or arbitrary HTTP path intake');
+  const singleFile=path.join(dir,'single-video.mp4');
+  await fs.writeFile(singleFile,Buffer.concat([await fs.readFile(file),Buffer.from('distinct fixture')]));
+  const single=await receipts.handoff([singleFile]),singleId=single.files[0].id;
+  const acceptedSingle=await api('/file-intake/handoffs/'+single.id+'/confirm',{version:2,requestId:randomUUID(),
+    fileIds:[singleId],mode:'copy',revealWhenDone:true,targets:[{fileId:singleId,nameMode:'standard',
+      destination:{kind:'video',scope:'project',projectId:project.id,newFolder:{name:'验收子目录'}}}]});
+  assert.equal(acceptedSingle.items[0].resolvedFolder.relativePath,'验收子目录');
+  const openUrl='/file-intake/batches/'+acceptedSingle.id+'/open-folder';
+  await assert.rejects(api(openUrl,{}),{status:503,code:'INTAKE_DESKTOP_UNAVAILABLE'});
+  const secondSession=await fetch(origin+'/api/session'),secondToken=(await secondSession.json()).token;
+  const denied=await fetch(origin+'/api'+openUrl,{method:'POST',headers:{cookie:secondSession.headers.get('set-cookie').split(';')[0],
+    'X-Local-Token':secondToken}});
+  assert.equal(denied.status,400);
+  const noToken=await fetch(origin+'/api'+openUrl,{method:'POST',headers:{cookie}});
+  assert.equal(noToken.status,403);
+  assert.equal((await finishBatch(acceptedSingle.id)).items[0].status,'ready');
+  checks.push('Open-folder uses the initiating local session and token; disabled desktop leaves import successful');
   await stop();await fs.writeFile(path.join(evidence,'first-app.log'),output);
   start();const restarted=await ready();assert.equal(restarted.instanceId,session.instanceId);
   assert.deepEqual(await api('/file-intake/theme'),{themeId:'midnight'});
   assert.ok((await api('/file-intake/batches')).batches.some(b=>b.id===batch.id&&b.items[0].status==='ready'));
-  assert.equal((await api('/project-videos/projects/'+project.id)).videos.length,1);checks.push('normal owned restart retains exact receipts without recopy');
+  assert.equal((await api('/project-videos/projects/'+project.id)).videos.length,2);
+  await assert.rejects(api(openUrl,{}),{status:400,code:'INTAKE_INVALID_INPUT'});checks.push('normal owned restart retains exact receipts without recopy');
   passed=true;
 }finally {
   let closeError;try{await stop();}catch(e){closeError=e.message;}

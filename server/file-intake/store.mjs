@@ -7,18 +7,27 @@ import {Receipts,uuid,stamp,same,unchanged,revalidateSelection,error} from './fi
 
 import {defaultRoutingPreferences} from './preferences.mjs';
 import {IntakeNames,checkChoice,wantsStandard} from './names.mjs';
+import {folderName,nameKey,sameFolder} from '../project-videos/folders.mjs';
 
 const stable = value => JSON.stringify(value);
 const pending = new Set(['queued','copying','duplicate','unknown']);
 const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
 const unavailableVideoFolder = new Set(['ENOENT','ENOTDIR','FOLDER_NOT_FOUND','TARGET_CHANGED']);
+const desktopUnavailable=new Set(['APPLICATION_CLOSING','DESKTOP_PLATFORM_UNAVAILABLE','DESKTOP_SESSION_UNAVAILABLE','NATIVE_HELPER_UNAVAILABLE','NATIVE_COMPILER_UNAVAILABLE']);
 const videoFolderChanged = () => error('TARGET_CHANGED','所选项目视频文件夹已移动、删除或变化，请重新选择');
+const folderView = row => ({id:row.id,name:row.name,relativePath:row.relativePath});
+const sameDirectoryState = (a,b) => a.target===b.target&&a.exists===b.exists&&(!a.exists||sameFolder(a.targetIdentity,b.targetIdentity));
+function folderRequestId(batchId,projectId,parentId,name) {
+  const hash=createHash('sha256').update(stable(['intake-folder',batchId,projectId,parentId,nameKey(name)])).digest('hex');
+  return [hash.slice(0,8),hash.slice(8,12),'5'+hash.slice(13,16),'8'+hash.slice(17,20),hash.slice(20,32)].join('-');
+}
 const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copiedBytes||0,status:i.status,
   error:i.error,code:i.code,videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
-  managedProjectName:i.managedProjectName,destination:i.destination,nameMode:i.nameMode,plannedFileName:i.plannedFileName,resultFileName:i.resultFileName,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
+  managedProjectName:i.managedProjectName,destination:i.destination,resolvedFolder:i.resolvedFolder,reveal:i.reveal,nameMode:i.nameMode,plannedFileName:i.plannedFileName,resultFileName:i.resultFileName,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
 
 export class FileIntake {
-  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir,generic,preferences}) {
+  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir,generic,preferences,desktop=catalog.desktopNative}) {
+    this.desktop=desktop;this.receiptSessions=new Map();this.folderDispatches=new Map();this.liveReveal=new Set();
     this.generic=generic;this.preferences=preferences;this.receipts=new Receipts(dataDir);this.catalog=catalog;this.projects=projects;
     this.withActivity=withActivity;this.trash=trash||((file,expected)=>this.boundTrash(file,expected));
     this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.foreignIds=new Set();this.closing=false;this.finalizing=new Set();
@@ -41,6 +50,11 @@ export class FileIntake {
         i.status=i.removal==='planned'?'unknown':'source_retained';
         i.error='上次原件移除结果尚未确认；副本与原回执保留，不自动再次移除';removalInterrupted=true;
       }
+      let revealInterrupted=false;
+      for(const i of b.items)if(i.revealAttemptedAt&&!i.reveal){
+        i.reveal={status:'unknown',at:i.revealAttemptedAt,error:{code:'INTAKE_DESKTOP_UNKNOWN',message:'上次访达显示结果待核对'}};
+        revealInterrupted=true;
+      }
       if(removalInterrupted||b.items.some(i=>pending.has(i.status))) {
         b.status='interrupted';
         for(const i of b.items)if(['queued','copying'].includes(i.status)) {
@@ -52,6 +66,7 @@ export class FileIntake {
         // Recover that receipt only; old temporary files are never swept here.
         this.summarize(b);await this.receipts.write('batches',b.id,b);
       }
+      else if(revealInterrupted)await this.receipts.write('batches',b.id,b);
       this.batches.set(b.id,b);
     }
     }catch(e){this.initializationError=error('INTAKE_STORAGE_UNAVAILABLE','文件任务存储不可用，未开始收纳；原件与原回执保留。请检查本机数据目录权限');}
@@ -115,6 +130,13 @@ export class FileIntake {
         !await this.availableVideoFolder(target.projectId,target.folderId))target.folderId='root';
     return snapshot;
   }
+  projectSeries(id) {
+    const store=this.projects.series,member=store?.membership(id);
+    if(!member?.series_id)return undefined;
+    const series=store.series(member.series_id),season=member.season_id?store.season(series.id,member.season_id):null;
+    return {id:series.id,name:series.name,seasonNo:season?Number(season.season_no):null,
+      seasonLabel:season?.label??null,episodeNo:member.episode_no};
+  }
   async routingOptions(){
     const {folders:photoCategories}=await this.generic.choices('photo','',{readOnly:true});
     const db=this.generic.db,assets=db.prepare('SELECT id,kind,name,revision,default_look_id FROM creative_assets WHERE project_id=? AND archived_at=0 ORDER BY name,id');
@@ -126,7 +148,8 @@ export class FileIntake {
         const group=byAsset.get(row.asset_id)??[];
         group.push({id:row.id,name:JSON.parse(row.data_json).name,revision:row.revision});byAsset.set(row.asset_id,group);
       }
-      projects.push({id,name,videoFolders,assets:assets.all(id).map(({default_look_id,...a})=>({
+      const series=this.projectSeries(id);
+      projects.push({id,name,...(series?{series}:{}),videoFolders,assets:assets.all(id).map(({default_look_id,...a})=>({
         ...a,defaultLookId:default_look_id??null,looks:byAsset.get(a.id)??[],
       }))});
     }
@@ -138,19 +161,62 @@ export class FileIntake {
       reservations.push([(i.target??b.target)?.target,i.plannedFileName??i.destination?.fileName??i.name]);
     return new IntakeNames(reservations);
   }
-  async previewNameTarget(destination) {
-    if(destination.scope!=='project')return {};
-    if(destination.kind==='video'){
-      const project=this.catalog.project(destination.projectId);
-      const id=destination.folderId??'root', state=await this.resolveVideoFolder(project.id,id);
-      return {project,folder:state.row,directory:state.target,verify:async()=>{
-        const again=await this.resolveVideoFolder(project.id,id);
-        if(again.target!==state.target||again.exists!==state.exists||stable(again.targetIdentity)!==stable(state.targetIdentity))
-          throw error('TARGET_CHANGED','核对名称期间目录已变化');
-      }};
+  async videoNameTarget(destination,{write=false}={}) {
+    const project=this.catalog.project(destination.projectId,write),parentId=destination.folderId??'root';
+    const name=destination.newFolder?folderName(destination.newFolder.name):null;
+    if(name&&parentId!=='root'&&!uuid(parentId))throw error('INTAKE_INVALID_INPUT','请选择有效的父文件夹',400);
+    const read=async()=>{
+      if(!name)return {state:await this.resolveVideoFolder(project.id,parentId)};
+      try{return await this.catalog.folders.intakeChild(project.id,parentId,name);}
+      catch(e){if(unavailableVideoFolder.has(e.code))throw videoFolderChanged();throw e;}
+    };
+    const {state,parent}=await read(),series=this.projectSeries(project.id);
+    return {project,series,folder:state.row,directory:state.target,state,parent,name,parentId,verify:async()=>{
+      const checked=await read();
+      if(!sameDirectoryState(state,checked.state)||parent&&!sameDirectoryState(parent,checked.parent))
+        throw videoFolderChanged();
+    }};
+  }
+  async previewNameTarget(destination,options) {
+    if(destination.scope==='library'){
+      const state=await this.generic.previewLibraryTarget(destination);
+      return {directory:state.target,verify:state.verify};
     }
+    if(destination.kind==='video')return this.videoNameTarget(destination,options);
     const state=await this.generic.previewImageTarget(destination);
     return {directory:state.target,assetName:state.assetName,verify:state.verify};
+  }
+  async resolveNewIntakeFolder(ctx,batchId) {
+    const {project,parent,parentId,name,state}=ctx;
+    if(state.exists){
+      await ctx.verify();
+      return {folder:folderView(state.row),state,parent};
+    }
+    const folders=this.catalog.folders;
+    const read=async()=>{
+      const checked=await folders.intakeChild(project.id,parentId,name);
+      if(!sameDirectoryState(parent,checked.parent))throw videoFolderChanged();
+      return checked;
+    };
+    const existing=await read();
+    if(existing.state.exists)return {folder:folderView(existing.state.row),...existing};
+    try {
+      const created=await folders.create(project.id,{requestId:folderRequestId(batchId,project.id,parentId,name),parentId,name},{
+        beforeCreate:async()=>{
+          const checked=await read();
+          if(checked.state.exists)throw error('FOLDER_EXISTS','同级文件夹已建立');
+          return checked.parent;
+        },
+      });
+      const checked=await folders.intakeChild(project.id,parentId,name);
+      if(checked.state.row?.id!==created.id||parent.exists&&!sameDirectoryState(parent,checked.parent))throw videoFolderChanged();
+      return {folder:folderView(checked.state.row),...checked};
+    } catch(e) {
+      if(e.code!=='FOLDER_EXISTS')throw e;
+      const checked=await read();
+      if(!checked.state.exists)throw e;
+      return {folder:folderView(checked.state.row),...checked};
+    }
   }
   async namePreview(id,input) {
     this.assertOpen();
@@ -158,12 +224,12 @@ export class FileIntake {
     if(!Array.isArray(input?.targets)||input.targets.length>h.files.length||input.targets.some(t=>!t||!files.has(t.fileId))||
         new Set(input.targets.map(t=>t.fileId)).size!==input.targets.length)
       throw error('INTAKE_INVALID_INPUT','文件清单与目标不匹配',400);
-    const planner=this.namePlanner(),rows=[];
+    const planner=this.namePlanner(),rows=[],children=new Map();
     for(const target of input.targets){
       const f=files.get(target.fileId),result={fileId:f.id,proposedFileName:null,proposedNumber:null};
       try {
         checkChoice(f,target);
-        const {destination,nameMode}=target,ctx={destination,nameMode,...await this.previewNameTarget(destination)};
+        const {destination,nameMode}=target,ctx={destination,nameMode,...await this.planningTarget(destination,children)};
         if(!wantsStandard(ctx.destination,ctx.nameMode))planner.reserve(ctx.directory,ctx.destination.fileName??f.name);
         rows.push({f,ctx,result});
       }catch(e){rows.push({result:{...result,error:this.namePreviewError(e)}});}
@@ -171,6 +237,12 @@ export class FileIntake {
     for(const row of rows)if(row.ctx)try{Object.assign(row.result,await planner.plan(row.f,row.ctx));}
     catch(e){row.result.error=this.namePreviewError(e);}
     return {items:rows.map(row=>row.result)};
+  }
+  async planningTarget(destination,children,options) {
+    if(!destination.newFolder)return this.previewNameTarget(destination,options);
+    const key=stable([destination.projectId,destination.folderId??'root',nameKey(folderName(destination.newFolder.name))]);
+    if(!children.has(key))children.set(key,await this.videoNameTarget(destination,options));
+    return children.get(key);
   }
   namePreviewError(e) {
     return e.status?{code:e.code||'TARGET_CHANGED',message:e.message}:{code:'TARGET_CHANGED',message:'未能读取目标目录，请刷新目标后重试'};
@@ -207,7 +279,7 @@ export class FileIntake {
     }
     return {folders};
   }
-  async confirm(handoffId,input) {if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input));return this.serial(async()=>{
+  async confirm(handoffId,input,{sessionId}={}) {if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input,sessionId));return this.serial(async()=>{
     this.assertOpen();
     if(!uuid(input.requestId)||!uuid(input.projectId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length)
       throw error('INTAKE_INVALID_INPUT','请选择视频、项目、目标文件夹与收纳方式',400);
@@ -233,49 +305,180 @@ export class FileIntake {
   context(b,i){
     if(b.version!==2)return {catalog:this.catalog,projectId:b.projectId,target:b.target,folderId:b.folderId};
     const d=i.destination;
-    return {catalog:d.scope==='project'&&d.kind==='video'?this.catalog:this.generic.bind(d,i.target),projectId:d.projectId||'',target:i.target,folderId:d.folderId||'root'};
+    return {catalog:d.scope==='project'&&d.kind==='video'?this.catalog:this.generic.bind(d,i.target),projectId:d.projectId||'',target:i.target,folderId:i.resolvedFolder?.id??d.folderId??'root'};
   }
-  async confirmUnified(handoffId,input){
-    let acceptanceStarted=false;try{
+  async confirmUnified(handoffId,input,sessionId){
+    let acceptanceStarted=false;const resolvedFolders=[];try{
     this.assertOpen();
     if(!this.generic||!input||(input.standardNames!==undefined&&typeof input.standardNames!=='boolean')||!uuid(input.requestId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length||!Array.isArray(input.targets)||input.targets.length!==input.fileIds.length||input.targets.some(t=>!t||typeof t!=='object'))
       throw error('INTAKE_INVALID_INPUT','请逐项确认素材类型与收纳目标',400);
     if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE','废纸篓组件不可用，请使用复制方式');
     const h=await this.receipts.read('handoffs',handoffId),ids=[...new Set(input.fileIds)];
     if(ids.length!==input.fileIds.length||new Set(input.targets.map(t=>t.fileId)).size!==ids.length||ids.some(id=>!h.files.some(f=>f.id===id)||!input.targets.some(t=>t.fileId===id)))throw error('INTAKE_INVALID_INPUT','文件清单与目标不匹配',400);
-    const args=stable({version:2,handoffId,mode:input.mode,fileIds:ids,targets:input.targets,standardNames:input.standardNames});
+    const singleVideo=ids.length===1&&(h.files.find(f=>f.id===ids[0]).mediaKind||'video')==='video';
+    const {revealWhenDone}=input;
+    if((revealWhenDone!==undefined&&typeof revealWhenDone!=='boolean')||(revealWhenDone&&!singleVideo))
+      throw error('INTAKE_INVALID_INPUT','只有单个视频可以选择收纳完成后在访达中显示',400);
+    const args=stable({version:2,handoffId,mode:input.mode,fileIds:ids,targets:input.targets,standardNames:input.standardNames,
+      ...(revealWhenDone?{revealWhenDone:true}:{})});
+    if(this.foreignIds.has(input.requestId))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
+    try {
+      await this.receipts.read('batches',input.requestId);
+      acceptanceStarted=true;
+      throw error('INTAKE_RESULT_UNKNOWN','原批次回执已存在，请核对原请求后继续');
+    }catch(e){
+      if(e.code!=='ENOENT'){acceptanceStarted=true;throw e;}
+    }
     if(h.preparation!=='ready'||h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_CHECKING','原文件内容核验尚未完成，请稍候或重新选择',422);
     const items=[],plans=[],sharedImages=new Map(),planner=this.namePlanner();
     // The confirmation order owns both sequence allocation and the first
     // successful image which supplies a missing representative.
     const targets=new Map(input.targets.map(t=>[t.fileId,t])),files=new Map(h.files.map(f=>[f.id,f]));
     for(const id of ids)checkChoice(files.get(id),targets.get(id));
+    const children=new Map(),preflight=new Map(),created=new Map(),confirmedParents=new Map();
+    if([...targets.values()].some(t=>t.destination.newFolder)){
+      for(const id of ids){
+        const {destination,nameMode}=targets.get(id),f=files.get(id);
+        const target=await this.planningTarget(destination,children,{write:true});
+        // Verify every source, destination and name before the first folder write.
+        const ctx={destination,nameMode,...target,child:destination.newFolder?target:undefined};
+        preflight.set(id,ctx);
+        if(!wantsStandard(destination,nameMode))planner.reserve(ctx.directory,destination.fileName??f.name);
+        await revalidateSelection(f);
+      }
+      for(const [id,ctx] of preflight)await planner.plan(files.get(id),ctx);
+    }
+    for(const {child} of preflight.values())if(child&&!created.has(child)){
+      const parentKey=stable([child.project.id,child.parentId]);
+      const parent=confirmedParents.get(parentKey)??child.parent;
+      const result=await this.resolveNewIntakeFolder({...child,parent},input.requestId);
+      created.set(child,result);resolvedFolders.push(result.folder);
+      confirmedParents.set(parentKey,result.parent);
+    }
+    const finalPlanner=preflight.size?this.namePlanner():planner;
     for(const id of ids){
       const f=files.get(id),{destination,nameMode}=structuredClone(targets.get(id));
-      let target,label,ctx;
+      let target,label,ctx,resolvedFolder;
       if(destination.scope==='project'&&destination.kind==='video'){
-        const project=this.catalog.project(destination.projectId,true),folderId=destination.folderId??'root';
+        const project=this.catalog.project(destination.projectId,true);
+        const child=created.get(preflight.get(id)?.child);
+        resolvedFolder=child?.folder;
+        const folderId=resolvedFolder?.id??destination.folderId??'root';
         target=await this.prepareVideoFolder(project.id,folderId);
+        if(child&&!sameDirectoryState(child.state,target))throw videoFolderChanged();
         const folder=target.row;
         label=project.name+' / '+(folder?.relativePath||'项目根目录');
-        ctx={project,folder,verify:()=>this.catalog.current(project.id,target)};
+        ctx={project,series:this.projectSeries(project.id),folder,verify:()=>this.catalog.current(project.id,target)};
       }else{
         target=await this.generic.prepare(destination,{sharedImages,requestGroupId:input.requestId});
         label=target.label||({photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'}[destination.kind]+' / '+(destination.directory||'待确认'));
         ctx={assetName:target.assetName,verify:()=>this.generic.current(target)};
       }
-      const item={...f,destination,nameMode,target,destinationLabel:label,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0};
+      const item={...f,destination,...(resolvedFolder?{resolvedFolder}:{}),nameMode,target,destinationLabel:label,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0};
       items.push(item);
       plans.push({destination,nameMode,directory:target.target,...ctx});
-      if(!wantsStandard(destination,nameMode))planner.reserve(target.target,destination.fileName??f.name);
+      if(!wantsStandard(destination,nameMode))finalPlanner.reserve(target.target,destination.fileName??f.name);
     }
-    for(const [i,item] of items.entries())item.plannedFileName=(await planner.plan(item,plans[i])).proposedFileName;
+    for(const [i,item] of items.entries())item.plannedFileName=(await finalPlanner.plan(item,plans[i])).proposedFileName;
     const labels=[...new Set(items.map(i=>i.destinationLabel))],projectIds=[...new Set(items.map(i=>i.destination.projectId||''))];
     const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items};
-    acceptanceStarted=true;await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);await this.rememberTargets(items.map(i=>i.destination),{mode:input.mode,standardNames:input.standardNames});this.kick();return this.dto(b);
-    }catch(e){if(!acceptanceStarted)Object.assign(e,{accepted:false,requestId:input?.requestId});throw e;}
+    acceptanceStarted=true;
+    await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);
+    if(singleVideo&&sessionId)this.receiptSessions.set(b.id,sessionId);
+    if(revealWhenDone)this.liveReveal.add(b.id);
+    await this.rememberTargets(items.map(i=>i.resolvedFolder?{...i.destination,folderId:i.resolvedFolder.id}:i.destination),{
+      mode:input.mode,standardNames:input.standardNames,revealWhenDone:singleVideo?revealWhenDone:undefined,
+    });
+    this.kick();return this.dto(b);
+    }catch(e){
+      if(!acceptanceStarted)Object.assign(e,{accepted:false,requestId:input?.requestId});
+      if(resolvedFolders.length)e.resolvedFolders=resolvedFolders;
+      throw e;
+    }
+  }
+  desktopError(cause) {
+    if(cause.effectUnknown)return error('INTAKE_DESKTOP_UNKNOWN','未收到访达回执，请查看桌面后再操作',502);
+    if(desktopUnavailable.has(cause.code))return error('INTAKE_DESKTOP_UNAVAILABLE','当前本机桌面不可用',503);
+    if(cause.code==='TARGET_CHANGED'||cause.code==='FOLDER_UNAVAILABLE')return videoFolderChanged();
+    return error('INTAKE_DESKTOP_FAILED','未能在访达中显示，请核对目标后重试',409);
+  }
+  assertDesktop() {
+    if(!this.desktop||process.env.MEDIA_DISABLE_DESKTOP_NATIVE==='1'||process.env.MEDIA_READONLY_FILES==='1')
+      throw error('DESKTOP_PLATFORM_UNAVAILABLE','当前本机桌面不可用',503);
+  }
+  async verifyDestination(b,i) {
+    const {catalog,projectId,target,folderId}=this.context(b,i);
+    this.assertLibrary(b);
+    try{
+      if(catalog===this.catalog){
+        const state=await this.resolveVideoFolder(projectId,folderId);
+        if(!state.exists||state.target!==target.target||!sameFolder(state.targetIdentity,target.targetIdentity))
+          throw videoFolderChanged();
+      }
+      await catalog.current(projectId,target,{write:false});
+    }catch(e){
+      if(unavailableVideoFolder.has(e.code)||e.status===404)throw videoFolderChanged();
+      throw e;
+    }
+  }
+  async openFolder(id,input,{sessionId}={}) {
+    this.assertOpen();
+    if(input!==undefined&&input!==null&&(typeof input!=='object'||Array.isArray(input)||Object.keys(input).length))
+      throw error('INTAKE_INVALID_INPUT','请使用本次收纳回执打开固定的目标文件夹',400);
+    const b=this.batch(id);this.assertLibrary(b);const [i]=b.items;
+    if(b.version!==2||b.items.length!==1||i.destination.kind!=='video'||!sessionId||this.receiptSessions.get(id)!==sessionId)
+      throw error('INTAKE_INVALID_INPUT','仅可从本次单个视频的收纳回执打开目标文件夹',400);
+    if(this.folderDispatches.has(id))return this.folderDispatches.get(id);
+    const work=(async()=>{
+      try{
+        await this.verifyDestination(b,i);
+        this.assertDesktop();
+        const {target}=this.context(b,i);
+        await this.desktop.openFolder(target.target,{identity:target.targetIdentity,beforeDispatch:async()=>{
+          this.assertOpen();await this.verifyDestination(b,i);
+        }});
+        return {status:'dispatched'};
+      }catch(e){throw this.desktopError(e);}
+    })();
+    this.folderDispatches.set(id,work);
+    try{return await work;}finally{this.folderDispatches.delete(id);}
+  }
+  async verifiedRevealSource(b,i) {
+    await this.verifyDestination(b,i);
+    const {catalog,projectId,target}=this.context(b,i);
+    const receipt=catalog.receipt(projectId,i.requestId);
+    if(receipt.status!=='ready'||(receipt.videoId??receipt.assetId)!==(i.videoId??i.assetId))throw videoFolderChanged();
+    const source=await catalog.verifiedSource(projectId,i.videoId??i.assetId);
+    if(path.dirname(source.path)!==target.target||path.basename(source.path)!==i.resultFileName||source.path===i.path)
+      throw videoFolderChanged();
+    return source;
+  }
+  async revealCompleted(b,i) {
+    if(!this.liveReveal.has(b.id)||i.status!=='ready')return;
+    this.liveReveal.delete(b.id);
+    if((b.mode==='move'&&i.removal!=='complete')||i.revealAttemptedAt)return;
+    const at=Date.now();
+    // Write the attempt first. A lost native or process response must never
+    // cause a second Finder selection during retry or recovery.
+    i.revealAttemptedAt=at;await this.save(b,{touch:false});
+    let result;
+    try{
+      this.assertOpen();this.assertDesktop();
+      const source=await this.verifiedRevealSource(b,i);
+      await this.desktop.revealFiles([source.path],{identity:{dev:source.identity.dev,ino:source.identity.ino},beforeDispatch:async()=>{
+        this.assertOpen();
+        const current=await this.verifiedRevealSource(b,i);
+        if(current.path!==source.path||!same(current.identity,source.identity))throw videoFolderChanged();
+      }});
+      result={status:'dispatched',at};
+    }catch(e){
+      const fault=this.desktopError(e);
+      result={status:e.effectUnknown?'unknown':'failed',at,error:{code:fault.code,message:fault.message}};
+    }
+    const snapshot=structuredClone(b);snapshot.items.find(item=>item.id===i.id).reveal=result;
+    await this.save(snapshot,{touch:false});i.reveal=result;
   }
   summarize(b) {
     if(b.items.some(i=>i.status==='copying'))b.status='running';
@@ -287,20 +490,25 @@ export class FileIntake {
   kick() {
     if(this.closing||this.work)return;
     clearTimeout(this.timer);this.timer=null;
-    this.work=Promise.resolve().then(()=>this.withActivity(()=>this.catalog.media.track(async()=>{
+    this.work=Promise.resolve().then(()=>this.withActivity(async()=>{
       for(const b of this.batches.values()) {
         if(b.status==='interrupted')continue;
         for(const i of b.items) {
           if(this.closing)break;
           if(i.status!=='queued')continue;
-          try {await this.process(b,i);} catch(e) {
-            if(e.code==='IMPORT_BUSY') {i.status='queued';i.error='等待当前视频导入结束';}
-            else if(i.status!=='unknown'&&i.status!=='source_retained') {i.status='failed';i.error=e.message;i.code=e.code;}
-          }
-          this.summarize(b);await this.save(b);
+          const processed=await this.catalog.media.track(async()=>{
+            let processed;
+            try {processed=await this.process(b,i);} catch(e) {
+              if(e.code==='IMPORT_BUSY') {i.status='queued';i.error='等待当前视频导入结束';}
+              else if(i.status!=='unknown'&&i.status!=='source_retained') {i.status='failed';i.error=e.message;i.code=e.code;}
+            }
+            this.summarize(b);await this.save(b);
+            return processed;
+          });
+          if(processed&&i.status==='ready'&&this.liveReveal.has(b.id))await this.serial(()=>this.revealCompleted(b,i));
         }
       }
-    }))).catch(e=>{this.lastError=e;}).finally(()=>{
+    })).catch(e=>{this.lastError=e;}).finally(()=>{
       this.work=null;
       if(!this.closing&&[...this.batches.values()].some(b=>b.status!=='interrupted'&&b.items.some(i=>i.status==='queued')))
         this.timer=setTimeout(()=>this.kick(),1000);
@@ -368,6 +576,7 @@ export class FileIntake {
       if(r.published||r.status==='unknown'){i.status='unknown';i.error='文件可能已复制，需核对原回执；未重发或移除原文件';}
       throw e;
     } finally {await handle.close();}
+    return true;
   }
   async completeReady(b,i) {
     const {catalog,projectId,target,folderId}=this.context(b,i);
@@ -462,6 +671,7 @@ export class FileIntake {
       if(i.status==='ready')await this.completeReady(b,i);
     } catch(e) {this.applyReceipt(i,catalog.receiptDTO(catalog.receipt(projectId,i.requestId)));throw e;}
     finally {this.summarize(b);await this.save(b);this.kick();}
+    if(input.choice!=='cancel')await this.revealCompleted(b,i);
     return this.dto(b);
   });}
   async reconcile(id) {return this.serial(async()=>{
