@@ -328,6 +328,30 @@ try {
     await confirmButton().click(); await expect(accepted()).toBeVisible(); assert.equal('prompt' in fx.confirmBodies[0], false);
   });
 
+  await check('long folder paths wrap inside the window: two sizes, one and several videos, three themes', async () => {
+    const long = 'longFolderSegment'.repeat(8);
+    const withLong = (files, theme) => f => {
+      f.handoff.files = files; f.handoff.themeId = theme;
+      const add = [{id: 'f-a', name: 'A', relativePath: 'A'}, {id: 'f-long', name: long, relativePath: 'A/' + long}];
+      f.options.projects[0].videoFolders.push(...add); f.folders[P1].push(...add);
+      f.handoff.routingPreferences.lastVideoFolderByProject = {[P1]: 'f-long'};
+    };
+    const overflow = () => page.evaluate(() => {const r = document.scrollingElement; const shell = document.querySelector('.fi-body'); return Math.max(r.scrollWidth - r.clientWidth, shell ? shell.scrollWidth - shell.clientWidth : 0);});
+    for (const [w, h] of [[600, 560], [760, 690]]) for (const theme of ['forest', 'dark', 'midnight']) for (const several of [false, true]) {
+      const files = several ? [file('v1', 'dy_1_' + 'x'.repeat(60) + '.mov', 'video'), file('v2', 'dy_2.mov', 'video')] : [file('v1', 'dy_0612_2241_' + 'y'.repeat(80) + '.mov', 'video')];
+      await fresh(withLong(files, theme)); await page.setViewportSize({width: w, height: h});
+      await expect(page.getByRole('group', {name: '文件夹', exact: true}).first().getByRole('button', {name: 'A/' + long, exact: true})).toHaveAttribute('aria-pressed', 'true');
+      await pause(150);
+      assert.ok(await overflow() <= 1, `no sideways overflow at ${w}x${h} ${theme} ${several ? 'several' : 'one'}: ${await overflow()}`);
+      for (const el of await page.locator('.fi-place, .fi-chips, .fi-vfile').all()) {
+        const box = await el.boundingBox(), right = await page.evaluate(() => document.querySelector('.fi-body').getBoundingClientRect().right);
+        assert.ok(box.x + box.width <= right + 1, 'kept inside the window');
+      }
+      await expect(confirmButton()).toBeInViewport();
+      await shot(`long-${w}x${h}-${theme}-${several ? 'several' : 'one'}`);
+    }
+  });
+
   await check('photos keep the grouped list; no Finder option; name preview errors are shown', async () => {
     await fresh(f => {f.handoff.files = [file('p1', 'image_1.png', 'photo')];});
     await expect(revealBox()).toHaveCount(0); await expect(chips()).toHaveCount(0);

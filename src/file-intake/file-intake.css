@@ -296,3 +296,14 @@
 .fi-root.fi-simple .fi-prompt-line .fi-link,.fi-root.fi-simple .fi-prompt-line .fi-link-muted{flex:none;font-size:12px}
 .fi-simple .fi-prompt small{font-size:12px}
 .fi-simple .fi-vmore{padding-top:2px}
+/* 长文件夹名、长路径：单项不超过表单宽度，超长的词可以断开换行（验收 PR97 长路径溢出） */
+.fi-simple .fi-place>*{min-width:0;max-width:100%}
+.fi-simple .fi-place-end,.fi-simple .fi-place-part{overflow-wrap:anywhere;word-break:break-word}
+.fi-root.fi-simple .fi-place-link{max-width:100%;height:auto;text-align:left;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.fi-simple .fi-chips>*{min-width:0;max-width:100%}
+.fi-root.fi-simple .fi-chip{height:auto;padding-top:6px;padding-bottom:6px;text-align:left;white-space:normal}
+.fi-simple .fi-chip>span{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.fi-simple .fi-vfile>small{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fi-simple .fi-vfile>strong{flex:0 1 auto}
+.fi-root.fi-simple .fi-chip-edit input{max-width:min(220px,100%)}
+.fi-simple .fi-form-label-place{align-self:start;padding-top:4px}

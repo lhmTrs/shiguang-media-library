@@ -59,7 +59,7 @@ export function VideoDestination({project, projects, recent, destination, rememb
     onChange({kind: 'video', scope: 'project', projectId: id, folderId: 'root'});
   };
   return <>
-    <span className="fi-form-label">放到</span>
+    <span className="fi-form-label fi-form-label-place">放到</span>
     <nav className="fi-place" aria-label="去处路径">
       {segments.map((s, i) => <Fragment key={i}>
         {i > 0 && <span className="fi-place-sep" aria-hidden="true">›</span>}
