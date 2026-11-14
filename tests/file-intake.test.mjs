@@ -15,6 +15,7 @@ import {ProjectVideos} from '../server/project-videos/store.mjs';
 import {FileIntake} from '../server/file-intake/store.mjs';
 import {fileIntakeRouter} from '../server/file-intake/router.mjs';
 import {IntakePreferences} from '../server/file-intake/preferences.mjs';
+import {ManagedIntakeCatalog} from '../server/file-intake/media-catalog.mjs';
 import {Receipts,inspectSelection,selectionHash} from '../server/file-intake/files.mjs';
 import {workflow,plist,shellQuote} from '../server/file-intake/native.mjs';
 
@@ -30,7 +31,7 @@ async function fixture(t,{trash}={}) {
   const generated=spawnSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=green:s=64x64:r=2:d=1',
     '-c:v','libx264','-pix_fmt','yuv420p','-threads','1',file]);assert.equal(generated.status,0,generated.stderr?.toString());
   t.after(async()=>{await intake.close();await entry.close();assert.equal(entry.media.handles.size,0);assert.equal(entry.media.children.size,0);lib.db.close();});
-  return {dir,dataDir,lib,projects,storyboards,entry,catalog,intake,project,other,file};
+  return {dir,dataDir,lib,projects,assets,storyboards,entry,catalog,intake,project,other,file};
 }
 async function accept(f,files,mode='copy',extra={}) {
   const h=await f.intake.receipts.handoff(files),input={requestId:randomUUID(),projectId:f.project.id,folderId:'root',mode,fileIds:h.files.map(i=>i.id),...extra};
@@ -398,4 +399,206 @@ test('a removed video folder is omitted from suggestions and explicit confirmati
   assert.equal(f.intake.batches.size,0);
   assert.deepEqual(await fs.readdir(path.join(root,folder.name)),[]);
   await fs.access(f.file);
+});
+
+async function videoSelection(f,files,destination,extra={}) {
+  const h=await f.intake.receipts.handoff(files);
+  const targets=h.files.map(file=>({fileId:file.id,destination:{...destination},nameMode:'standard'}));
+  return {h,input:{version:2,requestId:randomUUID(),mode:'copy',fileIds:targets.map(t=>t.fileId),targets,...extra}};
+}
+
+test('series names, ordinary-file sequences across prefixes, and new-folder confirmation agree',async t=>{
+  const f=await fixture(t);
+  f.intake.generic={db:f.lib.db,async choices(){return {folders:[]};}};
+  f.intake.preferences=await new IntakePreferences({dataDir:f.dataDir,libraryId:f.intake.libraryId}).init();
+  const series=f.projects.series,drama=series.createSeries({name:'剧:名',request_id:randomUUID()});
+  const season=series.createSeason(drama.id,{season_no:2,label:'第二季外传',request_id:randomUUID()});
+  const createEpisodes=(seasonId,count)=>{
+    let project;
+    for(let episodeNo=1;episodeNo<=count;episodeNo++)
+      project=series.createEpisode(drama.id,{season_id:seasonId,expected_episode_no:episodeNo,request_id:randomUUID()}).project;
+    return project;
+  };
+  const episode=createEpisodes(season.id,5),standalone=createEpisodes(null,12);
+  const options=await f.intake.routingOptions();
+  assert.deepEqual(options.projects.find(p=>p.id===episode.id).series,
+    {id:drama.id,name:'剧:名',seasonNo:2,seasonLabel:'第二季外传',episodeNo:5});
+  const parent=await f.catalog.folders.create(episode.id,{requestId:randomUUID(),name:'现场'});
+  const root=await f.catalog.folders.rootPath(episode.id);
+  const dest={kind:'video',scope:'project',projectId:episode.id,folderId:parent.id,newFolder:{name:'近景'}};
+  const {h,input}=await videoSelection(f,[f.file],dest);
+  const preview=(await f.intake.namePreview(h.id,input)).items[0];
+  assert.equal(preview.proposedFileName,'剧-名S02E05_现场_近景_001.mp4');
+  assert.deepEqual(preview.nameParts.map(p=>[p.role,p.text]),[
+    ['series','剧-名'],['season','S02'],['episode','E05'],['folder','现场'],['folder','近景'],['number','001'],['ext','.mp4'],
+  ]);
+  await assert.rejects(fs.access(path.join(root,'现场','近景')),{code:'ENOENT'});
+  const b=await f.intake.confirm(h.id,input);
+  const {resolvedFolder}=b.items[0];
+  assert.equal(resolvedFolder.relativePath,'现场/近景');assert.deepEqual(b.items[0].destination,dest);
+  await settled(f.intake);
+  const item=f.intake.dto(f.intake.batch(b.id)).items[0];
+  assert.equal(item.status,'ready',item.error);
+  assert.equal(item.resultFileName,preview.proposedFileName);
+  assert.equal((await f.intake.intakePreferences()).routingPreferences.lastVideoFolderByProject[episode.id],resolvedFolder.id);
+  const dir=path.join(root,'现场','近景');
+  for(const name of ['另一前缀_098.mov','旧视频_123456.mp4','日期_20261114.mp4'])await fs.writeFile(path.join(dir,name),'fixture');
+  await fs.mkdir(path.join(dir,'目录_9999.mp4'));
+  await fs.symlink(path.join(dir,'另一前缀_098.mov'),path.join(dir,'链接_9999.mp4'));
+  const file2=path.join(f.dir,'another.mp4');await fs.copyFile(f.file,file2);
+  const next=await videoSelection(f,[f.file,file2],dest);
+  next.input.targets[1].destination.fileName='手动_101.mp4';
+  assert.deepEqual((await f.intake.namePreview(next.h.id,next.input)).items.map(i=>i.proposedFileName),[
+    '剧-名S02E05_现场_近景_102.mp4','手动_101.mp4',
+  ]);
+  const nextBatch=await f.intake.confirm(next.h.id,next.input);
+  assert.deepEqual(nextBatch.items.map(i=>i.resolvedFolder.id),[resolvedFolder.id,resolvedFolder.id]);
+  await settled(f.intake);
+  const limit=await videoSelection(f,[f.file],dest);
+  await fs.writeFile(path.join(dir,'其他前缀_9999.mov'),'fixture');
+  assert.equal((await f.intake.namePreview(limit.h.id,limit.input)).items[0].error.code,'INTAKE_NAME_NUMBER_LIMIT');
+  await assert.rejects(f.intake.confirm(limit.h.id,limit.input),{code:'INTAKE_NAME_NUMBER_LIMIT'});
+  const flat=await videoSelection(f,[f.file],{kind:'video',scope:'project',projectId:standalone.id});
+  assert.equal((await f.intake.namePreview(flat.h.id,flat.input)).items[0].proposedFileName,'剧-名EP12_001.mp4');
+});
+
+test('new-folder preflight creates nothing for invalid targets; unmanaged same names are refused',async t=>{
+  const f=await fixture(t);f.intake.generic={};
+  const root=await f.catalog.folders.rootPath(f.project.id);
+  const file2=path.join(f.dir,'another.mp4');await fs.copyFile(f.file,file2);
+  const dest={kind:'video',scope:'project',projectId:f.project.id,newFolder:{name:'合法目录'}};
+  const {h,input}=await videoSelection(f,[f.file,file2],dest);
+  input.targets[1].destination.newFolder={name:'../越界'};
+  await assert.rejects(f.intake.confirm(h.id,input),{code:'INVALID_FOLDER_NAME',accepted:false});
+  await assert.rejects(fs.access(root),{code:'ENOENT'});
+  input.targets[1].destination.newFolder={name:'另一个目录'};
+  const accepted=await f.intake.confirm(h.id,input);
+  assert.deepEqual(accepted.items.map(i=>i.resolvedFolder.name),['合法目录','另一个目录']);
+  await settled(f.intake);
+  await fs.mkdir(path.join(root,'未登记'));
+  const conflict=await videoSelection(f,[f.file],{...dest,newFolder:{name:'未登记'}});
+  await assert.rejects(f.intake.confirm(conflict.h.id,conflict.input),{code:'FOLDER_EXISTS',accepted:false});
+  assert.ok(!f.catalog.folders.rows(f.project.id).some(row=>row.name==='未登记'));
+});
+
+test('Finder operations verify the current batch and directory, persist only the automatic outcome, and never replay it',async t=>{
+  const f=await fixture(t);f.intake.generic={};
+  f.intake.preferences=await new IntakePreferences({dataDir:f.dataDir,libraryId:f.intake.libraryId}).init();
+  let reveals=0,opens=0,nativeOpenError;
+  f.intake.desktop={
+    async revealFiles(files,{beforeDispatch}){
+      const b=f.intake.list().batches[0],raw=await f.intake.receipts.read('batches',b.id);
+      assert.equal(raw.items[0].status,'ready');assert.ok(raw.items[0].revealAttemptedAt);assert.equal(f.entry.media.handles.size,0);
+      await beforeDispatch();assert.equal(f.entry.media.handles.size,0);
+      assert.deepEqual(files,[path.join(await f.catalog.folders.rootPath(f.project.id),'入库',raw.items[0].resultFileName)]);
+      reveals++;throw Object.assign(new Error('lost response'),{effectUnknown:true});
+    },
+    async openFolder(dir,{beforeDispatch,identity}){
+      await beforeDispatch();assert.equal(String((await fs.lstat(dir)).ino),identity.ino);opens++;
+      if(nativeOpenError)throw nativeOpenError;
+    },
+  };
+  const sessionId='session-a',dest={kind:'video',scope:'project',projectId:f.project.id,newFolder:{name:'入库'}};
+  const {h,input}=await videoSelection(f,[f.file],dest,{revealWhenDone:true});
+  const b=await f.intake.confirm(h.id,input,{sessionId});
+  await settled(f.intake);
+  const raw=await f.intake.receipts.read('batches',b.id);
+  assert.equal(reveals,1);assert.equal(raw.status,'completed');assert.equal(raw.items[0].reveal.status,'unknown');
+  assert.equal(raw.items[0].reveal.error.code,'INTAKE_DESKTOP_UNKNOWN');
+  assert.equal((await f.intake.intakePreferences()).routingPreferences.revealWhenDone,true);
+  const app=express();
+  app.use((req,res,next)=>{res.locals.localSessionId=req.get('X-Fixture-Session');next();});
+  app.use(fileIntakeRouter(f.intake,{}));
+  const server=await new Promise(resolve=>{const listener=app.listen(0,'127.0.0.1',()=>resolve(listener));});
+  t.after(()=>new Promise((resolve,reject)=>server.close(e=>e?reject(e):resolve())));
+  const open=(session,body)=>fetch('http://127.0.0.1:'+server.address().port+'/batches/'+b.id+'/open-folder',{
+    method:'POST',headers:{'X-Fixture-Session':session,'Content-Type':'application/json'},body,
+  });
+  assert.equal((await open('session-b')).status,400);
+  assert.equal((await open(sessionId,JSON.stringify({path:'/tmp'}))).status,400);
+  const successful=await open(sessionId);assert.equal(successful.status,200);
+  assert.deepEqual(await successful.json(),{status:'dispatched'});
+  for(const [cause,status,code] of [
+    [{code:'DESKTOP_SESSION_UNAVAILABLE'},503,'INTAKE_DESKTOP_UNAVAILABLE'],
+    [{code:'NATIVE_TIMEOUT',effectUnknown:true},502,'INTAKE_DESKTOP_UNKNOWN'],
+  ]){
+    nativeOpenError=cause;
+    const response=await open(sessionId);
+    assert.equal(response.status,status);assert.equal((await response.json()).code,code);
+  }
+  const folder=path.join(await f.catalog.folders.rootPath(f.project.id),'入库');
+  await fs.rename(folder,folder+'-moved');await fs.mkdir(folder);
+  const changed=await open(sessionId);
+  assert.equal(changed.status,409);assert.equal((await changed.json()).code,'TARGET_CHANGED');assert.equal(opens,3);
+  const reboot=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:{},desktop:f.intake.desktop}).init();
+  t.after(()=>reboot.close());
+  await reboot.confirm(h.id,input,{sessionId});
+  await assert.rejects(reboot.openFolder(b.id,undefined,{sessionId}),{code:'INTAKE_INVALID_INPUT'});
+  await reboot.reconcile(b.id);assert.equal(reveals,1);
+});
+
+test('multi-video true is refused, and omitted reveal and false replay the same request',async t=>{
+  const f=await fixture(t);f.intake.generic={};
+  const second=path.join(f.dir,'second.mp4');await fs.copyFile(f.file,second);
+  const dest={kind:'video',scope:'project',projectId:f.project.id};
+  const multi=await videoSelection(f,[f.file,second],dest,{revealWhenDone:true});
+  await assert.rejects(f.intake.confirm(multi.h.id,multi.input),{code:'INTAKE_INVALID_INPUT',status:400});
+  const single=await videoSelection(f,[f.file],dest);
+  const accepted=await f.intake.confirm(single.h.id,single.input);
+  const replay=await f.intake.confirm(single.h.id,{...single.input,revealWhenDone:false});
+  assert.equal(replay.id,accepted.id);
+  await settled(f.intake);
+});
+
+test('generic video reveals the verified copy; duplicate resolution reveals the final reused file once',async t=>{
+  const f=await fixture(t);
+  f.intake.generic=await new ManagedIntakeCatalog({catalog:f.catalog,assets:f.assets,dataDir:f.dataDir,
+    directory:path.join(f.dir,'personal_item')}).init();
+  f.intake.preferences=await new IntakePreferences({dataDir:f.dataDir,libraryId:f.intake.libraryId}).init();
+  const reveals=[],folders=[];
+  f.intake.desktop={
+    async revealFiles(files,{beforeDispatch}){await beforeDispatch();reveals.push(...files);},
+    async openFolder(folder,{beforeDispatch}){await beforeDispatch();folders.push(folder);},
+  };
+  const dest={scope:'library',kind:'video',directory:''},sessionId='library-session';
+  const first=await videoSelection(f,[f.file],dest,{revealWhenDone:true});
+  const firstBatch=await f.intake.confirm(first.h.id,first.input,{sessionId});
+  await settled(f.intake);
+  assert.equal(f.intake.dto(f.intake.batch(firstBatch.id)).items[0].reveal.status,'dispatched');
+  await f.intake.openFolder(firstBatch.id,{}, {sessionId});
+  assert.equal(reveals[0],path.join(folders[0],path.basename(f.file)));
+  const second=await videoSelection(f,[f.file],dest,{revealWhenDone:true});
+  const secondBatch=await f.intake.confirm(second.h.id,second.input,{sessionId});
+  await settled(f.intake);
+  const item=f.intake.dto(f.intake.batch(secondBatch.id)).items[0];
+  assert.equal(item.status,'duplicate');assert.equal(reveals.length,1);
+  const resolved=await f.intake.resolve(secondBatch.id,item.id,{choice:'reuse',candidateId:item.candidates[0].id});
+  assert.equal(resolved.items[0].status,'ready');
+  assert.equal(resolved.items[0].reveal.status,'dispatched');
+  assert.deepEqual(reveals,[reveals[0],reveals[0]]);
+  await f.intake.reconcile(secondBatch.id);assert.equal(reveals.length,2);
+  const last=await videoSelection(f,[f.file],dest,{revealWhenDone:false});
+  await f.intake.confirm(last.h.id,last.input,{sessionId});
+  assert.equal((await f.intake.intakePreferences()).routingPreferences.revealWhenDone,false);
+  await settled(f.intake);
+});
+
+test('a created folder stays registered if later batch preparation fails',async t=>{
+  const f=await fixture(t);f.intake.generic={};
+  const {h,input}=await videoSelection(f,[f.file],{
+    kind:'video',scope:'project',projectId:f.project.id,newFolder:{name:'已建目录'},
+  });
+  const prepare=f.catalog.prepare.bind(f.catalog);
+  f.catalog.prepare=async()=>{throw Object.assign(Error('synthetic prepare refusal'),{code:'TARGET_CHANGED',status:409});};
+  let folderId;
+  await assert.rejects(f.intake.confirm(h.id,input),e=>{
+    assert.equal(e.accepted,false);
+    assert.equal(e.resolvedFolders[0].name,'已建目录');folderId=e.resolvedFolders[0].id;
+    return e.code==='TARGET_CHANGED';
+  });
+  assert.equal(f.intake.batches.size,0);assert.ok((await f.catalog.folders.resolve(f.project.id,folderId)).exists);
+  f.catalog.prepare=prepare;
+  const retry=await f.intake.confirm(h.id,input);
+  assert.equal(retry.items[0].resolvedFolder.id,folderId);
+  await settled(f.intake);
 });

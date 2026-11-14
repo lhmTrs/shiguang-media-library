@@ -105,14 +105,35 @@ export class ProjectVideoFolders {
       if(within(file,s.state.target))fail('FOLDER_BUSY','此目录仍有视频正在导入，请等待原任务结束后再整理',409);
     }
   }
-  async create(id,input) {
+  async intakeChild(id,parentId,value) {
+    const name=folderName(value),parent=await this.resolve(id,parentId);
+    if(!parent.exists&&parentId!=='root')fail('FOLDER_NOT_FOUND','父文件夹已不存在',404);
+    const rows=this.rows(id).filter(row=>row.parentId===parentId&&nameKey(row.name)===nameKey(name));
+    const entries=parent.exists?(await fs.readdir(parent.target)).filter(entry=>nameKey(entry)===nameKey(name)):[];
+    const checked=await this.resolve(id,parentId);
+    if(parent.target!==checked.target||parent.exists!==checked.exists||
+      parent.exists&&!sameFolder(parent.targetIdentity,checked.targetIdentity))fail('TARGET_CHANGED','父文件夹已变化',409);
+    if(rows.length||entries.length){
+      if(rows.length!==1||entries.length!==1)fail('FOLDER_EXISTS','同名项未登记为可用的项目视频文件夹',409);
+      const state=await this.resolve(id,rows[0].id);
+      if(!state.exists||path.dirname(state.target)!==parent.target||nameKey(path.basename(state.target))!==nameKey(entries[0]))
+        fail('TARGET_CHANGED','同名文件夹已移动或替换',409);
+      return {parent,state};
+    }
+    const relativePath=[parent.row?.relativePath,name].filter(Boolean).join('/');
+    return {parent,state:{target:path.join(parent.target,name),row:{name,relativePath},exists:false}};
+  }
+  async create(id,input,{beforeCreate}={}) {
     this.catalog.project(id,true);const requestId=input.requestId;if(!idOK(requestId))fail('INVALID_REQUEST_ID','新建文件夹请求编号无效');
     const previous=this.db.prepare('SELECT * FROM project_video_operations WHERE id=?').get(requestId);
     const args=canonical({parentId:input.parentId||'root',name:folderName(input.name)});
     if(previous){const p=JSON.parse(previous.data_json);if(previous.project_id!==id||p.args!==args)fail('REQUEST_ID_CONFLICT','请求编号已用于其他目录',409);if(p.status==='ready')return p.folder;fail('OPERATION_UNSETTLED','原新建目录操作尚未结清，请核对原请求',409);}
     return this.catalog.serial(async()=>{
       const replay=this.db.prepare('SELECT * FROM project_video_operations WHERE id=?').get(requestId);if(replay){const x=JSON.parse(replay.data_json);if(replay.project_id===id&&x.args===args&&x.status==='ready')return x.folder;fail('OPERATION_UNSETTLED','原新建目录请求仍需核对',409);}
+      const parentProof=await beforeCreate?.();
       const state=await this.resolve(id,input.parentId||'root',{write:true,create:true}),name=folderName(input.name),file=path.join(state.target,name);
+      if(parentProof&&(parentProof.target!==state.target||parentProof.exists&&!sameFolder(parentProof.targetIdentity,state.targetIdentity)))
+        fail('TARGET_CHANGED','父文件夹已变化',409);
       this.busyOperations(id,state.target);const names=await fs.readdir(state.target);if(names.some(n=>nameKey(n)===nameKey(name)))fail('FOLDER_EXISTS','同级文件夹或文件名称已存在，请使用其他名称',409);
       const folderId=randomUUID(),now=Date.now(),record={kind:'create-folder',args,status:'running',file};this.db.prepare('INSERT INTO project_video_operations VALUES(?,?,?,?,?)').run(requestId,id,canonical(record),now,now);
       let createdIdentity=null;
