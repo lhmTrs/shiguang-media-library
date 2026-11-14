@@ -14,6 +14,7 @@ import { MysqlDatabase } from '../server/mysql-db.mjs';
 import { Projects } from '../server/projects.mjs';
 import { ProjectAssets } from '../server/project-assets/store.mjs';
 import { addLook, addImage } from './helpers/creative-fixture.mjs';
+import { assertCharacterMergeRequestRace } from './helpers/character-merge-request-race.mjs';
 
 const evidence = path.resolve(process.env.CREATIVE_MYSQL_EVIDENCE || 'collab/results/PROJECT-ASSET-LIBRARY-20261104/mysql'); await fs.mkdir(evidence, { recursive: true });
 const base = await fs.mkdtemp(path.join(os.tmpdir(), 'creative-mysql-')), data = path.join(base, 'mysql'); await fs.mkdir(data, { mode: 0o700 });
@@ -132,6 +133,10 @@ try {
   const groups = svc.groups(drama.id), context_token = groups.context_token;
   const preview = svc.preview(drama.id, {context_token, group_id:groups.items[0].group_id, primary_asset_id:first.id});
   const input = {context_token, request_id:randomUUID(), preview_token:preview.preview_token, choices:preview.choices};
+  freshLib.migrating = true;
+  assert.throws(() => svc.confirm(drama.id, input), error => error.status === 423 && !error.details?.request_settled);
+  freshLib.migrating = false;
+  assert.deepEqual(svc.request(drama.id, input.request_id), {found:false});
   const merged = svc.confirm(drama.id, input);
   assert.deepEqual(svc.confirm(drama.id, input), merged);
   assert.equal(svc.resolveAsset(b.id, second.id), first.id);
@@ -144,6 +149,37 @@ try {
   assert.equal(fresh.get(first.id).project_id, a.id);
   assert.equal(fresh.get(second.id).archived_at, 0);
   assert.equal(fresh.validateBackup(fresh.backup()).tables.creative_character_aliases.length, 0);
+  const legacy = fresh.backup();
+  const rejectedInput = { ...input, request_id:randomUUID() };
+  const rejection = {status:409, code:'CHARACTER_MERGE_STALE', details:{request_settled:true}};
+  assert.throws(() => svc.confirm(drama.id, rejectedInput), rejection);
+  const mixed = fresh.backup();
+  for (const [name, backup] of [['receipt_legacy', legacy], ['receipt_mixed', mixed]]) {
+   await connection.query('CREATE DATABASE ' + name + ' CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');
+   const db = new MysqlDatabase({ ...config, database:name });
+   const done = once(db.worker, 'exit');
+   try {
+    const targetLib = { db, dataDir:path.join(base, name) };
+    new Projects(targetLib).init();
+    const target = new ProjectAssets(targetLib).init();
+    await target.restore(backup);
+    const receipt = target.characterMerges;
+    assert.deepEqual(receipt.request(drama.id, input.request_id).result, {...merged, can_undo:false});
+    assert.deepEqual(receipt.request(drama.id, result.request_id).result, result);
+    if (backup === mixed) {
+     assert.deepEqual(receipt.request(drama.id, rejectedInput.request_id), svc.request(drama.id, rejectedInput.request_id));
+     assert.throws(() => receipt.confirm(drama.id, rejectedInput), rejection);
+    } else assert.deepEqual(receipt.request(drama.id, rejectedInput.request_id), {found:false});
+   } finally {
+    db.close();
+    await bounded(done, 10000, 'Receipt restore worker exit unknown');
+   }
+  }
+ });
+ await check('双 MySQL 连接按先提交的成功或拒绝回执结清同一编号', async () => {
+  const options = { mysql:{ ...config, database:'creative_fresh' } };
+  await assertCharacterMergeRequestRace(fresh, options, false);
+  await assertCharacterMergeRequestRace(fresh, options, true);
  });
  passed = true;
 } catch (e) { await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }

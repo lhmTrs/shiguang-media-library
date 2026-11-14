@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { Projects } from '../../server/projects.mjs';
 import { ProjectAssets } from '../../server/project-assets/store.mjs';
-export async function creativeFixture() {
-  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-unit-'))), db = new Database(':memory:');
+export async function creativeFixture({ onDisk = false } = {}) {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-unit-'))), db = new Database(onDisk ? path.join(dir, 'synthetic.sqlite') : ':memory:');
   db.exec('CREATE TABLE roots(id TEXT PRIMARY KEY,path TEXT,retired INTEGER,online INTEGER); CREATE TABLE assets(id TEXT PRIMARY KEY,root_id TEXT,path TEXT,name TEXT,kind TEXT,trashed INTEGER)');
   const root = randomUUID(), media = randomUUID(), image = path.join(dir, 'synthetic.png');
   await fs.writeFile(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64'));

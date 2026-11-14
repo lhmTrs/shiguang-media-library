@@ -1,6 +1,7 @@
 import { canonical, fault, idOK } from './model.mjs';
 import { isRecord } from '../project-attributes/model.mjs';
 import { mergeEntities } from './character-merge-write.mjs';
+import { rejectedMergeId, validRejectionReceipt } from './character-merge-receipts.mjs';
 import { CREATIVE_TABLES } from './schema.mjs';
 import { ATTRIBUTE_TABLES } from '../project-attributes/schema.mjs';
 
@@ -59,12 +60,16 @@ export function validateCharacterMergeBackup(tables, directory) {
     if (data.before.creative_assets.length !== ids.size || data.after.creative_assets.length !== ids.size ||
         data.after.creative_assets.find(asset => asset.id === row.canonical_asset_id)?.owner_id !== row.series_id) throw invalid();
     const request = requests.get(data.request_id);
-    if (request?.merge_id !== row.id || JSON.parse(request.result_json).history_id !== data.history_id) throw invalid();
+    const mergeResult = request && JSON.parse(request.result_json);
+    if (request?.merge_id !== row.id || mergeResult?.status !== 'merged' ||
+        mergeResult.history_id !== data.history_id) throw invalid();
     if (row.status === 'merged') {
       if (data.source_asset_ids.some(id => aliases.get(id)?.merge_id !== row.id)) throw invalid();
     } else {
       const undo = requests.get(data.undo?.request_id);
-      if (undo?.merge_id !== row.id || JSON.parse(undo.result_json).history_id !== data.undo.history_id) throw invalid();
+      const undoResult = undo && JSON.parse(undo.result_json);
+      if (undo?.merge_id !== row.id || undoResult?.status !== 'undone' ||
+          undoResult.history_id !== data.undo.history_id) throw invalid();
       checkSnapshot(data.undo.before, ids, row.series_id, episodes);
     }
   }
@@ -86,9 +91,15 @@ export function validateCharacterMergeBackup(tables, directory) {
   }
   for (const row of requests.values()) {
     const result = JSON.parse(row.result_json), merge = merges.get(row.merge_id);
-    if (!isRecord(result) || result.request_id !== row.id || result.merge_id !== row.merge_id ||
-        !['merged', 'undone'].includes(result.status) || merge?.series_id !== row.series_id || !idOK(result.history_id) ||
-        !/^[a-f0-9]{64}$/.test(row.request_hash)) throw invalid();
+    if (!isRecord(result) || result.request_id !== row.id || !/^[a-f0-9]{64}$/.test(row.request_hash)) throw invalid();
+    if (result.status === 'rejected') {
+      // A series without assets or successful merges can be removed. Retain
+      // its historical rejection to keep the request ID reserved.
+      if (row.merge_id !== rejectedMergeId || !validRejectionReceipt(result)) throw invalid();
+      continue;
+    }
+    if (result.merge_id !== row.merge_id || !['merged', 'undone'].includes(result.status) ||
+        merge?.series_id !== row.series_id || !idOK(result.history_id)) throw invalid();
     const data = JSON.parse(merge.data_json);
     if (row.id !== (result.status === 'merged' ? data.request_id : data.undo?.request_id)) throw invalid();
   }

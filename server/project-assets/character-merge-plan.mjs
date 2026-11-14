@@ -18,14 +18,26 @@ export function scoreValue(value, allowOrigin = false) {
   catch { return false; }
 }
 
-export function lookPlan(group, primary, choices, references) {
-  if (choices !== undefined && (!isRecord(choices) || Object.keys(choices).length !== 1 ||
-      !Array.isArray(choices.look_choices) || choices.look_choices.length > 10000)) throw badChoice();
-  const supplied = new Map();
-  for (const choice of choices?.look_choices ?? []) {
-    if (!isRecord(choice) || typeof choice.conflict_id !== 'string' || supplied.has(choice.conflict_id)) throw badChoice();
-    supplied.set(choice.conflict_id, choice);
+// Confirm separates malformed input from well-formed choices that no longer
+// fit the group. Only the latter may settle a request as a business rejection.
+export function validLookChoices(choices) {
+  if (!isRecord(choices) || Object.keys(choices).length !== 1 || !Array.isArray(choices.look_choices) ||
+      choices.look_choices.length > 10000) return false;
+  const ids = new Set();
+  for (const choice of choices.look_choices) {
+    if (!isRecord(choice) || Object.keys(choice).length !== 3 || typeof choice.conflict_id !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(choice.conflict_id) || ids.has(choice.conflict_id)) return false;
+    ids.add(choice.conflict_id);
+    if (choice.action === 'keep_both') {
+      try { text(choice.rename_to, '造型名称', 120, true); } catch { return false; }
+    } else if (choice.action !== 'merge_into' || !idOK(choice.target_look_id)) return false;
   }
+  return true;
+}
+
+export function lookPlan(group, primary, choices, references) {
+  if (choices !== undefined && !validLookChoices(choices)) throw badChoice();
+  const supplied = new Map((choices?.look_choices ?? []).map(choice => [choice.conflict_id, choice]));
   const taken = new Map(), items = [], conflicts = [], normalized = [];
   const active = person => person.looks.filter(activeChild);
   const keep = (person, look, name, action, result = look.id) => {
@@ -56,13 +68,12 @@ export function lookPlan(group, primary, choices, references) {
       const affected_shots = references.filter(ref => ref.looks.includes(look.id)).length;
       conflicts.push({ conflict_id, source_look_id: look.id, allowed_targets, suggested_name, default_choice, affected_shots });
       supplied.delete(conflict_id);
-      if (choice.action === 'keep_both' && Object.keys(choice).length === 3 && typeof choice.rename_to === 'string') {
-        let name;
-        try { name = text(choice.rename_to, '造型名称', 120, true); } catch { throw badChoice(); }
+      if (choice.action === 'keep_both') {
+        const name = choice.rename_to.trim();
         if (taken.has(nameKey(name))) throw badChoice();
         normalized.push({ ...choice, rename_to: name });
         keep(person, look, name, 'rename');
-      } else if (choice.action === 'merge_into' && Object.keys(choice).length === 3 && allowed_targets.includes(choice.target_look_id)) {
+      } else if (choice.action === 'merge_into' && allowed_targets.includes(choice.target_look_id)) {
         normalized.push(choice);
         keep(person, look, targets.find(target => target.id === choice.target_look_id).name, 'merge_into', choice.target_look_id);
       } else throw badChoice();
