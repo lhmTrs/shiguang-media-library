@@ -23,5 +23,3 @@
 /* 选择器要比它多一级（:not() 各算一级，同级时取决于样式文件加载顺序） */
 .ca-workspace .aa-decisions .aa-actions input[type=radio] { width: auto; min-width: 0; flex: none; margin: 0; padding: 0; border: 0; background: none; }
 .ca-workspace .aa-decisions .aa-map select { width: auto; }
-/* 一键统一浮窗（资产页内）的主按钮悬停时文字和底色同为绿色：同 merge.css 的修正 */
-.ca-workspace .ca-align button.ca-primary:hover:not(:disabled), .ca-workspace .aa-banner button.ca-primary:hover:not(:disabled) { color: #fff; filter: brightness(.95); }
