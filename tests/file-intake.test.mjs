@@ -589,20 +589,54 @@ test('generic video reveals the verified copy; duplicate resolution reveals the 
 
 test('a created folder stays registered if later batch preparation fails',async t=>{
   const f=await fixture(t);f.intake.generic={};
-  const {h,input}=await videoSelection(f,[f.file],{
+  const second=path.join(f.dir,'second.mp4');await fs.copyFile(f.file,second);
+  const {h,input}=await videoSelection(f,[f.file,second],{
     kind:'video',scope:'project',projectId:f.project.id,newFolder:{name:'已建目录'},
   });
-  const prepare=f.catalog.prepare.bind(f.catalog);
-  f.catalog.prepare=async()=>{throw Object.assign(Error('synthetic prepare refusal'),{code:'TARGET_CHANGED',status:409});};
+  input.targets[1].destination.projectId=f.other.id;
+  const folders=f.catalog.folders,create=folders.create.bind(folders);
+  folders.create=(id,...args)=>{
+    if(id===f.other.id)throw Object.assign(Error('synthetic folder refusal'),{code:'TARGET_CHANGED',status:409});
+    return create(id,...args);
+  };
   let folderId;
   await assert.rejects(f.intake.confirm(h.id,input),e=>{
     assert.equal(e.accepted,false);
-    assert.equal(e.resolvedFolders[0].name,'已建目录');folderId=e.resolvedFolders[0].id;
+    folderId=e.resolvedFolders[0].id;
+    assert.deepEqual(e.resolvedFolders,[{id:folderId,name:'已建目录',relativePath:'已建目录',projectId:f.project.id,parentId:'root'}]);
     return e.code==='TARGET_CHANGED';
   });
   assert.equal(f.intake.batches.size,0);assert.ok((await f.catalog.folders.resolve(f.project.id,folderId)).exists);
-  f.catalog.prepare=prepare;
+  assert.equal(folders.rows(f.other.id).length,0);
+  folders.create=create;
   const retry=await f.intake.confirm(h.id,input);
   assert.equal(retry.items[0].resolvedFolder.id,folderId);
+  assert.notEqual(retry.items[1].resolvedFolder.id,folderId);
+  assert.equal(folders.row(f.other.id,retry.items[1].resolvedFolder.id).name,'已建目录');
   await settled(f.intake);
+});
+
+test('retrying a standard project video rechecks directory numbers without changing its fixed prefix',async t=>{
+  const f=await fixture(t);f.intake.generic={};
+  const destination={kind:'video',scope:'project',projectId:f.project.id};
+  const first=await videoSelection(f,[f.file],destination);
+  const start=f.catalog.startIntake.bind(f.catalog);
+  f.catalog.startIntake=async()=>{throw Error('synthetic disk error');};
+  const failed=await f.intake.confirm(first.h.id,first.input);
+  await settled(f.intake);
+  const old=f.intake.batch(failed.id).items[0];
+  assert.equal(old.status,'failed');
+  assert.equal(old.plannedFileName,'右键项目_001.mp4');
+  f.catalog.startIntake=start;
+  f.projects.save(f.project.id,{name:'改名项目'});
+  const secondFile=path.join(f.dir,'second.mp4');
+  await fs.writeFile(secondFile,Buffer.concat([await fs.readFile(f.file),Buffer.from('other fixture')]));
+  const second=await videoSelection(f,[secondFile],destination);
+  const accepted=await f.intake.confirm(second.h.id,second.input);
+  await settled(f.intake);
+  assert.equal(f.intake.batch(accepted.id).items[0].resultFileName,'改名项目_001.mp4');
+  const retried=await f.intake.retry(failed.id,old.id);
+  assert.equal(retried.items[0].plannedFileName,'右键项目_002.mp4');
+  await settled(f.intake);
+  assert.equal(f.intake.batch(failed.id).items[0].resultFileName,'右键项目_002.mp4');
 });

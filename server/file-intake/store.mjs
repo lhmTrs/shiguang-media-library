@@ -359,7 +359,8 @@ export class FileIntake {
       const parentKey=stable([child.project.id,child.parentId]);
       const parent=confirmedParents.get(parentKey)??child.parent;
       const result=await this.resolveNewIntakeFolder({...child,parent},input.requestId);
-      created.set(child,result);resolvedFolders.push(result.folder);
+      created.set(child,result);
+      resolvedFolders.push({...result.folder,projectId:child.project.id,parentId:child.parentId});
       confirmedParents.set(parentKey,result.parent);
     }
     const finalPlanner=preflight.size?this.namePlanner():planner;
@@ -701,12 +702,16 @@ export class FileIntake {
   async retry(id,itemId) {return this.serial(async()=>{
     this.assertOpen();const b=this.batch(id);this.assertLibrary(b);const i=b.items.find(i=>i.id===itemId);
     if(!i||i.status!=='failed')throw error('INTAKE_RETRY_REFUSED','只有明确失败的未完成文件可以重试');
-    const {catalog,projectId,target,folderId}=this.context(b,i);let r;try{r=catalog.receipt(projectId,i.requestId);}catch{}
+    const {catalog,projectId,target}=this.context(b,i);let r;try{r=catalog.receipt(projectId,i.requestId);}catch{}
     if(r?.status==='waiting'&&r.instance!==catalog.instance&&!r.published&&!catalog.running.has(i.requestId))
       await catalog.resolve(projectId,i.requestId,{choice:'cancel'});
     else if(r&&(r.status!=='failed'||r.published))throw error('INTAKE_RESULT_UNKNOWN','原导入可能已接收，请先核对原回执');
     await unchanged(i.path,i.identity);await catalog.current(projectId,target);
-    i.attempts.push({requestId:i.requestId,status:i.status,error:i.error});i.requestId=randomUUID();i.status='queued';i.error=undefined;
+    let plannedFileName=i.plannedFileName;
+    if(plannedFileName&&i.destination?.kind==='video'&&wantsStandard(i.destination,i.nameMode))
+      plannedFileName=await this.namePlanner().retryVideoName(plannedFileName,target.target,()=>this.verifyDestination(b,i));
+    i.attempts.push({requestId:i.requestId,status:i.status,error:i.error,plannedFileName:i.plannedFileName});
+    i.plannedFileName=plannedFileName;i.requestId=randomUUID();i.status='queued';i.error=undefined;
     this.summarize(b);await this.save(b);this.kick();return this.dto(b);
   });}
   beginClose(){this.closing=true;clearTimeout(this.timer);}
