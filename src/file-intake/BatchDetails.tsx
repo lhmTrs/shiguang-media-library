@@ -9,7 +9,7 @@ export function Destination({batch}: {batch: IntakeBatch}) {
 function previewUrl(value: string) {
   try {const url = new URL(value, location.href); return url.origin === location.origin && ['http:', 'https:'].includes(url.protocol) ? value : '';} catch {return '';}
 }
-function Conflict({item, disabled, resolve}: {item: IntakeItem; disabled: boolean; resolve: (input: ResolveInput) => void}) {
+function Conflict({item, disabled, resolve, prompt}: {item: IntakeItem; disabled: boolean; resolve: (input: ResolveInput) => void; prompt?: boolean}) {
   const [candidateId, setCandidateId] = useState(item.candidates?.[0]?.id || ''), [apply, setApply] = useState(false), [overwrite, setOverwrite] = useState(false), [confirmed, setConfirmed] = useState(false);
   const candidate = item.candidates?.find(c => c.id === candidateId), shots = candidate?.adoptedShots || [], media = previewUrl(candidate?.mediaUrl || '');
   return <div className="fi-conflict">
@@ -22,6 +22,7 @@ function Conflict({item, disabled, resolve}: {item: IntakeItem; disabled: boolea
       {(!item.destination||item.destination.scope==='project'&&item.destination.kind==='video')&&<button className="fi-danger-link" disabled={disabled || !candidate} aria-expanded={overwrite} onClick={() => {setOverwrite(v => !v); setConfirmed(false);}}>覆盖…</button>}
       <button disabled={disabled} onClick={() => resolve({choice: 'cancel'})}>取消此项</button>
     </div>
+    {prompt && <p className="fi-muted">选「复用已有文件」时，这次附的提示词不会替换那个视频原来的提示词。</p>}
     {overwrite && candidate && <section className="fi-warning" aria-label={'覆盖影响确认 ' + item.name}>
       <strong><AlertTriangle size={15}/>覆盖「{candidate.name}」</strong>
       <p>{shots.length ? '将解除以下镜号对目标视频的采用：' + shots.map(s => '镜 ' + s.number).join('、') : '没有受影响镜号。'} 覆盖不应用到后续项。</p>
@@ -53,7 +54,7 @@ export function BatchDetails({batch, busy = false, uncertain = false, resolve, r
         {item.status === 'source_retained' && <p className="fi-warning-copy">目标已登记，原文件未移除。不会重复复制。</p>}
         {item.status === 'managed' && <p className="fi-muted">保留原标签与关联 · {item.managedProjectName || (item.managedProjectId ? '原所属项目' : '全局素材库')}{item.managedProjectId ? '，可进入项目视频使用原移动入口。' : '，可进入素材查找查看。'}</p>}
         {(item.error || item.code) && <p className={batch.acknowledged ? 'fi-muted' : 'fi-error'} role={batch.acknowledged ? undefined : 'alert'}>{item.code && item.code + ' · '}{item.error}</p>}
-        {item.status === 'duplicate' && resolve && <Conflict key={conflictKey} item={item} disabled={busy || uncertain} resolve={input => resolve(item, input)}/>}
+        {item.status === 'duplicate' && resolve && <Conflict key={conflictKey} item={item} disabled={busy || uncertain} prompt={!!batch.prompt?.text} resolve={input => resolve(item, input)}/>}
         <div className="fi-actions">{item.status === 'failed' && !needsSelection(item) && !batch.acknowledged && retry && <button disabled={busy || uncertain} onClick={() => retry(item)}>重试此失败项</button>}{complete && onView && <button disabled={!viewable} title={!viewable ? '原所属项目尚未返回，请刷新核对' : ''} onClick={() => viewable && void onView(viewProject, viewId)}><FolderOpen size={14}/>{item.status === 'managed' ? item.managedProjectId ? '查看 / 移动已有文件' : '查看已有素材' : item.destination?.kind==='photo'&&item.destination.scope==='project'?'查看已绑定图片':viewProject?'查看项目视频':'查看素材'}</button>}</div>
       </li>;
     })}</ul>

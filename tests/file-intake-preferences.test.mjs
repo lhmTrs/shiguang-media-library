@@ -24,7 +24,46 @@ test('v1 routing migrates; accepted library choices preserve project history and
   assert.equal(restored.themeId,'midnight');
   assert.deepEqual(restored.snapshot(projects,(_p,id)=>id===folderB).routingPreferences,{
     lastProjectId:{photo:b,video:b},lastVideoFolderByProject:{[a]:'root',[b]:folderB},
-    lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},lastAudioKind:'sfx',mode:'move',standardNames:true,revealWhenDone:false,
+    lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},lastAudioKind:'sfx',mode:'move',standardNames:true,standardNamesChosen:true,revealWhenDone:false,
   });
   assert.equal(restored.snapshot([{id:b,archived:true}]).routingPreferences.lastProjectId.video,null);
+});
+
+test('standard naming defaults on until an explicit confirmed boolean choice survives restart',async t=>{
+  const dataDir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'sg-intake-naming-choice-')));
+  t.after(()=>fs.rm(dataDir,{recursive:true,force:true}));
+  const libraryId=randomUUID(),projectId=randomUUID(),folderId=randomUUID(),projects=[{id:projectId}];
+  const open=()=>new IntakePreferences({dataDir,libraryId}).init();
+  const first=await open();
+  assert.equal(first.routing.standardNames,true);
+  assert.equal(first.routing.standardNamesChosen,false);
+  const legacy={
+    version:2,libraryId,themeId:'midnight',
+    targets:{video:{kind:'video',scope:'project',projectId,folderId}},
+    routingPreferences:{
+      lastProjectId:{photo:projectId,video:projectId},lastVideoFolderByProject:{[projectId]:folderId},
+      lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},
+      lastAudioKind:'sfx',mode:'move',standardNames:false,revealWhenDone:true,
+    },
+  };
+  await fs.writeFile(first.file,JSON.stringify(legacy),{mode:0o600});
+  const migrated=await open(),expected={...legacy.routingPreferences,standardNames:true,standardNamesChosen:false};
+  assert.deepEqual(migrated.snapshot(projects).routingPreferences,expected);
+  assert.equal(migrated.themeId,'midnight');
+  await migrated.setTheme({themeId:'dark'});
+  const unrelated=await open();
+  assert.deepEqual(unrelated.snapshot(projects).routingPreferences,expected);
+  await unrelated.remember([legacy.targets.video]);
+  assert.deepEqual((await open()).snapshot(projects).routingPreferences,expected);
+  await unrelated.remember([legacy.targets.video],{standardNames:false});
+  const chosen=await open();
+  assert.deepEqual(chosen.snapshot(projects).routingPreferences,{...expected,standardNames:false,standardNamesChosen:true});
+  await chosen.setTheme({themeId:'forest'});
+  await chosen.remember([{kind:'music',scope:'library',directory:'配乐'}]);
+  const restarted=await open();
+  assert.equal(restarted.routing.standardNames,false);
+  assert.equal(restarted.routing.standardNamesChosen,true);
+  await restarted.remember([legacy.targets.video],{standardNames:true});
+  assert.equal((await open()).routing.standardNames,true);
+  assert.equal((await open()).routing.standardNamesChosen,true);
 });

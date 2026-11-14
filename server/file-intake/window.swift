@@ -144,6 +144,46 @@ guard args.count == 3, args[1] == "--url", let url = URL(string:args[2]),
       let fragment = url.fragment, fragment.hasPrefix("/file-intake/"),
       UUID(uuidString:String(fragment.dropFirst("/file-intake/".count))) != nil else {exit(2)}
 
+final class ClipboardTextBridge: NSObject, WKScriptMessageHandlerWithReply {
+    let pageURL: URL
+    let readText: () -> String?
+    weak var webView: WKWebView?
+
+    init(pageURL: URL, readText: @escaping () -> String? = {NSPasteboard.general.string(forType: .string)}) {
+        self.pageURL = pageURL
+        self.readText = readText
+        super.init()
+    }
+
+    func isIntakePage(_ candidate: URL?) -> Bool {
+        guard let candidate, let port = pageURL.port, (1...65535).contains(port),
+              let fragment = pageURL.fragment, fragment.hasPrefix("/file-intake/"),
+              UUID(uuidString: String(fragment.dropFirst("/file-intake/".count))) != nil else {return false}
+        return pageURL.scheme == "http" && pageURL.host == "127.0.0.1" &&
+            candidate.scheme == "http" && candidate.host == "127.0.0.1" && candidate.port == port &&
+            candidate.path == "/" && candidate.user == nil && candidate.password == nil &&
+            candidate.query == nil && candidate.fragment == fragment
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.name == "readClipboardText", message.body as? String == "read",
+              message.frameInfo.isMainFrame, let view = webView, message.webView === view,
+              message.frameInfo.securityOrigin.protocol == "http",
+              message.frameInfo.securityOrigin.host == "127.0.0.1",
+              message.frameInfo.securityOrigin.port == pageURL.port,
+              isIntakePage(message.frameInfo.request.url), isIntakePage(view.url) else {
+            replyHandler(nil, "CLIPBOARD_REQUEST_DENIED")
+            return
+        }
+        guard let text = readText(), !text.isEmpty else {replyHandler(["kind": "empty"], nil); return}
+        // JavaScript Array.from counts Unicode code points, including combining marks and emoji joins.
+        let length = text.unicodeScalars.count
+        if length > 10000 {replyHandler(["kind": "tooLong", "length": length], nil)}
+        else {replyHandler(["kind": "text", "text": text], nil)}
+    }
+}
+
 final class IntakeWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     static let frameName = "ShiguangIntakeWindow"
     static let headerHeight: CGFloat = 52
@@ -158,7 +198,10 @@ final class IntakeWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WK
         let config = WKWebViewConfiguration()
         config.userContentController.add(self,name:"intake")
         config.userContentController.add(self,name:"intakeAppearance")
+        let clipboard = ClipboardTextBridge(pageURL: url)
+        config.userContentController.addScriptMessageHandler(clipboard, contentWorld: .page, name: "readClipboardText")
         view = WKWebView(frame:.zero,configuration:config)
+        clipboard.webView = view
         view.navigationDelegate = self
         // Let the window colour show until the page paints, instead of a white flash.
         view.setValue(false, forKey:"drawsBackground")

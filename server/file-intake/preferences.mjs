@@ -9,7 +9,7 @@ const themes=new Set(['forest','dark','midnight','sepia','graphite','ocean']);
 const maxBytes=128*1024;
 export const defaultRoutingPreferences=()=>({
   lastProjectId:{photo:null,video:null},lastVideoFolderByProject:{},
-  lastLibraryDirectory:{photo:'',video:'',music:'',sfx:''},lastAudioKind:null,mode:'copy',standardNames:false,revealWhenDone:false,
+  lastLibraryDirectory:{photo:'',video:'',music:'',sfx:''},lastAudioKind:null,mode:'copy',standardNames:true,standardNamesChosen:false,revealWhenDone:false,
 });
 const validFolder=id=>uuid(id)||id==='root';
 const isAudio=kind=>kind==='music'||kind==='sfx';
@@ -47,7 +47,10 @@ function loadRouting(raw) {
   }
   if(isAudio(raw?.lastAudioKind))r.lastAudioKind=raw.lastAudioKind;
   if(raw?.mode==='move')r.mode='move';
-  r.standardNames=raw?.standardNames===true;
+  // Older versions saved false before the user had a choice. Only a marked,
+  // explicit confirmation may carry that false across restarts.
+  r.standardNamesChosen=raw?.standardNamesChosen===true;
+  r.standardNames=!r.standardNamesChosen||raw?.standardNames!==false;
   r.revealWhenDone=raw?.revealWhenDone===true;
   return r;
 }
@@ -103,7 +106,10 @@ export class IntakePreferences {
     return this.update(next=>{
       for(const t of safe){next.targets[t.kind]=t;recordTarget(next.routingPreferences,t);}
       if(mode==='copy'||mode==='move')next.routingPreferences.mode=mode;
-      if(typeof standardNames==='boolean')next.routingPreferences.standardNames=standardNames;
+      if(typeof standardNames==='boolean'){
+        next.routingPreferences.standardNames=standardNames;
+        next.routingPreferences.standardNamesChosen=true;
+      }
       if(safe.length===1&&safe[0].kind==='video'&&typeof revealWhenDone==='boolean')
         next.routingPreferences.revealWhenDone=revealWhenDone;
     });
