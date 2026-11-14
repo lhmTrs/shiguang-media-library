@@ -126,8 +126,14 @@ export const promptLength = (text: string) => Array.from(text.trim()).length;
  */
 export function PromptField({value, locked, problem, onChange}: {value: string; locked: boolean; problem?: string; onChange: (text: string) => void}) {
   const [open, setOpen] = useState(false), [notice, setNotice] = useState(''), [reading, setReading] = useState(false);
-  const box = useRef<HTMLTextAreaElement>(null), request = useRef(0), edited = useRef(false), alive = useRef(true);
+  const box = useRef<HTMLTextAreaElement>(null), request = useRef(0), edited = useRef(false), alive = useRef(true), selectFilled = useRef(false);
   useEffect(() => () => {alive.current = false;}, []);
+  // Select the clipboard text only once it is really in the box (the parent renders it a moment later).
+  useEffect(() => {
+    const el = box.current;
+    if (!selectFilled.current || !el || !value || el.value !== value) return;
+    selectFilled.current = false; el.focus(); el.select();
+  }, [value, open]);
   const focusBox = (selectAll: boolean) => requestAnimationFrame(() => {box.current?.focus(); if (selectAll) box.current?.select();});
   async function start() {
     const id = ++request.current; edited.current = false; setNotice(''); setOpen(true); onChange('');
@@ -138,7 +144,7 @@ export function PromptField({value, locked, problem, onChange}: {value: string; 
       const reply = await bridge.postMessage('read');
       // A late reply never overwrites what was typed meanwhile, nor a newer request.
       if (!alive.current || id !== request.current || edited.current) return;
-      if (reply?.kind === 'text' && typeof reply.text === 'string' && reply.text.trim()) {onChange(reply.text); focusBox(true); return;}
+      if (reply?.kind === 'text' && typeof reply.text === 'string' && reply.text.trim()) {selectFilled.current = true; onChange(reply.text); return;}
       if (reply?.kind === 'tooLong') setNotice('剪贴板里有 ' + reply.length + ' 字，超过 1 万字没有自动填。确实是提示词的话，请直接 ⌘V 粘贴。');
     } catch { /* No clipboard: fall back to the empty box. */ }
     finally {if (alive.current && id === request.current) setReading(false);}
@@ -149,7 +155,7 @@ export function PromptField({value, locked, problem, onChange}: {value: string; 
   return <div className="fi-prompt">
     {open ? <>
       <textarea ref={box} aria-label="提示词" className="fi-prompt-box" value={value} disabled={locked} placeholder={reading ? '正在读取剪贴板…' : '在这里 ⌘V 粘贴提示词'}
-        onChange={e => {edited.current = true; onChange(e.target.value);}} onBlur={fold}/>
+        onChange={e => {edited.current = true; selectFilled.current = false; onChange(e.target.value);}} onBlur={fold}/>
       <span className="fi-prompt-meta"><span>{length} 字</span><span>· ⌘V 粘贴，点别处收起</span><span className="fi-grow"/>
         <button type="button" className="fi-link-muted" disabled={locked} onMouseDown={e => e.preventDefault()} onClick={() => {request.current++; onChange(''); setOpen(false); setNotice('');}}>不附了</button></span>
     </> : value.trim() ? <div className="fi-prompt-line">
