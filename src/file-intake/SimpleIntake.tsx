@@ -1,7 +1,7 @@
 import {useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode} from 'react';
 import {ArrowRight, ChevronDown, ChevronRight, Film, Image as ImageIcon, Music, RefreshCw, X} from 'lucide-react';
 import {INTAKE_API, bytes, encoded, kindLabel, type IntakeFile, type RoutingOptions, type RoutingProject} from './types';
-import type {DestinationDraft} from './TargetEditor';
+import {findSibling, newFolderProblem, type DestinationDraft} from './TargetEditor';
 
 export type Row = {
   file: IntakeFile; name: string; destination: DestinationDraft | null; reason: string; hint?: string;
@@ -79,13 +79,17 @@ export function CategoryPopover({categories, count, onApply, onClose}: {categori
   </Popover>;
 }
 
-export function FolderPopover({options, projectId, folderId, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; count: number; onApply: (projectId: string, folderId: string) => void; onClose: () => void}) {
-  const [p, setP] = useState(projectId), [f, setF] = useState(folderId), project = options.projects.find(x => x.id === p);
+export function FolderPopover({options, projectId, folderId, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; count: number; onApply: (projectId: string, folderId: string, newFolder?: string) => void; onClose: () => void}) {
+  const [p, setP] = useState(projectId), [f, setF] = useState(folderId), [name, setName] = useState(''), project = options.projects.find(x => x.id === p);
+  const folders = project?.videoFolders || [], same = findSibling(folders, f, name), problem = name.trim() ? newFolderProblem(name) : '';
+  const apply = () => {if (!project || problem) return; if (name.trim() && !same) onApply(p, f, name.trim().normalize('NFC')); else onApply(p, same ? same.id : f);};
   return <Popover label="改视频去处" onClose={onClose}>
     <div className="fi-pop-title">把 {count} 个视频放进</div>
     <label>项目<select aria-label="视频项目" value={p} onChange={e => {setP(e.target.value); setF('root');}}>{options.projects.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{(project?.videoFolders || []).map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.relativePath || x.name}</option>)}</select></label>
-    <div className="fi-pop-actions"><button onClick={onClose}>取消</button><button className="fi-primary" disabled={!project} onClick={() => onApply(p, f)}>放进去</button></div>
+    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{folders.map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.relativePath || x.name}</option>)}</select></label>
+    <label>在这里新建（可不填）<input aria-label="新文件夹名字" value={name} onChange={e => setName(e.target.value)} placeholder="例如：A"/></label>
+    <small className={problem ? 'fi-error' : 'fi-muted'}>{problem || (same ? '已有同名文件夹「' + same.relativePath + '」，直接放进去' : name.trim() ? '点「收纳」时才真正建；取消收纳不会留下空文件夹' : '')}</small>
+    <div className="fi-pop-actions"><button onClick={onClose}>取消</button><button className="fi-primary" disabled={!project || !!problem} onClick={apply}>放进去</button></div>
   </Popover>;
 }
 
@@ -118,9 +122,11 @@ export {ImageIcon};
  * in the intake window can't take the page's font and falls back to a serif face. Recently used
  * projects come first with the reason; a search box appears once there are more than eight.
  */
-export function ProjectPicker({projects, value, placeholder, recent, disabled, onChange}: {
+export function ProjectPicker({projects, value, placeholder, recent, disabled, onChange, linkLabel}: {
   projects: RoutingProject[]; value: string; placeholder: string; recent: {id: string; why: string}[];
   disabled?: boolean; onChange: (projectId: string) => void;
+  /** Shown as a quiet text link (e.g. 换集…) instead of the project-name button. */
+  linkLabel?: string;
 }) {
   const [open, setOpen] = useState(false), [query, setQuery] = useState(''), [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -142,12 +148,14 @@ export function ProjectPicker({projects, value, placeholder, recent, disabled, o
     className="fi-picker-option" onMouseEnter={() => setActive(i)} onMouseDown={e => e.preventDefault()} onClick={() => pick(p)}>
     <span>{p.name}</span>{why && <small>{why}</small>}</div>;
   return <span className="fi-anchor">
-    <button type="button" className={'fi-picker' + (open ? ' fi-picker-open' : '')} data-popover-trigger aria-label="整批项目" aria-haspopup="listbox" aria-expanded={open}
+    {linkLabel ? <button type="button" className="fi-link fi-picker-link" data-popover-trigger aria-label={linkLabel.replace(/…$/, '')} aria-haspopup="listbox" aria-expanded={open}
+      data-value={value} disabled={disabled} onClick={() => open ? close() : setOpen(true)}>{linkLabel}</button>
+    : <button type="button" className={'fi-picker' + (open ? ' fi-picker-open' : '')} data-popover-trigger aria-label="整批项目" aria-haspopup="listbox" aria-expanded={open}
       data-value={value} disabled={disabled} title="选一个项目，名字里没写项目的文件都去这里；名字里写了项目的、单独设置过的不受影响"
       onClick={() => open ? close() : setOpen(true)} onKeyDown={e => {if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {e.preventDefault(); setOpen(true);}}}>
       <span className={current ? '' : 'fi-picker-placeholder'}>{current ? current.name : placeholder}</span><ChevronDown size={14} aria-hidden="true"/>
-    </button>
-    {open && <Popover label="选择项目" align="left" onClose={close}>
+    </button>}
+    {open && <Popover label="选择项目" align={linkLabel ? 'right' : 'left'} onClose={close}>
       <div className="fi-picker-pop" onKeyDown={keys}>
         {projects.length > 8 && <input className="fi-picker-search" aria-label="搜索项目" placeholder="搜索项目" value={query} autoFocus
           onChange={e => {setQuery(e.target.value); setActive(0);}} aria-controls="fi-project-list" aria-activedescendant={flat[active] ? 'fi-project-' + flat[active].id : undefined}/>}
@@ -164,3 +172,4 @@ export function ProjectPicker({projects, value, placeholder, recent, disabled, o
     </Popover>}
   </span>;
 }
+

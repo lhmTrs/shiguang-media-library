@@ -193,6 +193,18 @@ export class ManagedIntakeCatalog {
     assertDirectories(state.proofs);
     return {target,destination:d,assetName:asset?.name,verify:()=>assertDirectories(state.proofs)};
   }
+  async previewLibraryTarget(value) {
+    const d=destination(value);
+    const state=await this.readBase(d.kind);
+    let target=state.base;
+    for(const name of d.directory.split('/').filter(Boolean)) {
+      target=path.join(target,name);
+      state.proofs.push(await this.ensureDirectory(target,{create:false}));
+    }
+    const verify=()=>assertDirectories(state.proofs);
+    verify();
+    return {target,verify};
+  }
   async base(kind,scope='library') {
     this.writable();
     const base=this.basePath(kind,scope);
@@ -277,9 +289,9 @@ export class ManagedIntakeCatalog {
     assertDirectories(state.proofs);await fs.mkdir(path.join(parent,child),{mode:0o700});assertDirectories(state.proofs);
     await this.ensureDirectory(path.join(parent,child));return {id:next,name:next,relativePath:next};
   });}
-  currentSync(target,{image=true}={}) {
+  currentSync(target,{image=true,write=true}={}) {
     this.assertTargetLibrary(target);
-    this.writable();
+    if(write)this.writable();
     if(!target || target.version!==1 || !uuid(target.requestGroupId) || canonical(destination(target.destination))!==canonical(target.destination)) throw error('TARGET_CHANGED','固定目标无效');
     const d=target.destination, expectedBase=path.join(this.directory,d.scope==='project'?'picture':rootNames[d.kind]);
     if(target.base!==expectedBase || target.root.path!==expectedBase || target.root.kind!==d.kind || !within(expectedBase,target.target)) throw error('TARGET_CHANGED','目标不属于原系统目录');
@@ -321,7 +333,7 @@ export class ManagedIntakeCatalog {
     return {
       lib:this.lib,db:this.db,media:this.media,running:this.running,instance:this.instance,
       project(id,write=false){placeholder(id);return bound.destination.scope==='project'?owner.project(bound.destination.projectId,write):{id:'',name:labels[bound.destination.kind]};},
-      async current(id,state=bound){placeholder(id);if(canonical(state)!==canonical(bound)) throw error('TARGET_CHANGED','不能替换已确认目标');return owner.current(bound);},
+      async current(id,state=bound,options){placeholder(id);if(canonical(state)!==canonical(bound)) throw error('TARGET_CHANGED','不能替换已确认目标');return owner.current(bound,options);},
       startIntake(id,input,state=bound){placeholder(id);if(canonical(state)!==canonical(bound)) throw error('TARGET_CHANGED','不能替换已确认目标');return owner.start(bound,input);},
       upload(id,requestId,stream){placeholder(id);return owner.upload(bound,requestId,stream);},
       receipt(id,requestId){placeholder(id);return owner.read(bound,requestId);},

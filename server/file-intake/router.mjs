@@ -45,7 +45,8 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
     }));
   });
   route('get','/projects/:id/folders',async(req,res)=>res.json(await withActivity(()=>store.folders(req.params.id))));
-  route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body))));
+  const desktopSession=(req,res)=>['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)?res.locals.localSessionId:undefined;
+  route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body,{sessionId:desktopSession(req,res)}))));
     route('get','/media-imports/:requestId/candidates/:candidateId/media',async(req,res)=>{
     const opened=await store.generic.openCandidate(req.params.requestId,req.params.candidateId);let done=false;
     const release=()=>{if(done)return;done=true;store.catalog.media.responses.delete(res);void store.catalog.media.release(opened.handle).catch(()=>{});};
@@ -54,11 +55,12 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   });
   route('get','/batches',(_req,res)=>res.json(store.list()));
   route('get','/batches/:id',(req,res)=>res.json(store.dto(store.batch(req.params.id))));
+  route('post','/batches/:id/open-folder',async(req,res)=>res.json(await withActivity(()=>store.openFolder(req.params.id,req.body,{sessionId:desktopSession(req,res)}))));
   route('post','/batches/:id/acknowledge',async(req,res)=>res.json(await withActivity(()=>store.acknowledge(req.params.id,req.body))));
   route('post','/batches/:id/reconcile',async(req,res)=>res.json(await withActivity(()=>store.reconcile(req.params.id))));
-  route('post','/batches/:id/items/:item/resolve',async(req,res)=>res.json(await store.resolve(req.params.id,req.params.item,req.body)));
+  route('post','/batches/:id/items/:item/resolve',async(req,res)=>res.json(await withActivity(()=>store.resolve(req.params.id,req.params.item,req.body))));
   route('post','/batches/:id/items/:item/retry',async(req,res)=>res.json(await withActivity(()=>store.retry(req.params.id,req.params.item))));
   router.use((e,_req,res,_next)=>{if(res.destroyed||res.writableEnded)return;if(res.headersSent){res.destroy();return;}res.status(e.status||500).json({code:e.code||'INTAKE_FAILED',
-    error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{})});});
+    error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{}),...(e.resolvedFolders?{resolvedFolders:e.resolvedFolders}:{})});});
   return router;
 }

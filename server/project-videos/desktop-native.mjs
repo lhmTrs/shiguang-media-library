@@ -28,6 +28,8 @@ const reasons = {
   INVALID_FILES: '请选择有效的绝对文件路径',
   EMPTY_FILES: '没有可操作的文件，未写入剪贴板',
   FILE_UNAVAILABLE: '部分文件已不可用，未执行桌面操作',
+  FOLDER_UNAVAILABLE: '目标文件夹已移动或替换',
+  FOLDER_OPEN_FAILED: '系统未接受打开目标文件夹的请求',
   INVALID_CHANGE_COUNT: '剪贴板版本无效',
 };
 const fault = (code, extra) => error(code, reasons[code] || reasons.NATIVE_FAILED,
@@ -271,7 +273,7 @@ export class ProjectVideoDesktopNative {
   }
 
   async invoke(binary, request) {
-    const mutation = ['copy-files', 'reveal-files'].includes(request.operation);
+    const mutation = ['copy-files', 'reveal-files', 'open-folder'].includes(request.operation);
     const input = JSON.stringify({protocol: PROTOCOL, ...request});
     if (Buffer.byteLength(input) > MAX_INPUT) throw fault('INVALID_FILES');
     const result = await this.run(binary, [], input, request.operation==='detect-face'?1500:5000, {mutation});
@@ -280,7 +282,7 @@ export class ProjectVideoDesktopNative {
     if (result.signal || data?.protocol !== PROTOCOL || typeof data.ok !== 'boolean') throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: mutation});
     if (!data.ok) {
       const code = Object.hasOwn(reasons, data.code) ? data.code : 'NATIVE_FAILED';
-      throw fault(code, {effectUnknown: mutation && !['CLIPBOARD_CHANGED', 'EMPTY_FILES', 'INVALID_FILES', 'FILE_UNAVAILABLE', 'INVALID_CHANGE_COUNT', 'DESKTOP_SESSION_UNAVAILABLE', 'DESKTOP_PLATFORM_UNAVAILABLE'].includes(code)});
+      throw fault(code, {effectUnknown: mutation && !['CLIPBOARD_CHANGED', 'EMPTY_FILES', 'INVALID_FILES', 'FILE_UNAVAILABLE', 'FOLDER_UNAVAILABLE', 'FOLDER_OPEN_FAILED', 'INVALID_CHANGE_COUNT', 'DESKTOP_SESSION_UNAVAILABLE', 'DESKTOP_PLATFORM_UNAVAILABLE'].includes(code)});
     }
     if (result.code !== 0) throw fault('NATIVE_FAILED', {effectUnknown: mutation});
     return data;
@@ -346,12 +348,21 @@ export class ProjectVideoDesktopNative {
     return work;
   }
 
-  revealFiles(paths,{beforeDispatch}={}) {
+  revealFiles(paths,{beforeDispatch,identity}={}) {
     return this.track(async () => {
       const files = this.files(paths);
-      const data = await this.invoke(await this.prepareDispatch(beforeDispatch), {operation: 'reveal-files', paths: files});
+      const data = await this.invoke(await this.prepareDispatch(beforeDispatch), {operation: 'reveal-files', paths: files, ...(identity?{identity}: {})});
       if (data.ack !== 'dispatched' || data.count !== files.length) throw fault('NATIVE_PROTOCOL_ERROR', {effectUnknown: true});
       return {ack: 'dispatched', count: data.count};
+    });
+  }
+
+  openFolder(folder,{identity,beforeDispatch}={}) {
+    return this.track(async()=>{
+      const [target]=this.files([folder]);
+      const data=await this.invoke(await this.prepareDispatch(beforeDispatch),{operation:'open-folder',target,identity});
+      if(data.ack!=='dispatched')throw fault('NATIVE_PROTOCOL_ERROR',{effectUnknown:true});
+      return {ack:'dispatched'};
     });
   }
 

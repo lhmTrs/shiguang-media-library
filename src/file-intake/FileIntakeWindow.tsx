@@ -1,5 +1,5 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
-import {AlertCircle, CheckCircle2, RefreshCw, ShieldCheck} from 'lucide-react';
+import {AlertCircle, CheckCircle2, Film, FolderOpen, MoreHorizontal, RefreshCw, ShieldCheck} from 'lucide-react';
 import {GlobalFeedback, notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {applyTheme, readTheme} from '../theme';
 import type {ThemeId} from '../theme-list';
@@ -10,6 +10,8 @@ import {intakeSession} from './session';
 import {TargetEditor, initialDestination, submittedDestination, type DestinationDraft} from './TargetEditor';
 import {barDefault, stem, suggestAll} from './routing.mjs';
 import {CategoryPopover, FolderPopover, GroupHeader, Popover, ProjectPicker, PutPopover, RowName, Thumb, fileMeta, libraryTitle, type Group, type Row} from './SimpleIntake';
+import {PromptField, VideoDestination, promptLength} from './VideoForm';
+import {newFolderProblem} from './TargetEditor';
 import {INTAKE_API, bytes, encoded, errorMessage, knownRefusal, sameTarget, type ConfirmInput, type Handoff, type ImageProposal, type IntakeBatch, type IntakeRequest, type MediaKind, type NamePreviewItem, type RoutingOptions} from './types';
 import './file-intake.css';
 
@@ -28,16 +30,19 @@ const applyLocal = (id: ThemeId) => (applyTheme as (id: ThemeId, options?: {sync
 const FINDER_NAMES: Record<string, string> = {Downloads: '下载', Desktop: '桌面', Documents: '文稿', Pictures: '图片', Movies: '影片', Music: '音乐'};
 const folderLabel = (p: string) => {const name = p.split('/').slice(-2, -1)[0] || '访达'; return FINDER_NAMES[name] || name;};
 
+/** A receipt for exactly one video: the window stays open for 打开目标文件夹 instead of closing itself. */
+const oneVideo = (b: IntakeBatch) => b.version === 2 && b.items.length === 1 && (b.items[0].destination?.kind === 'video' || b.items[0].mediaKind === 'video');
+
 function readAttempt(id: string): ConfirmInput | null {
   try {const v = JSON.parse(sessionStorage.getItem('shiguang.file-intake.' + id) || 'null'); return v && typeof v.requestId === 'string' && ['copy', 'move'].includes(v.mode) && Array.isArray(v.fileIds) && v.fileIds.every((f: unknown) => typeof f === 'string') && (v.version===2&&Array.isArray(v.targets)||typeof v.projectId==='string'&&typeof v.folderId==='string') ? v : null;} catch {return null;}
 }
 const proposalKey = (d: DestinationDraft) => [d.projectId, d.characterName, d.lookName].join('\u0000');
 // Where a previewed standard name was computed for; a stale preview is never shown under a new destination.
-const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderId, d.assetId, d.characterName, d.lookName].join('|');
+const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderId, d.newFolder?.name, d.assetId, d.characterName, d.lookName].join('|');
 const isCharacter = (d: DestinationDraft | null): d is DestinationDraft => !!d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind;
 const groupKey = (d: DestinationDraft | null, pending: boolean) => pending || !d ? 'decide'
   : d.scope === 'library' ? 'library:' + d.kind + ':' + (d.directory || '')
-  : d.kind === 'video' ? 'video:' + d.projectId + ':' + (d.folderId || 'root')
+  : d.kind === 'video' ? 'video:' + d.projectId + ':' + (d.folderId || 'root') + (d.newFolder ? '+' + d.newFolder.name : '')
   : d.assetKind ? 'asset:' + d.projectId : 'character:' + d.projectId;
 
 /** Tell the native shell which appearance the page settled on, so its title area matches. */
@@ -52,7 +57,7 @@ function syncAppearance() {
 /** Standalone native/browser confirmation entry. It never boots the full App. */
 export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [api, setApi] = useState<IntakeRequest | null>(null), [handoff, setHandoff] = useState<Handoff | null>(null);
-  const [selected, setSelected] = useState<string[]>([]), [mode, setMode] = useState<'copy' | 'move'>('copy'), [standardNames, setStandardNames] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]), [mode, setMode] = useState<'copy' | 'move'>('copy'), [standardNames, setStandardNames] = useState(false), [reveal, setReveal] = useState(false), [promptText, setPromptText] = useState('');
   const [options, setOptions] = useState<RoutingOptions | null>(null), [optionsError, setOptionsError] = useState(''), [optionsReload, setOptionsReload] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [proposals, setProposals] = useState<Record<string, ProposalState>>({});
   const [names, setNames] = useState<Record<string, NamePreviewItem & {for?: string}>>({}), [namesError, setNamesError] = useState('');
@@ -61,6 +66,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const [projectOverride, setProjectOverride] = useState(''), [panelAt, setPanelAt] = useState<{top: number; left: number; maxHeight: number} | null>(null), [flash, setFlash] = useState('');
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [unknown, setUnknown] = useState(false), [batch, setBatch] = useState<IntakeBatch | null>(null), [reload, setReload] = useState(0);
   const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing'), [closeIn, setCloseIn] = useState(0);
+  // 打开目标文件夹 on a one-video receipt: idle → sending → done, or an error that keeps the window open.
+  const [folderOpen, setFolderOpen] = useState<{state: 'idle' | 'sending' | 'done'; error?: string}>({state: 'idle'});
   const alive = useRef(true), sending = useRef(false), initialized = useRef(''), attempt = useRef<ConfirmInput | null>(null), accepted = useRef('');
   useFeedbackToast(error, {source: '素材收纳'});
   useEffect(() => {applyLocal(readTheme()); syncAppearance(); alive.current = true; return () => {alive.current = false;};}, []);
@@ -78,10 +85,17 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     setBatch(value); setUnknown(false); remember(null);
     if (submitted && accepted.current !== value.id) {
       accepted.current = value.id; notifyFeedback({kind: 'success', source: '素材收纳', message: '收纳任务已接收，可在拾光顶栏“文件任务”查看真实进度。'});
-      if (bridge()) {post('accepted'); setCloseIn(CLOSE_AFTER_SECONDS);}
+      // One video stays open so 打开目标文件夹 can be clicked; every other receipt closes on its own.
+      if (bridge() && !oneVideo(value)) {post('accepted'); setCloseIn(CLOSE_AFTER_SECONDS);}
     }
   }
   useEffect(() => {if (!flash) return; const t = setTimeout(() => setFlash(''), 1200); return () => clearTimeout(t);}, [flash]);
+  const confirmRef = useRef<() => void>(() => undefined);
+  const latestConfirm = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    const keys = (e: KeyboardEvent) => {if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.repeat) {e.preventDefault(); confirmRef.current();}};
+    window.addEventListener('keydown', keys); return () => window.removeEventListener('keydown', keys);
+  }, []);
   // Countdown only mirrors the shell's own close timer so the summary stays readable.
   useEffect(() => {
     if (!closeIn) return;
@@ -105,6 +119,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         const prefs = value.routingPreferences;
         setMode(saved?.mode || prefs?.mode || 'copy');
         setStandardNames(saved?.version === 2 ? !!saved.standardNames : !!prefs?.standardNames);
+        setReveal(saved?.version === 2 && saved.revealWhenDone !== undefined ? saved.revealWhenDone : !!prefs?.revealWhenDone);
+        setPromptText(saved?.version === 2 ? saved.prompt?.text || '' : '');
         if (saved) setDrafts(Object.fromEntries(value.files.map(f => {
           const d = saved.version === 2 ? saved.targets.find(t => t.fileId === f.id)?.destination || null : {kind: 'video' as const, scope: 'project' as const, projectId: saved.projectId, folderId: saved.folderId};
           return [f.id, {destination: d, manual: true, fileName: d?.fileName}];
@@ -159,11 +175,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const p = isCharacter(destination) && destination.projectId && destination.characterName && destination.lookName ? proposals[proposalKey(destination)] : undefined;
     const needsProposal = isCharacter(destination) && !decision;
     const assetMissing = !!destination?.assetKind && !destination.assetId;
-    const ready = !!destination && !decision && !assetMissing && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId);
+    const ready = !!destination && !decision && !assetMissing && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId) && !(destination.newFolder && newFolderProblem(destination.newFolder.name));
     const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
       reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, fallbackLook: decision ? s?.fallbackLook : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
-      problem: needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
+      problem: needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : destination?.newFolder && newFolderProblem(destination.newFolder.name) ? '新文件夹名字：' + newFolderProblem(destination.newFolder.name) : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
   });
   // Character targets are checked against the project before confirmation. Each key is
   // fetched once; a late answer only fills its own key, so it cannot overwrite a newer choice.
@@ -201,8 +217,14 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const rename = (id: string, fileName: string) => setDrafts(old => ({...old, [id]: {...old[id], destination: old[id]?.destination ?? null, manual: !!old[id]?.manual, fileName}}));
   const remove = (id: string) => {setSelected(old => old.filter(x => x !== id)); setChecked(old => old.filter(x => x !== id));};
   const pending = rows.filter(r => !r.ready).length;
+  // 收完在访达中显示 only applies to one video; it is remembered, and greyed out with the reason otherwise.
+  const singleVideo = rows.length === 1 && rows[0].file.mediaKind === 'video', anyVideo = rows.some(r => r.file.mediaKind === 'video');
   const checking = handoff?.preparation === 'checking', prepFailed = handoff?.preparation === 'failed';
-  const canConfirm = !loading && !busy && !checking && !prepFailed && !!api && files.length > 0 && !pending && !(mode === 'move' && !handoff?.canTrash);
+  // A prompt goes with the whole batch and only to project videos (the server refuses anything else).
+  const hasPrompt = !!promptText.trim();
+  const promptProblem = !hasPrompt ? '' : rows.some(r => !(r.destination?.kind === 'video' && r.destination.scope === 'project')) ? '提示词只能附给项目里的视频：请把去处改回项目，或者去掉提示词'
+    : promptLength(promptText) > 200000 ? '提示词太长了（超过 20 万字），请删减后再收纳' : '';
+  const canConfirm = !loading && !busy && !checking && !prepFailed && !!api && files.length > 0 && !pending && !promptProblem && !(mode === 'move' && !handoff?.canTrash);
 
   async function reconcile() {
     if (!api || sending.current) return; sending.current = true; setBusy(true); setError('');
@@ -214,21 +236,68 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     } catch (e) {if (alive.current) {setUnknown(true); setError(errorMessage(e));}}
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
+  async function openFolder() {
+    if (!api || !batch || folderOpen.state === 'sending') return;
+    setFolderOpen({state: 'sending'});
+    try {
+      const r = await api<{status?: string}>(INTAKE_API + '/batches/' + encoded(batch.id) + '/open-folder', {});
+      if (!alive.current) return;
+      if (r?.status !== 'dispatched') throw Object.assign(Error('访达没有确认收到打开请求'), {code: 'REVEAL_UNKNOWN'});
+      setFolderOpen({state: 'done'});
+      if (native) post('close');
+    } catch (e) {
+      if (!alive.current) return;
+      const err = e as {status?: number; code?: string; message?: string};
+      // A lost answer may still have opened Finder: say so instead of retrying behind the user's back.
+      const unsure = !err.status || err.code === 'REVEAL_UNKNOWN' || err.code === 'INTAKE_DESKTOP_UNKNOWN';
+      setFolderOpen({state: 'idle', error: unsure ? '没能确认访达是否已经打开，请先看一眼访达；没打开再点一次。'
+        : err.code === 'INTAKE_DESKTOP_UNAVAILABLE' ? '这台电脑现在连不上访达，没能打开文件夹。收纳不受影响，可以稍后在拾光里查看这个视频。'
+        : err.code === 'INTAKE_DESKTOP_FAILED' ? '访达拒绝了这次打开请求：' + (err.message || '') + '。收纳不受影响。'
+        : err.code === 'TARGET_CHANGED' ? '目标文件夹已经不在原来的位置：' + (err.message || '') + '。可在拾光里查看这个视频。' : errorMessage(e)});
+    }
+  }
+  // A folder named here may already exist when the batch itself failed: say so, and point the rows at it
+  // so the next 收纳 uses that folder instead of asking to create it again.
+  type BuiltFolder = {id: string; name: string; relativePath: string; projectId?: string; parentId?: string};
+  const builtFolders = (e: unknown) => ((e as {resolvedFolders?: BuiltFolder[]})?.resolvedFolders || []).filter(f => f && typeof f.id === 'string');
+  const builtNote = (e: unknown) => {const f = builtFolders(e); return f.length ? '。文件夹「' + f.map(x => x.relativePath || x.name).join('」「') + '」已经建好，下次直接放进去' : '';};
+  // Only a row with proof of the same project and the same parent takes the built folder. A receipt without that
+  // proof (older service) leaves the pending folder as it is; the server matches it again on the next 收纳.
+  const sameName = (a: string, b: string) => a.normalize('NFC').toLocaleLowerCase() === b.normalize('NFC').toLocaleLowerCase();
+  const adoptBuilt = (e: unknown) => {
+    const built = builtFolders(e).filter(f => typeof f.projectId === 'string'); if (!built.length) return;
+    setOptionsReload(n => n + 1);
+    for (const r of rows) {
+      const d = r.destination; if (!d?.newFolder || d.kind !== 'video' || d.scope !== 'project') continue;
+      const parent = d.folderId && d.folderId !== 'root' ? d.folderId : 'root';
+      const hit = built.find(f => f.projectId === d.projectId && (f.parentId || 'root') === parent && sameName(f.name, d.newFolder!.name));
+      if (hit) setDestination([r.file.id], {...d, folderId: hit.id, newFolder: undefined});
+    }
+  };
+  // Leave any field first (a pending folder name settles on blur), then confirm with the state that follows.
+  latestConfirm.current = () => void confirm();
+  confirmRef.current = () => {(document.activeElement as HTMLElement | null)?.blur?.(); setTimeout(() => latestConfirm.current(), 0);};
   async function confirm() {
     if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || unknown || handoff.batchId || batch || !canConfirm) return;
-    const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames,
+    const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}), ...(hasPrompt ? {prompt: {text: promptText.trim()}} : {}),
       targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
-    catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。'));}}
+    catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + builtNote(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。')); adoptBuilt(e);}}
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
 
   // Groups: what needs a decision first, then project targets, then the general library.
   const projectName = (id?: string) => options?.projects.find(p => p.id === id)?.name || handoff?.projects.find(p => p.id === id)?.name || '项目';
-  const folderName = (pid?: string, fid?: string) => !fid || fid === 'root' ? '项目根目录' : options?.projects.find(p => p.id === pid)?.videoFolders.find(f => f.id === fid)?.relativePath || '项目文件夹';
+  // Episodes show where they sit (剧 › 季 › 集); the project name stays the fallback.
+  const projectTitle = (id?: string) => {
+    const s = options?.projects.find(p => p.id === id)?.series;
+    return s ? [s.name, s.seasonNo != null ? s.seasonLabel?.trim() || '第' + s.seasonNo + '季' : '', '第' + s.episodeNo + '集'].filter(Boolean).join(' › ') : projectName(id);
+  };
+  const folderPath = (pid?: string, fid?: string) => !fid || fid === 'root' ? '' : options?.projects.find(p => p.id === pid)?.videoFolders.find(f => f.id === fid)?.relativePath || '项目文件夹';
+  const folderName = (pid?: string, fid?: string, created?: {name: string}) => created ? [folderPath(pid, fid), created.name].filter(Boolean).join('/') + '（收纳时新建）' : folderPath(pid, fid) || '项目根目录';
   const destLabel = (d: DestinationDraft) => d.scope === 'library' ? libraryTitle(d.kind, d.directory || '')
-    : d.kind === 'video' ? projectName(d.projectId) + ' › ' + folderName(d.projectId, d.folderId)
+    : d.kind === 'video' ? projectTitle(d.projectId) + ' › ' + folderName(d.projectId, d.folderId, d.newFolder)
     : d.assetKind ? projectName(d.projectId) + ' › ' + (options?.projects.find(p => p.id === d.projectId)?.assets.find(a => a.id === d.assetId)?.name || (d.assetKind === 'scene' ? '场景' : '道具'))
     : projectName(d.projectId) + ' › ' + d.characterName + ' › ' + d.lookName;
   const groups: Group[] = [];
@@ -237,7 +306,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     if (!g) {
       const d = r.destination;
       g = key === 'decide' ? {key, title: '需要你决定', detail: '', tone: 'decide', rows: [], photos: false}
-        : key.startsWith('video:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 › ' + folderName(d!.projectId, d!.folderId), detail: r.reason, tone: 'video', rows: [], photos: false}
+        : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + folderName(d!.projectId, d!.folderId, d!.newFolder), detail: r.reason, tone: 'video', rows: [], photos: false}
         : key.startsWith('character:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 人物照片', detail: '', tone: 'project', rows: [], photos: true}
         : key.startsWith('asset:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 场景和道具', detail: '', tone: 'project', rows: [], photos: true}
         : {key, title: libraryTitle(d!.kind, d!.directory || ''), detail: d!.kind === 'photo' && !d!.directory ? '名字认不出，将进入摄影照片' : '', tone: d!.kind === 'music' || d!.kind === 'sfx' ? 'audio' : 'library', rows: [], photos: d!.kind === 'photo'};
@@ -328,7 +397,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {g.photos && g.key.startsWith('library:') && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'cat:' + g.key ? '' : 'cat:' + g.key)}>改分类…</button>
         {popover === 'cat:' + g.key && <CategoryPopover categories={options.photoCategories} count={targets.length} onClose={() => setPopover('')} onApply={dir => {setDestination(targets, {kind: 'photo', scope: 'library', directory: dir}); setChecked([]); setPopover('');}}/>}</span>}
       {g.tone === 'video' && options && first && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'folder:' + g.key ? '' : 'folder:' + g.key)}>改文件夹…</button>
-        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId) => {setDestination(ids, {kind: 'video', scope: 'project', projectId, folderId}); setPopover('');}}/>}</span>}
+        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId, newFolder) => {setDestination(ids, {kind: 'video', scope: 'project', projectId, folderId, ...(newFolder ? {newFolder: {name: newFolder}} : {})}); setPopover('');}}/>}</span>}
     </>;
     return <section key={g.key} className={'fi-group fi-group-' + g.tone} aria-label={g.title}>
       <GroupHeader group={g} open={opened} toggle={() => setOpen(o => ({...o, [g.key]: !opened}))}
@@ -349,6 +418,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   }
 
   const single = rows.length === 1 && rows[0];
+  const singleNameError = single && standardNames && single.destination && names[single.file.id]?.for === nameKey(single.destination) ? names[single.file.id]?.error : undefined;
+  const projectOf = (r: Row) => r.destination?.kind === 'video' && r.destination.scope === 'project' ? options?.projects.find(p => p.id === r.destination!.projectId) : undefined;
+  // Videos get the form layout (放到 / 文件夹 / 名字 / 收完后); photos, audio and mixed batches keep the grouped list.
+  const singleVideoForm = !!single && single.file.mediaKind === 'video' && !single.decision && !!projectOf(single);
+  const videoForm = rows.length > 1 && !!options && rows.every(r => r.file.mediaKind === 'video' && !r.decision);
+  const oneVideoReceipt = !!batch && receiptKind === 'submitted' && oneVideo(batch);
   const lastIds: {photo?: string | null; video?: string | null} = prefs?.lastProjectId || {};
   const recentProjects = [...new Set([lastIds.photo, lastIds.video].filter((x): x is string => !!x))]
     .map(id => ({id, why: lastIds.photo === id && lastIds.video === id ? '上次照片和视频' : lastIds.photo === id ? '上次照片' : '上次视频'}));
@@ -362,6 +437,55 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const summaryWarn = toDecide ? '还差 ' + toDecide + ' 个要你决定' : '';
   const summaryRest = [toDecide ? (parked.length ? parked.length + parkedUnit + '先放待确认' : '')
     : parked.length ? parked.length + parkedUnit + '名字认不出，先放进待确认' : pending ? '正在核对人物和造型…' : '全部已分好', totalSize].filter(Boolean).join(' · ');
+  // A new project starts in the folder last used there (if it still exists), as the routing does.
+  const withRemembered = (d: DestinationDraft, before?: DestinationDraft | null) => {
+    if (d.newFolder || d.projectId === before?.projectId) return d;
+    const last = prefs?.lastVideoFolderByProject?.[d.projectId || ''];
+    return last && options?.projects.find(p => p.id === d.projectId)?.videoFolders.some(f => f.id === last) ? {...d, folderId: last} : d;
+  };
+  const nameLine = (r: Row) => drafts[r.file.id]?.fileName ? <strong className="fi-name-new" title={r.name}>{r.name}<small>（手动起名）</small></strong>
+    : !standardNames ? <span className="fi-name-keep">保持原名 <span title={r.file.name}>{r.file.name}</span></span>
+    : r.newName ? <strong className="fi-name-new" title={r.newName}>{r.newName}</strong>
+    : <span className="fi-muted fi-name-wait">{namesError ? '暂时算不出新名字，确认后仍按规则命名' : r.destination?.scope === 'project' ? '正在算新名字…' : '这里不改名'}</span>;
+  const renameBox = <label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={standardNames} onChange={e => setStandardNames(e.target.checked)}/>按项目改名</label>;
+  const moreButton = (r: Row, text?: string) => <button className={text ? 'fi-link fi-vfile-more' : 'fi-icon-button'} data-popover-trigger data-file-id={r.file.id}
+    aria-label={(locked ? '查看 ' : '单独设置 ') + r.file.name} title="单独设置这个文件（项目、通用素材、文件名）" onClick={e => openPanel(r.file.id, e.currentTarget)}>{text || <MoreHorizontal size={15}/>}</button>;
+  const videoSingle = (r: Row) => <div className="fi-vform">
+    <div className="fi-vfile"><span className="fi-vfile-icon" aria-hidden="true"><Film size={18}/></span><strong title={r.file.name}>{r.file.name}</strong>
+      <small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
+    <div className="fi-form">
+      <VideoDestination project={projectOf(r)!} projects={options!.projects} recent={recentProjects} destination={r.destination!} locked={locked}
+        remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setDestination([r.file.id], withRemembered(d, r.destination))}/>
+      <span className="fi-form-label fi-form-label-top">名字</span>
+      <div className="fi-form-name">{renameBox}{nameLine(r)}
+        {singleNameError && <small className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「更多设置…」手动起名。' : ''}</small>}
+        {r.problem && <small className="fi-error" role="alert">{r.problem}</small>}</div>
+      <span className="fi-form-label fi-form-label-top">提示词</span>
+      <PromptField value={promptText} locked={locked} problem={promptProblem} onChange={setPromptText}/>
+      <span className="fi-form-label">收完后</span>
+      <label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={reveal} onChange={e => setReveal(e.target.checked)}/>在访达中显示这个文件</label>
+      {/* Kept low in the form: the top right is where notices appear. */}
+      <span/><span className="fi-vmore">{moreButton(r, locked ? '查看原设置…' : '更多设置（改成通用素材、手动起名）…')}</span>
+    </div>
+  </div>;
+  const videoMulti = () => <div className="fi-vform">
+    <div className="fi-vtop">{renameBox}<span className="fi-grow"/><small className="fi-muted">原名 → 新名</small></div>
+    {groups.map(g => {
+      const first = g.rows[0], d = first.destination, p = projectOf(first);
+      return <section key={g.key} className="fi-vblock" aria-label={'去处 ' + (d ? destLabel(d) : '未定')}>
+        {p && d ? <div className="fi-form"><VideoDestination project={p} projects={options!.projects} recent={recentProjects} destination={d} locked={locked} count={g.rows.length}
+          remembered={prefs?.lastVideoFolderByProject?.[p.id]} onChange={nd => setDestination(g.rows.map(r => r.file.id), withRemembered(nd, d))}/></div>
+          : <div className="fi-vblock-head"><strong>{d ? destLabel(d) : '请选择去处'}</strong><small className="fi-muted">{g.rows.length} 个 · 点每行的 ⋯ 改去处</small></div>}
+        <ul className="fi-vrows">{g.rows.map(r => <li key={r.file.id} className={'fi-vrow' + (flash === r.file.id ? ' fi-flash' : '')}>
+          <span className="fi-vrow-from" title={r.file.name}>{r.file.name}</span><span className="fi-vrow-arrow" aria-hidden="true">→</span>{nameLine(r)}{moreButton(r)}
+          {r.problem && <small className="fi-error fi-vrow-problem" role="alert">{r.problem}</small>}
+        </li>)}</ul>
+      </section>;
+    })}
+    <div className="fi-form"><span className="fi-form-label fi-form-label-top">提示词</span>
+      <PromptField value={promptText} locked={locked} problem={promptProblem} onChange={setPromptText}/></div>
+    <div className="fi-vreveal"><label className="fi-check-inline fi-check-off"><input type="checkbox" disabled checked={false}/>收完在访达中显示</label><small>只在收纳 1 个视频时生效</small></div>
+  </div>;
   const countLabel = (n: number) => {const kinds = new Set(files.map(f => f.mediaKind)); return kinds.size === 1 ? n + (files[0].mediaKind === 'photo' ? ' 张照片' : files[0].mediaKind === 'audio' ? ' 个音频' : ' 个视频') : n + ' 个文件';};
 
   return <main className={'fi-root fi-window fi-simple' + (native ? ' fi-native' : '')}><section className="fi-shell" aria-label="收纳素材到拾光" aria-busy={loading || busy}>
@@ -371,7 +495,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {status}
     </header>
 
-    {options && !batch && !locked && !single && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
+    {options && !batch && !locked && !single && !videoForm && options.projects.length > 0 && files.some(f => f.mediaKind !== 'audio') && <div className="fi-projectbar">
       <span className="fi-projectbar-label">项目</span>
       <ProjectPicker projects={options.projects} value={barProject} placeholder={barMixed ? '各自沿用上次' : '选择项目'} recent={recentProjects} onChange={setProjectOverride}/>
       {barMixed && <span className="fi-muted">照片和视频的默认去处不同，选一个项目就统一</span>}
@@ -385,7 +509,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         {prepFailed && <p className="fi-error" role="alert">{handoff.preparationError}</p>}
         {optionsError && !locked && <p className="fi-error" role="alert">没能读取项目和分类，自动分组暂不可用：{optionsError}<button onClick={() => setOptionsReload(n => n + 1)}><RefreshCw size={13}/>重新读取</button></p>}
         {!files.length && <p className="fi-muted">请至少保留一个文件。</p>}
-        {single ? <div className="fi-single fi-single-side">
+        {singleVideoForm && single ? videoSingle(single) : videoForm ? videoMulti() : single ? <div className="fi-single fi-single-side">
           <Thumb file={single.file} handoffId={handoffId} ready={!checking && !prepFailed} size="large"/>
           <div className="fi-single-info">
             <div className="fi-single-name"><RowName row={single}/><small>{fileMeta(single)} · 来自「{folderLabel(single.file.path)}」</small></div>
@@ -397,8 +521,10 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
             <span className="fi-single-actions">
               <button data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '改去处 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '改去处…'}</button>
             </span>
+            {singleNameError && <p className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「改去处…」在「文件名」里手动起名。' : ''}</p>}
           </div>
         </div> : groups.map(renderGroup)}
+        {hasPrompt && !singleVideoForm && !videoForm && !locked && <p className="fi-error" role="alert">{promptProblem || '这批文件不在视频收纳界面里，提示词没有地方显示'}<button className="fi-link" onClick={() => setPromptText('')}>去掉提示词</button></p>}
         {removed.length > 0 && <p className="fi-removed-line">已移除 {removed.length} 个{removed.map(f => <button key={f.id} className="fi-link" disabled={locked} aria-label={'恢复 ' + f.name} onClick={() => setSelected(old => [...old, f.id])}>恢复 {f.name}</button>)}</p>}
         {namesError && standardNames && <p className="fi-muted">暂时算不出新名字；确认后仍会按规范命名。</p>}
         {popover.startsWith('edit:') && (() => {const r = rows.find(x => 'edit:' + x.file.id === popover); return r ? <div key={r.file.id}>{!locked && <div className="fi-scrim" aria-hidden="true"/>}{editor(r)}</div> : null;})()}
@@ -407,6 +533,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         <CheckCircle2 size={40}/>
         <p className="fi-accepted" role="status">任务已接收，请在网页顶栏“文件任务”查看后续进度。</p>
         <p className="fi-muted">这不代表已经收完。复制、核验、登记都在后台进行，关掉窗口也不影响。遇到重名或内容相同的文件，会在「文件任务」里请你选择。</p>
+        {oneVideoReceipt && (batch.items[0].plannedFileName || batch.revealWhenDone || batch.prompt?.text) && <section className="fi-after" aria-label="收完以后">
+          <strong>收完以后</strong>
+          {batch.items[0].plannedFileName && <span>新名字 <b>{batch.items[0].plannedFileName}</b></span>}
+          {batch.revealWhenDone && <span>收完会打开访达，选中这个文件</span>}
+          {batch.prompt?.text && <span>已附提示词（{promptLength(batch.prompt.text)} 字）</span>}
+        </section>}
         <BatchDetails batch={batch}/>
       </div>}
       {batch && receiptKind !== 'submitted' && <><p className={receiptKind === 'other' ? 'fi-warning-copy' : 'fi-muted'} role="status">{receiptKind === 'other' ? '此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。' : '这是此选择的既有回执，没有新建任务。'}</p><BatchDetails batch={batch}/></>}
@@ -415,10 +547,20 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {receiptKind === 'other' && attempt.current && <p className="fi-muted">本窗口原请求编号：<code>{attempt.current.requestId}</code></p>}
     </div>
 
+    {!batch && handoff && files.length > 0 && !singleVideoForm && !videoForm && (willRename || anyVideo) && <div className="fi-options" role="group" aria-label="收纳时">
+      <span className="fi-muted">收纳时</span>
+      {willRename && <span className="fi-option"><label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={standardNames} onChange={e => setStandardNames(e.target.checked)}/>按项目改名</label><small>视频按剧集；图片照旧按人物_造型</small></span>}
+      {anyVideo && <span className="fi-option"><label className={'fi-check-inline' + (singleVideo ? '' : ' fi-check-off')}><input type="checkbox" disabled={locked || !singleVideo} checked={reveal} onChange={e => setReveal(e.target.checked)}/>收完在访达中显示</label>{!singleVideo && <small>只在收纳 1 个视频时生效</small>}</span>}
+      <span className="fi-grow"/><small className="fi-muted">都会记住</small>
+    </div>}
     <footer className="fi-foot">
-      {batch ? <>
+      {batch ? oneVideoReceipt ? <>
+        <span className="fi-foot-note">{folderOpen.error ? <span className="fi-error" role="alert">{folderOpen.error}</span>
+          : <span className="fi-muted" role="status">{folderOpen.state === 'done' ? '已请求访达打开目标文件夹' : '窗口不会自动关闭；文件收完才会出现在文件夹里'}</span>}</span>
+        {native && <button onClick={() => post('close')}>关闭</button>}
+        <button className="fi-primary" disabled={folderOpen.state === 'sending' || !api} onClick={() => void openFolder()}><FolderOpen size={15}/>{folderOpen.state === 'sending' ? '正在打开…' : '打开目标文件夹'}</button>
+      </> : <>
         <span className="fi-muted fi-foot-note">{closeIn ? '窗口 ' + closeIn + ' 秒后自动关闭' : ''}</span>
-        <a className="fi-button" href="/#/project-videos" target="_blank" rel="noopener noreferrer">打开拾光 · 文件任务</a>
         {native && <button className="fi-primary" onClick={() => post('close')}>关闭</button>}
       </> : <>
         <fieldset className="fi-seg fi-mode" disabled={locked}><legend className="fi-sr">原文件处理方式</legend>
@@ -426,12 +568,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
           <label title={handoff?.canTrash ? '' : '当前系统不支持安全移入废纸篓'}><input type="radio" name="intake-mode" checked={mode === 'move'} disabled={!handoff?.canTrash} onChange={() => setMode('move')}/>移动</label>
         </fieldset>
         <div className="fi-foot-note">
-          {willRename && <label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={standardNames} onChange={e => setStandardNames(e.target.checked)}/>收纳时按规范改名</label>}
           <span className="fi-muted">{mode === 'move' ? '收纳成功后，原文件移入废纸篓（不会永久删除）' : '原文件留在原处'}{prefs && mode === prefs.mode ? '（沿用上次的选择）' : ''}</span>
         </div>
         {pending > 0 && !locked && <span className="fi-warn-text">还差 {pending} 个</span>}
         {unknown ? <button className="fi-primary" disabled={busy || !api} onClick={() => void reconcile()}>{busy ? '正在核对…' : '核对原提交结果'}</button>
-          : <button className="fi-primary fi-confirm-button" disabled={!canConfirm} onClick={() => void confirm()}>{busy ? '正在提交，请勿重复点击…' : files.length === 1 ? '收纳' : '收纳 ' + countLabel(files.length)}</button>}
+          : <button className="fi-primary fi-confirm-button" disabled={!canConfirm} aria-keyshortcuts="Meta+Enter" onClick={() => void confirm()}>{busy ? '正在提交，请勿重复点击…' : files.length === 1 ? '收纳' : '收纳 ' + countLabel(files.length)}{!busy && <kbd className="fi-kbd" aria-hidden="true">⌘↩</kbd>}</button>}
       </>}
     </footer>
   </section><GlobalFeedback/></main>;

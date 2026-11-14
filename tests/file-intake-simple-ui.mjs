@@ -36,7 +36,9 @@ function setup() {
   };
 }
 function validateConfirm(b) {
-  assert.deepEqual(Object.keys(b).sort(), ['fileIds', 'mode', 'requestId', 'standardNames', 'targets', 'version']);
+  assert.deepEqual(Object.keys(b).filter(k => k !== 'revealWhenDone').sort(), ['fileIds', 'mode', 'requestId', 'standardNames', 'targets', 'version']);
+  // 收完在访达中显示 is only sent for exactly one video.
+  if ('revealWhenDone' in b) {assert.equal(typeof b.revealWhenDone, 'boolean'); assert.equal(b.fileIds.length, 1); assert.equal(fx.handoff.files.find(f => f.id === b.fileIds[0]).mediaKind, 'video');}
   assert.equal(b.version, 2); assert.match(b.requestId, /^[a-f0-9-]{36}$/); assert.deepEqual(b.targets.map(t => t.fileId), b.fileIds);
   for (const t of b.targets) {
     assert.deepEqual(Object.keys(t).filter(k => !['fileId', 'destination', 'nameMode'].includes(k)), []);
@@ -129,7 +131,7 @@ try {
     await expect(group('音效 › 待确认')).toContainText('0:42 · 按时长预选为音效');
     await expect(page.getByText('还差 2 个', {exact: true})).toBeVisible(); await expect(confirmButton()).toBeDisabled();
     await expect(page.getByRole('radio', {name: '复制', exact: true})).toBeChecked();
-    await expect(page.getByRole('checkbox', {name: '收纳时按规范改名'})).toBeChecked();
+    await expect(page.getByRole('checkbox', {name: '按项目改名'})).toBeChecked();
     await page.screenshot({path: path.join(evidence, 'groups.png')});
     await settle(); await page.screenshot({path: path.join(evidence, 'ready.png')});
     assert.equal(fx.confirmBodies.length, 0, 'previews and decisions never submit');
@@ -488,7 +490,7 @@ try {
   await check('older service without routing options falls back to per-kind presets and per-file editing quietly', async () => {
     await fresh(f => {f.routing404 = true; f.handoff.routingPreferences = undefined; f.handoff.files = f.handoff.files.filter(x => x.mediaKind === 'video'); f.preferences = {video: {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'}};});
     await expect(page.locator('.fi-single-dest')).toContainText('雨巷 › 项目根目录'); await expect(page.locator('.fi-single')).toContainText('穿越计视频16.mp4'); await expect(page.getByRole('alert')).toHaveCount(0);
-    await expect(page.getByRole('checkbox', {name: '收纳时按规范改名'})).not.toBeChecked();
+    await expect(page.getByRole('checkbox', {name: '按项目改名'})).not.toBeChecked();
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(fx.confirmBodies[0].targets, [{fileId: 'v1', destination: {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'}}]);
     assert.equal(fx.confirmBodies[0].standardNames, false);

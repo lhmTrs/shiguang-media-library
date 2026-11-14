@@ -226,3 +226,84 @@
 .fi-install-steps small,.fi-install-state b small{display:inline}
 /* 完成态：阶段列表下方的「还差一步」 */
 .fi-install-next{margin-top:4px!important;padding:7px 10px;border-radius:7px;border:1px solid color-mix(in srgb,var(--fi-accent) 30%,var(--fi-line));background:var(--fi-bg)}
+/* 右键收纳 · 视频按剧集改名、访达显示、收纳时新建文件夹 */
+.fi-simple .fi-options{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;padding:8px 20px;border-top:1px solid var(--fi-line);font-size:12px}
+.fi-simple .fi-option{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.fi-simple .fi-option>small{font-size:11px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-check-off{color:var(--fi-muted)}
+.fi-simple .fi-options .fi-grow{flex:1}
+.fi-simple .fi-after{display:flex;flex-direction:column;gap:4px;width:100%;max-width:560px;padding:10px 14px;border:1.5px solid var(--fi-accent);border-radius:10px;text-align:left;font-size:12px}
+.fi-simple .fi-after>strong{color:var(--fi-accent)}
+.fi-simple .fi-after b{overflow-wrap:anywhere}
+
+/* 右键收纳改版：视频一行一项（放到 / 文件夹 / 名字 / 收完后），文件夹平铺成按钮 */
+.fi-simple .fi-vform{display:flex;flex-direction:column;gap:14px;width:100%;max-width:720px;margin:0 auto;padding:4px 8px}
+.fi-simple .fi-vfile{display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid var(--fi-line);min-width:0}
+.fi-simple .fi-vfile-icon{width:36px;height:36px;border-radius:8px;background:var(--fi-soft);display:flex;align-items:center;justify-content:center;color:var(--fi-muted);flex:none}
+.fi-simple .fi-vfile>strong{font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fi-root.fi-simple .fi-vfile>small{display:inline;font-size:12px;white-space:nowrap}
+.fi-simple .fi-grow{flex:1}
+.fi-root.fi-simple .fi-vfile-more{font-size:12px;flex:none}
+.fi-simple .fi-form{display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:16px;row-gap:12px;align-items:center}
+.fi-simple .fi-form-label{font-size:12px;color:var(--fi-muted)}
+.fi-simple .fi-form-label-top{align-self:start;padding-top:8px}
+.fi-simple .fi-place{display:flex;align-items:center;flex-wrap:wrap;gap:2px 4px;font-size:14px;min-width:0}
+.fi-simple .fi-place-sep{color:var(--fi-muted);opacity:.7;padding:0 2px}
+.fi-simple .fi-place-part{color:var(--fi-muted)}
+.fi-root.fi-simple .fi-place-link{min-height:28px;padding:0 4px;border:0;border-radius:6px;background:transparent;color:var(--fi-muted);font-size:14px}
+.fi-root.fi-simple .fi-place-link:hover{background:var(--fi-soft);color:var(--fi-text)}
+.fi-simple .fi-place-end{font-weight:650}
+.fi-root.fi-simple .fi-place-end small{display:inline;font-size:12px;font-weight:400;margin-left:2px}
+.fi-root.fi-simple .fi-place-count{font-size:12px;margin-left:8px}
+.fi-root.fi-simple .fi-picker-link{min-height:28px;padding:0 4px;border:0;background:transparent;font-size:12px;color:var(--fi-accent);text-decoration:underline;text-underline-offset:2px}
+.fi-simple .fi-chips-wrap{display:flex;flex-direction:column;gap:6px;min-width:0}
+.fi-simple .fi-chips{display:flex;flex-wrap:wrap;gap:8px}
+.fi-root.fi-simple .fi-chip{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border:1px solid var(--fi-line);border-radius:8px;background:var(--fi-bg);color:var(--fi-text);font-size:13px;cursor:pointer}
+.fi-root.fi-simple .fi-chip:hover{border-color:color-mix(in srgb,var(--fi-accent) 45%,var(--fi-line));background:var(--fi-bg)}
+.fi-root.fi-simple .fi-chip-on{border:1.5px solid var(--fi-accent);background:var(--fi-soft);color:var(--fi-accent);font-weight:600}
+.fi-root.fi-simple .fi-chip-on:hover{background:var(--fi-soft)}
+.fi-simple .fi-chip-parent{color:var(--fi-muted);font-weight:400}
+.fi-root.fi-simple .fi-chip-new{border-style:dashed;color:var(--fi-accent);font-weight:600}
+.fi-root.fi-simple .fi-chip-edit{flex-direction:row;padding:0 8px 0 12px;margin:0;cursor:text}
+.fi-root.fi-simple .fi-chip-edit input{min-width:3ch;max-width:220px;border:0;outline:0;background:transparent;font:inherit;font-weight:600;color:var(--fi-accent);padding:0}
+.fi-simple .fi-form-name{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fi-simple .fi-name-new{font-size:15px;color:var(--fi-accent);padding-left:23px;overflow-wrap:anywhere}
+.fi-root.fi-simple .fi-name-new small{display:inline;font-weight:400;margin-left:4px}
+.fi-simple .fi-name-keep{font-size:13px;color:var(--fi-muted);padding-left:23px;overflow-wrap:anywhere}
+.fi-simple .fi-name-keep>span{color:var(--fi-text)}
+.fi-simple .fi-name-wait{padding-left:23px}
+.fi-simple .fi-form-name>small{padding-left:23px}
+.fi-simple .fi-vtop{display:flex;align-items:center;gap:10px}
+.fi-simple .fi-vblock{display:flex;flex-direction:column;gap:12px;padding:12px 14px;border:1px solid var(--fi-line);border-radius:10px}
+.fi-simple .fi-vblock-head{display:flex;align-items:baseline;gap:10px}
+.fi-simple .fi-vrows{list-style:none;margin:0;padding:0;border-top:1px solid var(--fi-line)}
+.fi-simple .fi-vrow{display:grid;grid-template-columns:minmax(0,1fr) 18px minmax(0,1.5fr) 32px;align-items:center;gap:0 6px;padding:6px 0;border-bottom:1px solid var(--fi-soft)}
+.fi-simple .fi-vrow:last-child{border-bottom:0}
+.fi-simple .fi-vrow-from{font-size:12px;color:var(--fi-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fi-simple .fi-vrow-arrow{color:var(--fi-muted);opacity:.7}
+.fi-simple .fi-vrow .fi-name-new,.fi-simple .fi-vrow .fi-name-keep,.fi-simple .fi-vrow .fi-name-wait{padding-left:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fi-simple .fi-vrow-problem{grid-column:1/-1}
+.fi-simple .fi-vreveal{display:flex;align-items:center;gap:10px;font-size:13px}
+.fi-root.fi-simple .fi-vreveal small{display:inline;font-size:12px}
+.fi-simple .fi-kbd{margin-left:8px;padding:0 4px;border:1px solid color-mix(in srgb,currentColor 45%,transparent);border-radius:4px;font:inherit;font-size:11px;opacity:.85}
+.fi-simple .fi-prompt{display:flex;flex-direction:column;gap:6px;min-width:0}
+.fi-root.fi-simple .fi-prompt-add{align-self:flex-start}
+.fi-root.fi-simple .fi-prompt-box{width:100%;min-height:104px;max-height:240px;padding:8px 10px;border:1.5px solid var(--fi-accent);border-radius:8px;font:inherit;font-size:13px;line-height:1.6;resize:vertical;color:var(--fi-text);background:var(--fi-bg)}
+.fi-simple .fi-prompt-meta{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fi-muted)}
+.fi-simple .fi-prompt-line{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 10px;border:1px solid var(--fi-line);border-radius:8px;background:var(--fi-page)}
+.fi-simple .fi-prompt-count{flex:none;font-size:12px;font-weight:600;color:var(--fi-accent)}
+.fi-simple .fi-prompt-head{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-prompt-line .fi-link,.fi-root.fi-simple .fi-prompt-line .fi-link-muted{flex:none;font-size:12px}
+.fi-simple .fi-prompt small{font-size:12px}
+.fi-simple .fi-vmore{padding-top:2px}
+/* 长文件夹名、长路径：单项不超过表单宽度，超长的词可以断开换行（验收 PR97 长路径溢出） */
+.fi-simple .fi-place>*{min-width:0;max-width:100%}
+.fi-simple .fi-place-end,.fi-simple .fi-place-part{overflow-wrap:anywhere;word-break:break-word}
+.fi-root.fi-simple .fi-place-link{max-width:100%;height:auto;text-align:left;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.fi-simple .fi-chips>*{min-width:0;max-width:100%}
+.fi-root.fi-simple .fi-chip{height:auto;padding-top:6px;padding-bottom:6px;text-align:left;white-space:normal}
+.fi-simple .fi-chip>span{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.fi-simple .fi-vfile>small{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fi-simple .fi-vfile>strong{flex:0 1 auto}
+.fi-root.fi-simple .fi-chip-edit input{max-width:min(220px,100%)}
+.fi-simple .fi-form-label-place{align-self:start;padding-top:4px}
