@@ -295,3 +295,4 @@
 .fi-simple .fi-prompt-head{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--fi-muted)}
 .fi-root.fi-simple .fi-prompt-line .fi-link,.fi-root.fi-simple .fi-prompt-line .fi-link-muted{flex:none;font-size:12px}
 .fi-simple .fi-prompt small{font-size:12px}
+.fi-simple .fi-vmore{padding-top:2px}

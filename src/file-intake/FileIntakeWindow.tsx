@@ -452,7 +452,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     aria-label={(locked ? '查看 ' : '单独设置 ') + r.file.name} title="单独设置这个文件（项目、通用素材、文件名）" onClick={e => openPanel(r.file.id, e.currentTarget)}>{text || <MoreHorizontal size={15}/>}</button>;
   const videoSingle = (r: Row) => <div className="fi-vform">
     <div className="fi-vfile"><span className="fi-vfile-icon" aria-hidden="true"><Film size={18}/></span><strong title={r.file.name}>{r.file.name}</strong>
-      <small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small><span className="fi-grow"/>{moreButton(r, locked ? '查看…' : '更多设置…')}</div>
+      <small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
     <div className="fi-form">
       <VideoDestination project={projectOf(r)!} projects={options!.projects} recent={recentProjects} destination={r.destination!} locked={locked}
         remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setDestination([r.file.id], withRemembered(d, r.destination))}/>
@@ -464,6 +464,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <PromptField value={promptText} locked={locked} problem={promptProblem} onChange={setPromptText}/>
       <span className="fi-form-label">收完后</span>
       <label className="fi-check-inline"><input type="checkbox" disabled={locked} checked={reveal} onChange={e => setReveal(e.target.checked)}/>在访达中显示这个文件</label>
+      {/* Kept low in the form: the top right is where notices appear. */}
+      <span/><span className="fi-vmore">{moreButton(r, locked ? '查看原设置…' : '更多设置（改成通用素材、手动起名）…')}</span>
     </div>
   </div>;
   const videoMulti = () => <div className="fi-vform">
