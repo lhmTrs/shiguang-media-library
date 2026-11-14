@@ -25,7 +25,7 @@ const evidence = process.env.CREATIVE_TEST_EVIDENCE;
 const shot = async name => { if (evidence) { await fs.mkdir(evidence, { recursive: true }); await page.screenshot({ path: path.join(evidence, name + '.png') }); } };
 const scopeSwitch = () => work().getByRole('group', { name: '看哪里的资产' });
 
-let S, eps = [], A, B;
+let S, eps = [], A, B; const writes = [];
 const ep = (i, project) => ({ project_id: project.id, project_name: project.name, episode_no: i, season_id: 'q1', season_no: 1, season_label: '第 1 季' });
 const member = (id, owner, episode, extra = {}) => ({ asset_id: id, asset_revision: 1, owner_type: owner, owner_id: owner === 'series' ? S.id : episode.project_id, episode, look_count: 2, image_count: 3, scored_dimensions: 6, default_look_id: 'l-' + id, references: { shots: 20, manifests: 1, manifest_entries: 2 }, base_info_excerpt: '资料摘要', performance_info_excerpt: null, primary_locked: false, ...extra });
 const fake = { failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
@@ -86,7 +86,7 @@ async function installMocks() {
     if (fake.staleUndoOnce) { fake.staleUndoOnce = false; return route.fulfill({ status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_UNDO_STALE' } }); }
     const mergeId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2));
     if (mergeId === 'm-g-lisi') fake.lisiMerged = false; else fake.zhaoMerged = false;
-    const receipt = { request_id: body.request_id, merge_id: mergeId, status: 'undone', restored_asset_ids: ['a', 'b'], history_id: 'h2' }; fake.receipts[body.request_id] = receipt;
+    const receipt = { request_id: body.request_id, merge_id: mergeId, status: 'undone', restored_asset_ids: mergeId === 'm-g-lisi' ? [A, B] : ['z-series', 'z-ep2'], history_id: 'h2' }; fake.receipts[body.request_id] = receipt;
     if (fake.undoPlan.shift() === 'drop') return route.abort('connectionreset'); // 撤销真实写入，只丢回应
     return route.fulfill({ json: receipt }); });
   await page.route(u => new RegExp('/assets/' + A + '/versions$').test(new URL(u).pathname), async route => {
@@ -112,12 +112,14 @@ try {
   for (let i = 1; i <= 2; i++) eps.push((await api(`/project-series/${S.id}/episodes`, { season_id: q.id, expected_episode_no: i, request_id: rid() })).project);
   A = (await api('/project-assets/assets', { project_id: eps[0].id, kind: 'character', name: '李四' })).id;
   B = (await api('/project-assets/assets', { project_id: eps[1].id, kind: 'character', name: '李四' })).id;
+  await api('/project-assets/assets', { project_id: eps[0].id, kind: 'character', name: '钱八' }); // 和合并无关的人物（验证草稿不被丢）
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+  page.on('request', r => { const u = new URL(r.url()).pathname; if (r.method() !== 'GET' && u.startsWith('/api/') && !/names\/check|\/preview$|undo-preview$/.test(u)) writes.push(r.method() + ' ' + u); });
   await installMocks();
   await page.goto(origin + '/#/all'); await expect(page.locator('.ppb').first()).toHaveAttribute('data-project', /./);
   await selectProjectInBar(page, eps[0].id); await nav('项目资产');
@@ -275,10 +277,18 @@ try {
     await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
     await page.reload(); await expect(work()).toBeVisible(); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
     await expect(bar).toContainText('上次撤销合并「李四」的结果还没核对到'); await expect(work().locator('.cm-banner')).toHaveCount(0);
+    // 复验阻断：先在第 1 集打开无关的「钱八」改资料不保存，再从独立提示核对已成功的撤销 → 钱八和草稿原样保留，不发任何写请求
+    await scopeSwitch().getByRole('button').first().click();
+    await work().locator('.ca-card').filter({ hasText: '钱八' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('钱八');
+    await work().getByLabel('基础信息', { exact: true }).fill('钱八的草稿，还没保存'); const writesBefore = writes.length;
     await bar.getByRole('button', { name: '核对上次结果' }).click();
     const undo2 = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo2.getByRole('button', { name: '核对上次结果' }).click(); await expect(undo2).toHaveCount(0);
     assert.equal(fake.undos.length, undos + 1, '按原号查到撤销回执，不再发撤销'); await expect(bar).toHaveCount(0);
-    await expect(work()).toContainText('已撤销合并「李四」'); await expect(work().locator('.cm-banner')).toBeVisible(); // 核对完恢复正常入口
+    await expect(work().locator('.ca-name-input')).toHaveValue('钱八'); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('钱八的草稿，还没保存');
+    assert.deepEqual(writes.slice(writesBefore), [], '核对时不应发出任何写请求'); await shot('10-draft-kept');
+    // 核对完恢复正常入口：撤销后两份李四回来了，卡片上的同名提示和合并入口重新出现
+    await expect(work().locator('.ca-card-wrap').filter({ hasText: '李四' }).first().locator('.cm-card-hint')).toHaveText('第 2 集也有一个「李四」');
+    await expect(work()).toContainText('已撤销合并「李四」');
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

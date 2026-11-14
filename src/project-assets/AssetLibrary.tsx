@@ -12,7 +12,7 @@ import {ImpactPreview, type ImpactPreviewData} from './ImpactPreview';
 import {SeasonSettings} from './SeasonSettings';
 import {SeriesAlignment} from './SeriesAlignment';
 import {MergeBanner, MergeDialog, MergeDoneBar, MergePendingBar, UndoMergeDialog, useMergeGroups, usePendingMerge} from './CharacterMerge';
-import {memberPlaces, mergeErrorText, pendingStore, siblingHint, type MergeGroup, type MergeReceipt, type RelatedCharacters} from './merge';
+import {memberPlaces, mergeErrorText, pendingStore, siblingHint, type MergeGroup, type MergeReceipt, type RelatedCharacters, type UndoReceipt} from './merge';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -878,9 +878,16 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (pu && pu.mergeId !== mergeId) { setNotice('上次撤销合并「' + pu.name + '」的结果还没核对到，先核对它'); mergeId = pu.mergeId; name = pu.name; }
     setMenu(''); setQuick(null); setMergeUndo({ mergeId, name });
   }
+  /** 合并 / 撤销完成后的详情处理（组合验收 R1 复验）：只处理这次涉及的人物，无关人物和它的未保存草稿原样保留；
+   *  涉及的人物没改过就关掉（下次打开读新资料），有未保存修改就保留草稿并提示，保存时由版本冲突保护核对。 */
+  function settleDetail(ids: string[], what: string) {
+    const d = draftRef.current; if (!d || !ids.includes(d.id)) return;
+    if (dirtyRef.current) setError('「' + d.name + '」刚因' + what + '变了，你未保存的修改还在、没有丢；保存时会提示版本冲突，请核对后再保存');
+    else dropDetail();
+  }
   async function afterMerge(r: MergeReceipt, group: MergeGroup, lookCount?: number) {
     setMergeOpen(null); setMergeDone({ receipt: r, name: group.name, lookCount }); setMergeVersion(v => v + 1);
-    if (draftRef.current && group.members.some(m => m.asset_id === draftRef.current!.id)) dropDetail();
+    settleDetail([...group.members.map(m => m.asset_id), r.canonical_asset_id], '合并同名人物');
     await loadList().catch(e => setError(e.message)); // 设计稿 B4：只在顶部提示，不替用户打开人物
   }
   async function nextMerge(r: MergeReceipt) {
@@ -889,8 +896,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (!g) { setMergeDone(null); setNotice('这部剧里已经没有需要合并的同名人物了'); return; }
     openMerge(g);
   }
-  function afterUndo(name: string) {
-    setMergeUndo(null); setMergeDone(null); setMergeVersion(v => v + 1); dropDetail();
+  function afterUndo(name: string, r: UndoReceipt) {
+    setMergeUndo(null); setMergeDone(null); setMergeVersion(v => v + 1); settleDetail(r.restored_asset_ids ?? [], '撤销合并');
     setNotice('已撤销合并「' + name + '」，恢复成合并前的几份');
     void loadList().catch(e => setError(e.message));
   }
@@ -1545,7 +1552,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     </div></div>}
     {seasonOpen && <SeasonSettings key={seasonOpen.id + ':' + seasonOpen.source.projectId} api={api} base={scopePath('season', seasonOpen.id)} source={seasonOpen.source} seasonName={seasonOpen.name} seriesName={seasonOpen.seriesName} onClose={() => setSeasonOpen(null)} onScopeChanged={() => { const opened = seasonOpen; setSeasonOpen(cur => cur === opened ? null : cur); void fetchContext(); setNotice('这一集的所属剧或季刚变了，已重新读取；请重新打开本季设定'); }} onChanged={() => { void loadList(); const d = draftRef.current; if (d) void refreshDetail(d.id); }}/>}
     {mergeOpen && mergeSeries && <MergeDialog key={mergeOpen.group.group_id} api={request} seriesId={mergeSeries} group={mergeOpen.group} initialPrimary={mergeOpen.primary} contextToken={merges.data?.context_token} reloadGroups={merges.reload} onClose={() => setMergeOpen(null)} onMerged={(r, g, n) => void afterMerge(r, g, n)}/>}
-    {mergeUndo && mergeSeries && <UndoMergeDialog api={request} seriesId={mergeSeries} mergeId={mergeUndo.mergeId} name={mergeUndo.name} contextToken={merges.data?.context_token} reloadToken={async () => (await merges.reload())?.context_token} onClose={() => setMergeUndo(null)} onUndone={() => afterUndo(mergeUndo.name)}/>}
+    {mergeUndo && mergeSeries && <UndoMergeDialog api={request} seriesId={mergeSeries} mergeId={mergeUndo.mergeId} name={mergeUndo.name} contextToken={merges.data?.context_token} reloadToken={async () => (await merges.reload())?.context_token} onClose={() => setMergeUndo(null)} onUndone={r => afterUndo(mergeUndo.name, r)}/>}
     {impactState && <ImpactPreview title={impactState.kind === 'archive' ? '归档' + impactState.label : '把' + impactState.label + '提升到全剧'} confirmLabel={impactState.kind === 'archive' ? '确认归档' : '确认提升'}
       intro={impactState.kind === 'archive' ? <>归档后，下面这些季和集里的显示会按预览回退；这些层上相关的单独设置会失效（记录留在操作历史里）。明确引用它的镜头需要先在分镜里处理。</> : <>提升后它变成整部剧共享：原来的造型、图片、版本和镜头引用都保持不变，只是归属从本集变成全剧，其他集也能看到它。</>}
       data={impactState.data} nameOf={impactNameOf} busy={!!busy} replacement={impactState.replacement}
