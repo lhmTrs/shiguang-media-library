@@ -12,6 +12,7 @@ import {once} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import {chromium, expect} from '@playwright/test';
 import {Receipts} from '../server/file-intake/files.mjs';
+import {selectProjectInBar} from './helpers/path-bar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const owned = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sg-intake-rename-app-')));
@@ -106,7 +107,9 @@ try {
     assert.equal(item.status, 'ready'); assert.equal(item.resultFileName, '穿越计S02E01_A_001.mp4');
     assert.equal(item.resolvedFolder?.relativePath, 'A');
     if (batch.revealWhenDone !== true) gaps.push('batch DTO 没有 revealWhenDone（合同 B4 要求带出）');
-    assert.ok(item.reveal && item.reveal.status !== 'dispatched', 'native disabled: reveal must not claim it was dispatched');
+    // The Finder step runs after the receipt settles; wait for its own record.
+    let reveal; for (let i = 0; i < 100 && !reveal; i++) {reveal = (await api('/file-intake/batches/' + batch.id)).items[0].reveal; if (!reveal) await pause(50);}
+    assert.ok(reveal, 'reveal result recorded'); assert.notEqual(reveal.status, 'dispatched', 'native disabled: reveal must not claim it was dispatched');
     const folders = (await api('/file-intake/projects/' + episode.id + '/folders')).folders.map(f => f.relativePath).sort();
     assert.deepEqual(folders, ['', 'A', 'B']);
     await page.getByRole('button', {name: '打开目标文件夹', exact: true}).click();
@@ -143,6 +146,24 @@ try {
     const batch = await done((await api('/file-intake/handoffs/' + handoff.id)).batchId);
     assert.deepEqual(batch.items.map(i => i.resultFileName).sort(), ['穿越计S02E01_A_009.mp4', '穿越计S02E01_A_010.mp4']);
     await expect(page.getByRole('button', {name: '打开目标文件夹', exact: true})).toHaveCount(0);
+  });
+
+  await check('生成视频页: renamed videos drop this episode prefix on cards; a hand-typed title stays exactly as typed', async () => {
+    const listing = await api('/project-videos/projects/' + episode.id + '?folderId=all');
+    const v1 = listing.videos.find(v => v.fileName === '穿越计S02E01_A_001.mp4'), v8 = listing.videos.find(v => v.fileName === '穿越计S02E01_A_008.mp4');
+    assert.ok(v1 && v8);
+    await api('/project-videos/projects/' + episode.id + '/videos/' + v8.id, {expectedRevision: v8.revision, title: '穿越计S02E01_我手填的标题', notes: '', prompt: {mode: 'none'}}, 'PATCH');
+    await ctx?.close(); ctx = await browser.newContext({viewport: {width: 1440, height: 900}}); ctx.setDefaultTimeout(8000);
+    await ctx.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
+    page = await ctx.newPage(); page.on('pageerror', e => errors.push(e.message));
+    await page.goto(origin + '/#/project-videos');
+    await selectProjectInBar(page, episode.id);
+    const work = page.getByRole('region', {name: '项目生成视频'});
+    await work.getByRole('navigation', {name: /视频文件夹/}).getByRole('button', {name: 'A', exact: true}).click();
+    const card = id => work.locator('.pv-card[data-video-id="' + id + '"] .pv-card-body strong');
+    await expect(card(v1.id)).toHaveText('A_001.mp4'); await expect(card(v1.id)).toHaveAttribute('title', '穿越计S02E01_A_001.mp4');
+    await expect(card(v8.id)).toHaveText('穿越计S02E01_我手填的标题');
+    await shot('4-project-videos');
   });
 
   assert.deepEqual(errors, []); if (gaps.length) console.log('GAP ' + gaps.join('；')); assert.deepEqual(gaps, []); passed = true;

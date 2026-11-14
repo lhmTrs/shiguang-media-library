@@ -140,8 +140,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
 }) {
   const [collection, setCollection] = useState<ProjectVideoCollection | null>(null);
   // Names renamed by the intake rule start with this episode's 「剧名SxxEyy_」; cards show the rest, hover keeps the full name.
+  // Only a title that is still the file name is shortened: a title typed by hand is shown exactly as typed.
   const namePrefix = namePrefixFor?.(projectId) ?? null;
-  const shownName = (v: {name?: string; fileName: string}) => shortVideoName(v.name || v.fileName, namePrefix);
+  const shownName = (v: {name?: string; fileName: string}) => !v.name || v.name === v.fileName ? shortVideoName(v.fileName, namePrefix) : v.name;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   useFeedbackToast(error, {source: '生成视频'});
