@@ -83,6 +83,26 @@ export class IntakeNames {
     const suffix=basename.slice(prefix.length);
     return /^\d{3,}$/.test(suffix)?Number(suffix):0;
   }
+  async nextVideoNumber(directory,verify,minimum=1) {
+    if(!this.videoMaximum.has(directory)){
+      if(!this.scans.has(directory))this.scans.set(directory,directoryNames(directory,verify));
+      const entries=await this.scans.get(directory);
+      let highest=0;
+      for(const names of [entries,this.reserved.get(directory)??[]])
+        for(const name of names)highest=Math.max(highest,videoSequence(name));
+      this.videoMaximum.set(directory,highest);
+    }
+    const n=Math.max(minimum,this.videoMaximum.get(directory)+1);
+    if(n>9999)throw error('INTAKE_NAME_NUMBER_LIMIT','此目录的编号已到 9999，请手动命名',422);
+    return n;
+  }
+  async retryVideoName(plannedFileName,directory,verify) {
+    const {name,ext}=path.parse(plannedFileName);
+    const match=name.match(/^(.*)_([0-9]{3,4})$/s);
+    if(!match)return plannedFileName;
+    const n=await this.nextVideoNumber(directory,verify,Number(match[2]));
+    return standardVideoFileName(match[1]+'_'+String(n).padStart(3,'0')+ext);
+  }
   async plan(file,{destination:d,nameMode,project,series,folder,assetName,directory,verify}) {
     if(!wantsStandard(d,nameMode))return {proposedFileName:d.fileName??file.name,proposedNumber:null};
     const ext=path.extname(file.name);
@@ -94,23 +114,16 @@ export class IntakeNames {
     const base=video?.base??assetName;
     if(video)standardVideoFileName(base+'_001'+ext);
     else validName(base+'_001'+ext);
-    const prefix=key(base+'_');
-    if(!this.scans.has(directory))this.scans.set(directory,directoryNames(directory,verify));
-    const entries=await this.scans.get(directory);
     if(video){
-      if(!this.videoMaximum.has(directory)){
-        let max=0;
-        for(const names of [entries,this.reserved.get(directory)??[]])
-          for(const name of names)max=Math.max(max,videoSequence(name));
-        this.videoMaximum.set(directory,max);
-      }
-      const n=this.videoMaximum.get(directory)+1;
-      if(n>9999)throw error('INTAKE_NAME_NUMBER_LIMIT','此目录的编号已到 9999，请手动命名',422);
+      const n=await this.nextVideoNumber(directory,verify);
       const number=String(n).padStart(3,'0');
       const name=standardVideoFileName(base+'_'+number+ext);
       this.reserve(directory,name);
       return {proposedFileName:name,proposedNumber:n,nameParts:[...video.parts,{role:'number',text:number},{role:'ext',text:ext}]};
     }
+    const prefix=key(base+'_');
+    if(!this.scans.has(directory))this.scans.set(directory,directoryNames(directory,verify));
+    const entries=await this.scans.get(directory);
     if(!this.maximum.has(directory))this.maximum.set(directory,new Map());
     const byPrefix=this.maximum.get(directory);
     if(!byPrefix.has(prefix)){
