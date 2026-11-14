@@ -13,6 +13,7 @@ import { MysqlStorage } from '../server/mysql.mjs';
 import { MysqlDatabase } from '../server/mysql-db.mjs';
 import { Projects } from '../server/projects.mjs';
 import { ProjectAssets } from '../server/project-assets/store.mjs';
+import { canonical, digest } from '../server/project-assets/model.mjs';
 import { addLook, addImage } from './helpers/creative-fixture.mjs';
 import { assertCharacterMergeRequestRace } from './helpers/character-merge-request-race.mjs';
 
@@ -180,6 +181,70 @@ try {
   const options = { mysql:{ ...config, database:'creative_fresh' } };
   await assertCharacterMergeRequestRace(fresh, options, false);
   await assertCharacterMergeRequestRace(fresh, options, true);
+ });
+ await check('MySQL 拒绝跨剧前像恢复和撤销，并在确认事务内拦截新的继承链重名', async () => {
+  const directory = freshProjects.series, svc = fresh.characterMerges;
+  const drama = directory.createSeries({request_id:randomUUID(),name:'MySQL 撤销写域'});
+  const other = directory.createSeries({request_id:randomUUID(),name:'MySQL 外部写域'});
+  const episode = (series,n) => directory.createEpisode(series.id,{
+   request_id:randomUUID(),season_id:null,expected_episode_no:n,
+  }).project;
+  const a = episode(drama,1), b = episode(drama,2), outside = episode(other,1);
+  const first = await fresh.create({project_id:a.id,kind:'character',name:'MySQL 撤销人物'});
+  const second = await fresh.create({project_id:b.id,kind:'character',name:first.name});
+  const context = () => svc.groups(drama.id).context_token;
+  const group = svc.groups(drama.id).items[0];
+  const view = svc.preview(drama.id,{group_id:group.group_id,primary_asset_id:first.id,context_token:context()});
+  const merge = svc.confirm(drama.id,{request_id:randomUUID(),context_token:context(),preview_token:view.preview_token,choices:view.choices});
+  const original = freshDB.prepare('SELECT data_json FROM creative_character_merges WHERE id=?').get(merge.merge_id).data_json;
+  const data = JSON.parse(original);
+  const before = data.before.creative_assets.find(row=>row.id===first.id);
+  before.project_id = before.owner_id = outside.id;
+  data.membership.push([outside.id,null]);
+  const backup = fresh.backup();
+  backup.tables.creative_character_merges.find(row=>row.id===merge.merge_id).data_json = canonical(data);
+  const {format,schema_version,checksum,...content} = backup;
+  backup.checksum = digest(content);
+  await connection.query('CREATE DATABASE undo_guard_restore CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');
+  const restoreDB = new MysqlDatabase({...config,database:'undo_guard_restore'});
+  const exited = once(restoreDB.worker,'exit');
+  try {
+   const restoreLib = {db:restoreDB,dataDir:path.join(base,'undo_guard_restore')};
+   new Projects(restoreLib).init();
+   const target = new ProjectAssets(restoreLib).init(), unchanged = target.backup().checksum;
+   await assert.rejects(target.restore(backup),/备份中包含无效/);
+   assert.equal(target.backup().checksum,unchanged);
+  } finally {
+   restoreDB.close();
+   await bounded(exited,10000,'Undo guard restore worker exit unknown');
+  }
+  const undoInput = token => ({request_id:randomUUID(),context_token:context(),undo_token:token??'0'.repeat(64),accept_restore_changes:true});
+  const clean = svc.undoPreview(drama.id,merge.merge_id,{context_token:context()});
+  freshDB.prepare('UPDATE creative_character_merges SET data_json=? WHERE id=?').run(canonical(data),merge.merge_id);
+  const blocked = svc.undoPreview(drama.id,merge.merge_id,{context_token:context()});
+  assert.equal(blocked.status,'blocked');
+  assert(blocked.blockers.some(row=>row.code==='CHARACTER_MERGE_SCOPE_CHANGED'));
+  assert.throws(()=>svc.undo(drama.id,merge.merge_id,undoInput(clean.undo_token)),{code:'CHARACTER_MERGE_UNDO_BLOCKED'});
+  assert.equal(fresh.get(first.id).owner_id,drama.id);
+  assert.equal(svc.resolveAsset(b.id,second.id),first.id);
+  freshDB.prepare('UPDATE creative_character_merges SET data_json=? WHERE id=?').run(original,merge.merge_id);
+  const asset = fresh.get(first.id);
+  await fresh.scopedWrites.save('series',drama.id,first.id,{
+   request_id:randomUUID(),context_token:context(),expected_revision:asset.revision,asset:{...asset,name:'MySQL 新主体名'},
+  });
+  const ready = svc.undoPreview(drama.id,merge.merge_id,{context_token:context()});
+  assert.equal(ready.status,'clean');
+  fresh.scopedWrites.create('series',drama.id,{
+   request_id:randomUUID(),context_token:context(),kind:'character',name:first.name,on_shared:'reject',
+  });
+  const conflict = svc.undoPreview(drama.id,merge.merge_id,{context_token:context()});
+  assert.equal(conflict.status,'blocked');
+  assert(conflict.blockers.some(row=>row.code==='CHARACTER_MERGE_NAME_CONFLICT'));
+  for (const accept_restore_changes of [false,true]) assert.throws(()=>svc.undo(drama.id,merge.merge_id,{
+   ...undoInput(ready.undo_token),accept_restore_changes,
+  }),{code:'CHARACTER_MERGE_UNDO_BLOCKED'});
+  assert.equal(fresh.get(second.id).archived_at>0,true);
+  assert.equal(svc.resolveAsset(b.id,second.id),first.id);
  });
  passed = true;
 } catch (e) { await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }

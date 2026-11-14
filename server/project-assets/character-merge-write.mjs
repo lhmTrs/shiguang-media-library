@@ -193,6 +193,69 @@ function restoreValues(table, original, applied, live) {
   return fields;
 }
 
+function projectedRows(table, original, applied, live) {
+  const before = rowMap(original), after = rowMap(applied), current = rowMap(live);
+  return [...new Set([...before.keys(), ...current.keys()])].flatMap(id => {
+    const old = before.get(id), expected = after.get(id), row = current.get(id);
+    if (!old) return expected || !row ? [] : [row];
+    if (!row) return changedFields(old, expected).length ? [old] : [];
+    return [{ ...row, ...(expected ? restoreValues(table, old, expected, row) : {}) }];
+  });
+}
+
+function undoProjection(data, current, primary) {
+  const projected = Object.fromEntries(Object.keys(mergeEntities).map(table => [
+    table, projectedRows(table, data.before[table], data.after[table], current[table]),
+  ]));
+  // Apply the same clock retention rule as the writer. Retained/new clocks
+  // on a shared identity also need their episode or season authorized.
+  const clocks = rowMap(current.creative_asset_override_clocks);
+  const prior = rowMap(data.before.creative_asset_override_clocks);
+  const restoringLocal = data.before.creative_assets.find(row => row.id === primary).owner_type === 'project';
+  for (const row of data.after.creative_asset_override_clocks) {
+    if (same(prior.get(row.id), row)) continue;
+    if (restoringLocal) clocks.delete(row.id);
+    else if (!clocks.has(row.id)) clocks.set(row.id, row);
+  }
+  projected.creative_asset_override_clocks = [...clocks.values()];
+  return projected;
+}
+
+function projectionScopeValid(projected, seriesId, episodes, seasons) {
+  const assets = rowMap(projected.creative_assets), local = new Set(episodes.map(row => row.project_id));
+  const seasonIds = new Set(seasons.map(row => row.id));
+  const owned = row => row.owner_type === 'series'
+    ? row.project_id === null && row.owner_id === seriesId
+    : row.owner_type === 'project' && row.owner_id === row.project_id && local.has(row.project_id);
+  if ([...assets.values()].some(row => row.kind !== 'character' || !owned(row))) return false;
+  if (projected.project_character_attributes.some(row =>
+    assets.get(row.id)?.owner_type !== 'project' || assets.get(row.id).project_id !== row.project_id ||
+    !local.has(row.project_id))) return false;
+  if (projected.series_character_attributes.some(row =>
+    assets.get(row.id)?.owner_type !== 'series' || row.series_id !== seriesId)) return false;
+  return [...projected.creative_asset_overrides, ...projected.creative_asset_override_clocks].every(row =>
+    assets.get(row.asset_id)?.owner_type === 'series' &&
+    (row.scope_type === 'episode' ? local.has(row.scope_id) : row.scope_type === 'season' && seasonIds.has(row.scope_id)));
+}
+
+function nameConflicts(service, seriesId, projected) {
+  const own = new Set(projected.map(row => row.id)), conflicts = [];
+  for (const row of projected) {
+    if (row.archived_at !== 0) continue;
+    const owners = row.owner_type === 'project'
+      ? "(owner_type='project' AND owner_id=? OR owner_type='series' AND owner_id=?)"
+      : "(owner_type='series' AND owner_id=? OR owner_type='project' AND owner_id IN (SELECT id FROM project_series_members WHERE series_id=?))";
+    const ownerId = row.owner_type === 'project' ? row.owner_id : seriesId;
+    const matches = service.db.prepare("SELECT id FROM creative_assets WHERE kind=? AND name_key=? AND archived_at=0 AND " + owners)
+      .all(row.kind, row.name_key, ownerId, seriesId);
+    for (const match of matches) if (!own.has(match.id)) conflicts.push({
+      code: 'CHARACTER_MERGE_NAME_CONFLICT', asset_id: row.id, conflict_asset_id: match.id,
+      ...(row.project_id && { project_id: row.project_id }),
+    });
+  }
+  return conflicts;
+}
+
 export function planCharacterUndo(service, record) {
   const { data, series_id: seriesId, id: mergeId, canonical_asset_id: primary } = record;
   if (record.status === 'undone') return { record, current: null, ready: false, undo_token: null, merge_id: mergeId,
@@ -206,8 +269,16 @@ export function planCharacterUndo(service, record) {
   const lookAliases = service.db.prepare(`SELECT l.* FROM creative_character_look_aliases l JOIN creative_looks t
     ON t.id=l.target_id WHERE t.asset_id=? ORDER BY l.id`).all(primary);
   if (!same(data.aliases, aliases) || !same(data.lookAliases, lookAliases)) block('CHARACTER_MERGE_DEPENDENCY');
-  const affected = new Set(data.episode_ids);
-  if (!same(episodes.filter(row => affected.has(row.project_id)).map(row => [row.project_id, row.season_id]).sort(),
+  const projected = undoProjection(data, current, primary);
+  const writeProjects = [
+    ...projected.creative_assets.filter(row => row.owner_type === 'project').map(row => row.project_id),
+    ...projected.project_character_attributes.map(row => row.project_id),
+    ...[...projected.creative_asset_overrides, ...projected.creative_asset_override_clocks]
+      .filter(row => row.scope_type === 'episode').map(row => row.scope_id),
+  ];
+  const affected = new Set([...data.episode_ids, ...writeProjects]);
+  const scopeValid = projectionScopeValid(projected, seriesId, episodes, service.directory.seasons(seriesId));
+  if (!scopeValid || !same(episodes.filter(row => affected.has(row.project_id)).map(row => [row.project_id, row.season_id]).sort(),
       data.membership.filter(([id]) => affected.has(id)).sort()) ||
       !same(service.alignment.state(seriesId), data.alignment) ||
       !same(service.store.attributes.seriesConfig(seriesId), data.config)) block('CHARACTER_MERGE_SCOPE_CHANGED');
@@ -227,12 +298,10 @@ export function planCharacterUndo(service, record) {
     }
     baseline.set(key, old - 1);
   }
-  // Restoring a source must not displace a newer asset with that name.
-  for (const row of data.before.creative_assets) {
-    const clash = service.db.prepare('SELECT id FROM creative_assets WHERE owner_type=? AND owner_id=? AND kind=? AND name_key=? AND archived_at=0')
-      .get(row.owner_type, row.owner_id, row.kind, row.name_key);
-    if (clash && !data.asset_ids.includes(clash.id)) block('CHARACTER_MERGE_NAME_CONFLICT', { asset_id: row.id });
-  }
+  // Check the final names, including unrelated edits retained by undo, against
+  // both owners in the episode's inheritance chain. The original group may
+  // intentionally return to its original duplicate identities.
+  if (scopeValid) blockers.push(...nameConflicts(service, seriesId, projected.creative_assets));
   const savedLooks = rowMap(data.before.creative_looks);
   const savedBindings = rowMap(data.before.creative_image_bindings);
   const currentLooks = rowMap(current.creative_looks);
@@ -280,19 +349,11 @@ export function planCharacterUndo(service, record) {
   }
   const projectAsset = id => {
     const before = data.before.creative_assets.find(row => row.id === id);
-    const restored = table => {
-      const original = rowMap(data.before[table]), applied = rowMap(data.after[table]), live = rowMap(current[table]);
-      return [...new Set([...original.keys(), ...live.keys()])].flatMap(key => {
-        const old = original.get(key), after = applied.get(key), row = live.get(key);
-        if (!old) return after || !row ? [] : [row];
-        if (!row) return changedFields(old, after).length ? [old] : [];
-        return [{ ...row, ...(after ? restoreValues(table, old, after, row) : {}) }];
-      }).filter(row => row.asset_id === id).map(row => ({ ...row, ...JSON.parse(row.data_json) }));
-    };
+    const restored = table => projected[table].filter(row => row.asset_id === id)
+      .map(row => ({ ...row, ...JSON.parse(row.data_json) }));
     const looks = restored('creative_looks'), images = restored('creative_image_bindings');
     const expected = data.after.creative_assets.find(row => row.id === id);
-    const live = current.creative_assets.find(row => row.id === id);
-    const target = { ...live, ...restoreValues('creative_assets', before, expected, live) };
+    const target = { ...projected.creative_assets.find(row => row.id === id) };
     if (before.owner_type === 'project' && expected.owner_type === 'series' && !before.default_look_id && !target.default_look_id) {
       target.default_look_id = looks.find(activeChild)?.id ?? null;
     }
