@@ -13,6 +13,7 @@ const baseline=process.env.GENERATION_TEST_BASELINE==='1';
 let browser,page,cookie,token,passed=false;const checks=[],errors=[],external=[],contexts=[];
 async function api(p,body,method){const r=await fetch(origin+'/api'+p,{method:method||(body?'POST':'GET'),headers:{cookie,origin,'x-local-token':token,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});assert.ok(r.ok,p);return r.json();}
 const chat=()=>page.getByRole('region',{name:'Codex 图文对话'}),button=()=>chat().locator('.codex-generate-button'),feedback=()=>chat().locator('.codex-generation-feedback');
+const codexTab=()=>page.getByRole('tab',{name:/用 Codex 生成/}).click(),fillTab=()=>page.getByRole('tab',{name:'填写与复制',exact:true}).click();
 const connectRoute='**/api/prompt-codex/connect';
 const connection=()=>chat().locator('.codex-connection');
 const reconnect=()=>chat().locator('.codex-header-actions').getByRole('button',{name:'重新连接',exact:true});
@@ -21,7 +22,7 @@ async function open(){
  const context=await browser.newContext({viewport:{width:1440,height:1000}});contexts.push(context);
  await context.addInitScript(id=>{localStorage.setItem('shiguang.refreshSeconds','0');localStorage.setItem('shiguang.activeProject',id)},project.id);
  await serveCandidate(context,external);
- page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/prompt-templates');await expect(button()).toBeEnabled();
+ page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/prompt-templates');await codexTab();await expect(button()).toBeEnabled();
  if(baseline)await chat().locator('.codex-connect-button').click();
  else{
   await expect(connection()).toHaveText(/^\s*(尚未连接|已连接)\s*$/);
@@ -38,7 +39,7 @@ try{
  await check(baseline?'Baseline reproduces a silent draft-save stop next to the generate button':'Draft-save failure is visible beside the clicked button and sends no generation',async()=>{
   const context=await open();let turns=0;context.on('request',r=>{if(r.method()==='POST'&&/\/turns$/.test(r.url()))turns++});
   await context.route('**/api/prompt-templates/*/draft',route=>route.fulfill({status:409,json:{error:'合成草稿冲突，请重新核对'}}));
-  await page.getByLabel('主题',{exact:true}).fill('草稿失败反馈验证');await button().click();
+  await fillTab();await page.getByLabel('主题',{exact:true}).fill('草稿失败反馈验证');await codexTab();await button().click();
   if(baseline){await expect(page.getByText(/合成草稿冲突，请重新核对。可先下载/)).toBeVisible();await expect(feedback()).toHaveCount(0);await expect(button()).toBeEnabled();}
   else{await expect(feedback()).toContainText('尚未发送生成请求');await expect(feedback()).toContainText('合成草稿冲突');await expect(button()).toBeEnabled();}
   assert.equal(turns,0);await snapshot('draft-save-failure');await context.close();
@@ -81,7 +82,7 @@ try{
   await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');await expect(button()).toBeEnabled();
   await expect(connection()).toHaveText('连接失败');assert.equal(statusReads,1);assert.deepEqual(writes,[]);
   // 顶栏统一后不能再把项目清空：让项目列表真的为空（宿主没有当前项目），再看发送保护
-  await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
+  await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await codexTab();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
  });
  await check('Unsupported-tool failure is explained next to follow-up; explicit reconnect preserves input and never sends it',async()=>{
   const toolTemplate=await api('/prompt-templates',{...fixture(),name:'合成工具错误模板'});await api('/prompt-templates/'+toolTemplate.id+'/draft',{template_revision:1,expected_revision:0,values:{...inputs,主题:'合成工具断连测试'}},'PUT');

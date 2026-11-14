@@ -22,6 +22,8 @@ child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);const exit
 async function check(name,fn){await fn();checks.push(name);console.log('PASS '+name);}
 const raw=(p,init={})=>fetch(origin+'/api'+p,{...init,headers:{cookie,origin,...init.headers}});
 async function api(p,body,method){const r=await raw(p,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json','x-local-token':token},...(body?{body:JSON.stringify(body)}:{})});const v=await r.json();assert.ok(r.ok,JSON.stringify(v));return v;}
+// 全局提示框会盖住右上角按钮（main 上同样偶发），点那里之前先逐个关掉
+async function clearToasts(){const close=page.getByRole('button',{name:'关闭此提示'});for(let i=0;i<10&&await close.count();i++)await close.first().click().catch(()=>{});await expect(page.locator('.global-feedback-card')).toHaveCount(0);}
 async function download(page,button){const event=page.waitForEvent('download');await button.click();return fs.readFile(await (await event).path());}
 try{
  await expect.poll(()=>logs,{timeout:25000}).toContain(origin);
@@ -38,10 +40,10 @@ try{
  context.on('request',r=>{const u=new URL(r.url());if(u.protocol.startsWith('http')){requests.push(u.pathname);if(u.origin!==origin)unexpected.push(r.url());}});
  page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(origin);
  const nav=page.getByRole('navigation',{name:'主导航'}),item=name=>nav.getByRole('button',{name,exact:true});await item('提示词模板').click();
- const app=page.getByRole('region',{name:'提示词模板工作台'}),button=name=>app.getByRole('button',{name,exact:true});let templateId;
+ const app=page.getByRole('region',{name:'提示词模板工作台'}),button=name=>app.getByRole('button',{name,exact:true}),menuItem=name=>app.getByRole('menu',{name:'更多模板操作'}).getByRole('menuitem',{name,exact:true}),more=async name=>{await button('更多').click();await menuItem(name).click();};let templateId;
  await check('Native React workspace, same navigation/settings/service and no iframe',async()=>{
   await expect(app.getByRole('heading',{name:'从一个好用的模板开始'})).toBeVisible();await expect(page.locator('iframe')).toHaveCount(0);
-  assert.deepEqual(await page.locator('#navigation-design > button').evaluateAll(xs=>xs.map(x=>x.getAttribute('aria-label'))),['项目','分镜设计','提示词模板']);
+  assert.deepEqual(await page.locator('#navigation-design > button').evaluateAll(xs=>xs.map(x=>x.getAttribute('aria-label'))),['项目','素材使用','项目资产','生成视频','分镜设计','提示词模板']);
   await expect(page.getByRole('combobox',{name:'当前项目',exact:true})).toHaveCount(0);await expect(app.locator('.prompt-storage')).toContainText('SQLite');
   await button('选用内置模板').first().click();await expect(page.locator('.prompt-version-list article')).toHaveCount(4);await page.getByRole('button',{name:'关闭面板'}).click();
  });
@@ -67,18 +69,18 @@ try{
  });
  await check('Complete version inspection, rollback creates v3 and keeps v2/old input/history',async()=>{
   await button('编辑模板').click();const modal=page.getByRole('dialog');await modal.getByLabel('模板正文',{exact:true}).fill(fixture().body+'\n第二版规则');await modal.getByRole('button',{name:'保存模板'}).click();
-  await expect.poll(async()=>(await current()).current_version).toBe(2);await expect(button('下载旧版草稿')).toBeVisible();await button('历史版本').click();
+  await expect.poll(async()=>(await current()).current_version).toBe(2);await expect(button('下载旧版草稿')).toBeVisible();await more('历史版本');
   await expect(page.locator('.prompt-version-list article')).toHaveCount(2);await page.getByRole('button',{name:'回滚到 v1',exact:true}).click();await expect.poll(async()=>(await current()).current_version).toBe(3);
   assert.equal((await current()).definition.body,fixture().body);assert.equal((await api('/prompt-templates/'+templateId+'/versions')).length,3);
-  await button('生成记录').click();await expect(page.locator('.prompt-version-list article')).toHaveCount(1);await page.getByText('查看本次输入与完整模板快照',{exact:true}).click();await expect(page.locator('.prompt-version-list')).toContainText(inputs.主题);await page.getByRole('button',{name:'关闭面板'}).click();
+  await more('生成记录');await expect(page.locator('.prompt-version-list article')).toHaveCount(1);await page.getByText('查看本次输入与完整模板快照',{exact:true}).click();await expect(page.locator('.prompt-version-list')).toContainText(inputs.主题);await page.getByRole('button',{name:'关闭面板'}).click();
  });
  await check('Delete hides only; deleted list allows complete history and restore',async()=>{
-  await button('删除模板').click();await expect(app.getByRole('heading',{name:'从一个好用的模板开始'})).toBeVisible();assert.equal((await api('/prompt-templates')).items.length,0);
+  await more('删除模板');await expect(app.getByRole('heading',{name:'从一个好用的模板开始'})).toBeVisible();assert.equal((await api('/prompt-templates')).items.length,0);
   await button('已删除').click();await expect(button('恢复模板')).toBeVisible();await expect(app.getByLabel('主题',{exact:true})).toBeDisabled();assert.equal((await api('/prompt-templates/'+templateId+'/records')).total,1);
   await button('恢复模板').click();await button('正常').click();await expect(app.getByRole('heading',{name:/合成情绪模板/})).toBeVisible();assert.equal((await current()).deleted_at,null);
  });
  await check('Single-template JSON export/reimport keeps definition under a new stable ID',async()=>{
-  const before=(await current()).definition,bytes=await download(page,button('导出模板'));assert.deepEqual(JSON.parse(bytes).template,before);
+  const before=(await current()).definition,bytes=await (await button('更多').click(),download(page,menuItem('导出模板')));assert.deepEqual(JSON.parse(bytes).template,before);
   await app.locator('input[type=file]').first().setInputFiles({name:'模板.json',mimeType:'application/json',buffer:bytes});await expect.poll(async()=>(await api('/prompt-templates')).items.length).toBe(2);
   const rows=(await api('/prompt-templates')).items;templateId=rows.find(r=>r.id!==templateId).id;assert.deepEqual((await current()).definition,before);
  });
@@ -106,8 +108,34 @@ try{
   assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);assert.deepEqual(await api('/projects'),[]);
  });
  await check('Drag saves fixed database order, keyboard works inside filters, edits and reload retain order, stale order never overwrites',async()=>{
-  await page.setViewportSize({width:1600,height:1000});for(const name of ['排序验收甲','排序验收乙','排序验收丙'])await api('/prompt-templates',{...fixture(),name});await button('重新读取').click();const before=(await api('/prompt-templates')).items.map(t=>t.id);await expect(app.locator('.prompt-template-row')).toHaveCount(before.length);const chosen=await app.locator('.prompt-template.selected').locator('..').getAttribute('data-template-id'),source=before.at(-1),target=before[0];await app.locator('[data-template-id="'+source+'"]').getByRole('button',{name:/拖动排序/}).dragTo(app.locator('[data-template-id="'+target+'"]'));const moved=[source,...before.slice(0,-1)];await expect.poll(async()=>(await api('/prompt-templates')).items.map(t=>t.id)).toEqual(moved);assert.equal(await app.locator('.prompt-template.selected').locator('..').getAttribute('data-template-id'),chosen);const selected=await api('/prompt-templates/'+chosen);await api('/prompt-templates/'+chosen,{definition:{...selected.definition,description:'更新后顺序保持'},expected_revision:selected.revision},'PUT');assert.deepEqual((await api('/prompt-templates')).items.map(t=>t.id),moved);await page.reload();await expect(app.locator('.prompt-template-row')).toHaveCount(moved.length);assert.deepEqual(await app.locator('.prompt-template-row').evaluateAll(rows=>rows.map(row=>row.dataset.templateId)),moved);
+  await page.setViewportSize({width:1600,height:1000});for(const name of ['排序验收甲','排序验收乙','排序验收丙'])await api('/prompt-templates',{...fixture(),name});await clearToasts();await button('重新读取').click();const before=(await api('/prompt-templates')).items.map(t=>t.id);await expect(app.locator('.prompt-template-row')).toHaveCount(before.length);const chosen=await app.locator('.prompt-template.selected').locator('..').getAttribute('data-template-id'),source=before.at(-1),target=before[0];await app.locator('[data-template-id="'+source+'"]').getByRole('button',{name:/拖动排序/}).dragTo(app.locator('[data-template-id="'+target+'"]'));const moved=[source,...before.slice(0,-1)];await expect.poll(async()=>(await api('/prompt-templates')).items.map(t=>t.id)).toEqual(moved);assert.equal(await app.locator('.prompt-template.selected').locator('..').getAttribute('data-template-id'),chosen);const selected=await api('/prompt-templates/'+chosen);await api('/prompt-templates/'+chosen,{definition:{...selected.definition,description:'更新后顺序保持'},expected_revision:selected.revision},'PUT');assert.deepEqual((await api('/prompt-templates')).items.map(t=>t.id),moved);await page.reload();await expect(app.locator('.prompt-template-row')).toHaveCount(moved.length);assert.deepEqual(await app.locator('.prompt-template-row').evaluateAll(rows=>rows.map(row=>row.dataset.templateId)),moved);
   await app.getByLabel('搜索提示词模板').fill('排序验收');const shown=await app.locator('.prompt-template-row').evaluateAll(rows=>rows.map(row=>row.dataset.templateId));assert.equal(shown.length,3);const fullBefore=(await api('/prompt-templates')).items.map(t=>t.id);await app.locator('[data-template-id="'+shown[1]+'"]').getByRole('button',{name:/拖动排序/}).press('Alt+ArrowUp');const visibleNext=[shown[1],shown[0],shown[2]];let at=0;const filteredExpected=fullBefore.map(id=>shown.includes(id)?visibleNext[at++]:id);await expect.poll(async()=>(await api('/prompt-templates')).items.map(t=>t.id)).toEqual(filteredExpected);await expect.poll(()=>app.locator('.prompt-template-row').evaluateAll(rows=>rows.map(row=>row.dataset.templateId))).toEqual(visibleNext);await expect(app.locator('.prompt-order-handle').first()).toBeEnabled();await page.route('**/api/prompt-templates/order',route=>route.fulfill({status:409,json:{error:'模板列表或顺序已在别处更新，请重新读取后再拖动',code:'PROMPT_CONFLICT'}}));await app.locator('[data-template-id="'+visibleNext[1]+'"]').getByRole('button',{name:/拖动排序/}).press('Alt+ArrowUp');await expect(app.locator('.prompt-alert')).toContainText('顺序已在别处更新');assert.deepEqual((await api('/prompt-templates')).items.map(t=>t.id),filteredExpected);await page.unroute('**/api/prompt-templates/order');await page.screenshot({path:path.join(evidence,'template-order-desktop.png')});await page.setViewportSize({width:390,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(evidence,'template-order-mobile.png')});
+ });
+ await check('Header copy button, fill/Codex tabs and the More menu keep every action reachable',async()=>{
+  await page.setViewportSize({width:1440,height:900});await app.getByLabel('搜索提示词模板').fill('');await api('/prompt-templates',{...fixture(),name:'标签验收模板'});
+  await clearToasts();await button('重新读取').click();await app.locator('.prompt-template-list').getByRole('button').filter({hasText:'标签验收模板'}).click();await expect(app.getByRole('heading',{name:/标签验收模板/})).toBeVisible();
+  const fillTab=app.getByRole('tab',{name:'填写与复制',exact:true}),codexTab=app.getByRole('tab',{name:/用 Codex 生成/}),chat=page.getByRole('region',{name:'Codex 图文对话'}),topCopy=app.locator('.prompt-preview header').getByRole('button',{name:'复制完整提示词',exact:true}),bottomCopy=app.locator('.prompt-output-actions').getByRole('button',{name:'复制完整提示词',exact:true});
+  // 默认停在「填写与复制」，Codex 区隐藏但不卸载
+  await expect(fillTab).toHaveAttribute('aria-selected','true');await expect(codexTab).toHaveAttribute('aria-selected','false');await expect(app.locator('#prompt-panel-fill')).toBeVisible();await expect(chat).toBeHidden();assert.equal(await page.locator('.codex-chat').count(),1,'Codex area stays mounted while hidden');
+  // 顶部复制按钮：必填缺失时置灰；填齐后复制的内容与预览、底部按钮一致
+  await expect(topCopy).toBeVisible();await expect(bottomCopy).toHaveCount(1);await expect(topCopy).toBeDisabled();
+  await page.evaluate(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{window.__copied.push(t)}}})});
+  await app.getByLabel('主题',{exact:true}).fill('标签页验收主题');await expect(topCopy).toBeEnabled();const box=await topCopy.boundingBox();assert.ok(box&&box.y+box.height<=900,'header copy button is on the first screen');
+  await topCopy.click();await bottomCopy.click();const copied=await page.evaluate(()=>window.__copied);assert.equal(copied.length,2);assert.equal(copied[0],copied[1]);assert.ok(copied[0].includes('主题：标签页验收主题'));assert.equal(copied[0],await app.getByLabel('完整提示词内容').textContent());
+  // 切到「用 Codex 生成」再切回：填写内容保留，键盘左右键可切换
+  await codexTab.click();await expect(codexTab).toHaveAttribute('aria-selected','true');await expect(chat).toBeVisible();await expect(app.locator('#prompt-panel-fill')).toBeHidden();await expect(topCopy).toBeHidden();await page.screenshot({path:path.join(evidence,'prompt-tab-codex.png')});
+  await codexTab.press('ArrowLeft');await expect(fillTab).toBeFocused();await expect(fillTab).toHaveAttribute('aria-selected','true');await expect(app.getByLabel('主题',{exact:true})).toHaveValue('标签页验收主题');await fillTab.press('End');await expect(codexTab).toBeFocused();await codexTab.press('Home');await expect(fillTab).toHaveAttribute('aria-selected','true');
+  // 操作按钮只剩「编辑模板」+「更多」；更多菜单顺序固定，删除在最后且为红色
+  const heading=app.locator('.prompt-document-heading');assert.deepEqual(await heading.locator(':scope > .prompt-actions > button, :scope > .prompt-actions > .prompt-more > button').evaluateAll(xs=>xs.map(x=>x.textContent.trim())),['编辑模板','更多']);
+  const more=button('更多'),menu=app.getByRole('menu',{name:'更多模板操作'});await expect(more).toHaveAttribute('aria-expanded','false');await more.click();await expect(more).toHaveAttribute('aria-expanded','true');
+  assert.deepEqual(await menu.getByRole('menuitem').evaluateAll(xs=>xs.map(x=>x.textContent.trim())),['复制模板','导出模板','历史版本','生成记录','删除模板']);await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  const colors=await menu.getByRole('menuitem').evaluateAll(xs=>xs.map(x=>getComputedStyle(x).color));assert.notEqual(colors[4],colors[0],'delete is styled as dangerous');await page.screenshot({path:path.join(evidence,'prompt-more-menu.png')});
+  await page.keyboard.press('ArrowDown');await expect(menu.getByRole('menuitem',{name:'导出模板'})).toBeFocused();await page.keyboard.press('End');await expect(menu.getByRole('menuitem',{name:'删除模板'})).toBeFocused();await page.keyboard.press('ArrowDown');await expect(menu.getByRole('menuitem',{name:'复制模板'})).toBeFocused();
+  await page.keyboard.press('Escape');await expect(menu).toHaveCount(0);await expect(more).toBeFocused();
+  await more.click();await expect(menu).toBeVisible();await app.locator('.prompt-preview pre').click();await expect(menu).toHaveCount(0);
+  await more.click();await menu.getByRole('menuitem',{name:'历史版本'}).click();await expect(page.getByRole('dialog',{name:'模板历史版本'})).toBeVisible();await expect(menu).toHaveCount(0);await page.getByRole('button',{name:'关闭面板'}).click();await expect(more).toBeFocused();
+  for(const width of [1024,760]){await page.setViewportSize({width,height:900});await more.click();const r=await menu.boundingBox();assert.ok(r&&r.x>=0&&r.x+r.width<=width,'menu fits at '+width);await page.keyboard.press('Escape');}
+  await page.setViewportSize({width:1440,height:900});await page.screenshot({path:path.join(evidence,'prompt-tab-fill.png')});
  });
  await context.close();passed=true;
 }catch(e){await page?.screenshot({path:path.join(evidence,'ui-failure.png')}).catch(()=>{});await fs.writeFile(path.join(evidence,'ui-failure.txt'),e.stack);throw e;}
