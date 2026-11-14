@@ -124,14 +124,16 @@ export class ProjectVideoContentChanges {
     c.db.prepare('UPDATE storyboard_video_plans SET data_json=?,revision=?,updated_at=? WHERE id=?').run(canonical({adopted}),row.revision+1,Date.now(),id);
   }
   accept(id,sourceId,input){
+    this.catalog.assertRenderUnused(this.catalog.videos.source(id,sourceId));
     if(input.confirmAcceptContent!==true||!Array.isArray(input.confirmedUnbindShotIds))fail('CONTENT_CONFIRMATION_REQUIRED','请确认采用当前内容和需要解除的镜号',409);
     return this.journal.start(id,'accept-change',{...input,sourceId},async s=>{
       const c=this.catalog,p=this.find(id,sourceId,input.contentToken,'changes-preview'),current=await this.checkCandidate(id,sourceId,input,p);
       if(!same([...input.confirmedUnbindShotIds].sort(),[...p.invalidShotIds].sort()))fail('UNBIND_CONFIRMATION_REQUIRED','请精确确认因新时长失效的采用镜号',409);
+      c.assertRenderUnused(current.source);
       if(p.changeKind==='metadata_only')fail('CONTENT_UNCHANGED','视频内容一致，无需接受新内容；请刷新并沿用原视频',409);
       const kind=p.changeKind==='content_changed'?'user_accepted_change':'user_accepted_unverified_current';
       const result=c.videos.tx(()=>{
-        c.project(id,true);c.verification.assertAuthority(p.context);c.folders.busyOperations(id,current.source.path);
+        c.project(id,true);c.assertRenderUnused(current.source);c.verification.assertAuthority(p.context);c.folders.busyOperations(id,current.source.path);
         if(c.adoption(id).stamp!==p.adoptionStamp)fail('ADOPTION_CHANGED','采用关系在确认时变化',409);
         this.unbindShots(id,p.invalidShotIds);
         const probe={path:current.source.path,name:current.source.name,identity:p.candidate.originalIdentity,durationMs:p.candidate.probe.durationMs,codec:p.candidate.probe.codec,supported:p.candidate.probe.supported};
@@ -149,6 +151,7 @@ export class ProjectVideoContentChanges {
     });
   }
   removePreview(id,sourceId,input){
+    this.catalog.assertRenderUnused(this.catalog.videos.source(id,sourceId));
     this.expected(id,sourceId,input);
     return this.journal.start(id,'remove-preview',{...input,sourceId},async s=>{
       const c=this.catalog,current=this.expected(id,sourceId,input),authority=c.verification.authority(id,sourceId),otherActiveReferences=[],reasons=[];
@@ -169,9 +172,10 @@ export class ProjectVideoContentChanges {
     });
   }
   remove(id,sourceId,input){
+    this.catalog.assertRenderUnused(this.catalog.videos.source(id,sourceId));
     if(!['keep','trash'].includes(input.fileAction)||input.confirmUnbind!==true)fail('REMOVAL_CONFIRMATION_REQUIRED','请选择保留文件或移入废纸篓并确认解除采用',409);
     return this.journal.start(id,'remove',{...input,sourceId},async s=>{
-      const c=this.catalog,p=this.find(id,sourceId,input.removalToken,'remove-preview'),current=this.expected(id,sourceId,input);
+      const c=this.catalog,p=this.find(id,sourceId,input.removalToken,'remove-preview'),current=this.expected(id,sourceId,input);c.assertRenderUnused(current.source);
       if(current.adoption.stamp!==p.adoptionStamp||input.adoptionStamp!==p.adoptionStamp||c.verification.authority(id,sourceId)!==p.context.authority)fail('VIDEO_CONFLICT','移除影响已变化，请重新核对',409);
       if(input.fileAction==='trash'){
         if(!p.file||!p.locationContext||this.otherReferences({...current.source,identity:p.file.identity}).length||!c.lib.trashBin&&!c.trashInjected)fail('TRASH_UNAVAILABLE','此文件不能移入废纸篓，请选择保留文件',409);
@@ -185,7 +189,7 @@ export class ProjectVideoContentChanges {
       const unboundShotIds=(current.adoption.shots.get(sourceId)||[]).map(s=>s.id);
       const result={requestId:s.requestId,projectId:id,sourceId,status:'completed',record:{removed:true,unboundShotIds},file:{action:input.fileAction,status:input.fileAction==='keep'?'kept':'unknown'}};
       c.videos.tx(()=>{
-        c.project(id,true);
+        c.project(id,true);c.assertRenderUnused(current.source);
         if(c.adoption(id).stamp!==p.adoptionStamp||c.verification.authority(id,sourceId)!==p.context.authority)fail('VIDEO_CONFLICT','确认期间资料或采用关系变化',409);
         this.unbindShots(id,unboundShotIds);c.record(id,sourceId,{...current.meta.data,removedAt:Date.now()},(current.meta.row?.revision||0)+1);
         s.partial={record:result.record,file:result.file};s.result=result;s.status=input.fileAction==='keep'?'completed':'running';this.journal.save(s);
@@ -195,7 +199,7 @@ export class ProjectVideoContentChanges {
         try{
           await c.media.verify({path:current.source.path,identity:p.file.identity});
           if(this.otherReferences({...current.source,identity:p.file.identity}).length)fail('OTHER_ACTIVE_REFERENCES','文件新增了其他引用，已保留原文件',409);
-          const trashedPath=await c.fileOperations.trash(current.source.path);result.file.status='trashed';
+          c.assertRenderUnused(current.source);const trashedPath=await c.fileOperations.trash(current.source.path);result.file.status='trashed';
           if(current.meta.data.mediaAssetId)c.db.prepare('UPDATE assets SET path=?,trashed=1,online=0,file_status=? WHERE id=? AND path=?').run(trashedPath,'missing',current.meta.data.mediaAssetId,current.source.path);
         }catch(e){result.status='partial';result.file={action:'trash',status:e.code==='TRASH_UNSETTLED'||e.killed||e.signal||e.effectUnknown||e.code==='ETIMEDOUT'?'unknown':'failed',code:e.code||'TRASH_FAILED',reason:e.status?e.message:'记录已移除，文件移入废纸篓未确认；请核对原请求'};}
       }

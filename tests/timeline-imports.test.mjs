@@ -1,3 +1,4 @@
+import {VideoMedia} from '../server/storyboard-video/media.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
@@ -65,35 +66,21 @@ test("overview includes all timeline references independent of project list filt
   db.prepare("DELETE FROM assets WHERE id='a1'").run();
   assert.equal(projects.imports.overview(project.id).timelines[0].references.find(r=>r.assetId==="a1").kind,"sfx","historical snapshot preserves missing asset type");
 });
-test("local renders: explicit association, per-timeline scope, identity checks and safe unlink",async t=>{
-  const {projects,project,preview,apply}=setup(t), timeline=apply(preview());
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"shiguang-render-test-"));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
-  const file=path.join(dir,"成片.mp4");await fs.writeFile(file,"synthetic test video placeholder");
-  assert.equal(projects.renders.get(project.id,timeline.timelineId),null);
-  await assert.rejects(projects.renders.save(project.id,timeline.timelineId,{path:"relative.mp4"}),/绝对路径/);
-  await assert.rejects(projects.renders.save(project.id,timeline.timelineId,{path:file,offset:"bad"}),/偏移/);
-  const other=projects.save(null,{name:"其他项目"});
-  await assert.rejects(projects.renders.save(other.id,timeline.timelineId,{path:file}),/时间线不存在/);
-  const saved=await projects.renders.save(project.id,timeline.timelineId,{path:file,offset:3});
-  assert.equal(saved.offset,3);assert.equal(saved.path,await fs.realpath(file));
-  projects.save(project.id,{name:"改名后的项目",software:"resolve"});
-  assert.equal(projects.get(project.id).name,"改名后的项目");
-  assert.deepEqual(projects.renders.get(project.id,timeline.timelineId),saved,"rename keeps render linked by IDs");
-  assert.equal(projects.items(project.id).items[0].timelineReferences[0].timelineId,timeline.timelineId);
-  assert.equal(projects.items(project.id).items[0].timelineReferences[0].timelineName,"终版时间线","project and XML timeline names remain distinct");
-  const opened=await projects.renders.open(project.id,timeline.timelineId);
-  assert.equal((await opened.handle.readFile()).toString(),"synthetic test video placeholder");await opened.handle.close();
-  await fs.unlink(file);await fs.symlink(path.join(dir,"private.mp4"),file);
-  await fs.writeFile(path.join(dir,"private.mp4"),"private");
-  await assert.rejects(projects.renders.open(project.id,timeline.timelineId));
-  await fs.unlink(file);await fs.writeFile(file,"replacement");
-  await assert.rejects(projects.renders.open(project.id,timeline.timelineId),/重新关联/);
-  projects.renders.remove(project.id,timeline.timelineId);
-  assert.equal(await fs.readFile(file,"utf8"),"replacement","unlink association never deletes media");
-  await projects.renders.save(project.id,timeline.timelineId,{path:file});
-  projects.imports.undo(project.id,timeline.batchId);
-  assert.equal(projects.lib.db.prepare("SELECT COUNT(*) n FROM project_renders").get().n,0);
+test("legacy renders remain identity-checked read-only records and timeline removal releases them",async t=>{
+  const {projects,project,preview,apply}=setup(t),timeline=apply(preview());
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"shiguang-render-test-"));
+  const file=path.join(dir,"legacy.mp4");await fs.writeFile(file,"synthetic legacy placeholder");
+  const media=new VideoMedia();projects.lib.storyboardVideos={catalog:{media}};t.after(()=>media.close());
+  assert.equal(await projects.renders.get(project.id,timeline.timelineId),null);
+  await assert.rejects(projects.renders.save(project.id,timeline.timelineId,{path:file}),{code:'RENDER_PATH_NOT_ALLOWED'});
+  const st=await fs.stat(file),payload=JSON.stringify({path:file,offset:3,dev:String(st.dev),ino:String(st.ino),size:st.size,mtime:st.mtimeMs,updatedAt:Date.now()});
+  projects.lib.db.prepare('INSERT INTO project_renders(id,project_id,payload,revision) VALUES(?,?,?,?)').run(timeline.timelineId,project.id,payload,1);
+  const before=await projects.renders.get(project.id,timeline.timelineId);projects.save(project.id,{name:"改名后的项目",software:"resolve"});assert.deepEqual(await projects.renders.get(project.id,timeline.timelineId),before);
+  const opened=await projects.renders.open(project.id,timeline.timelineId);assert.equal((await opened.handle.readFile()).toString(),"synthetic legacy placeholder");await media.release(opened.handle);
+  await fs.rename(file,file+'-old');await fs.writeFile(file,'replacement');await assert.rejects(projects.renders.open(project.id,timeline.timelineId),{code:'RENDER_LEGACY_REVIEW_REQUIRED'});
+  projects.imports.undo(project.id,timeline.batchId);assert.equal(projects.lib.db.prepare('SELECT COUNT(*) n FROM project_renders').get().n,0);assert.equal(await fs.readFile(file,'utf8'),'replacement');
 });
+
 test("preview is read-only; confirmation idempotent, multi-timeline union and scoped removals",t=>{
   const {db,projects,project,preview,apply}=setup(t);
   const before=db.prepare("SELECT * FROM assets").all();

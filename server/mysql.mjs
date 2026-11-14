@@ -116,6 +116,7 @@ export function mysqlColumnType(table, col) {
   if (table === 'media_projects' && col.name === 'project_kind') return "VARCHAR(16)";
   if (table === 'media_projects' && col.name === 'system_key') return "VARCHAR(40)";
   if (table === "project_assets" && ["project_id", "asset_id"].includes(col.name)) return "VARCHAR(36)";
+  if (table === "project_renders" && col.name === "revision") return "BIGINT";
   if (["project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders"].includes(table) && ["project_id", "timeline_id", "asset_id", "revision", "head_id"].includes(col.name)) return "VARCHAR(36)";
   if (table === "music_category_links" || (table === "asset_subcategories" && col.name === "category_id")) return "VARCHAR(36)";
   if (/INT/.test(col.type)) return "BIGINT";
