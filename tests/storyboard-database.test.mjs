@@ -85,7 +85,7 @@ test('归档同名不恢复；无对白清单人物仍保护；直接篡改归�
 test('同一毫秒多次归档仍唯一，旧版资产备份可验证转换',async t=>{
  const f=await creativeFixture();try{const now=Date.now();t.mock.method(Date,'now',()=>now);let a=await f.store.create({project_id:f.a.id,kind:'character',name:'重复名'});a=f.store.archive(a.id,true,a.revision);let b=await f.store.create({project_id:f.a.id,kind:'character',name:'重复名'});b=f.store.archive(b.id,true,b.revision);assert.equal(a.archived_at,now);assert.equal(b.archived_at,now+1);
  const backup=f.store.backup();backup.schema_version=1;backup.tables.creative_schema[0].version=1;
- for(const name of ['creative_asset_overrides','creative_asset_override_clocks','creative_asset_scope_requests','series_attribute_configs','series_character_attributes'])delete backup.tables[name];
+ for(const name of Object.keys(backup.tables)) if (['creative_asset_overrides','creative_asset_override_clocks','creative_asset_scope_requests','series_attribute_configs','series_character_attributes'].includes(name) || name.startsWith('creative_character_')) delete backup.tables[name];
  for(const asset of backup.tables.creative_assets){delete asset.owner_type;delete asset.owner_id;}
  backup.checksum=digest({tables:backup.tables,projects:backup.projects});const converted=f.store.validateBackup(backup);
  assert.equal(converted.schema_version,3);assert.equal(converted.tables.creative_schema[0].version,3);

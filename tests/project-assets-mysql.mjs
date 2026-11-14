@@ -120,6 +120,31 @@ try {
    assert.equal(restored.scoped.detail('episode', episode.id, draft.id).effective.default_look.value,first.id);
   } finally { restoredDB.close(); }
  });
+ await check('原生 MySQL 合并同名人物、回执幂等、旧身份解析、备份及撤销', async () => {
+  const directory = freshProjects.series, svc = fresh.characterMerges;
+  const drama = directory.createSeries({ request_id:randomUUID(), name:'MySQL 合成同名剧' });
+  const episode = n => directory.createEpisode(drama.id, {
+   request_id:randomUUID(), season_id:null, expected_episode_no:n,
+  }).project;
+  const a = episode(1), b = episode(2);
+  const first = await fresh.create({project_id:a.id, kind:'character', name:'同一人物'});
+  const second = await fresh.create({project_id:b.id, kind:'character', name:'同一人物'});
+  const groups = svc.groups(drama.id), context_token = groups.context_token;
+  const preview = svc.preview(drama.id, {context_token, group_id:groups.items[0].group_id, primary_asset_id:first.id});
+  const input = {context_token, request_id:randomUUID(), preview_token:preview.preview_token, choices:preview.choices};
+  const merged = svc.confirm(drama.id, input);
+  assert.deepEqual(svc.confirm(drama.id, input), merged);
+  assert.equal(svc.resolveAsset(b.id, second.id), first.id);
+  assert.equal(fresh.validateBackup(fresh.backup()).tables.creative_character_aliases.length, 1);
+  const undo = svc.undoPreview(drama.id, merged.merge_id, {context_token});
+  assert.equal(undo.status, 'clean');
+  const result = svc.undo(drama.id, merged.merge_id, {context_token, request_id:randomUUID(),
+   undo_token:undo.undo_token, accept_restore_changes:false});
+  assert.equal(result.status, 'undone');
+  assert.equal(fresh.get(first.id).project_id, a.id);
+  assert.equal(fresh.get(second.id).archived_at, 0);
+  assert.equal(fresh.validateBackup(fresh.backup()).tables.creative_character_aliases.length, 0);
+ });
  passed = true;
 } catch (e) { await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }
 finally {

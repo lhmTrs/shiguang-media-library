@@ -10,7 +10,7 @@ export function projectSeriesRouter(series) {
       }
       res.json(action(req));
     } catch (error) {
-      if (!(error instanceof SeriesError) && !['ASSET_IN_USE', 'ASSET_SCOPE_CHANGED', 'ASSET_NAME_CONFLICT', 'STORYBOARD_GENERATION_LOCKED'].includes(error.code) && !(typeof error.code === 'string' && error.code.startsWith('ATTRIBUTE_'))) return next(error);
+      if (!(error instanceof SeriesError) && !['ASSET_IN_USE', 'ASSET_SCOPE_CHANGED', 'ASSET_NAME_CONFLICT', 'STORYBOARD_GENERATION_LOCKED'].includes(error.code) && !(typeof error.code === 'string' && /^(ATTRIBUTE_|CHARACTER_MERGE_|ASSET_SCOPE_|REQUEST_ID_CONFLICT$)/.test(error.code))) return next(error);
       return res.status(error.status ?? 409).json({ error: error.message, code: error.code, details: error.details });
     }
   };
@@ -32,6 +32,15 @@ export function projectSeriesRouter(series) {
   router.post(alignment + "/confirm", handle(req => series.attributeAlignment.confirm(req.params.seriesId, req.body), true));
   router.get(alignment + "/history", handle(req => series.attributeAlignment.history("series", req.params.seriesId, req.query)));
   router.get(alignment + "/history/:historyId", handle(req => series.attributeAlignment.history("series", req.params.seriesId, req.query, req.params.historyId)));
+  const merges = drama + '/character-merges';
+  const characters = () => series.projects.lib.creativeAssetStore.characterMerges;
+  router.get(drama + '/character-merge-groups', handle(req => characters().groups(req.params.seriesId, req.query)));
+  router.post(merges + '/preview', handle(req => characters().preview(req.params.seriesId, req.body), true));
+  router.post(merges + '/confirm', handle(req => characters().confirm(req.params.seriesId, req.body), true));
+  router.get(drama + '/character-merge-requests/:requestId', handle(req => characters().request(req.params.seriesId, req.params.requestId)));
+  router.get(merges + '/:mergeId', handle(req => characters().history(req.params.seriesId, req.params.mergeId)));
+  router.post(merges + '/:mergeId/undo-preview', handle(req => characters().undoPreview(req.params.seriesId, req.params.mergeId, req.body), true));
+  router.post(merges + '/:mergeId/undo', handle(req => characters().undo(req.params.seriesId, req.params.mergeId, req.body), true));
   router.patch(drama, handle(req => series.updateSeries(req.params.seriesId, req.body), true));
   router.delete(drama, handle(req => series.removeSeries(req.params.seriesId, req.body), true));
   router.post(drama + "/seasons", handle(req => series.createSeason(req.params.seriesId, req.body), true));

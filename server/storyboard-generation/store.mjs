@@ -21,7 +21,23 @@ export class GenerationStore{
  assertWritable(projectId){const row=this.lock(projectId),owner=this.context.getStore();if(row?.owner_task_id&&!(owner?.id===row.owner_task_id&&owner.generation===row.generation))throw error('STORYBOARD_GENERATION_LOCKED','当前项目正在生成分镜，全部分镜和关联资料编辑暂时冻结',423,{taskId:row.owner_task_id});}
  assertRestoreProjects(ids){for(const id of [...new Set(ids)].sort()){this.storyboards.assets.project(id,true);this.assertWritable(id);}}
  assetSnapshot(projectId){
-  return this.storyboards.assets.scoped.generationSnapshot(projectId,()=>this.assetStamp(projectId));
+  let storyboardReferences;
+  const snapshot = this.storyboards.assets.scoped.generationSnapshot(projectId, () => {
+   const stamp = this.assetStamp(projectId);
+   if (this.storyboards.head?.(projectId) && this.storyboards.seriesId(projectId)) {
+    const view = this.storyboards.readInTransaction(projectId);
+    const hasAliases = Object.values(view.asset_resolution).some(row => row.requested_asset_id !== row.canonical_asset_id) ||
+     Object.values(view.look_resolution).some(row => row.requested_look_id !== row.canonical_look_id);
+    if (hasAliases) {
+     storyboardReferences = {
+      asset_resolution: view.asset_resolution, look_resolution: view.look_resolution,
+      canonical_asset_manifest: view.canonical_asset_manifest, shot_character_looks: view.shot_character_looks,
+     };
+    }
+   }
+   return stamp;
+  });
+  return { ...snapshot, ...(storyboardReferences && { storyboardReferences }) };
  }
  assetStamp(projectId){
   const member=this.storyboards.lib.projectSeries?.membership(projectId);
@@ -37,7 +53,9 @@ export class GenerationStore{
   const scores=this.db.prepare('SELECT id,revision FROM series_character_attributes WHERE series_id=? ORDER BY id').all(member.series_id);
   const series=this.db.prepare('SELECT name,revision FROM project_series WHERE id=?').get(member.series_id);
   const season=member.season_id?this.db.prepare('SELECT label,season_no,revision FROM project_series_seasons WHERE id=?').get(member.season_id):null;
-  return digest({member,series,season,local,shared,overrides,config,alignment,scores,localConfig,localScores});
+  const assetAliases = this.db.prepare('SELECT id,target_id FROM creative_character_aliases WHERE series_id=? ORDER BY id').all(member.series_id);
+  const lookAliases = this.db.prepare('SELECT id,target_id FROM creative_character_look_aliases WHERE series_id=? ORDER BY id').all(member.series_id);
+  return digest({member,series,season,local,shared,overrides,config,alignment,scores,localConfig,localScores,assetAliases,lookAliases});
  }
  admit(id,snapshot,inputHash,deadlineAt){return this.tx(()=>{this.storyboards.assets.lockDirectory();this.storyboards.project(snapshot.project.id,true);const existing=this.db.prepare('SELECT * FROM sb_generation_tasks WHERE id=?').get(id);if(existing){if(existing.input_hash!==inputHash)throw error('REQUEST_ID_CONFLICT','请求编号已用于不同生成配置');return{row:existing,repeated:true};}this.assertWritable(snapshot.project.id);this.storyboards.expected(this.storyboards.head(snapshot.project.id),snapshot.expected_revision);if(this.assetStamp(snapshot.project.id)!==snapshot.assetStamp)throw error('PROJECT_ASSETS_CHANGED','项目资料已更新，请重新检查后发送');
   if(this.db.prepare('SELECT id FROM storyboard_import_requests WHERE id=?').get(id))throw error('REQUEST_ID_CONFLICT','请求编号已用于其他分镜初始化');

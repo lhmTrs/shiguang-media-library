@@ -13,6 +13,7 @@ export function projectAgentGuide({ project, origin, instanceId }) {
 先读取 \`GET /api/projects/${projectId}/asset-context\`，核对当前集、全剧、季和归组版本。
 当前集列表为 \`GET ${episodeAssets}/assets?kind=character&page=1\`。详情为 \`GET ${episodeAssets}/assets/<asset_id>\`。
 返回的 \`owner\` 区分本集与全剧，\`effective\` 给出本集实际采用的默认造型、图片与属性评分。明确的镜头引用以分镜 ID 为准。
+分镜响应的 \`asset_resolution\`、\`look_resolution\` 说明旧 ID 对应的当前人物和造型。按 \`canonical_asset_manifest\` 读取去重后的清单，按 \`shot_character_looks\` 核对每镜明确绑定或本集默认。日常保存保留原 \`project\` 内已有引用；新增引用使用当前主体 ID。人物详情返回 \`resolution\` 时，按其中的主体路径读取当前资料。
 新建前用 \`POST ${episodeAssets}/names/check\` 传 \`kind\` 和 \`name\`。需要沿用共享同名资产时，用 \`POST ${episodeAssets}/assets\` 提交新 UUID、同集的 \`context_token\`、类型、名称和 \`on_shared:"reuse"\`；需建立独立资料时选用未占用的名称并传 \`on_shared:"reject"\`。结果未知时查 \`GET /api/project-assets/scoped-requests/<request_id>\`。
 本链接的修改范围是当前集。本集自有资料可以按下文修改。遇到全剧共享基础资料时，请用户单独指定并授权全剧范围。
 ` : '';

@@ -144,6 +144,7 @@ export class ScopedAssetImpact {
     return this.db.transaction(() => {
       const scope = this.reads.scope(type, id);
       this.reads.assertContextToken(scope, contextToken);
+      this.store.characterMerges.assertCurrent(scope, assetId);
       const { asset } = this.reads.detailInTransaction(scope, assetId);
       const plan = this.#plan(scope, asset, operation, args);
       const encoded = Buffer.from(canonical({
@@ -166,6 +167,7 @@ export class ScopedAssetImpact {
       const payload = this.#open(input.preview_token);
       if (payload.operation !== operation || payload.asset_id !== assetId.toLowerCase() ||
           payload.context_token !== scope.context_token) throw changed();
+      this.store.characterMerges.assertCurrent(scope, assetId);
       const item = this.reads.detailInTransaction(scope, assetId);
       if (item.asset.revision !== payload.revision) throw changed();
       this.#authorize(scope, item.asset, operation);
@@ -266,6 +268,9 @@ export class ScopedAssetImpact {
 
   #archivePlan(asset, args, audience) {
     const defaults = archiveDefaults(asset, args);
+    const mapped = args.target.type === 'asset' ? this.store.characterMerges.family(asset.id).assetIds.size > 1
+      : args.target.type === 'look' && this.db.prepare('SELECT id FROM creative_character_look_aliases WHERE target_id=? LIMIT 1').get(args.target.id);
+    if (mapped) throw fault('请先处理此资料保留的合并身份', 409, { code: 'ASSET_IN_USE' });
     const { key, look, image, whole, candidates } = defaults;
     const { target, replacement_id } = args;
     const scores = whole && asset.kind === 'character' ? this.#archiveScores(asset) : null;
@@ -350,10 +355,16 @@ export class ScopedAssetImpact {
       LEFT JOIN storyboard_documents d ON d.id=l.document_id WHERE l.asset_id=?`).all(asset.id) : [];
     result.outside = links.some(link => !episodeIds.has(link.project_id));
     const linked = new Set(links.map(link => link.project_id));
+    const family = this.store.characterMerges.family(asset.id);
     const lookIds = new Set(asset.looks.filter(row => target.type === 'asset' ||
       (target.type === 'look' && row.id === target.id)).map(row => row.id));
     const imageIds = new Set(asset.images.filter(image => target.type === 'asset' ||
       (target.type === 'look' ? image.look_id === target.id : image.id === target.id)).map(row => row.id));
+    if (target.type === 'asset') for (const id of family.lookIds) lookIds.add(id);
+    if (target.type === 'look') {
+      const aliases = this.db.prepare('SELECT id FROM creative_character_look_aliases WHERE target_id=?').all(target.id);
+      for (const row of aliases) lookIds.add(row.id);
+    }
     for (const episode of episodes) {
       const document = board.head(episode.id);
       if (!document) continue;
@@ -364,7 +375,7 @@ export class ScopedAssetImpact {
       if (listed) result.manifests.push({ episode_id: episode.id, episode_name: episode.name, document_id: document.id });
       const previousCount = result.shots.length;
       const explicit = new Set(explicitAssetShots(project, {
-        assetIds: new Set(target.type === 'asset' ? [asset.id] : []), lookIds, imageIds,
+        assetIds: target.type === 'asset' ? family.assetIds : new Set(), lookIds, imageIds,
       }).map(shot => shot.shotId));
       for (const { shot, scene, number } of timeline(project)) {
         const reasons = [...(byShot.get(shot.id) ?? [])];

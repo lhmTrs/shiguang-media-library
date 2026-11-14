@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { CREATIVE_TABLES, ensureCreativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2 } from './schema.mjs';
+import { CHARACTER_MERGE_TABLES, CREATIVE_TABLES, ensureCreativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2 } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
 import { snapshotAttributes, validateAttributes, validateAlignmentLinks, restoreAttributes, assertRestoreAlignment } from '../project-attributes/backup.mjs';
@@ -14,6 +14,8 @@ import { ScopedProjectAssets } from './scoped.mjs';
 import { ScopedAssetWrites } from './scoped-writes.mjs';
 import { ScopedAssetAppend } from './scoped-append.mjs';
 import { ScopedAssetImpact } from './scoped-impact.mjs';
+import { CharacterMerges } from './character-merges.mjs';
+import { validateCharacterMergeBackup } from './character-merge-backup.mjs';
 import { validateScopedAssetBackup } from './scoped-backup.mjs';
 
 const parse = value => JSON.parse(value);
@@ -54,6 +56,7 @@ export class ProjectAssets {
     this.scopedWrites ??= new ScopedAssetWrites(this);
     this.scopedAppend ??= new ScopedAssetAppend(this);
     this.scopedImpact ??= new ScopedAssetImpact(this);
+    this.characterMerges ??= new CharacterMerges(this);
     this.scoped.setWriteCapabilities({ edit_base: true, create_override: true, append: true, promote: true, archive: true });
     return this;
   }
@@ -78,7 +81,8 @@ export class ProjectAssets {
   expected(row, revision) { if (!Number.isSafeInteger(revision) || row.revision !== revision) throw fault('角色已经更新，请核对最新版本；你的编辑仍保留', 409, { current_revision: row.revision }); }
   get(id) {
     const a = this.head(id), unpack = r => { const { data_json, source_json, ...rest } = r; return { ...rest, ...parse(data_json), source: parse(source_json) }; };
-    const asset={ ...unpack(a), ...(this.storyboards ? {storyboard_protected: !!this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)} : {}), looks: this.db.prepare('SELECT * FROM creative_looks WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack), images: this.db.prepare('SELECT * FROM creative_image_bindings WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack) };
+    const asset={ ...unpack(a), ...(this.storyboards ? {storyboard_protected: !!this.db.prepare(`SELECT id FROM storyboard_asset_links WHERE asset_id=? OR
+      asset_id IN (SELECT id FROM creative_character_aliases WHERE target_id=?) LIMIT 1`).get(id,id)} : {}), looks: this.db.prepare('SELECT * FROM creative_looks WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack), images: this.db.prepare('SELECT * FROM creative_image_bindings WHERE asset_id=? ORDER BY sort_order,id').all(id).map(unpack) };
     if(asset.kind==='character'){
       const cover=cardBinding(asset);
       for(const b of asset.images){
@@ -94,7 +98,8 @@ export class ProjectAssets {
     this.project(query.project_id);
     const kind = query.kind ?? 'character'; if (!['character', 'scene', 'prop'].includes(kind)) throw fault('资产类型无效');
     const q = String(query.q ?? '').toLowerCase(), archived = query.archived === 'true';
-    const rows = this.db.prepare(`SELECT * FROM creative_assets WHERE project_id=? AND kind=? AND archived_at${archived ? '>0' : '=0'} ORDER BY updated_at DESC,id`).all(query.project_id, kind);
+    const rows = this.db.prepare(`SELECT * FROM creative_assets WHERE project_id=? AND kind=? AND archived_at${archived ? '>0' : '=0'}
+      AND NOT EXISTS (SELECT 1 FROM creative_character_aliases WHERE id=creative_assets.id) ORDER BY updated_at DESC,id`).all(query.project_id, kind);
     const filtered = rows.filter(a => (a.name + parse(a.data_json).base_info).toLowerCase().includes(q));
     const page = Math.max(1, Math.min(100000, Number(query.page) || 1)), size = 40;
     return { total: filtered.length, page, items: filtered.slice((page - 1) * size, page * size).map(a => { const all = this.get(a.id); const look = all.looks.find(l => l.id === all.default_look_id); const image = all.images.find(b => b.id === (all.kind === 'character' ? look?.default_image_id : all.default_image_id)); return { ...all, look_count: all.looks.filter(active).length, cover: image ?? null }; }) };
@@ -148,7 +153,13 @@ export class ProjectAssets {
     const a = await this.prepare(blankAsset(input.project_id, input.kind, input.name), null);
     return this.tx(() => { this.lockDirectory(); this.project(a.project_id, true); return this.write(a, null, '创建资产'); });
   }
+  assertNotMerged(id, row = this.head(id)) {
+    if (row.owner_type !== 'project' || !row.project_id) return;
+    const seriesId = this.lib.projectSeries?.membership(row.project_id).series_id;
+    this.characterMerges.assertCurrent({ series_id: seriesId }, id);
+  }
   async save(id, input, revision) {
+    this.assertNotMerged(id);
     const old = this.localAsset(this.get(id)); this.expected(old, revision);
     const a = await this.prepare({ ...input, id }, old);
     const cover=cardBinding(a),before=cardBinding(old);
@@ -164,7 +175,7 @@ export class ProjectAssets {
         }
       }
     }
-    return this.tx(() => { this.lockDirectory(); this.project(a.project_id, true); const current = this.get(id); this.expected(this.head(id, true), revision); return this.write(a, current, '保存资料'); });
+    return this.tx(() => { this.lockDirectory(); this.project(a.project_id, true); const current = this.get(id); this.assertNotMerged(id, current); this.expected(this.head(id, true), revision); return this.write(a, current, '保存资料'); });
   }
   write(a, previous, summary, source = previous?.source ?? null, seriesId = null) {
     if (seriesId === null) {
@@ -246,10 +257,11 @@ export class ProjectAssets {
   imageData(b) { return { reference_type: b.reference_type, purpose: b.purpose, locks: b.locks, ignores: b.ignores, confirmed: b.confirmed, crop: b.crop, ...(Object.hasOwn(b,'crop_source')?{crop_source:b.crop_source,crop_manually_edited:b.crop_manually_edited,was_card_default:b.was_card_default}:{}), last_known_name: b.last_known_name ?? '' }; }
   assertUnlinked(id) {
     const exists = this.db.kind === 'mysql' ? this.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='storyboard_asset_links'").get() : this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='storyboard_asset_links'").get();
-    if (exists && this.db.prepare('SELECT id FROM storyboard_asset_links WHERE asset_id=? LIMIT 1').get(id)) throw fault('该资产属于当前分镜素材清单，不能删除或归档；请先用完整 JSON 重新初始化并移出清单', 409);
+    if (exists && this.db.prepare(`SELECT id FROM storyboard_asset_links WHERE asset_id=? OR
+      asset_id IN (SELECT id FROM creative_character_aliases WHERE target_id=?) LIMIT 1`).get(id,id)) throw fault('该资产属于当前分镜素材清单，不能删除或归档；请先用完整 JSON 重新初始化并移出清单', 409);
   }
   archive(id, archived, revision) { const owner=this.localAsset(this.head(id)).project_id; return this.tx(() => {
-    this.lockDirectory(); this.project(owner, true);this.generationLocks?.assertWritable(owner); const old=this.get(id); this.expected(this.head(id, true), revision);
+    this.lockDirectory(); this.project(owner, true);this.generationLocks?.assertWritable(owner); const old=this.get(id); this.assertNotMerged(id, old); this.expected(this.head(id, true), revision);
     if (archived) this.assertUnlinked(id);
     const a = structuredClone(old), max = this.db.prepare('SELECT MAX(archived_at) n FROM creative_assets WHERE project_id=? AND kind=? AND name_key=?').get(a.project_id, a.kind, nameKey(a.name)).n ?? 0;
     a.archived_at = archived ? Math.max(Date.now(), max + 1) : 0;
@@ -257,9 +269,21 @@ export class ProjectAssets {
   }); }
   versions(id) { this.head(id); return this.db.prepare('SELECT id,version,summary,created_at FROM creative_asset_versions WHERE asset_id=? ORDER BY version DESC').all(id); }
   version(id, version) { this.head(id); const row = this.db.prepare('SELECT snapshot FROM creative_asset_versions WHERE asset_id=? AND version=?').get(id, Number(version)); if (!row) throw fault('版本不存在', 404); return parse(row.snapshot); }
-  copyPreview(id, projectId) {
-    const a = this.localAsset(this.get(id)), p = this.project(projectId); if (a.kind !== 'character' || a.archived_at) throw fault('只可复制未归档人物');
-    return { source: a, target_project: { id: p.id, name: p.project_kind === 'public' ? '公共项目' : p.name }, source_revision: a.revision, request_id: randomUUID() };
+  copySource(id, sourceProjectId) {
+    const asset = this.get(id);
+    if (sourceProjectId === undefined) {
+      this.assertNotMerged(id, asset);
+      return this.localAsset(asset);
+    }
+    const scope = this.scoped.scope('episode', sourceProjectId);
+    const resolution = this.characterMerges.destination(scope, id);
+    const { asset: source } = this.scoped.detailInTransaction(scope, resolution?.canonical_asset_id ?? id);
+    if (source.kind !== 'character' || source.archived_at) throw fault('只可复制未归档人物');
+    return source;
+  }
+  copyPreview(id, projectId, sourceProjectId) {
+    const a = this.copySource(id, sourceProjectId), p = this.project(projectId); if (a.kind !== 'character' || a.archived_at) throw fault('只可复制未归档人物');
+    return { source: a, ...(a.id !== id ? { resolution: { requested_asset_id: id, canonical_asset_id: a.id } } : {}), target_project: { id: p.id, name: p.project_kind === 'public' ? '公共项目' : p.name }, source_revision: a.revision, request_id: randomUUID() };
   }
   copy(id, input) {
     if (!idOK(input.request_id)) throw fault('复制请求编号无效');
@@ -269,16 +293,20 @@ export class ProjectAssets {
       const done = this.db.prepare('SELECT * FROM creative_asset_copy_records WHERE id=?' + this.lock()).get(input.request_id);
       if (done) { if (done.request_hash !== requestHash) throw fault('复制请求编号已用于其他内容', 409); return this.get(done.target_id); }
       this.project(input.project_id, true);
-      const original = this.localAsset(this.get(id)); this.expected(this.head(id, true), input.source_revision);
+      const original = this.copySource(id, input.source_project_id);
+      if (original.id !== id) throw fault('请核对已合并的人物，并使用全剧主体编号复制', 409, {
+        code: 'ASSET_MERGED', details: { requested_asset_id: id, canonical_asset_id: original.id },
+      });
+      this.expected(this.head(original.id, true), input.source_revision);
       if (original.kind !== 'character' || original.archived_at) throw fault('只可复制未归档人物');
       const a = structuredClone(original), map = new Map();
-      a.id = randomUUID(); a.project_id = input.project_id; a.owner_id = input.project_id; a.name = input.name; a.base_info = input.base_info ?? original.base_info; a.performance_info = input.performance_info ?? original.performance_info;
+      a.id = randomUUID(); a.project_id = input.project_id; a.owner_type = 'project'; a.owner_id = input.project_id; a.name = input.name; a.base_info = input.base_info ?? original.base_info; a.performance_info = input.performance_info ?? original.performance_info;
       a.looks = a.looks.filter(active); const lookIds = new Set(a.looks.map(l => l.id)); a.images = a.images.filter(b => active(b) && lookIds.has(b.look_id));
       for (const row of [...a.looks, ...a.images]) { const prior = row.id; row.id = randomUUID(); map.set(prior, row.id); row.source = { id: prior, asset_id: id, revision: row.revision }; }
       a.default_look_id = map.get(a.default_look_id) ?? null;
       for (const l of a.looks) l.default_image_id = map.get(l.default_image_id) ?? null;
       for (const b of a.images) b.look_id = map.get(b.look_id);
-      const sourceProject = this.project(original.project_id), source = { project_id: original.project_id, project_name: sourceProject.project_kind === 'public' ? '公共项目' : sourceProject.name, asset_id: original.id, asset_name: original.name, revision: original.revision, copied_at: Date.now() };
+      const sourceProject = original.owner_type === 'series' ? this.lib.projectSeries.series(original.owner_id) : this.project(original.project_id), source = { project_id: original.project_id, project_name: sourceProject.project_kind === 'public' ? '公共项目' : sourceProject.name, asset_id: original.id, asset_name: original.name, revision: original.revision, copied_at: Date.now() };
       const result = this.write(normalize(a), null, '复制人物', source), now = Date.now();
       this.db.prepare('INSERT INTO creative_asset_copy_records VALUES(?,?,?,?,?,?,?)').run(input.request_id, id, result.id, requestHash, canonical(source), now, now);
       return result;
@@ -310,6 +338,10 @@ export class ProjectAssets {
     }
     if (input.schema_version === 2) {
       convertCreativeBackupV2(input);
+      input.checksum = digest(backupContent(input));
+    }
+    if (Object.keys(CHARACTER_MERGE_TABLES).every(table => !Object.hasOwn(input.tables, table))) {
+      for (const table of Object.keys(CHARACTER_MERGE_TABLES)) input.tables[table] = [];
       input.checksum = digest(backupContent(input));
     }
     if (canonical(Object.keys(input.tables).sort()) !== canonical(Object.keys(CREATIVE_TABLES).sort())) throw fault('资产库备份表不完整');
@@ -347,6 +379,7 @@ export class ProjectAssets {
       if (!valid) throw fault('备份资产归属无效');
     }
     validateScopedAssetBackup(t, input.project_series);
+    validateCharacterMergeBackup(t, input.project_series);
     for (const l of looks.values()) if (assets.get(l.asset_id)?.kind !== 'character') throw fault('备份造型归属无效');
     for (const b of t.creative_image_bindings) if (!assets.has(b.asset_id) || b.look_id !== null && looks.get(b.look_id)?.asset_id !== b.asset_id || !/^[a-f0-9]{64}$/.test(b.expected_sha256)) throw fault('备份图片归属或摘要无效');
     const versionKeys = new Set();
