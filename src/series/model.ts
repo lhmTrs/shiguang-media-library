@@ -1,6 +1,7 @@
 // 剧 → 季 → 集（SERIES-P1）前端数据层：类型、接口调用、由平铺列表组装的目录树。
 // 接口合同见 Codex 20261112-1745-SERIES-P1-接口合同（GET /api/projects 附加归组字段，GET /api/project-series 给剧与季）。
 import type { Project, ProjectRequest } from "../ProjectManager";
+import type { AlignmentChoice, AlignmentPreview } from "./alignment";
 
 export type GroupedProject = Project & {
   created_at?: number; updated_at?: number;
@@ -13,7 +14,20 @@ export type MoveChange = { project_id: string; before: Place; after: Place };
 export type MoveConflict = { project_id: string; code: string; series_id?: string; season_id?: string; episode_no?: number; conflicting_project_id?: string };
 export type MoveItem = { project_id: string; expected_revision: number; episode_no?: number };
 export type MoveTarget = { series_id: string | null; season_id: string | null };
-export type MoveReceipt = { request_id: string; changes: MoveChange[]; can_undo: boolean; undo_of?: string };
+export type MoveReceipt = { request_id: string; changes: MoveChange[]; can_undo: boolean; undo_of?: string; undo_disabled_reason?: string; attribute_history_ids?: string[] };
+/**
+ * 维度剧内统一（合同 v1 · A3）：归组 / 挪集 / 整理预览里的维度计划。旧后端不返回，前端按原流程走。
+ * mode：unchanged 不涉及维度；map_to_series 改用目标剧的维度；copy_to_standalone 移出剧时复制一份全剧维度；keep_legacy_on_exit 未统一的集移出时沿用自己的。
+ */
+export type AttributeBaseline = { kind: "default" } | { kind: "episode"; project_id: string };
+export type AttributePlanGroup = {
+  group_id: string; mode: "unchanged" | "map_to_series" | "copy_to_standalone" | "keep_legacy_on_exit"; target_series_id: string | null;
+  baseline_options?: AttributeBaseline[]; baseline?: AttributeBaseline; alignment?: AlignmentPreview;
+  exit_projects?: { project_id: string; source_series_id: string; config_revision: number }[];
+};
+export type AttributePlan = { preview_token: string; groups: AttributePlanGroup[]; choices: AttributeGroupChoice[]; can_undo: boolean; undo_disabled_reason?: string };
+export type AttributeGroupChoice = { group_id: string; baseline?: AttributeBaseline; decisions: AlignmentChoice[] };
+export type MovePreview = { ready: boolean; changes: MoveChange[]; conflicts: MoveConflict[]; attribute_plan?: AttributePlan };
 /** 整理旧项目：一次请求、服务端一个事务（Codex 20261112-195208 合同）。 */
 export type OrganizeGroup = { group_id: string; target: MoveTarget | { new_series: { name: string; software?: string } }; items: { project_id: string; expected_revision: number; episode_no: number }[] };
 export type OrganizeRequest = { request_id: string; groups: OrganizeGroup[] };
@@ -79,13 +93,17 @@ export function seriesApi(request: ProjectRequest) {
     deleteSeason: (season: Season) => request<{ removed: true }>(`/project-series/${season.series_id}/seasons/${season.id}`, { expected_revision: season.revision }, "DELETE"),
     createEpisode: (s: Series, season: Season | null, expectedEpisodeNo: number, requestId = newRequestId(), name?: string) =>
       request<{ request_id: string; project: GroupedProject }>(`/project-series/${s.id}/episodes`, { season_id: season?.id ?? null, expected_episode_no: expectedEpisodeNo, request_id: requestId, ...(name ? { name } : {}) }),
-    previewMove: (target: MoveTarget, items: MoveItem[]) => request<{ ready: boolean; changes: MoveChange[]; conflicts: MoveConflict[] }>("/project-series/moves/preview", { target, items }),
-    move: (target: MoveTarget, items: MoveItem[], requestId = newRequestId()) => request<MoveReceipt>("/project-series/moves", { target, items, request_id: requestId }),
+    previewMove: (target: MoveTarget, items: MoveItem[], attributeChoices?: AttributeGroupChoice[]) =>
+      request<MovePreview>("/project-series/moves/preview", { target, items, ...(attributeChoices ? { attribute_choices: attributeChoices } : {}) }),
+    move: (target: MoveTarget, items: MoveItem[], requestId = newRequestId(), attribute?: { token: string; choices: AttributeGroupChoice[] }) =>
+      request<MoveReceipt>("/project-series/moves", { target, items, request_id: requestId, ...(attribute ? { attribute_preview_token: attribute.token, attribute_choices: attribute.choices } : {}) }),
     undoMove: (originalRequestId: string) => request<MoveReceipt>(`/project-series/moves/${originalRequestId}/undo`, { request_id: newRequestId() }),
     reorderEpisode: (p: GroupedProject, direction: "previous" | "next", neighbor: GroupedProject) => request<MoveReceipt>(`/projects/${p.id}/series/reorder`, { direction, expected_revision: p.membership_revision ?? 0, expected_neighbor_id: neighbor.id, expected_neighbor_revision: neighbor.membership_revision ?? 0, request_id: newRequestId() }),
     reorderSeason: (season: Season, direction: "previous" | "next", neighbor: Season) => request<{ request_id: string; seasons: Season[] }>(`/project-series/${season.series_id}/seasons/${season.id}/reorder`, { direction, expected_revision: season.revision, expected_neighbor_id: neighbor.id, expected_neighbor_revision: neighbor.revision, request_id: newRequestId() }),
     requestStatus: (requestId: string) => request<{ found: boolean; result?: unknown }>(`/project-series/requests/${requestId}`),
-    organize: (body: OrganizeRequest) => request<OrganizeReceipt>("/project-series/organize", body),
+    organize: (body: OrganizeRequest & { attribute_preview_token?: string; attribute_choices?: AttributeGroupChoice[] }) => request<OrganizeReceipt>("/project-series/organize", body),
+    previewOrganize: (groups: OrganizeGroup[], attributeChoices?: AttributeGroupChoice[]) =>
+      request<{ ready: boolean; conflicts: OrganizeConflict[]; attribute_plan?: AttributePlan }>("/project-series/organize/preview", { groups, ...(attributeChoices ? { attribute_choices: attributeChoices } : {}) }),
   };
 }
 
@@ -106,6 +124,9 @@ export const seriesErrorText: Record<string, string> = {
   PROJECT_NOT_FOUND: "项目已不存在",
   STORYBOARD_GENERATION_LOCKED: "这一集正在生成分镜，暂时不能移动",
   SERIES_REQUEST_CONFLICT: "请求编号已被另一份内容用过，请重新提交",
+  ATTRIBUTE_ALIGNMENT_STALE: "相关的维度或分数刚被改过，已重新核对，请再确认一次",
+  ATTRIBUTE_ALIGNMENT_REQUIRED: "目标剧的人物属性维度还没统一：请先到它的全剧视图完成「统一维度」",
+  ATTRIBUTE_PREVIEW_REQUIRED: "这次移动会改变人物属性维度，需要先核对维度对应",
 };
 export const errorText = (e: unknown) => {
   const err = e as { code?: string; message?: string };

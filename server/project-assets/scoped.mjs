@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { DEFAULT_DIMENSIONS, dimensionDTO, isRecord, isRevision, isScore } from '../project-attributes/model.mjs';
+import { isRecord, isRevision, isScore } from '../project-attributes/model.mjs';
 import { canonical, digest, fault, idOK } from './model.mjs';
 
 const KINDS = ['character', 'scene', 'prop'];
@@ -300,14 +300,13 @@ export class ScopedProjectAssets {
     });
   }
 
-  #attributeConfig(type, id) {
-    if (type === 'project') return this.store.attributes.configDTO(this.store.attributes.config(id));
-    const row = this.db.prepare('SELECT revision,data_json FROM series_attribute_configs WHERE id=?').get(id);
-    const config = row ? JSON.parse(row.data_json) : { source: 'default', updated_at: null, dimensions: DEFAULT_DIMENSIONS };
-    return {
-      series_id: id, revision: Number(row?.revision ?? 0), source: config.source, updated_at: config.updated_at,
-      dimensions: config.dimensions.map(dimensionDTO),
-    };
+  #attributeConfig(scope, ownerType, ownerId) {
+    const attributes = this.store.attributes;
+    return attributes.configDTO(attributes.effectiveConfig(scope.type === 'episode' ? scope.id : null, {
+      ...(ownerType === 'series' && { seriesId: ownerId }),
+      editSeries: scope.type === 'series',
+      seasonId: scope.type === 'season' ? scope.id : null,
+    }));
   }
 
   #attributeRecord(row) {
@@ -323,9 +322,9 @@ export class ScopedProjectAssets {
       if (assetId !== undefined) {
         const row = this.#visibleRow(scope, assetId);
         if (row.kind !== 'character') throw notFound();
-        return this.#attributeConfig(row.owner_type, row.owner_id);
+        return this.#attributeConfig(scope, row.owner_type, row.owner_id);
       }
-      return scope.type === 'episode' ? this.#attributeConfig('project', scope.id) : this.#attributeConfig('series', scope.series_id);
+      return scope.type === 'episode' ? this.#attributeConfig(scope, 'project', scope.id) : this.#attributeConfig(scope, 'series', scope.series_id);
     });
   }
 
@@ -335,10 +334,11 @@ export class ScopedProjectAssets {
       if (scope.type !== 'series') throw notFound();
       const row = this.#visibleRow(scope, assetId);
       if (row.kind !== 'character') throw notFound();
-      const config = this.#attributeConfig('series', scope.id), record = this.#attributeRecord(row);
+      const config = this.#attributeConfig(scope, 'series', scope.id), record = this.#attributeRecord(row);
       return {
         asset_id: row.id, series_id: scope.id, config_revision: config.revision,
         attribute_revision: record.revision, scores: record.scores,
+        config_scope: config.config_scope, config_token: config.config_token,
       };
     });
   }
@@ -417,13 +417,14 @@ export class ScopedProjectAssets {
       effective.default_images = Object.fromEntries([...looks.values()].map(look => [look.id, imageField(look.id, look.default_image_id, look.revision)]));
       coverId = effective.default_images[effective.default_look.value]?.value;
       const configKey = owner.type + ':' + owner.id;
-      if (!configs.has(configKey)) configs.set(configKey, this.#attributeConfig(owner.type, owner.id));
+      if (!configs.has(configKey)) configs.set(configKey, this.#attributeConfig(scope, owner.type, owner.id));
       const config = configs.get(configKey), record = this.#attributeRecord(row);
       const scoreLayers = layers.filter(layer => layer.type === 'episode');
       effective.attribute_config_revision = config.revision;
+      effective.attribute_config_scope = config.config_scope;
       effective.attribute_scores = Object.fromEntries(config.dimensions.map(dim => [
         dim.id, field('attribute_score:' + dim.id, Object.hasOwn(record.scores, dim.id) ? record.scores[dim.id] : null,
-          record.revision, scoreLayers, manualScore, () => null, config.revision),
+          record.revision, scoreLayers, manualScore, () => null, config.alignment_status === 'aligned' ? config.config_token : config.revision),
       ]));
     } else {
       effective.default_images.null = imageField(null, asset.default_image_id, row.revision);

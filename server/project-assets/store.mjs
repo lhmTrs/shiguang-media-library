@@ -4,7 +4,7 @@ import path from 'node:path';
 import { CREATIVE_TABLES, ensureCreativeSchema, creativeIndexes, creativeSchemaVersion, convertCreativeBackupV2 } from './schema.mjs';
 import { blankAsset, canonical, digest, fault, idOK, nameKey, normalize } from './model.mjs';
 import { ProjectAttributes } from '../project-attributes/store.mjs';
-import { snapshotAttributes, validateAttributes, restoreAttributes } from '../project-attributes/backup.mjs';
+import { snapshotAttributes, validateAttributes, validateAlignmentLinks, restoreAttributes, assertRestoreAlignment } from '../project-attributes/backup.mjs';
 import { snapshotSeries, validateSeriesBackup, restoreSeriesBackup } from '../project-series/backup.mjs';
 import { lockSeriesDirectory } from '../project-series/schema.mjs';
 import { explicitAssetShots } from '../storyboard/asset-references.mjs';
@@ -339,7 +339,6 @@ export class ProjectAssets {
     const t = input.tables;
     if (t.creative_schema.length !== 1 || t.creative_schema[0].id !== 'asset-library' || t.creative_schema[0].version !== creativeSchemaVersion) throw fault('备份 schema 版本无效');
     const assets = new Map(t.creative_assets.map(a => [a.id, a]));
-    if (Object.hasOwn(input, 'project_attributes')) validateAttributes(input.project_attributes, input.projects, assets);
     const looks = new Map(t.creative_looks.map(l => [l.id,l]));
     const seriesIds = new Set((input.project_series?.project_series ?? []).map(row => row.id));
     for (const a of assets.values()) {
@@ -364,6 +363,9 @@ export class ProjectAssets {
     }
     for (const a of assets.values()) if (!versionKeys.has(a.id + '/' + a.revision)) throw fault('备份缺少当前版本');
     for (const c of t.creative_asset_copy_records) if (!assets.has(c.target_id) || !/^[a-f0-9]{64}$/.test(c.request_hash)) throw fault('备份复制记录无效');
+    if (Object.hasOwn(input, 'project_attributes'))
+      validateAttributes(input.project_attributes, input.projects, assets, input.project_series, t.series_attribute_configs, t.creative_asset_versions);
+    else validateAlignmentLinks(input.project_series);
     return input;
   }
   async restore(input) {
@@ -381,6 +383,7 @@ export class ProjectAssets {
       this.lockRestoreScope();
       const current=this.backupInTransaction();
       if (backup && current.checksum !== backup.checksum) throw fault('备份期间资产库已变化，请重新恢复', 409);
+      assertRestoreAlignment(current, input);
       const incomingPublic = input.projects.find(p => p.system_key === PUBLIC_KEY), currentPublic = this.db.prepare('SELECT id FROM media_projects WHERE system_key=?').get(PUBLIC_KEY);
       if (incomingPublic && currentPublic && incomingPublic.id !== currentPublic.id) {
         if (this.db.prepare('SELECT id FROM creative_assets WHERE project_id=?').get(currentPublic.id)) throw fault('目标公共项目已有资产，未覆盖', 409);

@@ -75,8 +75,10 @@ function applyMerge(m: Merge): Row[] {
 /** 全剧视图：维度配置读写走 <series>/attribute-config（PATCH 带 request_id / context_token），projectId 传全剧编号。 */
 export type SeriesConfigScope = { base: string; token: () => string | undefined };
 type SeriesImpact = RemovalPreview['affected'][number] & { episode_overrides?: number };
-export function AttributeConfig({ projectId, projectName, request, onClose, onSaved, series }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void; series?: SeriesConfigScope }) {
-  const asProject = (c: AttrConfig & { series_id?: string }): AttrConfig => series ? { ...c, project_id: c.series_id ?? '' } : c;
+export function AttributeConfig({ projectId, projectName, request, onClose, onSaved, series, onGoSeries }: { projectId: string; projectName: string; request: PromptRequest; onClose: () => void; onSaved: (c: AttrConfig) => void; series?: SeriesConfigScope;
+  /** 这一集已统一到全剧：带用户去全剧视图的维度设置（合同 v1 · A1 / SERIES_MANAGED）。 */ onGoSeries?: () => void }) {
+  const [managed, setManaged] = useState(false);
+  const asProject = (c: AttrConfig): AttrConfig => series ? { ...c, project_id: c.series_id ?? '' } : c;
   const api = series ? {
     config: async () => asProject(await request<AttrConfig>('/project-assets' + series.base + '/attribute-config')),
     saveConfig: async (body: Parameters<typeof attrApi.saveConfig>[2]) => asProject(await scopedWrite<AttrConfig>(request, '/project-assets' + series.base + '/attribute-config', { ...body, request_id: crypto.randomUUID(), context_token: series.token() }, 'PATCH', '/project-assets')),
@@ -100,7 +102,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   // Every draft edit bumps the generation; any response that started on an older generation is dropped.
   const generation = useRef(0);
   async function load() {
-    try { const c = await api.config(); if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
+    try { const c = await api.config(); if (!series && c.config_scope === 'series') { setManaged(true); return; } if (c.project_id !== projectId) throw Error('维度配置不属于当前项目'); setConfig(c); setRows(c.dimensions.map(toRow)); setReview(null); setStale(null); setMerge(null); setError(''); }
     catch (e) { setError((e as Error).message || '维度配置读取失败'); }
   }
   useEffect(() => { void load(); }, [projectId]);
@@ -123,12 +125,14 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   const locked = saving || !!stale || !!merge || !!review;
   const blocked = !config || config.project_id !== projectId || !!problem || saving || !!stale || !!merge || (review?.stage === 'choose' && review.changed.some(c => !review.choice[c.dimension_id]));
 
+  /** 编辑所依据的那次读取的配置凭证；合并到新版本后 config 换成新版本，凭证随之更新，但仍要用户再点保存。 */
+  const ctx = () => config?.config_token ? { config_token: config.config_token } : {};
   async function put(meaning: string[], preserve: string[], token?: string) {
     // 弹窗已关闭（切集 / 切视图 / 关掉）：等待中的预览回来后不再发出新的保存；已发出的保存由回执核对
     if (!alive.current) return;
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     const dimensions = rows.map(r => ({ ...outOf(r), id: r.id && meaning.includes(r.id) ? null : r.id }));
-    const next = await api.saveConfig({ expected_revision: config.revision, dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
+    const next = await api.saveConfig({ expected_revision: config.revision, ...ctx(), dimensions, ...(token ? { removal_confirmation: { token } } : {}), ...(preserve.length ? { preserve_scored_axes: preserve } : {}) });
     if (next.project_id !== projectId) throw Error('保存回执不属于当前项目');
     // The save is settled for its own project either way; an unmounted dialog must not touch whatever is open now.
     if (!alive.current) return;
@@ -138,7 +142,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
   async function toFinal(set: string[], preserve: string[], meaning: string[], message = '', gen = generation.current) {
     if (!config || config.project_id !== projectId) throw Error('维度配置与当前项目不一致，没有保存');
     if (!set.length) { await put(meaning, preserve); return; }
-    const pv = await api.removalPreview({ expected_revision: config.revision, remove: set });
+    const pv = await api.removalPreview({ expected_revision: config.revision, ...ctx(), remove: set });
     if (!alive.current) return;
     if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
     const affected = pv.affected.filter(touched);
@@ -158,7 +162,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       const changed = rows.filter(r => r.id && base.has(r.id) && wording(outOf(r)) !== wording(base.get(r.id)!)).map(r => r.id!);
       if (changed.length) {
         // Read-only probe: which of the reworded dimensions actually have scores.
-        const probe = await api.removalPreview({ expected_revision: config.revision, remove: changed });
+        const probe = await api.removalPreview({ expected_revision: config.revision, ...ctx(), remove: changed });
         if (!alive.current) return;
         if (gen !== generation.current) throw Object.assign(Error('草稿在等待期间改动了，请重新保存'), { code: 'DRAFT_CHANGED' });
         const scored = probe.affected.filter(touched);
@@ -167,7 +171,11 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       await toFinal(removed, [], [], '', gen);
     } catch (e) {
       const code = errCode(e);
-      if (code === 'CONFIG_STALE') { try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null); setError('维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。'); }
+      if (code === 'SERIES_MANAGED') { setManaged(true); return; }
+      if (code === 'CONFIG_STALE' || code === 'ATTRIBUTE_CONTEXT_STALE') {
+        try { setStale(await api.config()); } catch { /* keep the draft */ } setReview(null);
+        setError(code === 'CONFIG_STALE' ? '维度配置刚在别处被修改，你的改动还在。请选择下面的处理方式。' : '这部剧的成员或维度刚有变化（例如有集加入、移出或刚统一），你的改动还在、没有保存。请选择下面的处理方式后再保存。');
+      }
       else if ((code === 'REMOVAL_PREVIEW_STALE' || code === 'DIMENSION_REMOVAL_CONFIRM') && review?.stage === 'final') {
         try { await toFinal(review.set, review.preserve, review.meaning, '删除影响刚变了（下面是最新人数），请重新确认'); } catch (e2) { setReview(null); setError((e2 as Error).message || '请再点一次保存'); }
       }
@@ -187,6 +195,13 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
     setNote(['已和最新配置合并：保留了你的改动和别处的修改', ...m.notes].join('；') + '。请核对后再保存');
   }
 
+  if (managed) return <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
+    <div className="ca-modal ca-attr-config ca-attr-managed" role="dialog" aria-modal="true" aria-label="人物属性维度">
+      <header><div><h2>人物属性维度 · {projectName}</h2></div><button type="button" className="ca-icon-button" aria-label="关闭维度设置" onClick={onClose}><X size={17}/></button></header>
+      <div className="ca-modal-content"><p>这一集的维度由全剧统一设置，各集共用，所以不能在这里改。要增删或改名维度，请到全剧视图设置；本集人物的分数仍在本集打。</p></div>
+      <footer><button type="button" onClick={onClose}>关闭</button>{onGoSeries && <button type="button" className="ca-primary" autoFocus onClick={onGoSeries}>去全剧设置</button>}</footer>
+    </div>
+  </div>;
   const choose = (id: string, v: 'text' | 'meaning') => setReview(r => r && r.stage === 'choose' ? { ...r, choice: { ...r.choice, [id]: v } } : r);
   return <div className="ca-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !saving) onClose(); }} onKeyDown={e => { if (e.key === 'Escape' && !saving) { e.stopPropagation(); onClose(); } }}>
     <div className="ca-modal ca-attr-config" ref={dialog} role="dialog" aria-modal="true" aria-label="人物属性维度">
@@ -195,7 +210,7 @@ export function AttributeConfig({ projectId, projectName, request, onClose, onSa
       <div className="ca-modal-content">
         {error && <div className="ca-alert" role="alert">{error}</div>}
         {stale && <div className="ca-attr-confirm" role="group" aria-label="配置已更新">
-          <b>别处已把配置更新到第 {stale.revision} 版（你打开时是第 {config?.revision} 版）。</b>
+          <b>{stale.revision !== config?.revision ? `别处已把配置更新到第 ${stale.revision} 版（你打开时是第 ${config?.revision} 版）。` : '配置所在的剧或成员刚有变化，维度内容可能相同，但需要你按最新情况再确认一次。'}</b>
           <div className="ca-attr-confirm-actions"><button type="button" onClick={() => { setConfig(stale); setRows(stale.dimensions.map(toRow)); setStale(null); setReview(null); setError(''); setNote('已换成最新配置，你的改动已放弃'); }}>放弃我的改动，用新配置</button>
             <button type="button" className="ca-primary" onClick={() => startMerge(stale)}>保留我的改动，与新版本合并</button></div>
         </div>}

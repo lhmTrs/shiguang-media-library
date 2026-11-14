@@ -54,14 +54,15 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
     setSaving(true); setError('');
     try {
       const next = scopedUrl
-        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
-        : await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes });
+        ? await scopedWrite<AssetAttributes>(request, scopedUrl + '/assets/' + encodeURIComponent(assetId) + '/attributes', { request_id: crypto.randomUUID(), context_token: seriesScope!.contextToken, ...(config.config_token ? { config_token: config.config_token } : {}), expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes }, 'PATCH', '/project-assets')
+        : await attrApi.patch(request, assetId, { project_id: projectId, expected_config_revision: config.revision, expected_attribute_revision: attrs.attribute_revision, changes, ...(config.config_token ? { config_token: config.config_token } : {}) });
       if (next.asset_id !== assetId) throw Error('保存回执不属于当前人物，请重新打开后核对');
       setAttrs(next); setDraft(null); setEdited(new Set()); setNotice('属性已保存');
     } catch (e) {
       const code = errCode(e);
       if (code === 'ASSET_SCOPE_CHANGED') { setError('这部剧的归组刚变了，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
       else if (code === 'ASSET_STALE') { setError('全剧评分或维度刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
+      else if (code === 'ATTRIBUTE_CONTEXT_STALE') { setError('这部剧的成员或维度刚有变化，已重新读取；你的改动还在、没有保存，请核对后再保存'); void load(true); }
       else if (code === 'ATTRIBUTE_STALE' || code === 'CONFIG_STALE') { setError(code === 'CONFIG_STALE' ? '属性维度刚被修改，已重新读取；你的改动还在，请核对后再保存' : '这个人物的属性刚在别处改过，已重新读取；你的改动还在，请核对后再保存'); void load(true); }
       else setError((e as Error).message || '保存失败，改动仍保留');
     } finally { setSaving(false); }
@@ -74,8 +75,9 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
       {src && <span className="ca-attrs-source">{src.label}{src.at ? ' · ' + when(src.at) : ''}</span>}
       <span className="ca-grow"/>
       {!draft && <button type="button" disabled={state !== 'ok' || readOnly} title={readOnly ? '已归档的人物不能改属性' : undefined} onClick={startEdit}><Pencil size={14}/>编辑</button>}
-      {!seriesScope && <button type="button" onClick={onOpenConfig}><SlidersHorizontal size={14}/>维度设置…</button>}
+      {!seriesScope && <button type="button" onClick={onOpenConfig}><SlidersHorizontal size={14}/>{config?.config_scope === 'series' ? '维度在全剧设置…' : '维度设置…'}</button>}
     </div>
+    {!seriesScope && config?.config_scope === 'series' && <p className="ca-muted ca-attrs-managed" role="note">这一集的维度由全剧统一设置，各集共用；这里照常给本集人物打分。</p>}
     {state === 'loading' && <p className="ca-muted">正在读取属性…</p>}
     {state === 'error' && <p className="ca-muted">属性没有读到。<button type="button" className="ca-link-button" onClick={() => void load()}>重新读取</button></p>}
     {state === 'ok' && attrs && <>

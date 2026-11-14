@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 import express from "express";
-import { creativeFixture } from "./helpers/creative-fixture.mjs";
+import { confirmAttributePlan, creativeFixture, moveWithAttributePlan } from "./helpers/creative-fixture.mjs";
 import { digest } from "../server/project-assets/model.mjs";
 import { projectSeriesRouter } from "../server/project-series/router.mjs";
 import { SERIES_TABLES, seriesConstraints } from "../server/project-series/schema.mjs";
@@ -26,7 +26,7 @@ const item = (project, number) => ({
   project_id: project.id, expected_revision: project.membership_revision ?? 0,
   ...(number === undefined ? {} : { episode_no: number }),
 });
-const move = (series, target, items) => series.move({ target, items, request_id: randomUUID() });
+const move = (series, target, items) => moveWithAttributePlan(series, { target, items, request_id: randomUUID() });
 const listed = (projects, project) => projects.list().find(row => row.id === project.id);
 const organizeGroup = (group_id, target, ...items) => ({ group_id, target, items });
 const newDrama = name => ({ new_series: { name, software: "jianying" } });
@@ -83,7 +83,8 @@ test("batch move preserves all prior positions on conflict and undo requires the
   assert.throws(() => series.move(blocked), { code: "EPISODE_NUMBER_CONFLICT", details: { conflicts: preview.conflicts } });
   assert.equal(listed(projects, b).membership_revision, 0);
   assert.deepEqual(series.request(blocked.request_id), { found: false });
-  const input = { target: inSeason(season), items: [item(a, 1), item(b, 2)], request_id: randomUUID() };
+  move(series, root(drama), [item(a, 4), item(b, 5)]);
+  const input = { target: inSeason(season), items: [item(listed(projects, a), 1), item(listed(projects, b), 2)], request_id: randomUUID() };
   const moved = series.move(input);
   assert.deepEqual(series.move(input), moved);
   assert.deepEqual(series.request(input.request_id), { found: true, result: moved });
@@ -93,7 +94,7 @@ test("batch move preserves all prior positions on conflict and undo requires the
   assert.deepEqual(series.undo(moved.request_id, undoInput), undo);
   assert.equal(series.request(input.request_id).result.undone_by, undoInput.request_id);
   assert.equal(series.request(input.request_id).result.can_undo, false);
-  assert.deepEqual([listed(projects, a).membership_revision, listed(projects, b).membership_revision], [2, 2]);
+  assert.deepEqual([listed(projects, a).membership_revision, listed(projects, b).membership_revision], [3, 3]);
   assert.throws(() => series.move({ ...input, request_id: randomUUID() }), { code: "SERIES_STALE" });
 
   const grouped = move(series, root(drama), [item(listed(projects, a), 4), item(listed(projects, b), 5)]);
@@ -120,10 +121,10 @@ test("organize rolls back earlier groups when a later membership write fails", a
   const beforeDirectory = series.list();
   const beforeProjects = projects.list();
   const request_id = randomUUID();
-  const input = { request_id, groups: [
+  const input = confirmAttributePlan(series, 'organize', { request_id, groups: [
     organizeGroup("existing", root(drama), item(a, 7)),
     organizeGroup("new", newDrama("第二组新剧"), item(b, 9)),
-  ] };
+  ] });
   series.db.exec(`CREATE TEMP TRIGGER organize_write_failure BEFORE INSERT ON project_series_members
     WHEN NEW.episode_no=9 BEGIN SELECT RAISE(ABORT,'fixture rejected later write'); END`);
   assert.throws(() => series.organize(input), /fixture rejected later write/);
@@ -175,13 +176,13 @@ test("organize detects cross-group slot conflicts and rejects already grouped or
   projects.generationLocks = { assertWritable(id) {
     if (id === b.id) throw Object.assign(Error("fixture has a generation lock"), { code: "STORYBOARD_GENERATION_LOCKED" });
   } };
-  assert.throws(() => series.organize(target), { code: "SERIES_ORGANIZE_CONFLICT", details: {
+  assert.throws(() => series.organize(confirmAttributePlan(series, 'organize', target)), { code: "SERIES_ORGANIZE_CONFLICT", details: {
     conflicts: [{ group_id: "existing", project_id: b.id, code: "STORYBOARD_GENERATION_LOCKED" }],
   } });
   assert.deepEqual(series.list(), before);
   assert.deepEqual(series.request(request_id), { found: false });
   projects.generationLocks = undefined;
-  assert.deepEqual(series.organize(target).changes.map(change => change.before.revision), [0, 2]);
+  assert.deepEqual(series.organize(confirmAttributePlan(series, 'organize', target)).changes.map(change => change.before.revision), [0, 2]);
 });
 
 test("episodes and seasons swap the visible neighbor across gaps, and stale neighbors cannot swap", async t => {
@@ -210,9 +211,9 @@ test("creative backup round-trips directory, high-water marks and receipts; olde
   const drama = createDrama(series);
   const season = series.createSeason(drama.id, { request_id: randomUUID(), season_no: 3 });
   const moved = move(series, inSeason(season), [item(a, 7)]);
-  const organized = series.organize({ request_id: randomUUID(), groups: [
+  const organized = series.organize(confirmAttributePlan(series, 'organize', { request_id: randomUUID(), groups: [
     organizeGroup("new", newDrama("备份归组剧"), item(b, 6)),
-  ] });
+  ] }));
   await store.restore(legacy);
   assert.equal(series.membership(a.id).season_id, season.id);
   const backup = store.backup();
@@ -224,7 +225,8 @@ test("creative backup round-trips directory, high-water marks and receipts; olde
   assert.deepEqual(target.series.request(moved.request_id), series.request(moved.request_id));
   assert.deepEqual(target.series.request(organized.request_id), { found: true, result: organized });
   assert.deepEqual(target.series.membership(a.id), series.membership(a.id));
-  target.series.undo(moved.request_id, { request_id: randomUUID() });
+  assert.throws(() => target.series.undo(moved.request_id, { request_id: randomUUID() }), {code: "SERIES_UNDO_CONFLICT"});
+  move(target.series, outside, [item(listed(target.projects, a))]);
   assert.equal(target.series.membership(a.id).series_id, null);
   assert.equal(target.series.list().find(row => row.id === drama.id).seasons[0].next_episode_no, 8);
   await assert.rejects(target.store.restore(backup), { status: 409 });
@@ -291,6 +293,10 @@ test("HTTP series routes return the published contract and distinguish invalid i
   assert.deepEqual((await call("/project-series/requests/" + request_id)).data, { found: false });
   assert.deepEqual(series.list().map(row => row.name), ["接口剧名"]);
   batch.groups[1].items = [item(b, 2)];
+  const plan = await call(organize + "/preview", "POST", batch);
+  assert.equal(plan.status, 200);
+  batch.attribute_preview_token = plan.data.attribute_plan.preview_token;
+  batch.attribute_choices = plan.data.attribute_plan.choices;
   const organized = await call(organize, "POST", batch);
   assert.equal(organized.status, 200);
   assert.deepEqual((await call("/project-series/requests/" + request_id)).data, { found: true, result: organized.data });

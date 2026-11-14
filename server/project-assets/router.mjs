@@ -41,6 +41,9 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   const attributes = store.attributes;
   const configPath = '/projects/:id/attribute-config';
   const scorePath = '/assets/:id/attributes';
+  const historyPath = '/projects/:id/attribute-history';
+  route('get', historyPath, req => attributes.alignment.history('project', req.params.id, req.query));
+  route('get', historyPath + '/:historyId', req => attributes.alignment.history('project', req.params.id, req.query, req.params.historyId));
   route('get', configPath, req => attributes.getConfig(req.params.id));
   route('put', configPath, req => attributes.putConfig(req.params.id, req.body));
   route('post', configPath + '/removal-preview', req => attributes.removalPreview(req.params.id, req.body));
