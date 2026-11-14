@@ -256,7 +256,8 @@ export function RejectDialog({ ctl, allFolders }: { ctl: RejectController; allFo
     actions = <button type="button" className="pv-primary" onClick={ctl.hide}>完成</button>;
   } else if (ctl.stage === 'role') {
     const p = ctl.rolePlan, shots = uniqueShots(p?.affectedShots || []);
-    const candidates = folders.filter(f => f.available && f.id !== current);
+    // 成片保留文件夹不能同时作废片收纳处（合同 PROJECT-USAGE-RENDER v1）
+    const candidates = folders.filter(f => f.available && f.id !== current && f.role !== 'final');
     body = <>
       {ctl.mode === 'mark' && <p>{current ? `原收纳处“${currentName}”需要核对（目录找不到或不可用），` : '项目还没有废片收纳处，'}先指定一个文件夹作为收纳处，再移入视频。</p>}
       {ctl.mode === 'role' && <p>{current ? <>当前收纳处：<strong>{currentName}</strong>{rejectNeedsCheck(folders, ctl.roles) ? '（需核对）' : ''}</> : '项目还没有废片收纳处。'}</p>}

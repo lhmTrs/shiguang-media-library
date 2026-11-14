@@ -91,7 +91,9 @@ export interface ProjectVideoCollection {
 }
 
 /** needsReview：角色指针或目录不可用，需要用户核对；前端不猜同名目录。 */
-export type FolderRoles = { revision: number; rejectFolderId: string | null; rejectVideoCount: number; needsReview?: boolean };
+export type FolderRoles = { revision: number; rejectFolderId: string | null; rejectVideoCount: number; needsReview?: boolean;
+  /** 成片保留文件夹（合同 PROJECT-USAGE-RENDER v1）：不能改名、移动、删除；旧后台不返回。 */
+  finalFolderId?: string | null; finalState?: 'not_created' | 'ready' | 'needs_review'; finalErrorCode?: string | null };
 export type RejectShot = AdoptedShot & { sourceIds?: string[] };
 /** POST /folders/reject/preview 的回执（合同 v1）。 */
 export type RejectRolePlan = {
@@ -156,7 +158,7 @@ export interface ProjectVideoWorkspaceProps {
 }
 
 export type FolderView = 'all' | 'root' | 'reject' | string;
-export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | null};
+export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | 'final' | null; locked?: boolean};
 export type ConflictChoice = 'rename' | 'overwrite';
 export type FolderOperation = {
   kind: 'move-video' | 'move-videos' | 'rename-folder' | 'move-folder' | 'delete-folder';

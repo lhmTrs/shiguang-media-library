@@ -79,16 +79,19 @@ export function CategoryPopover({categories, count, onApply, onClose}: {categori
   </Popover>;
 }
 
-export function FolderPopover({options, projectId, folderId, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; count: number; onApply: (projectId: string, folderId: string, newFolder?: string) => void; onClose: () => void}) {
-  const [p, setP] = useState(projectId), [f, setF] = useState(folderId), [name, setName] = useState(''), project = options.projects.find(x => x.id === p);
-  const folders = project?.videoFolders || [], same = findSibling(folders, f, name), problem = name.trim() ? newFolderProblem(name) : '';
-  const apply = () => {if (!project || problem) return; if (name.trim() && !same) onApply(p, f, name.trim().normalize('NFC')); else onApply(p, same ? same.id : f);};
+export function FolderPopover({options, projectId, folderId, folderRole, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; folderRole?: 'final'; count: number; onApply: (projectId: string, folderId: string, newFolder?: string, folderRole?: 'final') => void; onClose: () => void}) {
+  const FINAL = '__final__';
+  const [p, setP] = useState(projectId), [f, setF] = useState(folderRole === 'final' ? FINAL : folderId), [name, setName] = useState(''), project = options.projects.find(x => x.id === p);
+  const folders = project?.videoFolders || [], finalFolder = folders.find(x => x.role === 'final');
+  // 「成片」还没建：给一个逻辑目标，确认收纳时由后台建好或接管同名文件夹；在它里面不能再新建子文件夹
+  const virtualFinal = f === FINAL, same = virtualFinal ? undefined : findSibling(folders, f, name), problem = virtualFinal ? '' : name.trim() ? newFolderProblem(name) : '';
+  const apply = () => {if (!project || problem) return; if (virtualFinal) {onApply(p, 'root', undefined, 'final'); return;} if (name.trim() && !same) onApply(p, f, name.trim().normalize('NFC')); else onApply(p, same ? same.id : f);};
   return <Popover label="改视频去处" onClose={onClose}>
     <div className="fi-pop-title">把 {count} 个视频放进</div>
     <label>项目<select aria-label="视频项目" value={p} onChange={e => {setP(e.target.value); setF('root');}}>{options.projects.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{folders.map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.relativePath || x.name}</option>)}</select></label>
-    <label>在这里新建（可不填）<input aria-label="新文件夹名字" value={name} onChange={e => setName(e.target.value)} placeholder="例如：A"/></label>
-    <small className={problem ? 'fi-error' : 'fi-muted'}>{problem || (same ? '已有同名文件夹「' + same.relativePath + '」，直接放进去' : name.trim() ? '点「收纳」时才真正建；取消收纳不会留下空文件夹' : '')}</small>
+    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{folders.map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.role === 'final' ? '成片（保留文件夹）' : x.relativePath || x.name}</option>)}{!finalFolder && <option value={FINAL}>成片（收纳时自动建好）</option>}</select></label>
+    <label>在这里新建（可不填）<input aria-label="新文件夹名字" value={virtualFinal ? '' : name} disabled={virtualFinal} onChange={e => setName(e.target.value)} placeholder="例如：A"/></label>
+    <small className={problem ? 'fi-error' : 'fi-muted'}>{problem || (virtualFinal ? '「成片」还没建，点「收纳」时自动建好；你原来就有叫「成片」的文件夹会直接接管，内容不动' : same ? '已有同名文件夹「' + same.relativePath + '」，直接放进去' : name.trim() ? '点「收纳」时才真正建；取消收纳不会留下空文件夹' : '')}</small>
     <div className="fi-pop-actions"><button onClick={onClose}>取消</button><button className="fi-primary" disabled={!project || !!problem} onClick={apply}>放进去</button></div>
   </Popover>;
 }

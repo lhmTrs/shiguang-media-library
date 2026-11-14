@@ -9,7 +9,9 @@ export type ImageProposal = {projectId:string;characterId:string|null;characterR
 export type AssetKind = 'character' | 'scene' | 'prop';
 export type IntakeDestination = {kind:MediaKind;scope:'library'|'project';projectId?:string;folderId?:string;directory?:string;fileName?:string;characterName?:string;lookName?:string;imageProposal?:ImageProposal;assetKind?:'scene'|'prop';assetId?:string;assetRevision?:number;
   /** 项目视频：点「收纳」时才在 folderId（父目录，'root' 为项目根目录）下新建这一层文件夹。 */
-  newFolder?:{name:string}};
+  newFolder?:{name:string};
+  /** 「成片」保留文件夹（合同 PROJECT-USAGE-RENDER v1）：还没建时用逻辑目标，确认收纳时由后台建好或接管；与 folderId/newFolder 互斥。 */
+  folderRole?:'final'};
 export type IntakeFile = {mediaKind?:'photo'|'video'|'audio';id: string; name: string; bytes: number; path: string; durationSec?: number | null};
 export type NameMode = 'keep' | 'standard';
 export type RoutingPreferences = {lastProjectId: {photo: string | null; video: string | null}; lastVideoFolderByProject: Record<string, string>; lastLibraryDirectory: Partial<Record<MediaKind, string>>; lastAudioKind: 'music' | 'sfx' | null; mode: 'copy' | 'move'; standardNames: boolean; revealWhenDone?: boolean};
@@ -23,7 +25,7 @@ export type NamePartRole = 'series' | 'season' | 'episode' | 'project' | 'folder
 export type NamePart = {role: NamePartRole; text: string};
 export type NamePreviewItem = {fileId: string; proposedFileName: string | null; proposedNumber: number | null; nameParts?: NamePart[]; error?: {code: string; message: string}};
 export type Handoff = {id: string; files: IntakeFile[]; projects: {id: string; name: string}[]; canTrash: boolean; batchId?: string; preparation?: 'checking' | 'ready' | 'failed'; preparationError?: string; preferences?:Partial<Record<MediaKind,IntakeDestination>>; routingPreferences?: RoutingPreferences; themeId?: string | null};
-export type IntakeFolder = {id: string; name: string; relativePath: string};
+export type IntakeFolder = {id: string; name: string; relativePath: string; role?: 'final' | 'reject' | null};
 export type Candidate = {id: string; name: string; reason: string; adoptedShots: {id: string; number: number | string}[]; mediaUrl: string; canOverwrite?:boolean};
 export type IntakeItem = {
   id: string; name: string; bytes: number; copiedBytes: number;

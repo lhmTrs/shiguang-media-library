@@ -660,6 +660,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const upgradeBlocked = locked || !collection || unresolved && task?.kind !== 'upgrade';
   const dirBlocked = !['all', 'root'].includes(folderId) && folderBlocked(folderId);
   const dirDisabled = locked || operationPending || dirBlocked;
+  // 「成片」是每集的保留文件夹：拾光里不能改名、移动、删除（后端同样拒绝 FOLDER_RESERVED）
+  const dirReserved = !['all', 'root', 'reject'].includes(folderId) && (roles?.finalFolderId === folderId || folders.some(f => f.id === folderId && f.role === 'final'));
   const receivingId = task?.kind === 'import' && !terminal(task.receipt) ? task.folderId : '';
   const attentionCount = videos.filter(attention).length;
   const formId = `pv-detail-form-${projectId}`;
@@ -787,14 +789,15 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           <button type="button" className="pv-folder-chip" aria-current={folderId === 'all' ? 'page' : undefined} title="聚合所有文件夹；文件状态在进入文件夹或打开视频时核验" onClick={() => navigateFolder('all')}><Layers size={14}/><span>全部视频</span></button>
           <button type="button" className={`pv-folder-chip${dropFolder === 'root' ? ' is-drop-target' : ''}`} aria-current={folderId === 'root' ? 'page' : undefined} onClick={() => navigateFolder('root')} {...folderDrop('root')}><FolderOpen size={14}/><span>项目根目录</span>{receivingId === 'root' && <small className="pv-receiving">接收中</small>}</button>
           {orderedFolders.map(({folder, depth}) => <button key={folder.id} type="button" className={`pv-folder-chip${dropFolder === folder.id ? ' is-drop-target' : ''}`} aria-current={folderId === folder.id ? 'page' : undefined} title={folderLabel(folder.id) || folder.name} onClick={() => navigateFolder(folder.id)} {...folderDrop(folder.id, folder.available)}>
-            {depth ? <CornerDownRight size={13}/> : <FolderIcon size={14}/>}<span>{folder.name}</span>{!folder.available && <small>不可用</small>}{receivingId === folder.id && <small className="pv-receiving">接收中</small>}</button>)}
+            {depth ? <CornerDownRight size={13}/> : <FolderIcon size={14}/>}<span>{folder.name}</span>{(folder.role === 'final' || roles?.finalFolderId === folder.id) && <small title="成片保留文件夹，不能改名、移动或删除">保留</small>}{!folder.available && <small>不可用</small>}{receivingId === folder.id && <small className="pv-receiving">接收中</small>}</button>)}
           <button type="button" className={`pv-folder-chip pv-folder-reject${dropFolder === 'reject' ? ' is-drop-target' : ''}`} aria-current={folderId === 'reject' ? 'page' : undefined} title={roles?.rejectFolderId ? `废片收纳处：${rejectName || '需核对'}` : '还没有设置废片收纳处'} onClick={() => navigateFolder('reject')} {...folderDrop('reject')}><Archive size={14}/><span>废片</span><small>{roles?.rejectVideoCount ?? 0}</small>{rejectCheck && <small>需核对</small>}</button>
           <button type="button" className="pv-folder-chip pv-folder-new" disabled={locked || operationPending || !collection} onClick={() => setFolderAction({kind: 'create', parentId: folderTarget(folderId)})}><FolderPlus size={14}/><span>新建文件夹</span></button>
           {menuWrap('dir', <><span>当前目录</span><ChevronDown size={13}/></>, {className: 'pv-folder-chip', disabled: folderId === 'all' || folderId === 'reject', title: folderId === 'all' || folderId === 'reject' ? '这是聚合视图，不是一个具体目录' : `管理“${folderName}”`}, <>
             {!['all', 'root'].includes(folderId) && <>
-              {menuItem('重命名文件夹…', () => setFolderAction({kind: 'rename-folder', folderId, label: folderName}), {disabled: dirDisabled})}
-              {menuItem('移动文件夹…', () => setFolderAction({kind: 'move-folder', folderId, label: folderName}), {disabled: dirDisabled})}
-              {menuItem('删除文件夹…', () => setFolderAction({kind: 'delete-folder', folderId, label: folderName}), {disabled: dirDisabled, danger: true})}
+              {menuItem('重命名文件夹…', () => setFolderAction({kind: 'rename-folder', folderId, label: folderName}), {disabled: dirDisabled || dirReserved})}
+              {menuItem('移动文件夹…', () => setFolderAction({kind: 'move-folder', folderId, label: folderName}), {disabled: dirDisabled || dirReserved})}
+              {menuItem('删除文件夹…', () => setFolderAction({kind: 'delete-folder', folderId, label: folderName}), {disabled: dirDisabled || dirReserved, danger: true})}
+              {dirReserved && <p className="pv-menu-note">「成片」是这一集的保留文件夹，不能改名、移动或删除；里面的视频照常管理。</p>}
               {dirBlocked && <p className="pv-menu-note">该文件夹或其子目录正在接收视频，等原导入结束后再操作。</p>}
               <hr/>
             </>}
