@@ -86,7 +86,7 @@ export class FileIntake {
     b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
   acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
   dto(b) {return {version:b.version,id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
-    mode:b.mode,revealWhenDone:b.revealWhenDone===true,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
+    mode:b.mode,...(b.prompt!==undefined?{prompt:structuredClone(b.prompt)}:{}),revealWhenDone:b.revealWhenDone===true,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
     canAcknowledge:this.canAcknowledge(b),acknowledged:this.acknowledged(b),acknowledgedAt:this.acknowledged(b)?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
   batch(id) {if(this.foreignIds.has(id))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
   list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
@@ -284,7 +284,10 @@ export class FileIntake {
     }
     return {folders};
   }
-  async confirm(handoffId,input,{sessionId}={}) {if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input,sessionId));return this.serial(async()=>{
+  async confirm(handoffId,input,{sessionId}={}) {
+    if(input&&Object.hasOwn(input,'prompt')&&input.version!==2)
+      throw Object.assign(error('INTAKE_INVALID_INPUT','附带提示词需要使用新版项目视频收纳',400),{accepted:false,requestId:input.requestId});
+    if(input?.version!==undefined&&input.version!==2)throw Object.assign(error('INTAKE_INVALID_INPUT','收纳请求版本无效',400),{accepted:false,requestId:input?.requestId});if(input?.version===2)return this.serial(()=>this.confirmUnified(handoffId,input,sessionId));return this.serial(async()=>{
     this.assertOpen();
     if(!uuid(input.requestId)||!uuid(input.projectId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length)
       throw error('INTAKE_INVALID_INPUT','请选择视频、项目、目标文件夹与收纳方式',400);
@@ -312,6 +315,19 @@ export class FileIntake {
     const d=i.destination;
     return {catalog:d.scope==='project'&&d.kind==='video'?this.catalog:this.generic.bind(d,i.target),projectId:d.projectId||'',target:i.target,folderId:i.resolvedFolder?.id??d.folderId??'root'};
   }
+  confirmPrompt(value,targets) {
+    if(!value||typeof value!=='object'||Array.isArray(value)||typeof value.text!=='string'||
+        Object.keys(value).some(key=>!['text','title'].includes(key))||
+        Object.hasOwn(value,'title')&&typeof value.title!=='string')
+      throw error('INTAKE_INVALID_INPUT','提示词需要正文和可选的文字标题',400);
+    if(targets.some(t=>t.destination?.scope!=='project'||t.destination?.kind!=='video'))
+      throw error('INTAKE_PROMPT_TARGET_UNSUPPORTED','附带提示词时，整批文件都必须收纳为项目视频',400);
+    const prompt={text:value.text,...(Object.hasOwn(value,'title')?{title:value.title}:{})};
+    // Project video owns text limits and storage. Validate before preparing any
+    // directory or batch, including when a later target in the batch is invalid.
+    for(const {destination} of targets)this.catalog.validatePrompt(destination.projectId,{mode:'new',...prompt});
+    return prompt;
+  }
   async confirmUnified(handoffId,input,sessionId){
     let acceptanceStarted=false;const resolvedFolders=[];try{
     this.assertOpen();
@@ -324,8 +340,10 @@ export class FileIntake {
     const {revealWhenDone}=input;
     if((revealWhenDone!==undefined&&typeof revealWhenDone!=='boolean')||(revealWhenDone&&!singleVideo))
       throw error('INTAKE_INVALID_INPUT','只有单个视频可以选择收纳完成后在访达中显示',400);
+    const hasPrompt=Object.hasOwn(input,'prompt');
+    const prompt=hasPrompt?this.confirmPrompt(input.prompt,input.targets):undefined;
     const args=stable({version:2,handoffId,mode:input.mode,fileIds:ids,targets:input.targets,standardNames:input.standardNames,
-      ...(revealWhenDone?{revealWhenDone:true}:{})});
+      ...(revealWhenDone?{revealWhenDone:true}:{}),...(hasPrompt?{prompt}:{})});
     if(this.foreignIds.has(input.requestId))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
@@ -389,7 +407,7 @@ export class FileIntake {
     }
     for(const [i,item] of items.entries())item.plannedFileName=(await finalPlanner.plan(item,plans[i])).proposedFileName;
     const labels=[...new Set(items.map(i=>i.destinationLabel))],projectIds=[...new Set(items.map(i=>i.destination.projectId||''))];
-    const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,revealWhenDone:revealWhenDone===true,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items};
+    const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,revealWhenDone:revealWhenDone===true,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items,...(hasPrompt?{prompt}:{})};
     acceptanceStarted=true;
     await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);
     if(singleVideo&&sessionId)this.receiptSessions.set(b.id,sessionId);
@@ -545,7 +563,8 @@ export class FileIntake {
     const currentIdentity=await revalidateSelection(i);
     if(!same(currentIdentity,i.identity)){i.selectionIdentity??={...i.identity};i.identity=currentIdentity;await this.save(b);}
     if((b.version!==2||i.destination.scope==='library')&&await this.managed(i,i.destination?.kind))return;
-    const args={requestId:i.requestId,fileName:i.plannedFileName??i.destination?.fileName??i.name,bytes:i.bytes,prompt:{mode:'none'},folderId};
+    const prompt=b.version===2&&b.prompt!==undefined?{mode:'new',...b.prompt}:{mode:'none'};
+    const args={requestId:i.requestId,fileName:i.plannedFileName??i.destination?.fileName??i.name,bytes:i.bytes,prompt,folderId};
     const started=await catalog.startIntake(projectId,args,target);
     if(started.status!=='waiting') {this.applyReceipt(i,started);return;}
     i.status='copying';b.status='running';i.error=undefined;i.copiedBytes=0;await this.save(b);
