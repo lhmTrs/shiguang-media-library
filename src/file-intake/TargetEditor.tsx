@@ -69,7 +69,7 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
         {assetProjects&&<button type="button" disabled={locked||!value.assetKind&&!!project&&!assetsIn(project).length} title={project&&!assetsIn(project).length?'这个项目还没有场景或道具':undefined} aria-pressed={!!value.assetKind} onClick={()=>!value.assetKind&&pickAsset(project||assetProjects.find(p=>assetsIn(p.id).length)?.id||'')}>场景/道具</button>}
         <button type="button" disabled={locked} aria-pressed={value.scope==='library'} onClick={()=>value.scope!=='library'&&patch({scope:'library',imageProposal:undefined})}>{kindLabel.photo}</button>
       </span></div>}
-      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>value.assetKind?pickAsset(e.target.value):patch({projectId:e.target.value,folderId:'root',imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>value.assetKind?pickAsset(e.target.value):patch({projectId:e.target.value,folderId:'root',newFolder:undefined,imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
       {value.scope==='project'&&value.kind==='photo'&&value.assetKind?<div className="fi-field"><span>放进</span>
         {assetsIn(project).length?<span className="fi-pop-list" role="radiogroup" aria-label={'场景或道具 '+file.id}>{assetsIn(project).map(a=><button key={a.id} type="button" role="radio" disabled={locked} aria-checked={value.assetId===a.id} onClick={()=>onChange({...value,assetKind:a.kind as 'scene'|'prop',assetId:a.id,assetRevision:a.revision,imageProposal:undefined})}>{a.kind==='scene'?'场景':'道具'} · {a.name}</button>)}</span>
           :<small className="fi-error" role="status">这个项目还没有场景或道具。请换一个项目，或把去处改成人物、摄影照片。</small>}
@@ -79,7 +79,9 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
         {checking?<p role="status">正在核对人物和造型…</p>:shownProposal&&(locked||proposalRef.current===proposalKey)?<p className="fi-muted">{shownProposal.newCharacter?'将新建人物：':'添加到现有人物：'}{shownProposal.characterName} · {shownProposal.newLook?'将新建造型：':'现有造型：'}{shownProposal.lookName}</p>:<p className="fi-muted">{locked?'原提交目标保留，请核对原请求结果。':'请填写人物和造型。缺少信息时也可改为收纳到摄影照片。'}</p>}
         <p className="fi-muted fi-keep-note">确认收纳后正式保存关联；已有代表图保持不变。</p>
       </>:<>
-        <label><span>{value.scope==='project'?'文件夹':'分类'}</span><select aria-label={'目标分类 '+file.id} value={selected} disabled={locked||reading} onChange={e=>patch(value.scope==='project'?{folderId:e.target.value}:{directory:e.target.value})}>{locked?<option value={selected}>{selected&&selected!=='root'?selected:value.scope==='project'?'项目根目录':'待确认'} · 原提交目标</option>:reading?<option>正在读取…</option>:folders.map(f=><option key={f.id} value={f.id}>{f.relativePath||f.name}</option>)}</select></label>
+        <label><span>{value.scope==='project'?'文件夹':'分类'}</span><select aria-label={'目标分类 '+file.id} value={selected} disabled={locked||reading} onChange={e=>patch(value.scope==='project'?{folderId:e.target.value,newFolder:undefined}:{directory:e.target.value})}>{locked?<option value={selected}>{selected&&selected!=='root'?selected:value.scope==='project'?'项目根目录':'待确认'} · 原提交目标</option>:reading?<option>正在读取…</option>:folders.map(f=><option key={f.id} value={f.id}>{f.relativePath||f.name}</option>)}</select></label>
+        {value.scope==='project'&&value.kind==='video'&&!locked&&<NewVideoFolder value={value} folders={folders} onChange={onChange}/>}
+        {value.scope==='project'&&value.kind==='video'&&locked&&value.newFolder&&<p className="fi-muted">原提交：在这里新建「{value.newFolder.name}」</p>}
         {value.scope==='library'&&<details><summary>新建分类文件夹</summary><div className="fi-actions"><input className="fi-button" aria-label={'新分类名称 '+file.id} value={newFolder} disabled={locked||creating} onChange={e=>setNewFolder(e.target.value)}/><button disabled={locked||creating||!newFolder.trim()} onClick={()=>void createFolder()}>{creating?'正在创建…':'创建分类'}</button></div><small>在当前分类下创建真实文件夹，最多两级；根目录表示待确认。</small></details>}
       </>}
       <label><span>文件名</span><input className="fi-button" aria-label={'副本名称 '+file.id} value={value.fileName||file.name} disabled={locked} onChange={e=>updateFilename(e.target.value)}/></label><small className="fi-field-hint">只改收进来的那一份；手动改的名字不会被规范名覆盖。</small>
@@ -90,8 +92,38 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
 
 export function submittedDestination(v:DestinationDraft):IntakeDestination {
   if(v.scope==='library')return {kind:v.kind,scope:'library',directory:v.directory||'',...(v.fileName?{fileName:v.fileName}:{})};
-  if(v.kind==='video')return {kind:'video',scope:'project',projectId:v.projectId,folderId:v.folderId||'root',...(v.fileName?{fileName:v.fileName}:{})};
+  if(v.kind==='video')return {kind:'video',scope:'project',projectId:v.projectId,folderId:v.folderId||'root',...(v.newFolder?{newFolder:{name:v.newFolder.name}}:{}),...(v.fileName?{fileName:v.fileName}:{})};
   // An unfinished scene/prop choice stays a scene/prop target (the server rejects it); it never falls through to a person.
   if(v.assetKind)return {kind:'photo',scope:'project',projectId:v.projectId,assetKind:v.assetKind,assetId:v.assetId,assetRevision:v.assetRevision,...(v.fileName?{fileName:v.fileName}:{})};
   return {kind:'photo',scope:'project',projectId:v.projectId,...(v.fileName?{fileName:v.fileName}:{}),imageProposal:v.imageProposal};
+}
+
+/** Pending video folder: only the name is kept here; the folder is created when 收纳 is confirmed. */
+function NewVideoFolder({value,folders,onChange}:{value:DestinationDraft;folders:IntakeFolder[];onChange:(v:DestinationDraft,manual?:boolean)=>void}){
+  const [name,setName]=useState(value.newFolder?.name||'');
+  const parent=value.folderId||'root',parentLabel=parent==='root'?'项目根目录':folders.find(f=>f.id===parent)?.relativePath||'当前文件夹';
+  const problem=newFolderProblem(name);
+  const same=findSibling(folders,parent,name);
+  const apply=()=>{if(problem)return;if(same){onChange({...value,folderId:same.id,newFolder:undefined});setName('');return;}onChange({...value,newFolder:{name:name.trim().normalize('NFC')}});};
+  return <details open={!!value.newFolder}><summary>{value.newFolder?'将在「'+parentLabel+'」里新建「'+value.newFolder.name+'」':'新建文件夹（点收纳时才建）'}</summary>
+    <div className="fi-actions"><input className="fi-button" aria-label="新文件夹名字" value={name} onChange={e=>setName(e.target.value)} placeholder="例如：A"/>
+      <button type="button" disabled={!!problem} onClick={apply}>{same?'用已有的「'+same.name+'」':'用这个名字'}</button>
+      {value.newFolder&&<button type="button" className="fi-link-muted" onClick={()=>{onChange({...value,newFolder:undefined});setName('');}}>不建了</button>}</div>
+    <small>{name.trim()&&problem?problem:'建在上面选中的「'+parentLabel+'」里；取消收纳不会留下空文件夹。'}</small></details>;
+}
+/** First-pass check while typing; the server checks the name again before creating anything. */
+export function newFolderProblem(raw:string){
+  const name=raw.trim();
+  if(!name)return '请填写文件夹名字';
+  if(/[\\/:*?"<>|\x00-\x1f\x7f]/.test(name))return '名字里不能有 / \\ : * ? " < > | 这些字符';
+  if(name==='.'||name==='..'||/^[.]/.test(name))return '名字不能以点开头';
+  if(name.length>80)return '名字太长了，请控制在 80 个字以内';
+  return '';
+}
+const folderKey=(s:string)=>s.trim().normalize('NFC').toLocaleLowerCase();
+/** An existing folder directly under parent with the same name (case-insensitive) is reused instead. */
+export function findSibling(folders:IntakeFolder[],parent:string,raw:string){
+  const prefix=parent==='root'?'':(folders.find(f=>f.id===parent)?.relativePath||'')+'/';
+  const want=folderKey(prefix+raw.trim());
+  return raw.trim()?folders.find(f=>f.id!=='root'&&folderKey(f.relativePath)===want)||null:null;
 }

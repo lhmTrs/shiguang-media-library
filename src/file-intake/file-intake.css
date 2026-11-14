@@ -226,3 +226,34 @@
 .fi-install-steps small,.fi-install-state b small{display:inline}
 /* 完成态：阶段列表下方的「还差一步」 */
 .fi-install-next{margin-top:4px!important;padding:7px 10px;border-radius:7px;border:1px solid color-mix(in srgb,var(--fi-accent) 30%,var(--fi-line));background:var(--fi-bg)}
+/* 右键收纳 · 视频按剧集改名、访达显示、收纳时新建文件夹 */
+.fi-simple .fi-options{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;padding:8px 20px;border-top:1px solid var(--fi-line);font-size:12px}
+.fi-simple .fi-option{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.fi-simple .fi-option>small{font-size:11px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-check-off{color:var(--fi-muted)}
+.fi-simple .fi-options .fi-grow{flex:1}
+.fi-simple .fi-single-folder{display:flex;align-items:center;gap:8px;width:100%}
+.fi-simple .fi-single-folder>.fi-muted{flex:none}
+.fi-simple .fi-folder-picker{flex:1;min-width:0}
+.fi-root.fi-simple .fi-folder-picker>.fi-picker{width:100%;font-weight:500}
+.fi-simple .fi-folder-picker>.fi-picker>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.fi-simple .fi-picker-note{display:inline;font-size:11px;font-weight:400;color:var(--fi-muted)}
+.fi-simple .fi-folder-picker>.fi-popover{width:300px;padding:8px;gap:8px}
+.fi-simple .fi-newfolder{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;background:var(--fi-soft)}
+.fi-simple .fi-newfolder-title{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--fi-accent)}
+.fi-simple .fi-newfolder-row{display:flex;align-items:flex-end;gap:6px}
+.fi-root.fi-simple .fi-newfolder-row label{flex:1;min-width:0;gap:3px;font-size:11px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-newfolder-row input{min-height:30px;padding:4px 8px;border:1px solid var(--fi-line);border-radius:6px;font:inherit;font-size:12px;color:var(--fi-text);background:var(--fi-bg)}
+.fi-root.fi-simple .fi-newfolder-row select{min-height:30px;padding:4px 6px;font-size:12px}
+.fi-root.fi-simple .fi-newfolder-row button{min-height:30px}
+.fi-simple .fi-newfolder small{font-size:11px}
+.fi-simple .fi-newname{display:flex;flex-direction:column;gap:6px;width:100%;padding:10px 12px;border:1.5px solid var(--fi-accent);border-radius:9px;background:color-mix(in srgb,var(--fi-accent) 6%,var(--fi-bg))}
+.fi-simple .fi-newname-title{font-size:12px;font-weight:600;color:var(--fi-accent)}
+.fi-simple .fi-newname-full{font-size:15px;font-weight:650;overflow-wrap:anywhere}
+.fi-simple .fi-newname-legend{display:flex;flex-wrap:wrap;gap:4px}
+.fi-simple .fi-newname-tag{display:inline-flex;align-items:baseline;gap:4px;padding:1px 7px;border-radius:999px;background:var(--fi-bg);border:1px solid var(--fi-line);font-size:12px}
+.fi-root.fi-simple .fi-newname-tag small{display:inline;font-size:10px;color:var(--fi-muted)}
+.fi-root.fi-simple .fi-newname>small{font-size:11px;color:var(--fi-muted)}
+.fi-simple .fi-after{display:flex;flex-direction:column;gap:4px;width:100%;max-width:560px;padding:10px 14px;border:1.5px solid var(--fi-accent);border-radius:10px;text-align:left;font-size:12px}
+.fi-simple .fi-after>strong{color:var(--fi-accent)}
+.fi-simple .fi-after b{overflow-wrap:anywhere}
