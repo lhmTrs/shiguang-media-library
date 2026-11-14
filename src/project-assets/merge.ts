@@ -103,6 +103,10 @@ export const mergeErrorText: Record<string, string> = {
   REQUEST_ID_CONFLICT: '这个请求编号已用于别的内容，没有执行。请关掉窗口重新打开再试',
   ASSET_MERGED: '这个人物已经合并到另一个人物里了，请打开合并后的那一个',
   STORYBOARD_GENERATION_LOCKED: '这部剧正在生成分镜，暂时不能合并或撤销，等生成结束再试',
+  // 撤销预览的阻断原因（后端返工 527fe74）
+  CHARACTER_MERGE_NAME_CONFLICT: '撤销后会出现同名人物（全剧和某一集各有一个同名的）：先把其中一个改名，再回来撤销',
+  CHARACTER_MERGE_DEPENDENCY: '合并之后又有别的合并依赖它，暂时不能单独撤销这一次',
+  CHARACTER_MERGE_SCOPE_CHANGED: '这部剧的成员或人物属性维度在合并后变了，暂时不能完整撤销',
 };
 export const mergeErr = (e: unknown, fallback: string) => {
   const err = e as { code?: string; status?: number; message?: string };

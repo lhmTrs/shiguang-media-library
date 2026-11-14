@@ -28,7 +28,7 @@ const scopeSwitch = () => work().getByRole('group', { name: '看哪里的资产'
 let S, eps = [], A, B; const writes = [];
 const ep = (i, project) => ({ project_id: project.id, project_name: project.name, episode_no: i, season_id: 'q1', season_no: 1, season_label: '第 1 季' });
 const member = (id, owner, episode, extra = {}) => ({ asset_id: id, asset_revision: 1, owner_type: owner, owner_id: owner === 'series' ? S.id : episode.project_id, episode, look_count: 2, image_count: 3, scored_dimensions: 6, default_look_id: 'l-' + id, references: { shots: 20, manifests: 1, manifest_entries: 2 }, base_info_excerpt: '资料摘要', performance_info_excerpt: null, primary_locked: false, ...extra });
-const fake = { rejected: {}, confirmErrorOnce: null, undoErrorOnce: null, failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
+const fake = { undoBlocked: false, rejected: {}, confirmErrorOnce: null, undoErrorOnce: null, failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
 const lisi = () => ({ group_id: 'g-lisi', name: '李四', references: { shots: 51, manifests: 2, manifest_entries: 4 }, members: [member(A, 'project', ep(1, eps[0]), { references: { shots: 31 } }), member(B, 'project', ep(2, eps[1]), { references: { shots: 20 } })] });
 const zhao = () => ({ group_id: 'g-zhao', name: '赵六', references: { shots: 9 }, members: [member('z-series', 'series', null, { primary_locked: true }), member('z-ep2', 'project', ep(2, eps[1]))] });
 function groups() {
@@ -84,6 +84,7 @@ async function installMocks() {
   });
   await page.context().route(u => /\/character-merges\/[^/]+\/undo-preview$/.test(new URL(u).pathname), route => { const b = route.request().postDataJSON(); fake.undoPreviews.push(b);
     if (b.context_token !== 'grp-tok-' + fake.groupReads) return route.fulfill({ status: 409, json: { error: '作用域已变化', code: 'ASSET_SCOPE_CHANGED' } });
+    if (fake.undoBlocked) return route.fulfill({ json: { ready: false, undo_token: null, merge_id: 'm-g-lisi', status: 'blocked', changes: [], blockers: [{ code: 'CHARACTER_MERGE_NAME_CONFLICT', asset_id: A }] } });
     return route.fulfill({ json: { ready: true, undo_token: 'ud-1', merge_id: 'm-g-zhao', status: 'review_required', blockers: [], changes: [{ entity: 'image', entity_id: 'i9', project_id: null, kind: '合并后新加的图片', action: 'restore_with_confirmation' }] } }); });
   await page.context().route(u => /\/character-merges\/[^/]+\/undo$/.test(new URL(u).pathname), route => { const body = route.request().postDataJSON(); fake.undos.push(body);
     if (fake.staleUndoOnce) { fake.staleUndoOnce = false; return route.fulfill({ status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_UNDO_STALE' } }); }
@@ -408,6 +409,17 @@ try {
     await expect(bar).toHaveCount(0); await expect(work().getByRole('button', { name: /^新建/ }).first()).toBeEnabled();
     const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('shiguang.characterMerge.pending.v3') || '{}'));
     assert.deepEqual(kept.merges.map(m => m.libraryId), ['another-library'], '另一个资料库的待核对原样保留'); assert.equal(kept.undos.length, 0);
+  });
+
+  await check('后端返工：撤销会造成同名人物 → 撤销预览阻断，显示中文原因，不给撤销按钮', async () => {
+    fake.undoBlocked = true;
+    await scopeSwitch().getByRole('button').first().click();
+    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    await work().getByRole('button', { name: '资料操作' }).click(); await work().getByRole('menuitem', { name: /来源与版本/ }).click();
+    await page.getByRole('dialog', { name: '来源与版本' }).getByRole('button', { name: '撤销这次合并…' }).click();
+    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await expect(undo.getByRole('alert')).toContainText('先把其中一个改名');
+    await expect(undo.getByRole('button', { name: '撤销合并' })).toHaveCount(0); await shot('14-undo-name-conflict');
+    await undo.getByRole('button', { name: '关闭' }).last().click(); fake.undoBlocked = false;
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

@@ -372,7 +372,7 @@ export function UndoMergeDialog({ api, libraryId, seriesId, mergeId, name, conte
         {!pv && busy && <p className="ca-muted" role="status">{busy}</p>}
         {pv?.status === 'undone' && <p>这次合并已经撤销过了。</p>}
         {pv && pv.status !== 'undone' && <>
-          <p>撤销后，合并前的几份各自恢复：资料文字、造型和图片的归属、分数、各集默认设置都回到合并前；分镜里原来的指向不受影响，会自动指回原来那一份。</p>
+          {pv.status !== 'blocked' && <p>撤销后，合并前的几份各自恢复：资料文字、造型和图片的归属、分数、各集默认设置都回到合并前；分镜里原来的指向不受影响，会自动指回原来那一份。</p>}
           {review.length > 0 && <section className="cm-review"><b>合并后又改过这些（撤销会把它们恢复成合并前的样子）：</b>
             <ul>{review.map(c => <li key={c.entity + c.entity_id + c.kind}>{ENTITY[c.entity] ?? c.entity} · {c.kind}{c.project_id ? '（' + c.project_id.slice(0, 8) + '…）' : ''}</li>)}</ul>
             <label><input type="checkbox" checked={accept} disabled={!!pending || !!busy} onChange={e => setAccept(e.target.checked)}/>我已核对，撤销时恢复这些内容（撤销前的状态会存成一个可查的版本）</label></section>}
