@@ -7,6 +7,7 @@ const repo = fileURLToPath(new URL('..', import.meta.url));
 // Deliberate allowlist, not the full default local suite. No App, browser,
 // desktop tool, listener, real cloud/model or existing library is required.
 export const CI_FILES = Object.freeze([
+  'font-scale.test.mjs',
   'global-feedback.test.mjs',
   'read-cache.test.mjs',
   'search-aliases.test.mjs',

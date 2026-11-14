@@ -14,6 +14,10 @@ const DONE = [
   'src/file-intake/file-intake.css',
   'src/library-workspace.css',
   'src/codex-task-drawer.css',
+  // 第二批
+  'src/storyboard/storyboard.css',
+  'src/storyboard/video-preview.css',
+  'src/storyboard/generation.css',
 ];
 
 test('已统一的 CSS 文件里没有档位以外的字号', () => {
