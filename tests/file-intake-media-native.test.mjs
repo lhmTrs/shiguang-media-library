@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {createServer} from 'node:http';
+import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
 import express from 'express';
 import {PHOTO,VIDEO,AUDIO} from '../server/fs-identity.mjs';
 import {Receipts,inspectSelection,selectionHash,revalidateSelection,stamp} from '../server/file-intake/files.mjs';
@@ -565,4 +569,223 @@ test('a previously installed all-media workflow with no Swift source marker requ
   await f.installOwned({target:f.native.target,movie:false,marker:{version:2,mediaKinds:['photo','video','audio']}});
   assert.deepEqual(await f.native.status(),{supported:true,installed:true,upgradeNeeded:true});
   assert.deepEqual(f.calls,[],'checking status must not compile or install');
+});
+
+test('changed window source selects a new helper and upgrades the installed workflow config',async t=>{
+  const f=await fixture(t);
+  const source=new URL('../server/file-intake/window.swift',import.meta.url);
+  const version=createHash('sha256').update(await fs.readFile(source)).digest('hex').slice(0,16);
+  const oldVersion='0000000000000000';
+  assert.notEqual(version,oldVersion);
+  await f.installOwned({target:f.native.target,movie:false,marker:{version:2,mediaKinds:['photo','video','audio'],windowVersion:oldVersion}});
+  const oldHelper=path.join(f.native.nativeDir,'ShiguangIntake-'+oldVersion+'-v1.app','Contents/MacOS/ShiguangIntake');
+  await fs.mkdir(path.dirname(oldHelper),{recursive:true,mode:0o700});
+  await fs.writeFile(oldHelper,'retained old helper',{mode:0o700});
+  assert.deepEqual(await f.native.status(),{supported:true,installed:true,upgradeNeeded:true});
+  assert.equal(f.calls.length,0,'status only reports that the old window needs upgrading');
+  await f.native.install();
+  assert.equal(f.calls.length,1,'an old cached helper cannot satisfy the new source version');
+  assert.ok(f.calls[0].args.includes(fileURLToPath(source)));
+  const marker=JSON.parse(await fs.readFile(path.join(f.native.target,'Contents/shiguang-install.json'),'utf8'));
+  assert.equal(marker.windowVersion,version);
+  const configName=(await fs.readdir(f.native.nativeDir)).find(name=>/^install-.*\.json$/.test(name));
+  const configFile=path.join(f.native.nativeDir,configName);
+  const config=JSON.parse(await fs.readFile(configFile,'utf8'));
+  assert.equal(config.helper,path.join(f.native.nativeDir,'ShiguangIntake-'+version+'-v1.app','Contents/MacOS/ShiguangIntake'));
+  assert.equal(await fs.readFile(config.helper,'utf8'),'synthetic helper; never execute');
+  assert.equal(await fs.readFile(oldHelper,'utf8'),'retained old helper');
+  const workflow=await fs.readFile(path.join(f.native.target,'Contents/Resources/document.wflow'),'utf8');
+  assert.ok(workflow.includes(configFile));
+  assert.deepEqual(await f.native.status(),{supported:true,installed:true,upgradeNeeded:false});
+  await f.native.install();
+  assert.equal(f.calls.length,1,'the exact same source may reuse its compiled helper');
+});
+
+test('clipboard bridge registers a reply handler and reads only after exact main-page admission',async()=>{
+  const swift=await fs.readFile(new URL('../server/file-intake/window.swift',import.meta.url),'utf8');
+  const bridge=swift.slice(swift.indexOf('final class ClipboardTextBridge:'),swift.indexOf('final class IntakeWindow:'));
+  assert.match(bridge,/WKScriptMessageHandlerWithReply/);
+  assert.match(swift,/addScriptMessageHandler\(clipboard, contentWorld: \.page, name: "readClipboardText"\)/);
+  assert.match(swift,/clipboard.webView = view/);
+  assert.match(bridge,/message.body as\? String == "read"/);
+  assert.match(bridge,/message.frameInfo.isMainFrame/);
+  assert.match(bridge,/message.webView === view/);
+  assert.match(bridge,/securityOrigin.protocol == "http"/);
+  assert.match(bridge,/securityOrigin.host == "127.0.0.1"/);
+  assert.match(bridge,/securityOrigin.port == pageURL.port/);
+  assert.match(bridge,/isIntakePage\(message.frameInfo.request.url\), isIntakePage\(view.url\)/);
+  assert.match(bridge,/candidate.query == nil && candidate.fragment == fragment/);
+  assert.match(bridge,/text.unicodeScalars.count/);
+  assert.match(bridge,/length > 10000/);
+  assert.match(bridge,/\["kind": "tooLong", "length": length\]/);
+  assert.equal((swift.match(/NSPasteboard.general/g)||[]).length,1);
+  assert.equal((bridge.match(/readText\(\)/g)||[]).length,1);
+  assert.ok(bridge.indexOf('readText()')>bridge.indexOf('CLIPBOARD_REQUEST_DENIED'));
+  assert.doesNotMatch(bridge,/evaluateJavaScript|callAsyncJavaScript|Timer|DispatchQueue|setString|clearContents|writeObjects/);
+});
+
+test('real hidden WK reply bridge enforces admission and Unicode boundaries with an injected source',
+  {skip:process.platform!=='darwin',timeout:120000},async t=>{
+  const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'sg-clipboard-wk-')));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const run=promisify(execFile);
+  const {stdout:developerOutput}=await run('/usr/bin/xcode-select',['-p']);
+  const developer=developerOutput.trim();
+  const compiler=path.join(developer,'usr/bin/swiftc');
+  const sdk=path.join(developer,'SDKs/MacOSX.sdk');
+  const swift=await fs.readFile(new URL('../server/file-intake/window.swift',import.meta.url),'utf8');
+  const bridge=swift.slice(swift.indexOf('final class ClipboardTextBridge:'),swift.indexOf('final class IntakeWindow:'));
+  assert.ok(bridge.startsWith('final class ClipboardTextBridge:'));
+  const values=[null,'','  ','quotes " \\ newline\n汉字','a'.repeat(10000),'a'.repeat(10001),
+    '😀'.repeat(10000),'😀'.repeat(10001),'e\u0301'.repeat(5000),'e\u0301'.repeat(5000)+'a',
+    '👩‍👩‍👧‍👦'.repeat(1428)+'abcd','👩‍👩‍👧‍👦'.repeat(1428)+'abcde'];
+  const fixtures=path.join(dir,'fixtures.json');
+  await fs.writeFile(fixtures,JSON.stringify(values));
+  const handoff='11111111-2222-4333-8444-555555555555';
+  const script=`
+    const check=(condition,label)=>{if(!condition)throw Error(label)};
+    const control=value=>window.webkit.messageHandlers.fixture.postMessage(value);
+    const read=value=>window.webkit.messageHandlers.readClipboardText.postMessage(value);
+    async function denied(value,label){
+      const before=(await control('status')).reads;
+      let rejected=false;
+      try{await read(value)}catch(error){rejected=error.message.includes('CLIPBOARD_REQUEST_DENIED')}
+      check(rejected,label+' rejects');
+      check((await control('status')).reads===before,label+' never reads');
+    }
+    async function iframeDenied(src){
+      const before=(await control('status')).reads;
+      await new Promise((resolve,reject)=>{
+        const frame=document.createElement('iframe');
+        const timer=setTimeout(()=>reject(Error('iframe timeout')),3000);
+        function done(event){
+          if(event.source!==frame.contentWindow)return;
+          clearTimeout(timer);removeEventListener('message',done);frame.remove();
+          event.data==='denied'?resolve():reject(Error('iframe accepted'));
+        }
+        addEventListener('message',done);frame.src=src;document.body.append(frame);
+      });
+      check((await control('status')).reads===before,'iframe never reads');
+    }
+    async function main(){
+      const expected=new URL((await control('status')).pageURL);
+      if(location.origin!==expected.origin){
+        await denied('read','wrong main-frame origin');
+        await control({finish:true,cases:0,invalidMessages:0,iframeDenials:0,pageDenials:1});
+        return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,100));
+      check((await control('status')).reads===0,'startup never reads');
+      window.webkit.messageHandlers.intakeAppearance.postMessage('dark:#101010');
+      window.webkit.messageHandlers.intake.postMessage('accepted');
+      check((await control('status')).reads===0,'theme and unrelated messages never read');
+      const values=${JSON.stringify(values)};
+      for(let index=0;index<values.length;index++){
+        await control({set:index});
+        const before=(await control('status')).reads;
+        const reply=await read('read');
+        check((await control('status')).reads===before+1,'exactly one read '+index);
+        const text=values[index],length=text===null?0:Array.from(text).length;
+        const expected=!text?{kind:'empty'}:length>10000?{kind:'tooLong',length}:{kind:'text',text};
+        check(Object.keys(reply).sort().join()===Object.keys(expected).sort().join(),'reply keys '+index);
+        check(Object.keys(expected).every(key=>reply[key]===expected[key]),'reply values '+index);
+      }
+      for(const body of [null,{},['read'],'Read','read\\n',1])await denied(body,'invalid message');
+      await iframeDenied('/iframe#'+location.hash.slice(1));
+      await iframeDenied('http://localhost:'+location.port+'/iframe#'+location.hash.slice(1));
+      const original=location.href;
+      for(const target of ['/#/projects','/#/file-intake/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee','/other'+location.hash,'/?query=1'+location.hash]){
+        history.replaceState(null,'',target);
+        await denied('read','wrong page');
+        history.replaceState(null,'',original);
+      }
+      await control({finish:true,cases:values.length,invalidMessages:6,iframeDenials:2,pageDenials:4});
+    }
+    main().catch(error=>control({failure:String(error)}));`;
+  const serve=(req,res)=>{
+    res.setHeader('Content-Type','text/html; charset=utf-8');
+    if(req.url.startsWith('/iframe')){
+      res.end(`<script>window.webkit.messageHandlers.readClipboardText.postMessage('read').then(()=>parent.postMessage('accepted','*'),()=>parent.postMessage('denied','*'))</script>`);
+    }else res.end('<body><script>'+script+'</script></body>');
+  };
+  const server=createServer(serve),otherOrigin=createServer(serve);
+  for(const listener of [server,otherOrigin]){
+    await new Promise(resolve=>listener.listen(0,'127.0.0.1',resolve));
+    t.after(()=>new Promise(resolve=>{listener.closeAllConnections();listener.close(resolve);}));
+  }
+  const url='http://127.0.0.1:'+server.address().port+'/#/file-intake/'+handoff;
+  const source=path.join(dir,'main.swift'),binary=path.join(dir,'bridge-test');
+  await fs.writeFile(source,`import Cocoa
+import WebKit
+${bridge}
+final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHandler {
+    let values: [String?]
+    let pageURL: URL
+    var value: String?
+    var reads = 0
+    var view: WKWebView!
+    init(_ url: URL, _ fixtures: String, loadURL: URL) throws {
+        pageURL = url
+        values = try JSONDecoder().decode([String?].self, from: Data(contentsOf: URL(fileURLWithPath: fixtures)))
+        super.init()
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let bridge = ClipboardTextBridge(pageURL: url, readText: { [unowned self] in
+            self.reads += 1
+            return self.value
+        })
+        config.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "readClipboardText")
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "fixture")
+        config.userContentController.add(self, name: "intakeAppearance")
+        config.userContentController.add(self, name: "intake")
+        view = WKWebView(frame: NSRect(x: 0, y: 0, width: 640, height: 480), configuration: config)
+        bridge.webView = view
+        view.load(URLRequest(url: loadURL))
+    }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {}
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        if let command = message.body as? [String: Any] {
+            if let index = command["set"] as? Int {value = values[index]}
+            if command["finish"] as? Bool == true {
+                var result = command
+                result["reads"] = reads
+                FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: result))
+                replyHandler(true, nil)
+                exit(0)
+            }
+            if let failure = command["failure"] as? String {
+                FileHandle.standardError.write(Data(failure.utf8))
+                replyHandler(nil, "TEST_FAILED")
+                exit(1)
+            }
+        }
+        replyHandler(["reads": reads, "pageURL": pageURL.absoluteString], nil)
+    }
+}
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
+let harness = try Harness(URL(string: CommandLine.arguments[1])!, CommandLine.arguments[2],
+                          loadURL: URL(string: CommandLine.arguments[3])!)
+DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+    FileHandle.standardError.write(Data("WK_TEST_TIMEOUT".utf8))
+    exit(2)
+}
+app.run()
+withExtendedLifetime(harness) {}
+`);
+  // Compile the actual bridge class, replace only its input source, and create no NSWindow.
+  const env={...process.env,TMPDIR:dir+path.sep};
+  await run(compiler,['-sdk',sdk,'-module-cache-path',path.join(dir,'modules'),source,'-o',binary,
+    '-framework','Cocoa','-framework','WebKit'],{env,timeout:90000,maxBuffer:65536});
+  const result=await run(binary,[url,fixtures,url],{env,timeout:25000,maxBuffer:65536});
+  const summary=JSON.parse(result.stdout);
+  assert.deepEqual(summary,{finish:true,cases:values.length,invalidMessages:6,iframeDenials:2,pageDenials:4,reads:values.length});
+  t.diagnostic('Real WK reply bridge with injected source and no window '+JSON.stringify(summary));
+  const deniedOrigins=[url.replace('127.0.0.1','localhost'),url.replace(':'+server.address().port+'/',':'+otherOrigin.address().port+'/')];
+  for(const loadURL of deniedOrigins){
+    const deniedResult=await run(binary,[url,fixtures,loadURL],{env,timeout:25000,maxBuffer:65536});
+    assert.deepEqual(JSON.parse(deniedResult.stdout),{finish:true,cases:0,invalidMessages:0,iframeDenials:0,pageDenials:1,reads:0});
+  }
+  t.diagnostic('Untrusted main-frame hostname and port both rejected with zero source reads');
 });
