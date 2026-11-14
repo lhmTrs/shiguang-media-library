@@ -29,7 +29,7 @@ function setup() {
       {id: P2, name: '新品广告', videoFolders: [{id: 'root', name: '项目根目录', relativePath: ''}], assets: []}],
       photoCategories: [{id: '', name: '待确认', relativePath: ''}]},
     folders: {[P1]: [{id: 'root', name: '项目根目录', relativePath: ''}, {id: 'f-b', name: 'B', relativePath: 'B'}, {id: 'f-bb', name: '补拍', relativePath: 'B/补拍'}], [P2]: [{id: 'root', name: '项目根目录', relativePath: ''}]},
-    confirmBodies: [], previewBodies: [], openBodies: [], posts: [], batches: [], open: ['dispatched'], parts: 'good', receipt: '',
+    confirmBodies: [], previewBodies: [], openBodies: [], posts: [], batches: [], open: ['dispatched'], parts: 'good', receipt: '', confirmFail: [],
   };
 }
 // Mirrors the agreed rule closely enough to check what the window shows and sends.
@@ -60,6 +60,12 @@ async function routeApi(route) {
   const pf = ep.match(/^\/projects\/([^/]+)\/folders$/); if (pf) return respond({folders: fx.folders[pf[1]]});
   if (ep === '/handoffs/' + H + '/confirm') {
     fx.confirmBodies.push(body); await pause(60);
+    const fail = fx.confirmFail.shift();
+    if (fail) {
+      // The batch was refused, but some folders were already created and registered.
+      for (const f of fail) {const list = fx.options.projects.find(p => p.id === (f.projectId || P1)).videoFolders; if (!list.some(x => x.id === f.id)) {list.push({id: f.id, name: f.name, relativePath: f.relativePath}); fx.folders[f.projectId || P1].push({id: f.id, name: f.name, relativePath: f.relativePath});}}
+      return respond({code: 'INTAKE_CONFIRM_FAILED', error: '合成：整批未受理', accepted: false, requestId: body.requestId, resolvedFolders: fail}, 409);
+    }
     const items = body.fileIds.map(id => {const t = body.targets.find(x => x.fileId === id); return {...fx.handoff.files.find(f => f.id === id), destination: clone(t.destination), ...(t.nameMode ? {nameMode: t.nameMode} : {}), plannedFileName: t.nameMode ? previewName(t).name : undefined, copiedBytes: 0, status: 'queued'};});
     const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items, revealWhenDone: !!body.revealWhenDone};
     if (fx.receipt === 'reveal-flipped') batch.revealWhenDone = !batch.revealWhenDone;
@@ -203,6 +209,45 @@ try {
     for (const t of b.targets) assert.deepEqual(t.destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-b', newFolder: {name: 'C'}});
     await expect.poll(native).toEqual(['accepted']); // several files still close on their own
     await expect(page.getByRole('button', {name: '打开目标文件夹', exact: true})).toHaveCount(0);
+  });
+
+  await check('R1 same folder name in two projects: a built folder is only taken by the row of its own project and parent', async () => {
+    const two = f => {f.handoff.files = [file('v1', 'dy_1.mov', 'video'), file('v2', 'dy_2.mov', 'video')];};
+    const setup2 = async () => {
+      // Both start in 穿越计 › B; send both to a new 样片 at the root, then move dy_2 to 新品广告 with its own new 样片.
+      await page.getByRole('button', {name: '改文件夹…', exact: true}).click();
+      const pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
+      await pop.getByRole('combobox', {name: '视频文件夹', exact: true}).selectOption('root');
+      await pop.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('样片'); await pop.getByRole('button', {name: '放进去', exact: true}).click();
+      await page.getByRole('button', {name: '单独设置 dy_2.mov', exact: true}).click();
+      const panel = page.getByRole('dialog', {name: '收纳设置 dy_2.mov', exact: true});
+      await panel.getByRole('combobox', {name: '目标项目 v2', exact: true}).selectOption(P2);
+      await panel.getByText('新建文件夹（点收纳时才建）', {exact: true}).click();
+      await panel.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('样片'); await panel.getByRole('button', {name: '用这个名字', exact: true}).click();
+      await panel.getByRole('button', {name: '完成', exact: true}).click();
+      await expect(confirmButton()).toBeEnabled();
+    };
+    const dest = (b, id) => b.targets.find(t => t.fileId === id).destination;
+    // Only 穿越计's 样片 was built; 新品广告 keeps asking for its own.
+    await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片', projectId: P1, parentId: 'root'}]];});
+    await setup2(); await confirmButton().click();
+    await expect(page.locator('.fi-body > .fi-error')).toContainText('文件夹「样片」已经建好');
+    assert.deepEqual(dest(fx.confirmBodies[0], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'root', newFolder: {name: '样片'}});
+    await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'nf-a'});
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'root', newFolder: {name: '样片'}});
+    // An older receipt without ownership: nothing is re-pointed; the server matches the pending names again.
+    await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片'}]];});
+    await setup2(); await confirmButton().click(); await expect(page.locator('.fi-body > .fi-error')).toBeVisible();
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: '样片'}});
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'root', newFolder: {name: '样片'}});
+    // Both built: each row takes its own project's folder.
+    await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片', projectId: P1, parentId: 'root'}, {id: 'nf-b', name: '样片', relativePath: '样片', projectId: P2, parentId: 'root'}]];});
+    await setup2(); await confirmButton().click(); await expect(page.locator('.fi-body > .fi-error')).toBeVisible();
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'nf-a'});
+    assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'nf-b'});
   });
 
   await check('photos only: no reveal option; name pieces that do not add up fall back to the plain name', async () => {

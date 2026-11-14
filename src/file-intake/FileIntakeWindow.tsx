@@ -245,15 +245,19 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   }
   // A folder named here may already exist when the batch itself failed: say so, and point the rows at it
   // so the next 收纳 uses that folder instead of asking to create it again.
-  const builtFolders = (e: unknown) => ((e as {resolvedFolders?: {id: string; name: string; relativePath: string}[]})?.resolvedFolders || []).filter(f => f && typeof f.id === 'string');
+  type BuiltFolder = {id: string; name: string; relativePath: string; projectId?: string; parentId?: string};
+  const builtFolders = (e: unknown) => ((e as {resolvedFolders?: BuiltFolder[]})?.resolvedFolders || []).filter(f => f && typeof f.id === 'string');
   const builtNote = (e: unknown) => {const f = builtFolders(e); return f.length ? '。文件夹「' + f.map(x => x.relativePath || x.name).join('」「') + '」已经建好，下次直接放进去' : '';};
+  // Only a row with proof of the same project and the same parent takes the built folder. A receipt without that
+  // proof (older service) leaves the pending folder as it is; the server matches it again on the next 收纳.
+  const sameName = (a: string, b: string) => a.normalize('NFC').toLocaleLowerCase() === b.normalize('NFC').toLocaleLowerCase();
   const adoptBuilt = (e: unknown) => {
-    const built = builtFolders(e); if (!built.length) return;
+    const built = builtFolders(e).filter(f => typeof f.projectId === 'string'); if (!built.length) return;
     setOptionsReload(n => n + 1);
     for (const r of rows) {
-      const d = r.destination; if (!d?.newFolder || d.kind !== 'video') continue;
-      const parent = d.folderId && d.folderId !== 'root' ? folderPath(d.projectId, d.folderId) + '/' : '';
-      const hit = built.find(f => (f.relativePath || f.name).normalize('NFC').toLocaleLowerCase() === (parent + d.newFolder!.name).normalize('NFC').toLocaleLowerCase());
+      const d = r.destination; if (!d?.newFolder || d.kind !== 'video' || d.scope !== 'project') continue;
+      const parent = d.folderId && d.folderId !== 'root' ? d.folderId : 'root';
+      const hit = built.find(f => f.projectId === d.projectId && (f.parentId || 'root') === parent && sameName(f.name, d.newFolder!.name));
       if (hit) setDestination([r.file.id], {...d, folderId: hit.id, newFolder: undefined});
     }
   };
