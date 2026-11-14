@@ -58,7 +58,8 @@ async function routeApi(route) {
 const drawer = () => page.getByRole('dialog', {name: '文件任务'});
 const entry = () => page.getByRole('button', {name: /^文件任务/});
 const install = () => drawer().locator('.fi-install');
-const installButton = () => install().locator(':scope > button');
+// The big install/upgrade button, or — when already up to date — the quiet 重新安装 link.
+const installButton = () => install().locator(':scope > button, .fi-reinstall');
 const state = () => install().locator('.fi-install-state');
 async function open() { if (!await drawer().count()) await entry().click(); await expect(drawer()).toBeVisible(); }
 async function close() { if (await drawer().count()) await drawer().getByRole('button', {name: '关闭文件任务', exact: true}).click(); await expect(drawer()).toHaveCount(0); }
@@ -81,6 +82,22 @@ createRoot(document.getElementById('root')).render(<><div className="app library
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   fresh(); await page.goto(origin + '/'); await expect(entry()).toBeVisible();
 
+  await check('入口状态一眼可见：需要升级时是主按钮；已是最新版只剩小字的系统设置和重新安装；未安装时是安装按钮', async () => {
+    fresh(); fixture.status.upgradeNeeded = true; await reload(); await open();
+    await expect(install().locator(':scope > p').first()).toHaveText('右键入口有新版本，点下面升级。升级后重新打开收纳窗口生效。');
+    await expect(install().locator(':scope > button')).toHaveText('升级访达入口'); await expect(install().locator(':scope > button')).toHaveClass(/fi-primary/);
+    await install().screenshot({path: path.join(evidence, 'state-upgrade.png')});
+    fresh(); await reload(); await open();
+    await expect(install().locator('.fi-install-latest')).toHaveText('已是最新版');
+    await expect(install().locator(':scope > button')).toHaveCount(0); // no big button when there is nothing to do
+    await expect(install().locator('.fi-install-help')).toContainText('菜单不出现？先打开系统设置启用「收纳素材到拾光」，仍不行再重新安装');
+    await expect(install().getByRole('button', {name: '打开系统设置', exact: true})).toBeEnabled();
+    await expect(install().getByRole('button', {name: '重新安装', exact: true})).toBeEnabled();
+    await install().screenshot({path: path.join(evidence, 'state-latest.png')});
+    fresh(); fixture.status.installed = false; await reload(); await open();
+    await expect(install().locator(':scope > button')).toHaveText('安装访达入口'); await expect(install().locator('.fi-install-latest')).toHaveCount(0);
+  });
+
   await check('快速安装：反馈在按钮正下方，成功写明还差一步；打开系统设置的成功与失败都在原处说明', async () => {
     fresh(); await reload(); await open();
     await installButton().click();
@@ -89,7 +106,8 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     const doneSteps = state().locator('.fi-install-steps li'); await expect(doneSteps).toHaveCount(4);
     for (let i = 0; i < 4; i++) await expect(doneSteps.nth(i)).toHaveAttribute('data-state', 'done');
     await expect(doneSteps.nth(1)).toContainText('准备窗口组件 · 已有，跳过'); await expect(doneSteps.nth(3)).toHaveText('已安装 · 刚刚');
-    await expect(installButton()).toHaveText('重新安装访达入口'); await expect(installButton()).toBeEnabled();
+    await expect(installButton()).toHaveText('重新安装'); await expect(installButton()).toBeEnabled();
+    await expect(install().locator('.fi-install-latest')).toHaveText('已是最新版');
     // 抽屉顶部不再出现安装进度那一行
     await expect(drawer().locator('.fi-drawer-body > p[role=status]')).toHaveCount(0);
     assert.deepEqual(posts, ['/install/job']);
@@ -154,7 +172,7 @@ createRoot(document.getElementById('root')).render(<><div className="app library
     fresh(); fixture.status.installJob = {id: 'job-interrupted', stage: 'failed', window: null, startedAt: Date.now() - 600000, finishedAt: Date.now() - 300000, message: null, error: {code: 'INSTALL_INTERRUPTED', message: '服务重启，上次安装未完成'}, previousKept: null};
     await reload(); await open(); await expect(state()).toContainText('上次安装被中断 · 5 分钟前');
     fresh(); fixture.status.installJob = {id: 'job-old', stage: 'done', window: 'skipped', startedAt: Date.now() - 3600000, finishedAt: Date.now() - 3600000, message: '早先安装', error: null, previousKept: null};
-    await reload(); await open(); await expect(state()).toHaveCount(0); await expect(installButton()).toHaveText('重新安装访达入口');
+    await reload(); await open(); await expect(state()).toHaveCount(0); await expect(installButton()).toHaveText('重新安装');
     await expect(entry().locator('.fi-install-chip')).toHaveCount(0);
   });
 
