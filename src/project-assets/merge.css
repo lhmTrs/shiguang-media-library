@@ -1,0 +1,42 @@
+/* 合并同名人物（合同 v1 · B）：全剧提示条、合并 / 撤销浮窗、卡片提示 */
+.cm-banner, .cm-done { display: flex; align-items: center; gap: 10px; margin: 8px 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
+.cm-banner { border: 1px solid var(--line, #dfe3e1); background: var(--ca-card, #fff); }
+.cm-banner > span, .cm-done > span { flex: 1; min-width: 0; line-height: 1.6; }
+.cm-banner small { display: block; color: #8a4b00; }
+.cm-banner svg, .cm-done svg { flex: none; color: var(--green, #1f6b4f); }
+.cm-done { border: 1px solid color-mix(in srgb, var(--green, #1f6b4f) 28%, transparent); background: color-mix(in srgb, var(--green, #1f6b4f) 8%, transparent); color: var(--green-ink, #164d39); }
+.cm-dialog { width: min(720px, calc(100vw - 32px)); }
+.cm-body { display: grid; gap: 12px; font-size: 13px; }
+.cm-lead { margin: 0; }
+.cm-note { margin: 0; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, #b26b00 8%, transparent); color: #6b4300; }
+.cm-members { display: grid; gap: 10px; }
+.cm-member { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line, #dfe3e1); border-radius: 12px; cursor: pointer; }
+.cm-member.is-on { border: 2px solid var(--green, #1f6b4f); background: color-mix(in srgb, var(--green, #1f6b4f) 7%, transparent); padding: 11px 13px; }
+.cm-member.is-off { opacity: .55; cursor: not-allowed; }
+.cm-member input { margin-top: 3px; }
+/* 资产页全局规则 .ca-workspace input:not([type=checkbox]):not([type=range]) 把单选也设成整行宽并加边框：这里回到本身大小，和文字同行 */
+.ca-workspace .ca-modal.cm-dialog input[type=radio], .ca-workspace .ca-modal.cm-dialog input[type=checkbox] { width: auto; min-width: 0; flex: none; margin: 0; padding: 0; border: 0; background: none; }
+.cm-conflict label > input:not([type=radio]) { width: 220px; flex: 0 1 220px; }
+.cm-member-body { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.cm-member-head { display: flex; gap: 8px; align-items: center; }
+.cm-member-body small { color: var(--muted, #5f6b66); overflow-wrap: anywhere; }
+.cm-tag { font-size: 12px; font-weight: 600; color: var(--green, #1f6b4f); }
+.cm-impact { display: grid; gap: 10px; }
+.cm-impact section, .cm-review { border: 1px solid var(--line, #dfe3e1); border-radius: 10px; padding: 10px 14px; display: grid; gap: 6px; }
+.cm-impact p { margin: 0; line-height: 1.7; }
+.cm-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cm-rows li { display: flex; justify-content: space-between; gap: 12px; }
+.cm-rows li > span:last-child { text-align: right; color: var(--muted, #3c4642); }
+.cm-warn { color: #8a4b00; }
+.cm-text { display: grid; gap: 4px; }
+.cm-text button { justify-self: start; display: inline-flex; gap: 4px; align-items: center; }
+.cm-issues { display: grid; gap: 12px; }
+.cm-conflict { border: 1px solid color-mix(in srgb, #b26b00 30%, transparent); background: color-mix(in srgb, #b26b00 5%, transparent); border-radius: 10px; padding: 12px 14px; margin: 0; display: grid; gap: 8px; min-width: 0; }
+.cm-conflict legend { font-weight: 600; padding: 0 4px; }
+.cm-conflict label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cm-conflict input[type=text], .cm-conflict input:not([type]), .cm-conflict select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line, #dfe3e1); border-radius: 6px; max-width: 220px; }
+.cm-review ul { margin: 0; padding-left: 18px; }
+.cm-review label { display: flex; gap: 8px; align-items: flex-start; }
+.cm-card-hint { display: block; margin-top: 2px; font-size: 12px; color: #8a4b00; }
+.cm-create-ask { margin: 0; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, #b26b00 8%, transparent); color: #6b4300; line-height: 1.7; }
+@media (max-width: 700px) { .cm-banner, .cm-done { flex-wrap: wrap; } }

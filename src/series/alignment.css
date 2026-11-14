@@ -19,3 +19,7 @@
 .aa-banner { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 10px 14px; border: 1px solid color-mix(in srgb, #b26b00 30%, transparent); border-radius: 10px; background: color-mix(in srgb, #b26b00 7%, transparent); font-size: 13px; }
 .aa-banner span { flex: 1; min-width: 0; }
 .aa-after { margin: 0; line-height: 1.7; color: var(--muted, #3c4642); font-size: 13px; }
+/* 资产页里（一键统一浮窗）全局规则 .ca-workspace input:not([type=checkbox]):not([type=range]) 会把单选撑成整行宽并加边框：回到本身大小 */
+/* 选择器要比它多一级（:not() 各算一级，同级时取决于样式文件加载顺序） */
+.ca-workspace .aa-decisions .aa-actions input[type=radio] { width: auto; min-width: 0; flex: none; margin: 0; padding: 0; border: 0; background: none; }
+.ca-workspace .aa-decisions .aa-map select { width: auto; }
