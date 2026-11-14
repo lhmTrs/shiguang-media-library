@@ -5,7 +5,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {canonical,digest,idOK} from '../project-assets/model.mjs';
-import {fail} from '../storyboard-video/model.mjs';
+import {usageFail as fail} from './action-journal.mjs';
 import {within} from '../fs-identity.mjs';
 import {folderName,folderIdentity,sameFolder,nameKey} from './folders.mjs';
 const run=promisify(execFile);
@@ -33,11 +33,11 @@ export class ProjectVideoFileOperations {
   const row = this.db.prepare('SELECT data_json FROM project_video_operations WHERE id=? AND project_id=?').get(requestId, id);
   if (!row) fail('OPERATION_NOT_FOUND', '未找到原文件操作', 404);
   const data = JSON.parse(row.data_json);
-  if (data.namespace === 'video-desktop-v1') fail('OPERATION_NOT_FOUND', '此编号属于视频桌面任务，请查询原桌面操作', 404);
+  if (data.namespace) fail('OPERATION_NOT_FOUND', '此编号属于视频桌面任务，请查询原桌面操作', 404);
   return { data, stored: row.data_json };
  }
  row(id,requestId){return this.readOperation(id,requestId).data;}
- save(id,requestId,data){this.db.prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=?').run(canonical(data),Date.now(),requestId,id);}
+ save(id,requestId,data){(data.admittedDb||this.db).prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=?').run(canonical(data),Date.now(),requestId,id);}
  replacePreview(id, requestId, stored, data) {
   // Both execution and abandonment replace the same durable preview exactly once.
   const result = this.db.prepare('UPDATE project_video_operations SET data_json=?,updated_at=? WHERE id=? AND project_id=? AND data_json=?')
@@ -50,8 +50,16 @@ export class ProjectVideoFileOperations {
   return{requestId,status,description:s.description,error:notStarted?'当前只有预览，执行尚未确认，请核对原请求；视频未报告移动完成':s.error,...(notStarted?{phase:'preview',errorCode:'OPERATION_NOT_STARTED'}:{}),folderId:s.resultFolderId,rolesRevision:s.roles?.revision,unboundShotIds:s.unboundShotIds||[],...(s.input?.kind==='move-videos'?{items:this.items(s,status)}:{}),canRecover:!notStarted&&s.kind!=='create-folder'&&(['unknown','failed'].includes(status))};
  }
  items(s,status){return s.input.sourceIds.map(sourceId=>{const move=s.moves.find(m=>m.sourceId===sourceId),steps=s.steps.filter(x=>x.itemId===sourceId),moved=steps.some(x=>x.status==='moved'),touched=steps.length>0;let state='not-run';if(status==='ready')state='ready';else if(status==='running')state='not-run';else if(status==='unknown'&&steps.some(x=>x.status!=='rolled-back'))state='unknown';else if(s.failedItemId===sourceId)state='failed';else if(touched)state=moved||steps.some(x=>x.status==='rolled-back')?'rolled-back':'failed';return{sourceId,status:state,destinationPath:move?.target,unboundShotIds:status==='ready'?(s.plan.sourceUnbindShots||[]).filter(x=>x.sourceIds.includes(sourceId)).map(x=>x.id):[],error:['failed','unknown'].includes(state)?s.error:undefined};});}
- roleSnapshot(id){const {revision,rejectFolderId}=this.catalog.folders.roleState(id);return{revision,rejectFolderId};}
+ roleSnapshot(id){const {revision,rejectFolderId,finalFolderId}=this.catalog.folders.roleState(id);return{revision,rejectFolderId,finalFolderId};}
  checkRoles(id,s){const current=this.roleSnapshot(id);if(s.roles?!equal(current,s.roles):current.rejectFolderId!==null)fail('REJECT_AREA_CHANGED','废片收纳处在确认后变化，请重新核对',409);}
+ assertDatabase(s){if(s.admittedDb&&s.admittedDb!==this.db||s.databaseToken&&s.databaseToken!==this.catalog.databaseToken())fail('LOCAL_INSTANCE_CHANGED','素材库实例已变化，请核对原操作',409);}
+ renderGuards(id,s){this.assertDatabase(s);const c=this.catalog,f=c.folders;if(s.folderId)f.assertMutable(id,s.folderId);const rows=f.rows(id),roles=f.roleState(id);
+  if(s.input.kind==='move-folder'&&roles.finalFolderId&&f.inSubtree(s.input.destinationFolderId,roles.finalFolderId,rows)&&f.inSubtree(roles.rejectFolderId,s.folderId,rows))fail('FOLDER_RESERVED','废片目录不能进入成片目录子树',409,{folderId:roles.finalFolderId,role:'final'});
+  const reject=s.input.kind.startsWith('move-')&&f.inRejectArea(id,s.input.destinationFolderId||'root',rows),trash=s.input.kind==='delete-folder'&&s.input.mode==='trash';
+  for(const old of s.sourceRows||[]){const source=c.videos.source(id,old.id);if(reject||trash||s.removeIds.includes(source.id))c.assertRenderUnused(source);}
+  for(const m of s.moves||[])if(m.overwrite)c.assertRenderUnusedFile(m.overwrite,s.nodes?.find(n=>n.path===m.overwrite)?.identity);
+  if(trash||reject)for(const n of s.nodes||[])if(n.kind==='file')c.assertRenderUnusedFile(n.path,n.identity);
+ }
  async snapshot(file){const root=await fs.lstat(file);if(root.isSymbolicLink())fail('SYMLINK_REJECTED','目录操作不处理符号链接，请先在访达中核对',409);const nodes=[];const visit=async p=>{const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory()&&!st.isFile())fail('UNSUPPORTED_ENTRY','目录中有链接或特殊文件，未开始操作',409);nodes.push({path:p,kind:st.isDirectory()?'directory':'file',identity:stamp(st)});if(st.isDirectory())for(const name of (await fs.readdir(p)).sort()){if(name.startsWith('.shiguang-video-'))fail('OPERATION_UNSETTLED','目录内仍有未结清操作，未开始整理',409);await visit(path.join(p,name));}};await visit(file);return nodes;}
  async unchanged(nodes){for(const n of nodes){const st=await exists(n.path);const changed=!st||st.isSymbolicLink()||(n.kind==='directory'?(!st.isDirectory()||String(st.dev)!==n.identity.dev||String(st.ino)!==n.identity.ino):!equal(stamp(st),n.identity));if(changed)fail('FILE_OPERATION_CONFLICT','文件或目录在确认后发生变化，请重新预览',409);}const dirs=nodes.filter(n=>n.kind==='directory');for(const n of dirs){const expected=nodes.filter(x=>path.dirname(x.path)===n.path).map(x=>path.basename(x.path)).sort();if(!equal((await fs.readdir(n.path)).sort(),expected))fail('FILE_OPERATION_CONFLICT','目录内容在确认后变化，请重新预览',409);}}
  async preview(id,input){
@@ -65,7 +73,9 @@ export class ProjectVideoFileOperations {
    if (data.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
    return data.plan;
   }
-  const folders=this.catalog.folders,rows=folders.rows(id),roles=this.roleSnapshot(id);
+  const folders=this.catalog.folders,rows=folders.rows(id),roles=this.roleSnapshot(id),databaseToken=this.catalog.databaseToken();
+  if(['rename-folder','move-folder','delete-folder'].includes(input.kind))folders.assertMutable(id,input.folderId);
+  if(input.kind==='move-folder'&&roles.finalFolderId&&folders.inSubtree(input.destinationFolderId,roles.finalFolderId,rows)&&folders.inSubtree(roles.rejectFolderId,input.folderId,rows))fail('FOLDER_RESERVED','废片目录不能进入成片目录子树',409,{folderId:roles.finalFolderId,role:'final'});
   const batch=input.kind==='move-videos',videoMove=batch||input.kind==='move-video',explicitUnbind=input.unbindAdoptions===true;
   if(batch&&(!Array.isArray(input.sourceIds)||input.sourceIds.length<1||input.sourceIds.length>50||input.sourceIds.some(x=>!idOK(x))||new Set(input.sourceIds).size!==input.sourceIds.length))fail('INVALID_SOURCE_IDS','请选择1至50个不重复的视频');
   if((batch||explicitUnbind)&&(!Number.isSafeInteger(input.expectedRolesRevision)||input.expectedRolesRevision!==roles.revision))fail('REJECT_AREA_CHANGED','废片收纳处版本已变化，请重新核对',409);
@@ -136,14 +146,15 @@ export class ProjectVideoFileOperations {
   const adoption=this.catalog.adoption(id),movingIds=videoMove?sourceRows.filter(v=>moves.some(m=>m.source===v.path)).map(v=>v.id):[];
   if(input.kind==='move-folder'&&folders.inRejectArea(id,input.destinationFolderId||'root',rows)&&shotUnion(adoption,sourceRows.map(v=>v.id)).length)fail('ADOPTED_FOLDER_MOVE_REJECTED','文件夹内有已采用视频，请逐项选择视频并确认解除采用',409);
   const sourceUnbindIds=videoMove&&explicitUnbind?movingIds:[],sourceUnbindShots=shotUnion(adoption,sourceUnbindIds),overwriteTargetUnbindShots=shotUnion(adoption,[...removeIds]),affected=shotUnion(adoption,[...new Set([...sourceUnbindIds,...removeIds])]);
+  this.renderGuards(id,{input,source,folderId:folder?.id,moves,nodes,sourceRows,removeIds:[...removeIds]});
   const description=videoMove?(batch?'批量移动视频':'移动视频'):input.kind==='rename-folder'?'重命名文件夹':input.kind==='move-folder'?'移动文件夹':mode==='trash'?'将文件夹及全部内容移入废纸篓':'将内容移回项目根目录后删除文件夹';
   const plan={requestId:input.requestId,description,conflicts,affectedShots:affected,sourceUnbindShots,overwriteTargetUnbindShots,willUnbindAdoptions:explicitUnbind||affected.length>0,adoptionStamp:adoption.stamp,rolesRevision:roles.revision,destinationFolderId:input.destinationFolderId||'root',files:nodes.filter(n=>n.kind==='file').length,folders:nodes.filter(n=>n.kind==='directory').length,ready:conflicts.every(c=>['rename','overwrite'].includes(c.choice))};
-  const data={args,input,plan,roles,root:root.target,source,folderId:folder?.id,nodes,parents,moves,sourceRows:sourceRows.map(s=>({id:s.id,path:s.path,identity:s.identity,revision:this.catalog.metadata(id,s).row?.revision||0})),folderRows:rows,folderStamp:digest(rows),removeIds:[...removeIds],sourceUnbindIds,strictUnbind:batch||explicitUnbind,adoptionStamp:adoption.stamp,status:'preview',description,steps:[],created:Date.now()};
+  const data={args,input,plan,roles,databaseToken,root:root.target,source,folderId:folder?.id,nodes,parents,moves,sourceRows:sourceRows.map(s=>({id:s.id,path:s.path,identity:s.identity,revision:this.catalog.metadata(id,s).row?.revision||0})),folderRows:rows,folderStamp:digest(rows),removeIds:[...removeIds],sourceUnbindIds,strictUnbind:batch||explicitUnbind,adoptionStamp:adoption.stamp,status:'preview',description,steps:[],created:Date.now()};
   plan.previewHash=digest(data);data.plan=plan;
-  this.checkRoles(id,data);
+  this.assertDatabase(data);this.checkRoles(id,data);
   const now=Date.now();this.db.prepare('INSERT INTO project_video_operations VALUES(?,?,?,?,?)').run(input.requestId,id,canonical(data),now,now);return plan;
  }
- async guard(id,s){this.catalog.project(id,true);if(s.input.kind!=='delete-folder'&&s.input.mode!==undefined)fail('INVALID_OPERATION','移动和重命名不能附带删除方式');this.checkRoles(id,s);if(s.roles?.rejectFolderId)await this.catalog.folders.resolve(id,s.roles.rejectFolderId,{write:true});if(digest(this.catalog.folders.rows(id))!==s.folderStamp)fail('FOLDER_CONFLICT','目录资料在确认后变化，请重新预览',409);for(const p of s.parents){const st=await exists(p.path);if(!st||!st.isDirectory()||st.isSymbolicLink()||!sameFolder(folderIdentity(st),p.identity)||await fs.realpath(p.path)!==p.path)fail('TARGET_CHANGED','目录位置在确认后变化，请重新预览',409);}for(const old of s.sourceRows){const current=this.catalog.assertBindableForMove(id,old.id);if(current.path!==old.path||!equal(current.identity,old.identity)||(this.catalog.metadata(id,current).row?.revision||0)!==old.revision)fail('VIDEO_CONFLICT','视频资料在确认后变化，请重新预览',409);}if(this.catalog.adoption(id).stamp!==s.adoptionStamp)fail('ADOPTION_CHANGED','采用镜号在确认后变化，请重新确认受影响镜号',409);if(s.folderId)this.catalog.folders.busy(id,s.source,s.input.requestId);for(const m of s.moves){this.catalog.folders.busyOperations(id,m.source,s.input.requestId);if(m.target)this.catalog.folders.busyOperations(id,m.target,s.input.requestId);}await this.unchanged(s.nodes);}
+ async guard(id,s){this.catalog.project(id,true);this.renderGuards(id,s);if(s.input.kind!=='delete-folder'&&s.input.mode!==undefined)fail('INVALID_OPERATION','移动和重命名不能附带删除方式');this.checkRoles(id,s);if(s.roles?.rejectFolderId)await this.catalog.folders.resolve(id,s.roles.rejectFolderId,{write:true});if(digest(this.catalog.folders.rows(id))!==s.folderStamp)fail('FOLDER_CONFLICT','目录资料在确认后变化，请重新预览',409);for(const p of s.parents){const st=await exists(p.path);if(!st||!st.isDirectory()||st.isSymbolicLink()||!sameFolder(folderIdentity(st),p.identity)||await fs.realpath(p.path)!==p.path)fail('TARGET_CHANGED','目录位置在确认后变化，请重新预览',409);}for(const old of s.sourceRows){const current=this.catalog.assertBindableForMove(id,old.id);if(current.path!==old.path||!equal(current.identity,old.identity)||(this.catalog.metadata(id,current).row?.revision||0)!==old.revision)fail('VIDEO_CONFLICT','视频资料在确认后变化，请重新预览',409);}if(this.catalog.adoption(id).stamp!==s.adoptionStamp)fail('ADOPTION_CHANGED','采用镜号在确认后变化，请重新确认受影响镜号',409);if(s.folderId)this.catalog.folders.busy(id,s.source,s.input.requestId);for(const m of s.moves){this.catalog.folders.busyOperations(id,m.source,s.input.requestId);if(m.target)this.catalog.folders.busyOperations(id,m.target,s.input.requestId);}await this.unchanged(s.nodes);}
  abandon(id, requestId) {
   this.catalog.project(id, true);
   const {data, stored} = this.readOperation(id, requestId);
@@ -169,7 +180,7 @@ export class ProjectVideoFileOperations {
   if (data.plan.affectedShots.length && input.confirmUnbind !== true) {
    fail('UNBIND_CONFIRMATION_REQUIRED', '此视频仍被镜号采用，覆盖或删除会解除关联，请确认', 409);
   }
-  const running = {...data, status:'running', instance:this.catalog.instance};
+  const running = {...data, status:'running', instance:this.catalog.instance};Object.defineProperty(running,'admittedDb',{value:this.db});
   if (!this.replacePreview(id, requestId, stored, running)) {
    const current = this.row(id, requestId);
    if (current.status === 'cancelled') fail(abandonedCode, abandonedMessage, 409);
@@ -185,9 +196,9 @@ export class ProjectVideoFileOperations {
   }
   return this.dto(requestId, running);
  }
- async step(id,requestId,s,source,target,kind='move'){const original=s.nodes.find(n=>n.path===source);if(!original)fail('FILE_OPERATION_CONFLICT','原操作未包含此来源',409);await this.unchanged(s.nodes.filter(n=>within(source,n.path)));s.steps.push({source,target,kind,status:'planned',identity:original.identity,itemId:s.currentItemId});this.save(id,requestId,s);const step=s.steps.at(-1);if(kind==='trash'){step.target=await this.trash(source);step.status='moved';this.save(id,requestId,s);return;}
+ async step(id,requestId,s,source,target,kind='move'){this.renderGuards(id,s);const original=s.nodes.find(n=>n.path===source);if(!original)fail('FILE_OPERATION_CONFLICT','原操作未包含此来源',409);await this.unchanged(s.nodes.filter(n=>within(source,n.path)));this.assertDatabase(s);s.steps.push({source,target,kind,status:'planned',identity:original.identity,itemId:s.currentItemId});this.save(id,requestId,s);const step=s.steps.at(-1);if(kind==='trash'){step.target=await this.trash(source);step.status='moved';this.save(id,requestId,s);return;}
   const st=await fs.lstat(source);if(!equal(stamp(st),original.identity))fail('SOURCE_CHANGED','原文件在执行前已变化，未移动',409);if(st.isSymbolicLink()||await fs.realpath(path.dirname(source))!==path.dirname(source)||await fs.realpath(path.dirname(target))!==path.dirname(target))fail('TARGET_CHANGED','文件位置在操作时变化',409);
-  if(st.isDirectory()){await fs.mkdir(target,{mode:0o700});step.reservation=folderIdentity(await fs.lstat(target));this.save(id,requestId,s);if((await fs.readdir(target)).length||!sameFolder(folderIdentity(await fs.lstat(target)),step.reservation))fail('TARGET_CHANGED','目标目录在操作时变化',409);await fs.rename(source,target);}
+  this.assertDatabase(s);if(st.isDirectory()){await fs.mkdir(target,{mode:0o700});step.reservation=folderIdentity(await fs.lstat(target));this.save(id,requestId,s);if((await fs.readdir(target)).length||!sameFolder(folderIdentity(await fs.lstat(target)),step.reservation))fail('TARGET_CHANGED','目标目录在操作时变化',409);await fs.rename(source,target);}
   else {await fs.link(source,target);const copied=await fs.lstat(target),after=await fs.lstat(source);if(copied.ino!==st.ino||after.ino!==st.ino||copied.dev!==st.dev||after.size!==st.size||after.mtimeMs!==st.mtimeMs)fail('SOURCE_CHANGED','移动期间文件发生变化',409);await fs.unlink(source);}
   step.status='moved';step.after=stamp(await fs.lstat(target));this.save(id,requestId,s);
  }
@@ -200,7 +211,7 @@ export class ProjectVideoFileOperations {
    for(const n of s.nodes){const file=this.mapped(s,n.path);if(!file||n.path===s.source&&s.input.kind==='delete-folder')continue;const st=await fs.lstat(file),expected=s.steps.find(x=>x.source===n.path)?.after||n.identity;if(st.isSymbolicLink()||String(st.dev)!==expected.dev||String(st.ino)!==expected.ino||n.kind==='file'&&(!st.isFile()||st.size!==expected.size||st.mtimeMs!==expected.mtimeMs||st.ctimeMs!==expected.ctimeMs))fail('SOURCE_CHANGED','原文件在整理期间发生变化，未更新原关联',409);}
    const relocated=[];for(const old of s.sourceRows){if(s.removeIds.includes(old.id))continue;const file=this.mapped(s,old.path);if(file&&file!==old.path){const meta=this.catalog.metadata(id,this.catalog.videos.source(id,old.id)).data,checked=await this.catalog.hash(file);if(!meta.sha256||checked.hash!==meta.sha256||checked.identity.dev!==old.identity.dev||checked.identity.ino!==old.identity.ino||checked.identity.size!==old.identity.size||checked.identity.mtimeMs!==old.identity.mtimeMs)fail('SOURCE_CHANGED','移动后的内容与原视频不同，未更新原关联',409);relocated.push({old,file,identity:checked.identity});}}
    const nextFolders=[];for(const row of s.folderRows){const old=path.join(s.root,...row.relativePath.split('/'));let file=this.mapped(s,old);if(old===s.source&&s.input.kind==='delete-folder')file=null;if(file!==old)nextFolders.push({row,file,identity:file?folderIdentity(await fs.lstat(file)):null});}
-   commitAttempted=true;this.catalog.videos.tx(()=>{this.catalog.project(id,true);this.checkRoles(id,s);if(digest(this.catalog.folders.rows(id))!==s.folderStamp)fail('FOLDER_CONFLICT','执行期间目录资料发生变化，操作将回退',409);if(this.catalog.adoption(id).stamp!==s.adoptionStamp)fail('ADOPTION_CHANGED','执行期间采用镜号发生变化，操作将回退',409);for(const old of s.sourceRows)if((this.catalog.metadata(id,this.catalog.videos.source(id,old.id)).row?.revision||0)!==old.revision)fail('VIDEO_CONFLICT','执行期间资料发生变化，操作将回退',409);
+   commitAttempted=true;this.catalog.videos.tx(()=>{this.catalog.project(id,true);this.renderGuards(id,s);this.checkRoles(id,s);if(digest(this.catalog.folders.rows(id))!==s.folderStamp)fail('FOLDER_CONFLICT','执行期间目录资料发生变化，操作将回退',409);if(this.catalog.adoption(id).stamp!==s.adoptionStamp)fail('ADOPTION_CHANGED','执行期间采用镜号发生变化，操作将回退',409);for(const old of s.sourceRows)if((this.catalog.metadata(id,this.catalog.videos.source(id,old.id)).row?.revision||0)!==old.revision)fail('VIDEO_CONFLICT','执行期间资料发生变化，操作将回退',409);
     this.catalog.detachSources(id,[...new Set([...(s.sourceUnbindIds||[]),...s.removeIds])]);for(const key of s.removeIds){const old=s.sourceRows.find(r=>r.id===key),step=s.steps.find(x=>x.source===old?.path||x.kind==='trash'&&old&&within(x.source,old.path));const archived=step?.target?(step.kind==='trash'?path.join(step.target,path.relative(step.source,old.path)):step.target):undefined;this.catalog.retireRecord(id,key,archived);}
     for(const item of relocated)this.catalog.relocateRecord(id,this.catalog.videos.source(id,item.old.id),item.file,item.identity);
     if(s.input.kind==='delete-folder')this.catalog.folders.clearRemovedRole(id,[s.folderId,...nextFolders.filter(x=>!x.file).map(x=>x.row.id)]);
@@ -216,7 +227,7 @@ export class ProjectVideoFileOperations {
    }
    s.error=e.message;s.status='running';s.unboundShotIds=[];delete s.resultFolderId;
    if(!s.steps.length&&!s.sourceDirectoryRemoved){s.status='failed';this.save(id,requestId,s);return this.dto(requestId,s);}try{await this.rollback(id,requestId,s);s.status='failed';}catch(rollback){s.status='unknown';s.error+='；回退未完成：'+rollback.message;}this.save(id,requestId,s);}return this.dto(requestId,s);}
- async rollback(id,requestId,s){if(s.status==='ready')fail('OPERATION_COMPLETED','已完成操作不能通过失败恢复重复执行',409);
+ async rollback(id,requestId,s){this.assertDatabase(s);if(s.status==='ready')fail('OPERATION_COMPLETED','已完成操作不能通过失败恢复重复执行',409);
   // Check the metadata BEFORE undoing bytes. A committed or later edited record
   // must not be stranded at a pathname that recovery has just removed.
   for(const old of s.sourceRows){const current=this.catalog.videos.source(id,old.id);if(current.path!==old.path||!equal(current.identity,old.identity)||(this.catalog.metadata(id,current).row?.revision||0)!==old.revision)fail('RECOVERY_CONFLICT','视频资料已提交或被后续修改，未移动回退文件',409);}

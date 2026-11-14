@@ -45,9 +45,9 @@ export class TimelineImports {
       const saved=parse(row.snapshot);
       return [row.asset_id,{name:row.name??saved.name,kind:row.kind??saved.kind}];
     }));
-    return {timelines:this.timelines(projectId).map(t=>{
+    return {projectId,timelines:this.timelines(projectId).map(t=>{
       const snapshot=parse(t.snapshot);
-      return {id:t.id,name:t.name,fps:snapshot.fps,duration:snapshot.duration??null,startTimecode:snapshot.startTimecode??null,references:snapshot.refs.map(ref=>({assetId:ref.assetId,name:assets.get(ref.assetId)?.name||ref.name,kind:assets.get(ref.assetId)?.kind||"unknown",used:ref.used,occurrences:ref.occurrences}))};
+      return {id:t.id,name:t.name,revision:t.revision,fps:snapshot.fps,duration:snapshot.duration??null,startTimecode:snapshot.startTimecode??null,warnings:snapshot.warnings??[],references:snapshot.refs.map((ref,refIndex)=>({assetId:ref.assetId,key:ref.key,retained:ref.retained??false,name:assets.get(ref.assetId)?.name||ref.name,kind:assets.get(ref.assetId)?.kind||"unknown",used:ref.used,occurrences:ref.occurrences.map((o,index)=>({...o,occurrenceId:hash([t.revision,ref.key??refIndex,index])}))}))};
     })};
   }
   decorate(projectId, row, context = this.context(projectId)) {

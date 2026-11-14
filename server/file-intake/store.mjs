@@ -130,8 +130,8 @@ export class FileIntake {
     const sharedFolder=target?.scope==='project'&&folders[target.projectId]===target.folderId;
     for(const [projectId,folderId] of Object.entries(folders))
       if(folderId!=='root'&&!await this.availableVideoFolder(projectId,folderId))folders[projectId]='root';
-    if(sharedFolder)target.folderId=folders[target.projectId];
-    else if(target?.scope==='project' && target.folderId!=='root' &&
+    if(sharedFolder&&!target.folderRole)target.folderId=folders[target.projectId];
+    else if(target?.scope==='project' && !target.folderRole && target.folderId!=='root' &&
         !await this.availableVideoFolder(target.projectId,target.folderId))target.folderId='root';
     return snapshot;
   }
@@ -167,6 +167,12 @@ export class FileIntake {
     return new IntakeNames(reservations);
   }
   async videoNameTarget(destination,{write=false}={}) {
+    if(destination.folderRole==='final'){
+      const project=this.catalog.project(destination.projectId,write),plan=await this.catalog.finalFolder.preview(project.id),state=plan.state;
+      return{project,series:this.projectSeries(project.id),folder:state.row,directory:state.target,state,finalPlan:plan,verify:async()=>{
+        const now=await this.catalog.finalFolder.preview(project.id);if(now.roles.revision!==plan.roles.revision||now.outcome!==plan.outcome||!sameDirectoryState(state,now.state))throw videoFolderChanged();
+      }};
+    }
     const project=this.catalog.project(destination.projectId,write),parentId=destination.folderId??'root';
     const name=destination.newFolder?folderName(destination.newFolder.name):null;
     if(name&&parentId!=='root'&&!uuid(parentId))throw error('INTAKE_INVALID_INPUT','请选择有效的父文件夹',400);
@@ -274,15 +280,16 @@ export class FileIntake {
   }
   async folders(projectId) {
     this.catalog.project(projectId);
-    const folders=[{id:'root',name:'项目根目录',relativePath:''}];
+    const roles=await this.catalog.finalFolder.roles(projectId);
+    const folders=[{id:'root',name:'项目根目录',relativePath:'',role:null,locked:false}];
     for(const {id} of this.catalog.folders.rows(projectId)){
       const state=await this.availableVideoFolder(projectId,id);
       if(state) {
         const {name,relativePath}=state.row;
-        folders.push({id,name,relativePath});
+        folders.push({id,name,relativePath,role:id===roles.finalFolderId?'final':id===roles.rejectFolderId?'reject':null,locked:id===roles.finalFolderId});
       }
     }
-    return {folders};
+    return {folders,folderRoles:roles};
   }
   async confirm(handoffId,input,{sessionId}={}) {
     if(input&&Object.hasOwn(input,'prompt')&&input.version!==2)
@@ -361,7 +368,7 @@ export class FileIntake {
     const targets=new Map(input.targets.map(t=>[t.fileId,t])),files=new Map(h.files.map(f=>[f.id,f]));
     for(const id of ids)checkChoice(files.get(id),targets.get(id));
     const children=new Map(),preflight=new Map(),created=new Map(),confirmedParents=new Map();
-    if([...targets.values()].some(t=>t.destination.newFolder)){
+    if([...targets.values()].some(t=>t.destination.newFolder||t.destination.folderRole==='final')){
       for(const id of ids){
         const {destination,nameMode}=targets.get(id),f=files.get(id);
         const target=await this.planningTarget(destination,children,{write:true});
@@ -381,6 +388,12 @@ export class FileIntake {
       resolvedFolders.push({...result.folder,projectId:child.project.id,parentId:child.parentId});
       confirmedParents.set(parentKey,result.parent);
     }
+    const finalResults=new Map();
+    for(const [fileId,ctx] of preflight)if(ctx.finalPlan&&!finalResults.has(ctx.project.id)){
+      await ctx.verify();
+      const result=await this.catalog.finalFolder.ensureResolved(ctx.project.id,{requestId:folderRequestId(input.requestId,ctx.project.id,'root','final-role'),expectedRolesRevision:ctx.finalPlan.roles.revision});
+      finalResults.set(ctx.project.id,result);resolvedFolders.push({...result.folder,projectId:ctx.project.id,outcome:result.outcome});
+    }
     const finalPlanner=preflight.size?this.namePlanner():planner;
     for(const id of ids){
       const f=files.get(id),{destination,nameMode}=structuredClone(targets.get(id));
@@ -388,7 +401,7 @@ export class FileIntake {
       if(destination.scope==='project'&&destination.kind==='video'){
         const project=this.catalog.project(destination.projectId,true);
         const child=created.get(preflight.get(id)?.child);
-        resolvedFolder=child?.folder;
+        resolvedFolder=destination.folderRole==='final'?finalResults.get(project.id)?.folder:child?.folder;
         const folderId=resolvedFolder?.id??destination.folderId??'root';
         target=await this.prepareVideoFolder(project.id,folderId);
         if(child&&!sameDirectoryState(child.state,target))throw videoFolderChanged();
@@ -400,7 +413,7 @@ export class FileIntake {
         label=target.label||({photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'}[destination.kind]+' / '+(destination.directory||'待确认'));
         ctx={assetName:target.assetName,verify:()=>this.generic.current(target)};
       }
-      const item={...f,destination,...(resolvedFolder?{resolvedFolder}:{}),nameMode,target,destinationLabel:label,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0};
+      const item={...f,destination,...(resolvedFolder?{resolvedFolder}:{}),...(destination.folderRole==='final'?{rolesRevision:this.catalog.folders.roleState(destination.projectId).revision}:{}),nameMode,target,destinationLabel:label,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0};
       items.push(item);
       plans.push({destination,nameMode,directory:target.target,...ctx});
       if(!wantsStandard(destination,nameMode))finalPlanner.reserve(target.target,destination.fileName??f.name);
@@ -412,7 +425,7 @@ export class FileIntake {
     await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);
     if(singleVideo&&sessionId)this.receiptSessions.set(b.id,sessionId);
     if(b.revealWhenDone)this.liveReveal.add(b.id);
-    await this.rememberTargets(items.map(i=>i.resolvedFolder?{...i.destination,folderId:i.resolvedFolder.id}:i.destination),{
+    await this.rememberTargets(items.map(i=>i.resolvedFolder?{...i.destination,...(i.destination.folderRole?{}:{folderId:i.resolvedFolder.id})}:i.destination),{
       mode:input.mode,standardNames:input.standardNames,revealWhenDone:singleVideo?revealWhenDone:undefined,
     });
     this.kick();return this.dto(b);
@@ -434,6 +447,7 @@ export class FileIntake {
   }
   async verifyDestination(b,i) {
     const {catalog,projectId,target,folderId}=this.context(b,i);
+    if(i.destination?.folderRole==='final'){const roles=await this.catalog.finalFolder.roles(projectId);if(roles.finalFolderId!==folderId||roles.finalState!=='ready'||roles.revision!==i.rolesRevision)throw error('FOLDER_ROLES_CONFLICT','成片目标在确认后已变化');}
     this.assertLibrary(b);
     try{
       if(catalog===this.catalog){

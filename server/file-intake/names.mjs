@@ -15,6 +15,8 @@ export function checkChoice(file, {destination:d,nameMode}={}) {
   if(d.fileName!==undefined&&(typeof d.fileName!=='string'||path.extname(d.fileName).toLowerCase()!==path.extname(file.name).toLowerCase()))
     throw error('INTAKE_INVALID_INPUT','只可修改副本名称，请保留原扩展名',400);
   if(d.fileName!==undefined)validName(d.fileName);
+  if(d.folderRole!==undefined&&(d.kind!=='video'||d.scope!=='project'||d.folderRole!=='final'||d.folderId!==undefined||d.newFolder!==undefined))
+    throw error('INTAKE_INVALID_INPUT','成片逻辑目标与实体文件夹/新建文件夹互斥',400);
   if(d.newFolder!==undefined){
     if(d.kind!=='video'||d.scope!=='project'||!d.newFolder||Object.keys(d.newFolder).join(',')!=='name')
       throw error('INTAKE_INVALID_INPUT','仅项目视频可在选定目录下新建一个文件夹',400);

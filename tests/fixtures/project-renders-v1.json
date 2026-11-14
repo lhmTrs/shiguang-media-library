@@ -1,0 +1,2333 @@
+{
+  "contract": "PROJECT-USAGE-RENDER",
+  "contractVersion": 1,
+  "state": "DESIGN_FROZEN_NOT_IMPLEMENTED",
+  "synthetic": true,
+  "baseline": "7a70fed4bfc2ee8e8e3a5881bc74ad22683ff218",
+  "notes": [
+    "仅冻结mock样例，不代表任一新增接口已实现或已开工。",
+    "所有ID、时间、路径、名称、参数均为合成；禁止将样例写进现用库。",
+    "/api/projects/.../render?schema=2为新固定响应；默认GET保留旧读结构。",
+    "使用请求status而非HTTP200推断操作成败。",
+    "folders-not-created仅为现有大响应的相关字段投影，不能用来完整替代原API。",
+    "每个HTTP场景各自独立前置，不是顺序执行同一数据库；preconditions只供mock，不是请求字段。"
+  ],
+  "ids": {
+    "projectId": "10000000-0000-4000-8000-000000000001",
+    "timelineId": "10000000-0000-4000-8000-000000000002",
+    "finalFolderId": "10000000-0000-4000-8000-000000000003",
+    "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+    "sourceId": "10000000-0000-4000-8000-00000000000a",
+    "timelineRevision": "10000000-0000-4000-8000-000000000032"
+  },
+  "enums": {
+    "availability": [
+      null,
+      "available",
+      "missing",
+      "removed",
+      "unavailable",
+      "untrusted"
+    ],
+    "verification": [
+      "unchecked",
+      "verified",
+      "needs_verification",
+      "content_changed"
+    ],
+    "operationStatus": [
+      "checking",
+      "running",
+      "completed",
+      "failed",
+      "unknown"
+    ],
+    "finalState": [
+      "not_created",
+      "ready",
+      "needs_review"
+    ]
+  },
+  "cases": [
+    {
+      "id": "render-unlinked",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": null,
+          "sourceId": null,
+          "name": null,
+          "folder": null,
+          "path": null,
+          "offset": 0,
+          "revision": 0,
+          "updatedAt": null,
+          "sourceRevision": null,
+          "linkedSourceRevision": null,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": null,
+          "availability": null,
+          "verification": {
+            "state": "unchecked",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": null,
+            "canPlay": false,
+            "reasonCode": "RENDER_NOT_LINKED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "not_linked",
+            "canSynchronize": false
+          },
+          "video": null
+        }
+      },
+      "note": "无行时revision=0；GET无副作用。"
+    },
+    {
+      "id": "render-cleared-tombstone",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": null,
+          "sourceId": null,
+          "name": null,
+          "folder": null,
+          "path": null,
+          "offset": 0,
+          "revision": 8,
+          "updatedAt": 1794700801000,
+          "sourceRevision": null,
+          "linkedSourceRevision": null,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": null,
+          "availability": null,
+          "verification": {
+            "state": "unchecked",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": null,
+            "canPlay": false,
+            "reasonCode": "RENDER_NOT_LINKED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "not_linked",
+            "canSynchronize": false
+          },
+          "video": null
+        }
+      },
+      "note": "解除后保留revision=8，避免ABA；旧默认GET仍返回null。"
+    },
+    {
+      "id": "render-ready",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "available",
+          "verification": {
+            "state": "verified",
+            "match": "file",
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": true,
+            "reasonCode": null,
+            "mediaUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+          },
+          "sync": {
+            "state": "aligned",
+            "canSynchronize": true
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-missing",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "missing",
+          "verification": {
+            "state": "verified",
+            "match": "file",
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": false,
+            "reasonCode": "RENDER_SOURCE_MISSING",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "source_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-removed",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "removed",
+          "verification": {
+            "state": "verified",
+            "match": "file",
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": false,
+            "reasonCode": "RENDER_SOURCE_REMOVED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "source_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-untrusted",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "untrusted",
+          "verification": {
+            "state": "unchecked",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": false,
+            "reasonCode": "RENDER_SOURCE_UNTRUSTED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "source_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-needs-review",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "available",
+          "verification": {
+            "state": "needs_verification",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": false,
+            "reasonCode": "RENDER_SOURCE_REVIEW_REQUIRED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "source_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-content-changed",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "available",
+          "verification": {
+            "state": "content_changed",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": false,
+            "reasonCode": "RENDER_SOURCE_CHANGED",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "source_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-timeline-changed",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "project-video",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "name": "合成S01E01_成片_001.mp4",
+          "folder": {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "parentId": "root",
+            "name": "成片",
+            "relativePath": "成片",
+            "role": "final",
+            "locked": true,
+            "available": true
+          },
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": 5,
+          "linkedSourceRevision": 5,
+          "timelineRevision": "10000000-0000-4000-8000-000000000033",
+          "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+          "availability": "available",
+          "verification": {
+            "state": "verified",
+            "match": "file",
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": true,
+            "canPlay": true,
+            "reasonCode": null,
+            "mediaUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+          },
+          "sync": {
+            "state": "timeline_changed",
+            "canSynchronize": false
+          },
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "durationMs": 60000,
+            "bytes": 12582912
+          }
+        }
+      },
+      "note": "允许查看视频；禁止把当前XML的高亮当成已确认同步。"
+    },
+    {
+      "id": "render-legacy-ready",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "legacy-path",
+          "sourceId": null,
+          "name": "旧成片.mp4",
+          "folder": null,
+          "path": "/synthetic/legacy/旧成片.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": null,
+          "linkedSourceRevision": null,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": null,
+          "availability": "available",
+          "verification": {
+            "state": "verified",
+            "match": "legacy_stat",
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": null,
+            "canPlay": true,
+            "reasonCode": null,
+            "mediaUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+          },
+          "sync": {
+            "state": "legacy_unverified",
+            "canSynchronize": false
+          },
+          "video": null
+        }
+      },
+      "note": "旧的已有关联仅保留受原身份校验约束的读取；不是新选片候选，不自动迁移。"
+    },
+    {
+      "id": "render-legacy-missing",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render?schema=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 2,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "link": "legacy-path",
+          "sourceId": null,
+          "name": "旧成片.mp4",
+          "folder": null,
+          "path": "/synthetic/legacy/旧成片.mp4",
+          "offset": 3,
+          "revision": 7,
+          "updatedAt": 1794700800000,
+          "sourceRevision": null,
+          "linkedSourceRevision": null,
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "linkedTimelineRevision": null,
+          "availability": "missing",
+          "verification": {
+            "state": "needs_verification",
+            "match": null,
+            "metadataChanged": false
+          },
+          "playback": {
+            "supported": null,
+            "canPlay": false,
+            "reasonCode": "RENDER_LEGACY_PATH_MISSING",
+            "mediaUrl": null
+          },
+          "sync": {
+            "state": "legacy_unverified",
+            "canSynchronize": false
+          },
+          "video": null
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "render-v1-compat-ready",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+          "offset": 3,
+          "updatedAt": 1794700800000
+        }
+      },
+      "note": "迁移期默认GET保留旧读结构；新前端一律schema=2。"
+    },
+    {
+      "id": "render-v1-compat-unlinked",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": null
+      },
+      "note": "包括已解除的tombstone，默认旧GET仍为null。"
+    },
+    {
+      "id": "render-sources",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/sources?page=1&pageSize=50"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "timelineRevision": "10000000-0000-4000-8000-000000000032",
+          "items": [
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000a",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "合成S01E01_成片_001.mp4",
+              "fileName": "合成S01E01_成片_001.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": true,
+              "disabledReasons": [],
+              "previewUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/videos/10000000-0000-4000-8000-00000000000a/media"
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000b",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "不可预览.mov",
+              "fileName": "不可预览.mov",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": "prores",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": false,
+                "reasonCode": "RENDER_CODEC_UNSUPPORTED"
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_CODEC_UNSUPPORTED",
+                  "message": "当前网页播放器不支持此编码"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000c",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "编码待确认.mp4",
+              "fileName": "编码待确认.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": null,
+              "width": null,
+              "height": null,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": null,
+                "reasonCode": "RENDER_INFO_REQUIRED"
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_INFO_REQUIRED",
+                  "message": "先刷新视频信息"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000d",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "废片候选.mp4",
+              "fileName": "废片候选.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000005",
+                "parentId": "root",
+                "name": "废片",
+                "relativePath": "废片",
+                "role": "reject",
+                "locked": false,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": true,
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_IN_REJECT_AREA",
+                  "message": "在废片收纳处，先移回项目里"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000e",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "缺失候选.mp4",
+              "fileName": "缺失候选.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000004",
+                "parentId": "root",
+                "name": "参考视频",
+                "relativePath": "参考视频",
+                "role": null,
+                "locked": false,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "missing",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_SOURCE_MISSING",
+                  "message": "视频文件已移动或丢失"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-00000000000f",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "待升级旧视频.mp4",
+              "fileName": "待升级旧视频.mp4",
+              "sourceRevision": 5,
+              "folder": null,
+              "managed": false,
+              "inRejectArea": false,
+              "availability": "untrusted",
+              "verification": {
+                "state": "unchecked",
+                "match": null,
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_SOURCE_UNTRUSTED",
+                  "message": "先升级或重新定位为本项目托管视频"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-000000000010",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "文件状态待核验.mp4",
+              "fileName": "文件状态待核验.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "needs_verification",
+                "match": null,
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": false,
+              "disabledReasons": [
+                {
+                  "code": "RENDER_SOURCE_REVIEW_REQUIRED",
+                  "message": "文件状态变化，先核对当前内容"
+                }
+              ],
+              "previewUrl": null
+            },
+            {
+              "sourceId": "10000000-0000-4000-8000-000000000011",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "普通目录可用.mp4",
+              "fileName": "普通目录可用.mp4",
+              "sourceRevision": 5,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000004",
+                "parentId": "root",
+                "name": "参考视频",
+                "relativePath": "参考视频",
+                "role": null,
+                "locked": false,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "unchecked",
+                "match": null,
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": true,
+              "disabledReasons": [],
+              "previewUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/videos/10000000-0000-4000-8000-000000000011/media"
+            }
+          ],
+          "total": 8,
+          "page": 1,
+          "pages": 1,
+          "pageSize": 50,
+          "folders": [
+            {
+              "id": "10000000-0000-4000-8000-000000000003",
+              "parentId": "root",
+              "name": "成片",
+              "relativePath": "成片",
+              "role": "final",
+              "locked": true,
+              "available": true
+            },
+            {
+              "id": "10000000-0000-4000-8000-000000000004",
+              "parentId": "root",
+              "name": "参考视频",
+              "relativePath": "参考视频",
+              "role": null,
+              "locked": false,
+              "available": true
+            },
+            {
+              "id": "10000000-0000-4000-8000-000000000005",
+              "parentId": "root",
+              "name": "废片",
+              "relativePath": "废片",
+              "role": "reject",
+              "locked": false,
+              "available": true
+            }
+          ],
+          "folderRoles": {
+            "revision": 4,
+            "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+            "rejectVideoCount": 1,
+            "needsReview": false,
+            "finalFolderId": "10000000-0000-4000-8000-000000000003",
+            "finalState": "ready",
+            "finalErrorCode": null
+          }
+        }
+      },
+      "note": "includeRejected语义固定为包含并置灰；已移除记录不作为新候选。unchecked且文件/授权轻量条件正常可选，POST仍必须正式核验。"
+    },
+    {
+      "id": "link-completed",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000064",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000064",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "action": "render-link",
+          "status": "completed",
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000064",
+          "result": {
+            "render": {
+              "schemaVersion": 2,
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "timelineId": "10000000-0000-4000-8000-000000000002",
+              "link": "project-video",
+              "sourceId": "10000000-0000-4000-8000-00000000000a",
+              "name": "合成S01E01_成片_001.mp4",
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "path": "/synthetic/shiguang/video/episode/成片/合成S01E01_成片_001.mp4",
+              "offset": 3,
+              "revision": 7,
+              "updatedAt": 1794700800000,
+              "sourceRevision": 5,
+              "linkedSourceRevision": 5,
+              "timelineRevision": "10000000-0000-4000-8000-000000000032",
+              "linkedTimelineRevision": "10000000-0000-4000-8000-000000000032",
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "playback": {
+                "supported": true,
+                "canPlay": true,
+                "reasonCode": null,
+                "mediaUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+              },
+              "sync": {
+                "state": "aligned",
+                "canSynchronize": true
+              },
+              "video": {
+                "codec": "h264",
+                "width": 1920,
+                "height": 1080,
+                "durationMs": 60000,
+                "bytes": 12582912
+              }
+            }
+          },
+          "error": null
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "link-checking",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000065",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000065",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "action": "render-link",
+          "status": "checking",
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000065",
+          "result": null,
+          "error": null
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "link-terminal-failed",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000066"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000066",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "action": "render-link",
+          "status": "failed",
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000066",
+          "result": null,
+          "error": {
+            "code": "RENDER_CONFLICT",
+            "message": "成片关联已被其他操作更新，请重新读取",
+            "error": "成片关联已被其他操作更新，请重新读取",
+            "details": {
+              "currentRevision": 8
+            }
+          }
+        }
+      },
+      "note": "HTTP200不是成功；必须读取status=failed及error。"
+    },
+    {
+      "id": "link-terminal-unknown",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000067"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000067",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "action": "render-link",
+          "status": "unknown",
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000067",
+          "result": null,
+          "error": {
+            "code": "RENDER_OPERATION_UNSETTLED",
+            "message": "原请求结果尚未核清，请查询原请求",
+            "error": "原请求结果尚未核清，请查询原请求",
+            "details": {}
+          }
+        }
+      },
+      "note": "不等于失败，禁止换requestId自动重发。"
+    },
+    {
+      "id": "unlink-completed",
+      "request": {
+        "method": "DELETE",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000068",
+          "expectedRevision": 7
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000068",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": "10000000-0000-4000-8000-000000000002",
+          "action": "render-unlink",
+          "status": "completed",
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000068",
+          "result": {
+            "render": {
+              "schemaVersion": 2,
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "timelineId": "10000000-0000-4000-8000-000000000002",
+              "link": null,
+              "sourceId": null,
+              "name": null,
+              "folder": null,
+              "path": null,
+              "offset": 0,
+              "revision": 8,
+              "updatedAt": 1794700801000,
+              "sourceRevision": null,
+              "linkedSourceRevision": null,
+              "timelineRevision": "10000000-0000-4000-8000-000000000032",
+              "linkedTimelineRevision": null,
+              "availability": null,
+              "verification": {
+                "state": "unchecked",
+                "match": null,
+                "metadataChanged": false
+              },
+              "playback": {
+                "supported": null,
+                "canPlay": false,
+                "reasonCode": "RENDER_NOT_LINKED",
+                "mediaUrl": null
+              },
+              "sync": {
+                "state": "not_linked",
+                "canSynchronize": false
+              },
+              "video": null
+            }
+          },
+          "error": null
+        }
+      },
+      "note": "只解除引用；不删除文件和项目视频记录。"
+    },
+    {
+      "id": "reject-prores",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000069",
+          "sourceId": "10000000-0000-4000-8000-00000000000b",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 415,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_CODEC_UNSUPPORTED",
+          "message": "当前网页播放器不支持此编码",
+          "error": "当前网页播放器不支持此编码",
+          "details": {
+            "sourceId": "10000000-0000-4000-8000-00000000000b",
+            "codec": "prores",
+            "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000069"
+          },
+          "requestId": "10000000-0000-4000-8000-000000000069",
+          "accepted": true,
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-000000000069"
+        }
+      },
+      "note": "语义拒绝已记可查询failed回执；accepted=true只表示请求回执已登记。"
+    },
+    {
+      "id": "reject-unknown-codec",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006a",
+          "sourceId": "10000000-0000-4000-8000-00000000000c",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_INFO_REQUIRED",
+          "message": "请先刷新视频信息",
+          "error": "请先刷新视频信息",
+          "details": {
+            "sourceId": "10000000-0000-4000-8000-00000000000c",
+            "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006a"
+          },
+          "requestId": "10000000-0000-4000-8000-00000000006a",
+          "accepted": true,
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006a"
+        }
+      },
+      "note": "语义拒绝已记可查询failed回执；accepted=true只表示请求回执已登记。"
+    },
+    {
+      "id": "reject-reject-area",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006b",
+          "sourceId": "10000000-0000-4000-8000-00000000000d",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_IN_REJECT_AREA",
+          "message": "在废片收纳处，先移回项目里",
+          "error": "在废片收纳处，先移回项目里",
+          "details": {
+            "sourceId": "10000000-0000-4000-8000-00000000000d",
+            "folderId": "10000000-0000-4000-8000-000000000005",
+            "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006b"
+          },
+          "requestId": "10000000-0000-4000-8000-00000000006b",
+          "accepted": true,
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006b"
+        }
+      },
+      "note": "语义拒绝已记可查询failed回执；accepted=true只表示请求回执已登记。"
+    },
+    {
+      "id": "reject-render-conflict",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006c",
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_CONFLICT",
+          "message": "成片关联已变化",
+          "error": "成片关联已变化",
+          "details": {
+            "sourceId": "10000000-0000-4000-8000-00000000000a",
+            "currentRevision": 8,
+            "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006c"
+          },
+          "requestId": "10000000-0000-4000-8000-00000000006c",
+          "accepted": true,
+          "statusUrl": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/requests/10000000-0000-4000-8000-00000000006c"
+        }
+      },
+      "note": "语义拒绝已记可查询failed回执；accepted=true只表示请求回执已登记。"
+    },
+    {
+      "id": "reject-new-path",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006d",
+          "path": "/synthetic/arbitrary.mp4",
+          "offset": 0
+        }
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_PATH_NOT_ALLOWED",
+          "message": "请从本项目视频中选择成片",
+          "error": "请从本项目视频中选择成片",
+          "details": {},
+          "requestId": "10000000-0000-4000-8000-00000000006d",
+          "accepted": false
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "reject-legacy-choose",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/choose",
+        "body": {}
+      },
+      "response": {
+        "status": 410,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_LEGACY_SELECTION_DISABLED",
+          "message": "请先将视频导入项目，再选择成片",
+          "error": "请先将视频导入项目，再选择成片",
+          "details": {}
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "reject-other-project",
+      "request": {
+        "method": "POST",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006e",
+          "sourceId": "10000000-0000-4000-8000-0000000003e7",
+          "offset": 3,
+          "expectedRevision": 6,
+          "expectedSourceRevision": 5,
+          "expectedTimelineRevision": "10000000-0000-4000-8000-000000000032"
+        }
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_SOURCE_NOT_FOUND",
+          "message": "未找到本项目的视频来源",
+          "error": "未找到本项目的视频来源",
+          "details": {},
+          "requestId": "10000000-0000-4000-8000-00000000006e",
+          "accepted": false
+        }
+      },
+      "note": "不泄露其它项目的名称、路径或状态。"
+    },
+    {
+      "id": "media-structured-error",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_SOURCE_MISSING",
+          "message": "成片视频文件已移动或丢失",
+          "error": "成片视频文件已移动或丢失",
+          "details": {
+            "sourceId": "10000000-0000-4000-8000-00000000000a"
+          }
+        }
+      },
+      "note": "仅流头未发出时为JSON；<video>.onError本身读不到这个JSON。"
+    },
+    {
+      "id": "media-legacy-missing",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timelines/10000000-0000-4000-8000-000000000002/render/media?renderRevision=7"
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_LEGACY_PATH_MISSING",
+          "message": "旧成片路径已失效",
+          "error": "旧成片路径已失效",
+          "details": {
+            "path": "/synthetic/legacy/旧成片.mp4"
+          }
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "folders-not-created",
+      "request": {
+        "method": "GET",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "project": {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "name": "合成第1集"
+          },
+          "folders": [
+            {
+              "id": "10000000-0000-4000-8000-000000000004",
+              "parentId": "root",
+              "name": "参考视频",
+              "relativePath": "参考视频",
+              "role": null,
+              "locked": false,
+              "available": true
+            },
+            {
+              "id": "10000000-0000-4000-8000-000000000005",
+              "parentId": "root",
+              "name": "废片",
+              "relativePath": "废片",
+              "role": "reject",
+              "locked": false,
+              "available": true
+            }
+          ],
+          "folderRoles": {
+            "revision": 3,
+            "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+            "rejectVideoCount": 1,
+            "needsReview": false,
+            "finalFolderId": null,
+            "finalState": "not_created",
+            "finalErrorCode": null
+          }
+        }
+      },
+      "note": "这是原项目视频GET的相关字段投影，非完整原接口响应；不得因此建目录。"
+    },
+    {
+      "id": "ensure-created",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-00000000006f",
+          "expectedRolesRevision": 3
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-00000000006f",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "final-folder-ensure",
+          "status": "completed",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-00000000006f",
+          "result": {
+            "outcome": "created",
+            "folder": {
+              "id": "10000000-0000-4000-8000-000000000003",
+              "parentId": "root",
+              "name": "成片",
+              "relativePath": "成片",
+              "role": "final",
+              "locked": true,
+              "available": true
+            },
+            "folderRoles": {
+              "revision": 4,
+              "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+              "rejectVideoCount": 1,
+              "needsReview": false,
+              "finalFolderId": "10000000-0000-4000-8000-000000000003",
+              "finalState": "ready",
+              "finalErrorCode": null
+            },
+            "created": true,
+            "adopted": false,
+            "contentsMoved": false
+          },
+          "error": null
+        }
+      },
+      "note": "",
+      "preconditions": {
+        "sameNameEntry": null,
+        "finalFolderId": null,
+        "rolesRevision": 3
+      }
+    },
+    {
+      "id": "ensure-adopted",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000070",
+          "expectedRolesRevision": 3
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000070",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "final-folder-ensure",
+          "status": "completed",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000070",
+          "result": {
+            "outcome": "adopted",
+            "folder": {
+              "id": "10000000-0000-4000-8000-000000000003",
+              "parentId": "root",
+              "name": "成片",
+              "relativePath": "成片",
+              "role": "final",
+              "locked": true,
+              "available": true
+            },
+            "folderRoles": {
+              "revision": 4,
+              "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+              "rejectVideoCount": 1,
+              "needsReview": false,
+              "finalFolderId": "10000000-0000-4000-8000-000000000003",
+              "finalState": "ready",
+              "finalErrorCode": null
+            },
+            "created": false,
+            "adopted": true,
+            "contentsMoved": false
+          },
+          "error": null
+        }
+      },
+      "note": "已存在且可核验的普通根级同名目录自动接管；无确认弹框；首次用requestId去重提示。",
+      "preconditions": {
+        "registeredOrdinaryRootFolder": {
+          "id": "10000000-0000-4000-8000-000000000003",
+          "name": "成片",
+          "role": null,
+          "locked": false,
+          "ordinaryDirectory": true,
+          "sameVerifiedIdentity": true,
+          "inRejectArea": false
+        },
+        "finalFolderId": null,
+        "rolesRevision": 3
+      }
+    },
+    {
+      "id": "ensure-existing",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000071",
+          "expectedRolesRevision": 4
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000071",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "final-folder-ensure",
+          "status": "completed",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000071",
+          "result": {
+            "outcome": "existing",
+            "folder": {
+              "id": "10000000-0000-4000-8000-000000000003",
+              "parentId": "root",
+              "name": "成片",
+              "relativePath": "成片",
+              "role": "final",
+              "locked": true,
+              "available": true
+            },
+            "folderRoles": {
+              "revision": 4,
+              "rejectFolderId": "10000000-0000-4000-8000-000000000005",
+              "rejectVideoCount": 1,
+              "needsReview": false,
+              "finalFolderId": "10000000-0000-4000-8000-000000000003",
+              "finalState": "ready",
+              "finalErrorCode": null
+            },
+            "created": false,
+            "adopted": false,
+            "contentsMoved": false
+          },
+          "error": null
+        }
+      },
+      "note": "",
+      "preconditions": {
+        "registeredValidFinalRole": true,
+        "rolesRevision": 4
+      }
+    },
+    {
+      "id": "ensure-checking",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000072",
+          "expectedRolesRevision": 3
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000072",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "final-folder-ensure",
+          "status": "checking",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000072",
+          "result": null,
+          "error": null
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "ensure-unknown",
+      "request": {
+        "method": "GET",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000073"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000073",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "final-folder-ensure",
+          "status": "unknown",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000073",
+          "result": {
+            "created": null,
+            "adopted": null,
+            "contentsMoved": false
+          },
+          "error": {
+            "code": "FINAL_FOLDER_OPERATION_UNSETTLED",
+            "message": "原目录操作结果尚未核清，请查询原请求",
+            "error": "原目录操作结果尚未核清，请查询原请求",
+            "details": {}
+          }
+        }
+      },
+      "note": "不得把created/adopted未知写false，也不得自动再mkdir。"
+    },
+    {
+      "id": "ensure-unsafe-name",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000074",
+          "expectedRolesRevision": 4
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "FINAL_FOLDER_NAME_CONFLICT",
+          "message": "同名位置不是可接管的普通文件夹",
+          "error": "同名位置不是可接管的普通文件夹",
+          "details": {
+            "conflictKind": "symbolic-link",
+            "canAdopt": false,
+            "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000074"
+          },
+          "requestId": "10000000-0000-4000-8000-000000000074",
+          "accepted": true,
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000074"
+        }
+      },
+      "note": "v1不自动修复已登记角色。",
+      "preconditions": {
+        "finalFolderId": null,
+        "rolesRevision": 4,
+        "sameNameEntryType": "symbolic-link"
+      }
+    },
+    {
+      "id": "ensure-existing-role-damaged",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/folders/final/ensure",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000075",
+          "expectedRolesRevision": 4
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "FINAL_FOLDER_NEEDS_REVIEW",
+          "message": "已登记的成片文件夹位置或身份发生变化，请先核对",
+          "error": "已登记的成片文件夹位置或身份发生变化，请先核对",
+          "details": {
+            "folderId": "10000000-0000-4000-8000-000000000003",
+            "state": "needs_review",
+            "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000075"
+          },
+          "requestId": "10000000-0000-4000-8000-000000000075",
+          "accepted": true,
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000075"
+        }
+      },
+      "note": "v1不自动修复已登记角色。",
+      "preconditions": {
+        "finalFolderId": "10000000-0000-4000-8000-000000000003",
+        "rolesRevision": 4,
+        "finalState": "needs_review"
+      }
+    },
+    {
+      "id": "info-refresh-checking",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/videos/10000000-0000-4000-8000-00000000000c/info/refresh",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000076",
+          "expectedRevision": 5
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000076",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "video-info-refresh",
+          "status": "checking",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000076",
+          "result": null,
+          "error": null
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "info-refresh-completed",
+      "request": {
+        "method": "GET",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000076"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "schemaVersion": 1,
+          "requestId": "10000000-0000-4000-8000-000000000076",
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelineId": null,
+          "action": "video-info-refresh",
+          "status": "completed",
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000076",
+          "result": {
+            "source": {
+              "sourceId": "10000000-0000-4000-8000-00000000000c",
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "name": "编码待确认.mp4",
+              "fileName": "编码待确认.mp4",
+              "sourceRevision": 6,
+              "folder": {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "parentId": "root",
+                "name": "成片",
+                "relativePath": "成片",
+                "role": "final",
+                "locked": true,
+                "available": true
+              },
+              "managed": true,
+              "inRejectArea": false,
+              "availability": "available",
+              "verification": {
+                "state": "verified",
+                "match": "file",
+                "metadataChanged": false
+              },
+              "codec": "h264",
+              "width": 1920,
+              "height": 1080,
+              "durationMs": 60000,
+              "bytes": 12582912,
+              "playback": {
+                "supported": true,
+                "reasonCode": null
+              },
+              "selectable": true,
+              "disabledReasons": [],
+              "previewUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/videos/10000000-0000-4000-8000-00000000000c/media"
+            }
+          },
+          "error": null
+        }
+      },
+      "note": "明确刷新可做单文件有界ffprobe，不能据此接受不同内容。"
+    },
+    {
+      "id": "info-refresh-unavailable",
+      "request": {
+        "method": "POST",
+        "url": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/videos/10000000-0000-4000-8000-00000000000c/info/refresh",
+        "body": {
+          "requestId": "10000000-0000-4000-8000-000000000077",
+          "expectedRevision": 5
+        }
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "code": "RENDER_INFO_UNAVAILABLE",
+          "message": "视频信息暂时无法确认，请核对原请求后再处理",
+          "error": "视频信息暂时无法确认，请核对原请求后再处理",
+          "details": {
+            "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000077"
+          },
+          "requestId": "10000000-0000-4000-8000-000000000077",
+          "accepted": true,
+          "statusUrl": "/api/project-videos/projects/10000000-0000-4000-8000-000000000001/operations/10000000-0000-4000-8000-000000000077"
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "overview-ready",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timeline-overview"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelines": [
+            {
+              "id": "10000000-0000-4000-8000-000000000002",
+              "name": "合成剪辑时间线",
+              "revision": "10000000-0000-4000-8000-000000000032",
+              "fps": 25,
+              "duration": 57,
+              "startTimecode": "01:00:00:00",
+              "warnings": [
+                "时间线引用不等于最终成片可听；轨道混音、效果和嵌套内容需要人工核对。"
+              ],
+              "references": [
+                {
+                  "assetId": "10000000-0000-4000-8000-00000000001e",
+                  "key": "synthetic-ref-a",
+                  "name": "合成脚步声.wav",
+                  "kind": "sfx",
+                  "used": true,
+                  "retained": false,
+                  "occurrences": [
+                    {
+                      "occurrenceId": "synthetic-a1",
+                      "clipId": "synthetic-a1",
+                      "clipName": "synthetic-a1",
+                      "track": 1,
+                      "start": 10,
+                      "end": 14,
+                      "startFrame": 250,
+                      "endFrame": 350,
+                      "sourceIn": 0,
+                      "sourceOut": 4,
+                      "sourceRate": 25,
+                      "disabled": false
+                    },
+                    {
+                      "occurrenceId": "synthetic-a2",
+                      "clipId": "synthetic-a2",
+                      "clipName": "synthetic-a2",
+                      "track": 1,
+                      "start": 16,
+                      "end": 19,
+                      "startFrame": 400,
+                      "endFrame": 475,
+                      "sourceIn": 0,
+                      "sourceOut": 3,
+                      "sourceRate": 25,
+                      "disabled": false
+                    },
+                    {
+                      "occurrenceId": "synthetic-a3",
+                      "clipId": "synthetic-a3",
+                      "clipName": "synthetic-a3",
+                      "track": 1,
+                      "start": 22,
+                      "end": 23,
+                      "startFrame": 550,
+                      "endFrame": 575,
+                      "sourceIn": 0,
+                      "sourceOut": 1,
+                      "sourceRate": 25,
+                      "disabled": false
+                    }
+                  ]
+                },
+                {
+                  "assetId": "10000000-0000-4000-8000-00000000001f",
+                  "key": "synthetic-ref-b",
+                  "name": "合成衣料声.wav",
+                  "kind": "sfx",
+                  "used": true,
+                  "retained": false,
+                  "occurrences": [
+                    {
+                      "occurrenceId": "synthetic-b1",
+                      "clipId": "synthetic-b1",
+                      "clipName": "synthetic-b1",
+                      "track": 2,
+                      "start": 11,
+                      "end": 15,
+                      "startFrame": 275,
+                      "endFrame": 375,
+                      "sourceIn": 0,
+                      "sourceOut": 4,
+                      "sourceRate": 25,
+                      "disabled": true
+                    }
+                  ]
+                },
+                {
+                  "assetId": null,
+                  "key": "synthetic-ref-unknown",
+                  "name": "位置未知.wav",
+                  "kind": "unknown",
+                  "used": false,
+                  "retained": false,
+                  "occurrences": [
+                    {
+                      "occurrenceId": "synthetic-c1",
+                      "clipId": "synthetic-c1",
+                      "clipName": "synthetic-c1",
+                      "track": 3,
+                      "start": null,
+                      "end": null,
+                      "startFrame": null,
+                      "endFrame": null,
+                      "sourceIn": 0,
+                      "sourceOut": null,
+                      "sourceRate": 25,
+                      "disabled": false
+                    }
+                  ]
+                },
+                {
+                  "assetId": "10000000-0000-4000-8000-000000000020",
+                  "key": "synthetic-retained-ref",
+                  "name": "上次导入保留.wav",
+                  "kind": "sfx",
+                  "used": true,
+                  "retained": true,
+                  "occurrences": [
+                    {
+                      "occurrenceId": "synthetic-retained-1",
+                      "clipId": "synthetic-retained-1",
+                      "clipName": "synthetic-retained-1",
+                      "track": 4,
+                      "start": 12,
+                      "end": 14,
+                      "startFrame": 300,
+                      "endFrame": 350,
+                      "sourceIn": 0,
+                      "sourceOut": 2,
+                      "sourceRate": 25,
+                      "disabled": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "note": "start/end/sourceIn/sourceOut均秒；duration也是秒，另video.durationMs为毫秒。"
+    },
+    {
+      "id": "overview-empty",
+      "request": {
+        "method": "GET",
+        "url": "/api/projects/10000000-0000-4000-8000-000000000001/timeline-overview"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "timelines": []
+        }
+      },
+      "note": "没有时间线：显示还没导入时间线，不伪造timelineId。"
+    }
+  ],
+  "standaloneErrors": [
+    {
+      "status": 409,
+      "body": {
+        "code": "FOLDER_RESERVED",
+        "message": "成片文件夹是保留文件夹，不能改名、移动或删除",
+        "error": "成片文件夹是保留文件夹，不能改名、移动或删除",
+        "details": {
+          "folderId": "10000000-0000-4000-8000-000000000003",
+          "role": "final"
+        }
+      }
+    },
+    {
+      "status": 409,
+      "body": {
+        "code": "RENDER_IN_USE",
+        "message": "此视频正作为成片使用，请先解除或更换成片关联",
+        "error": "此视频正作为成片使用，请先解除或更换成片关联",
+        "details": {
+          "sourceId": "10000000-0000-4000-8000-00000000000a",
+          "references": [
+            {
+              "projectId": "10000000-0000-4000-8000-000000000001",
+              "timelineId": "10000000-0000-4000-8000-000000000002",
+              "renderRevision": 7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "status": 404,
+      "body": {
+        "code": "OPERATION_NOT_FOUND",
+        "message": "未找到原请求回执；不能据此认定操作未发生",
+        "error": "未找到原请求回执；不能据此认定操作未发生",
+        "details": {}
+      }
+    }
+  ],
+  "synchronizationChecks": {
+    "offsetSeconds": 3,
+    "formula": "t = video.currentTime - offset",
+    "currentInterval": "start <= t && t < end",
+    "upcomingInterval": "t < start && start <= t + 10",
+    "examples": [
+      {
+        "videoCurrentTime": 15,
+        "timelineTime": 12,
+        "currentOccurrenceIds": [
+          "synthetic-a1"
+        ],
+        "upcomingOccurrenceIds": [
+          "synthetic-a2",
+          "synthetic-a3"
+        ],
+        "excludedDisabledIds": [
+          "synthetic-b1"
+        ],
+        "excludedRetainedIds": [
+          "synthetic-retained-1"
+        ]
+      },
+      {
+        "videoCurrentTime": 17,
+        "timelineTime": 14,
+        "currentOccurrenceIds": [],
+        "upcomingOccurrenceIds": [
+          "synthetic-a2",
+          "synthetic-a3"
+        ],
+        "excludedRetainedIds": [
+          "synthetic-retained-1"
+        ]
+      },
+      {
+        "videoCurrentTime": 1,
+        "timelineTime": -2,
+        "currentOccurrenceIds": [],
+        "upcomingOccurrenceIds": [],
+        "reason": "before_timeline_start",
+        "excludedRetainedIds": [
+          "synthetic-retained-1"
+        ]
+      }
+    ]
+  }
+}

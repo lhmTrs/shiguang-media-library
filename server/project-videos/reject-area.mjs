@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {canonical,digest,idOK} from '../project-assets/model.mjs';
-import {fail} from '../storyboard-video/model.mjs';
+import {usageFail as fail} from './action-journal.mjs';
 import {folderIdentity,folderName,nameKey,sameFolder} from './folders.mjs';
 
 const equal=(a,b)=>canonical(a)===canonical(b);
@@ -36,6 +36,7 @@ export class ProjectVideoRejectArea {
     if(!create||typeof create!=='object'||Array.isArray(create)||Object.keys(create).sort().join(',')!=='name,parentId'||create.parentId!=='root')fail('INVALID_REJECT_AREA','新收纳目录只能建在项目根目录');
     return{requestId:input.requestId,expectedRolesRevision:input.expectedRolesRevision,create:{parentId:'root',name:folderName(create.name)}};
   }
+  renderGuards(id,input){const c=this.catalog,f=this.folders,rows=f.rows(id),finalId=f.settings(id).finalFolderId;if(input.folderId){if(finalId&&(f.inSubtree(input.folderId,finalId,rows)||f.inSubtree(finalId,input.folderId,rows)))fail('FOLDER_RESERVED','成片与废片目录不能覆盖彼此',409,{folderId:finalId,role:'final'});for(const source of c.videos.sources(id))if(f.inSubtree(f.folderId(id,source.path,rows),input.folderId,rows))c.assertRenderUnused(source);}}
   sources(id,folderId,rows){
     if(!folderId)return[];
     return this.catalog.videos.sources(id).filter(s=>!this.catalog.metadata(id,s).data.removedAt&&this.folders.inSubtree(this.folders.folderId(id,s.path,rows),folderId,rows)).map(s=>({id:s.id,path:s.path,identity:s.identity,revision:this.catalog.metadata(id,s).row?.revision||0,authority:digest(this.catalog.verification.authority(id,s.id))})).sort((a,b)=>a.id.localeCompare(b.id));
@@ -45,7 +46,7 @@ export class ProjectVideoRejectArea {
     return [...shots.values()].map(s=>({...s,sourceIds:s.sourceIds.sort()})).sort((a,b)=>a.id.localeCompare(b.id));
   }
   assertMetadata(id,s){
-    this.catalog.project(id,true);const roles=this.folders.roleState(id);
+    this.catalog.project(id,true);this.renderGuards(id,s.input);const roles=this.folders.roleState(id);
     if(roles.revision!==s.input.expectedRolesRevision||roles.rejectFolderId!==s.plan.roleChange.beforeFolderId)fail('FOLDER_ROLES_CONFLICT','收纳角色或升级设置已变化，请重新预览',409);
     const rows=this.folders.rows(id);if(digest(rows)!==s.folderStamp)fail('FOLDER_CONFLICT','目录资料已变化，请重新预览',409);
     if(!equal(this.sources(id,s.input.create?null:s.input.folderId,rows),s.sources))fail('VIDEO_CONFLICT','收纳目录中的视频或真实授权已变化，请重新预览',409);
@@ -76,7 +77,7 @@ export class ProjectVideoRejectArea {
     }
   }
   async preview(id,raw){
-    this.catalog.project(id,true);const input=this.normalize(raw);
+    this.catalog.project(id,true);const input=this.normalize(raw);this.renderGuards(id,input);
     return this.tracked(async()=>{
       this.catalog.project(id,true);const args=digest(input),old=this.db.prepare('SELECT * FROM project_video_operations WHERE id=?').get(input.requestId);
       if(old){const s=JSON.parse(old.data_json);if(old.project_id!==id||s.kind!=='set-reject-area'||s.args!==args)fail('REQUEST_ID_CONFLICT','请求编号已用于其他输入',409);return s.plan;}

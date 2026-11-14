@@ -1024,7 +1024,14 @@ export class Library {
       return this.asset(assetId);
     }, { source });
   }
+  assertRenderFileMutable(file,stat,admittedDb=this.db) {
+    if(this.db!==admittedDb)throw Object.assign(Error('素材库实例已变化，未改动文件'),{code:'LOCAL_INSTANCE_CHANGED',status:409,details:{}});
+    if(this.projectRenders){this.projectRenders.assertNotInUse({path:file,identity:{dev:String(stat?.dev),ino:String(stat?.ino)}});return;}
+    const table=this.db.kind==='mysql'?this.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_renders'").get():this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_renders'").get();
+    if(table)throw Object.assign(Error('成片引用状态暂时无法核对，未改动文件'),{code:'RENDER_INFO_UNAVAILABLE',status:503,details:{}});
+  }
   async plan(input, jobId = null) {
+    const admittedDb=this.db;
     if (
       !["rename", "move", "trash"].includes(input.action) ||
       !Array.isArray(input.ids) ||
@@ -1039,6 +1046,8 @@ export class Library {
         if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
         const { a, p, stat } = await this.source(assetId);
+        this.assertRenderFileMutable(p,stat,admittedDb);
+        if(this.storyboardVideos?.catalog?.ownsMediaAsset(assetId))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
         let target = "";
         if (input.action === "trash") {
           if (!this.trashBin) throw Error("废纸篓组件不可用，操作已禁止");
@@ -1095,6 +1104,7 @@ export class Library {
           if (seen.has(target)) throw Error("批次中目标重名");
           seen.add(target);
         }
+        this.assertRenderFileMutable(p,stat,admittedDb);
         results.push({
           id: assetId,
           name: a.name,
@@ -1106,13 +1116,15 @@ export class Library {
           ok: true,
         });
       } catch (e) {
-        results.push({ id: assetId, ok: false, error: e.message });
+        results.push({ id: assetId, ok: false, error: e.message,...(e.code?{code:e.code,status:e.status,details:e.details||{}}:{}) });
       }
     }
     return results;
   }
   async relocate(source, target, expected) {
+    const admittedDb=this.db;
     const before = await fs.stat(source);
+    this.assertRenderFileMutable(source,before,admittedDb);
     if (
       expected &&
       (before.size !== expected.size || before.mtimeMs !== expected.mtimeMs)
@@ -1134,18 +1146,20 @@ export class Library {
       )
         throw Error("源文件复制期间变化，操作取消");
       await fs.utimes(target, before.atime, before.mtime);
+      this.assertRenderFileMutable(source,after,admittedDb);
       await fs.unlink(source);
     } catch (e) {
       if (copied) {
         try {
-          if ((await fs.lstat(target)).ino === copiedInode)
-            await fs.unlink(target);
+          const cleanupStat=await fs.lstat(target);
+          if (cleanupStat.ino === copiedInode){this.assertRenderFileMutable(target,cleanupStat,admittedDb);await fs.unlink(target);}
         } catch {}
       }
       throw e;
     }
   }
   async execute(input, expectedPlans = null, jobId = null) {
+    const admittedDb=this.db;
     const plans = await this.plan(input, jobId);
     const results = [];
     for (const p of plans) {
@@ -1165,6 +1179,8 @@ export class Library {
         if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
         const { a, stat } = await this.source(p.id);
+        this.assertRenderFileMutable(p.source,stat,admittedDb);
+        if(this.storyboardVideos?.catalog?.ownsMediaAsset(p.id))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
         if (expectedPlans) {
           const expected = expectedPlans.find((e) => e.id === p.id);
           if (
@@ -1177,7 +1193,7 @@ export class Library {
           )
             throw Error("文件或目标在确认后发生变化，请重新检查路径");
         }
-        this.db
+        admittedDb
           .prepare(
             "INSERT INTO operations(id,asset_id,action,source,target,status,created_at) VALUES(?,?,?,?,?,?,?)",
           )
@@ -1191,24 +1207,25 @@ export class Library {
             new Date().toISOString(),
           );
         if (input.action === "trash") {
+          this.assertRenderFileMutable(p.source,stat,admittedDb);
           const { stdout } = await run(this.trashBin, [p.source], {
             timeout: 30000,
           });
           const trash = JSON.parse(stdout);
-          this.db
+          admittedDb
             .prepare("UPDATE operations SET target=? WHERE id=?")
             .run(trash, operation);
           changed = true;
           if (!path.isAbsolute(trash) || !/(^|\/)\.Trash(es)?\//.test(trash))
             throw Error("废纸篓返回位置异常，请查看操作记录");
-          this.db
+          admittedDb
             .prepare("UPDATE assets SET trashed=1,online=0 WHERE id=?")
             .run(p.id);
         } else {
           await this.relocate(p.source, p.target, stat);
           changed = true;
           const s = await fs.stat(p.target);
-          this.db
+          admittedDb
             .prepare(
               "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=? WHERE id=?",
             )
@@ -1224,7 +1241,7 @@ export class Library {
               p.id,
             );
         }
-        this.db
+        admittedDb
           .prepare("UPDATE operations SET status='done' WHERE id=?")
           .run(operation);
         this.directoryClassification?.sync(null, p.id);
@@ -1240,10 +1257,10 @@ export class Library {
             uncertain = true;
           }
         }
-        this.db
+        admittedDb
           .prepare("UPDATE operations SET status=?,error=? WHERE id=?")
           .run(uncertain ? "interrupted" : "failed", e.message, operation);
-        results.push({ ...p, ok: false, error: e.message, operation });
+        results.push({ ...p, ok: false, error: e.message, operation,...(e.code?{code:e.code,status:e.status,details:e.details||{}}:{}) });
       } finally {
         this.locks.delete(p.id);
       }
@@ -1251,7 +1268,8 @@ export class Library {
     return results;
   }
   async undo(operationId) {
-    const op = this.db
+    const admittedDb=this.db;
+    const op = admittedDb
       .prepare(
         "SELECT * FROM operations WHERE id=? AND status='done' AND undone=0",
       )
@@ -1261,7 +1279,7 @@ export class Library {
     this.locks.add(op.asset_id);
     try {
       const a = this.asset(op.asset_id);
-      const later = this.db
+      const later = admittedDb
         .prepare(
           "SELECT id FROM operations WHERE asset_id=? AND status='done' AND undone=0 ORDER BY rowid DESC LIMIT 1",
         )
@@ -1279,10 +1297,12 @@ export class Library {
         if (a.path !== target) throw Error("素材位置已经改变");
         await this.checked(target, a.root_id);
       }
+      const actual=await fs.stat(target);this.assertRenderFileMutable(target,actual,admittedDb);
+      if(this.storyboardVideos?.catalog?.ownsMediaAsset(a.id))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
       await this.relocate(target, op.source);
       const s = await fs.stat(op.source);
-      this.db.transaction(() => {
-        this.db
+      admittedDb.transaction(() => {
+        admittedDb
           .prepare(
             "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=?,trashed=0,online=1,file_checked_ms=CASE WHEN file_status='missing' THEN 0 ELSE file_checked_ms END,file_status=CASE WHEN file_status='missing' THEN 'unknown' ELSE file_status END WHERE id=?",
           )
@@ -1297,7 +1317,7 @@ export class Library {
             indexFileIdentity(s).ino,
             a.id,
           );
-        this.db.prepare("UPDATE operations SET undone=1 WHERE id=?").run(op.id);
+        admittedDb.prepare("UPDATE operations SET undone=1 WHERE id=?").run(op.id);
       })();
       this.directoryClassification?.sync(null, a.id);
       this.onMetadataChanged?.(a.root_id);
