@@ -116,6 +116,25 @@ try {
     await dlg.getByRole('button', { name: '换个名字' }).click(); await expect(ask).toHaveCount(0);
   });
 
+  await check('收口 真实：确认前别处改了人物 → 服务端已落定的拒绝（request_settled）→ 不留待核对、按最新情况重新核对；按原编号查到 rejected 回执；再确认成功', async () => {
+    const confirmIds = []; const onReq = r => { if (/character-merges\/confirm$/.test(new URL(r.url()).pathname)) confirmIds.push(r.postDataJSON().request_id); }; page.on('request', onReq);
+    const create = page.getByRole('dialog', { name: '新建资产' }); if (await create.count()) { await create.locator('footer').getByRole('button', { name: /关闭|取消/ }).click(); await expect(create).toHaveCount(0); } // 上一项停在新建表单
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
+    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
+    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click(); await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click();
+    // 别处改了第 2 集的李四：预览凭证过期
+    const cur = (await api(`/project-assets/scopes/episode/${eps[1].id}/assets/${B.id}`)).asset;
+    await api('/project-assets/assets/' + B.id, { asset: { ...cur, base_info: cur.base_info + '（别处改过）' }, expected_revision: cur.revision }, 'PUT');
+    await dlg.getByRole('button', { name: '确认合并' }).click();
+    await expect(dlg.getByRole('status').filter({ hasText: '已按最新情况重新核对' })).toBeVisible(); await expect(work().locator('.cm-pending')).toHaveCount(0);
+    const rejected = await api(`/project-series/${S.id}/character-merge-requests/${confirmIds[0]}`);
+    assert.equal(rejected.found, true); assert.equal(rejected.result.status, 'rejected'); assert.equal(rejected.result.code, 'CHARACTER_MERGE_STALE');
+    await dlg.getByRole('button', { name: /处理 1 个同名造型|确认合并/ }).first().click();
+    if (await dlg.getByRole('button', { name: '确认合并' }).count()) await dlg.getByRole('button', { name: '确认合并' }).click();
+    await expect(dlg).toHaveCount(0); await expect(work().locator('.cm-done')).toContainText('已合并「李四」');
+    assert.notEqual(confirmIds.at(-1), confirmIds[0], '被拒后重新确认用新编号'); page.off('request', onReq);
+  });
+
   assert.deepEqual(failures, [], '不应有服务端 5xx');
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
