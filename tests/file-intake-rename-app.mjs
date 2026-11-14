@@ -64,15 +64,18 @@ const native = () => page.evaluate(() => window.nativeMessages);
 const shot = name => page.screenshot({path: path.join(evidence, name + '.png')});
 const confirmButton = () => page.locator('.fi-confirm-button');
 const renameBox = () => page.getByRole('checkbox', {name: '按项目改名'});
-const revealBox = () => page.getByRole('checkbox', {name: '收完在访达中显示'});
-const nameCard = () => page.getByRole('region', {name: '收纳后的名字', exact: true});
+const revealBox = () => page.getByRole('checkbox', {name: /在访达中显示/});
+const newName = () => page.locator('.fi-name-new').first();
+const chip = name => page.getByRole('group', {name: '文件夹', exact: true}).getByRole('button', {name, exact: true});
+const place = () => page.getByRole('navigation', {name: '去处路径', exact: true});
+const step = text => console.log('  · ' + text);
 async function check(name, fn) {await fn(); checks.push(name); console.log('PASS ' + name);}
 
 try {
   child = spawn(process.execPath, ['server/index.mjs'], {cwd: root, env: {...process.env, NODE_ENV: 'production', PORT: String(port), MEDIA_DATA_DIR: dataDir, MEDIA_PERSONAL_ITEM_DIR: personal, MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1', CODEX_HOME: path.join(owned, 'codex'), CODEX_BIN: path.join(owned, 'no-codex')}, stdio: ['ignore', 'pipe', 'pipe']});
   child.stdout.on('data', b => output += b); child.stderr.on('data', b => output += b);
   exited = new Promise(r => child.once('exit', (code, signal) => {exit = {code, signal}; r(exit);}));
-  await ready();
+  await ready(); console.log('  · server ready');
 
   // A series with season 2 and its first episode, plus one existing video folder B.
   const series = await api('/project-series', {name: '穿越计', request_id: randomUUID()});
@@ -84,17 +87,14 @@ try {
 
   await check('one video: series name preview, folder only named until 收纳, created once, window stays for 打开目标文件夹', async () => {
     const handoff = await receipts.handoff([await clip('穿越计第一集_dy0612.mp4', 'red')]);
-    await open(handoff);
-    await expect(page.locator('.fi-single-dest')).toContainText('穿越计 › 第2季 › 第1集');
-    await expect(renameBox()).not.toBeChecked(); await renameBox().check();
+    step('handoff ready'); await open(handoff); step('window open');
+    await expect(place()).toContainText('穿越计›第2季›第1集');
+    if (!await renameBox().isChecked()) await renameBox().check(); // default on once the backend preference lands
     await expect(revealBox()).toBeEnabled(); await revealBox().check();
-    await page.getByRole('button', {name: '视频文件夹', exact: true}).click();
-    const dialog = page.getByRole('dialog', {name: '选择文件夹', exact: true});
-    await dialog.getByRole('combobox', {name: '建在哪里', exact: true}).selectOption('root');
-    await dialog.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('A');
-    await dialog.getByRole('button', {name: '用这个', exact: true}).click();
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('穿越计S02E01_A_001.mp4');
-    await expect(nameCard().locator('.fi-newname-tag')).toHaveText(['剧名穿越计', '季 · 集S02E01', '文件夹A', '序号001']);
+    await chip('新建 C').click(); // B is the only single-letter folder
+    await page.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('A'); await page.keyboard.press('Enter');
+    await expect(place()).toContainText('A（收纳时新建）');
+    await expect(newName()).toHaveText('穿越计S02E01_A_001.mp4');
     await shot('1-before-confirm');
     // Previewing never creates the folder.
     assert.deepEqual((await api('/file-intake/projects/' + episode.id + '/folders')).folders.map(f => f.relativePath).sort(), ['', 'B']);
@@ -126,8 +126,8 @@ try {
     const handoff = await receipts.handoff([await clip('穿越计第一集_dy0613.mp4', 'blue')]);
     await open(handoff);
     await expect(renameBox()).toBeChecked(); await expect(revealBox()).toBeChecked();
-    await expect(page.getByRole('button', {name: '视频文件夹', exact: true})).toHaveAttribute('data-value', first.folderId);
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('穿越计S02E01_A_008.mp4');
+    await expect(chip('A')).toHaveAttribute('aria-pressed', 'true');
+    await expect(newName()).toHaveText('穿越计S02E01_A_008.mp4');
     await revealBox().uncheck(); await confirmButton().click();
     await expect(page.getByRole('region', {name: '收完以后', exact: true})).toContainText('穿越计S02E01_A_008.mp4');
     const batch = await done((await api('/file-intake/handoffs/' + handoff.id)).batchId);
@@ -139,7 +139,7 @@ try {
     const handoff = await receipts.handoff([await clip('穿越计第一集_x1.mp4', 'green'), await clip('穿越计第一集_x2.mp4', 'yellow')]);
     await open(handoff);
     await expect(revealBox()).toBeDisabled(); await expect(revealBox()).not.toBeChecked(); // last single-video choice was off
-    await expect(page.getByRole('group', {name: '收纳时', exact: true})).toContainText('只在收纳 1 个视频时生效');
+    await expect(page.locator('.fi-vreveal')).toContainText('只在收纳 1 个视频时生效');
     await shot('3-several');
     await confirmButton().click();
     await expect.poll(native).toEqual(['accepted']);

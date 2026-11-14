@@ -101,9 +101,12 @@ async function fresh(configure = () => {}) {
 const confirmButton = () => page.locator('.fi-confirm-button');
 const accepted = () => page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true});
 const renameBox = () => page.getByRole('checkbox', {name: '按项目改名'});
-const revealBox = () => page.getByRole('checkbox', {name: '收完在访达中显示'});
-const nameCard = () => page.getByRole('region', {name: '收纳后的名字', exact: true});
-const folderButton = () => page.getByRole('button', {name: '视频文件夹', exact: true});
+const revealBox = () => page.getByRole('checkbox', {name: /在访达中显示/});
+const chips = () => page.getByRole('group', {name: '文件夹', exact: true});
+const chip = (name, scope = page) => scope.getByRole('group', {name: '文件夹', exact: true}).getByRole('button', {name, exact: true});
+const place = (scope = page) => scope.getByRole('navigation', {name: '去处路径', exact: true});
+const newName = () => page.locator('.fi-name-new').first();
+const pendingInput = (scope = page) => scope.getByRole('textbox', {name: '新文件夹名字', exact: true});
 const native = () => page.evaluate(() => window.nativeMessages);
 const shot = name => page.screenshot({path: path.join(evidence, name + '.png')});
 async function check(name, fn) {if (only !== 'all' && !name.startsWith(only + ' ')) return; phase = name; await fn(); checks.push(name); console.log('PASS ' + name);}
@@ -115,31 +118,86 @@ try {
   await server.listen(); origin = server.resolvedUrls.local[0].replace(/\/$/, ''); port = new URL(origin).port;
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
 
-  await check('one video in an episode: series place, labelled new name, both options remembered and sent', async () => {
+  await check('one video: one path, folder buttons, name and Finder option in rows; both options sent', async () => {
     await fresh();
-    await expect(page.locator('.fi-single-dest')).toContainText('穿越计 › 第2季 › 第5集');
-    await expect(folderButton()).toContainText('B');
-    await expect(renameBox()).toBeChecked(); await expect(revealBox()).toBeChecked(); await expect(revealBox()).toBeEnabled();
-    await expect(page.getByRole('group', {name: '收纳时', exact: true})).toContainText('视频按剧集；图片照旧按人物_造型');
-    const card = nameCard(); await expect(card).toContainText('收纳后改名为');
-    await expect(card.locator('.fi-newname-full')).toHaveText('穿越计S02E05_B_017.mov');
-    await expect(card.locator('.fi-newname-tag')).toHaveText(['剧名穿越计', '季 · 集S02E05', '文件夹B', '序号017']);
-    await expect(page.locator('.fi-single-name')).toContainText('dy_0612_2241.mov'); // original stays on the file line
-    await shot('1-single-video');
+    await expect(place()).toContainText('穿越计›第2季›第5集›B');
+    await expect(chip('B')).toHaveAttribute('aria-pressed', 'true');
+    await expect(chip('B/补拍')).toHaveAttribute('aria-pressed', 'false');
+    await expect(chip('新建 C')).toBeVisible(); // B is the only single-letter folder at the top
+    await expect(page.locator('.fi-thumb-large')).toHaveCount(0); // no big empty preview box
+    await expect(page.getByRole('group', {name: '收纳时', exact: true})).toHaveCount(0); // options live in the form now
+    await expect(renameBox()).toBeChecked(); await expect(revealBox()).toBeChecked();
+    await expect(newName()).toHaveText('穿越计S02E05_B_017.mov');
+    await shot('1-single');
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     const b = fx.confirmBodies[0];
     assert.equal(b.revealWhenDone, true); assert.equal(b.standardNames, true);
     assert.deepEqual(b.targets, [{fileId: 'v1', destination: {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-b'}, nameMode: 'standard'}]);
-    // One video: the window stays open for 打开目标文件夹, and there is no 文件任务 link any more.
     await pause(300); assert.deepEqual(await native(), []);
-    await expect(page.getByText('窗口不会自动关闭；文件收完才会出现在文件夹里', {exact: true})).toBeVisible();
-    await expect(page.getByRole('link', {name: /文件任务/})).toHaveCount(0);
     const after = page.getByRole('region', {name: '收完以后', exact: true});
     await expect(after).toContainText('穿越计S02E05_B_017.mov'); await expect(after).toContainText('收完会打开访达，选中这个文件');
-    await shot('2-receipt');
     await page.getByRole('button', {name: '打开目标文件夹', exact: true}).click();
     await expect.poll(native).toEqual(['close']);
     assert.deepEqual(fx.openBodies, [{id: b.requestId, body: {}}]);
+  });
+
+  await check('folders: one click picks, again goes back to the episode; path segments go up; sub folders show their path', async () => {
+    await fresh();
+    await chip('B/补拍').click();
+    await expect(place()).toContainText('第5集›B›补拍'); await expect(newName()).toHaveText('穿越计S02E05_B_补拍_017.mov');
+    await place().getByRole('button', {name: 'B', exact: true}).click(); // a path segment goes back to that level
+    await expect(chip('B')).toHaveAttribute('aria-pressed', 'true');
+    await chip('B').click(); // clicking the selected folder puts the file in the episode itself
+    await expect(place()).toContainText('第5集'); await expect(place().locator('.fi-place-end')).toHaveText('第5集');
+    await expect(newName()).toHaveText('穿越计S02E05_017.mov');
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.equal(fx.confirmBodies[0].targets[0].destination.folderId, 'root');
+  });
+
+  await check('新建 C is one click: selected and editable, renamed in place, dropped when another folder is picked or Esc', async () => {
+    await fresh();
+    await chip('新建 C').click();
+    const input = pendingInput();
+    await expect(input).toHaveValue('C'); await expect(input).toBeFocused();
+    assert.equal(await input.evaluate(e => e.selectionStart === 0 && e.selectionEnd === e.value.length), true); // whole name selected
+    await expect(place()).toContainText('第5集›C（收纳时新建）'); await expect(newName()).toHaveText('穿越计S02E05_C_001.mov');
+    assert.deepEqual(fx.previewBodies.at(-1).targets[0].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: 'C'}});
+    await shot('2-new-folder');
+    await chip('B').click(); // changing your mind: the pending C is gone
+    await expect(pendingInput()).toHaveCount(0); await expect(chip('新建 C')).toBeVisible();
+    await chip('新建 C').click(); await page.keyboard.press('Escape'); await expect(pendingInput()).toHaveCount(0);
+    await expect(chip('新建 C')).toBeVisible();
+    // Typing replaces the suggestion; a name of an existing top folder (any case) becomes that folder.
+    await chip('新建 C').click(); await page.keyboard.type('b'); await page.keyboard.press('Enter');
+    await expect(pendingInput()).toHaveCount(0); await expect(chip('B')).toHaveAttribute('aria-pressed', 'true');
+    // Invalid names block 收纳; a good one is sent as newFolder and nothing is created before 收纳.
+    await chip('新建 C').click(); await page.keyboard.type('a/b');
+    await expect(page.locator('.fi-chips-wrap .fi-error')).toContainText('名字里不能有'); await expect(confirmButton()).toBeDisabled();
+    await pendingInput().fill('样片'); await expect(confirmButton()).toBeEnabled();
+    assert.equal(fx.posts.filter(p => !p.endsWith('/name-preview')).length, 0);
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(fx.confirmBodies[0].targets[0].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: '样片'}});
+  });
+
+  await check('letter rule: largest single letter + 1, gaps not refilled, sub folders ignored, none after Z', async () => {
+    const withFolders = list => f => {f.options.projects[0].videoFolders = [{id: 'root', name: '项目根目录', relativePath: ''}, ...list]; f.folders[P1] = clone(f.options.projects[0].videoFolders); f.handoff.routingPreferences.lastVideoFolderByProject = {};};
+    const folder = (id, relativePath) => ({id, name: relativePath.split('/').pop(), relativePath});
+    await fresh(withFolders([])); await expect(chip('新建 A')).toBeVisible();
+    await fresh(withFolders([folder('fa', 'A'), folder('fc', 'C'), folder('fx', 'A段镜头'), folder('fz', 'C/Z')])); await expect(chip('新建 D')).toBeVisible();
+    await fresh(withFolders([folder('fz', 'z')])); await expect(chip('新建')).toBeVisible();
+    await chip('新建').click(); await expect(pendingInput()).toHaveValue('');
+  });
+
+  await check('rename off shows the original name; ⌘↩ confirms from anywhere; 换集 switches the episode', async () => {
+    await fresh();
+    await renameBox().uncheck(); await expect(page.locator('.fi-name-keep')).toHaveText('保持原名 dy_0612_2241.mov');
+    await renameBox().check();
+    await page.getByRole('button', {name: '换集', exact: true}).click();
+    await page.getByRole('listbox', {name: '项目', exact: true}).getByRole('option', {name: /^新品广告/}).click();
+    await expect(place()).toContainText('新品广告'); await expect(place()).not.toContainText('第5集');
+    await expect(newName()).toHaveText('新品广告_017.mov');
+    await page.keyboard.press('Meta+Enter'); await expect(accepted()).toBeVisible();
+    assert.deepEqual(fx.confirmBodies[0].targets[0].destination, {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'});
   });
 
   await check('open-folder failures keep the window open and say what happened', async () => {
@@ -149,9 +207,8 @@ try {
     await open.click(); await expect(page.locator('.fi-foot [role=alert]')).toContainText('目标文件夹已经不在原来的位置');
     assert.deepEqual(await native(), []); await expect(open).toBeEnabled();
     await open.click(); await expect(page.locator('.fi-foot [role=alert]')).toContainText('没能确认访达是否已经打开');
-    assert.deepEqual(await native(), []); assert.equal(fx.openBodies.length, 2); // no retry behind the user's back
-    await pause(400); assert.equal(fx.openBodies.length, 2);
-    await open.click(); await expect.poll(() => fx.openBodies.length).toBe(3); await expect(page.locator('.fi-foot [role=alert]')).toContainText('没能确认访达是否已经打开');
+    await pause(400); assert.equal(fx.openBodies.length, 2); // no retry behind the user's back
+    await open.click(); await expect.poll(() => fx.openBodies.length).toBe(3);
     await open.click(); await expect(page.locator('.fi-foot [role=alert]')).toContainText('连不上访达');
     assert.deepEqual(await native(), []);
     await page.getByRole('button', {name: '关闭', exact: true}).click(); assert.deepEqual(await native(), ['close']);
@@ -167,68 +224,37 @@ try {
     await expect(page.getByRole('button', {name: '打开目标文件夹', exact: true})).toHaveCount(0);
   });
 
-  await check('new folder is only named here: sent as newFolder under the chosen parent, existing names are reused', async () => {
-    await fresh();
-    await folderButton().click(); const dialog = page.getByRole('dialog', {name: '选择文件夹', exact: true});
-    await expect(dialog.getByRole('option', {name: /^B\s*上次用的/})).toBeVisible();
-    const input = dialog.getByRole('textbox', {name: '新文件夹名字', exact: true});
-    await input.fill('a/b'); await expect(dialog).toContainText('名字里不能有'); await expect(dialog.getByRole('button', {name: '用这个', exact: true})).toBeDisabled();
-    // The parent starts at the current folder (B); at the project root, 「b」 is the existing B (case-insensitive).
-    await expect(dialog.getByRole('combobox', {name: '建在哪里', exact: true})).toHaveValue('f-b');
-    await dialog.getByRole('combobox', {name: '建在哪里', exact: true}).selectOption('root');
-    await input.fill('b'); await expect(dialog.getByRole('button', {name: '用已有的', exact: true})).toBeEnabled();
-    await dialog.getByRole('button', {name: '用已有的', exact: true}).click(); await expect(folderButton()).toHaveAttribute('data-value', 'f-b');
-    await folderButton().click(); await dialog.getByRole('combobox', {name: '建在哪里', exact: true}).selectOption('f-b');
-    await input.fill('补拍'); await expect(dialog).toContainText('已有同名文件夹「B/补拍」');
-    await input.fill('A'); await dialog.getByRole('combobox', {name: '建在哪里', exact: true}).selectOption('root');
-    await shot('3-folder-picker');
-    await dialog.getByRole('button', {name: '用这个', exact: true}).click();
-    await expect(folderButton()).toHaveAttribute('data-value', 'new:A'); await expect(folderButton()).toContainText('收纳时新建');
-    await expect(nameCard()).toContainText('「A」是新文件夹，从 001 开始');
-    await shot('4-new-folder');
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('穿越计S02E05_A_001.mov');
-    assert.deepEqual(fx.previewBodies.at(-1).targets[0].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: 'A'}});
-    assert.equal(fx.posts.filter(p => !p.endsWith('/name-preview')).length, 0); // nothing created before 收纳
-    await confirmButton().click(); await expect(accepted()).toBeVisible();
-    assert.deepEqual(fx.confirmBodies[0].targets[0].destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: 'A'}});
-  });
-
-  await check('several videos: reveal is greyed with the reason and not sent; folder popover can name a new folder', async () => {
+  await check('several videos: one block with shared path and folders, a name table, ⋯ per row, Finder option greyed', async () => {
     await fresh(f => {f.handoff.files = [file('v1', 'dy_1.mov', 'video'), file('v2', 'dy_2.mov', 'video')];});
-    await expect(revealBox()).toBeDisabled(); await expect(revealBox()).toBeChecked();
-    await expect(page.getByRole('group', {name: '收纳时', exact: true})).toContainText('只在收纳 1 个视频时生效');
-    await shot('5-several-videos');
-    await page.getByRole('button', {name: '改文件夹…', exact: true}).click();
-    const pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
-    await pop.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('C');
-    await expect(pop).toContainText('点「收纳」时才真正建'); await pop.getByRole('button', {name: '放进去', exact: true}).click();
-    await expect(page.getByRole('region', {name: '穿越计 › 第2季 › 第5集 › B/C（收纳时新建）', exact: true})).toBeVisible();
-    await expect(page.locator('.fi-rename').first()).toContainText('穿越计S02E05_B_C_001.mov');
+    const block = page.getByRole('region', {name: /^去处 /});
+    await expect(block).toHaveCount(1); await expect(place(block)).toContainText('2 个都放这里');
+    await expect(page.locator('.fi-projectbar')).toHaveCount(0);
+    await expect(revealBox()).toBeDisabled(); await expect(page.locator('.fi-vreveal')).toContainText('只在收纳 1 个视频时生效');
+    await expect(block.locator('.fi-vrow')).toHaveCount(2);
+    await chip('新建 C', block).click(); await pendingInput(block).fill('样片'); await pendingInput(block).blur();
+    await expect(place(block)).toContainText('样片（收纳时新建）');
+    await shot('3-several');
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     const b = fx.confirmBodies[0]; assert.equal('revealWhenDone' in b, false);
-    for (const t of b.targets) assert.deepEqual(t.destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-b', newFolder: {name: 'C'}});
+    for (const t of b.targets) assert.deepEqual(t.destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: '样片'}});
     await expect.poll(native).toEqual(['accepted']); // several files still close on their own
-    await expect(page.getByRole('button', {name: '打开目标文件夹', exact: true})).toHaveCount(0);
   });
 
   await check('R1 same folder name in two projects: a built folder is only taken by the row of its own project and parent', async () => {
     const two = f => {f.handoff.files = [file('v1', 'dy_1.mov', 'video'), file('v2', 'dy_2.mov', 'video')];};
     const setup2 = async () => {
-      // Both start in 穿越计 › B; send both to a new 样片 at the root, then move dy_2 to 新品广告 with its own new 样片.
-      await page.getByRole('button', {name: '改文件夹…', exact: true}).click();
-      const pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
-      await pop.getByRole('combobox', {name: '视频文件夹', exact: true}).selectOption('root');
-      await pop.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('样片'); await pop.getByRole('button', {name: '放进去', exact: true}).click();
+      // Both start in 穿越计 › B; send both to a new 样片, then move dy_2 to 新品广告 with its own new 样片.
+      await chip('新建 C').click(); await pendingInput().fill('样片'); await pendingInput().blur();
       await page.getByRole('button', {name: '单独设置 dy_2.mov', exact: true}).click();
       const panel = page.getByRole('dialog', {name: '收纳设置 dy_2.mov', exact: true});
       await panel.getByRole('combobox', {name: '目标项目 v2', exact: true}).selectOption(P2);
-      await panel.getByText('新建文件夹（点收纳时才建）', {exact: true}).click();
-      await panel.getByRole('textbox', {name: '新文件夹名字', exact: true}).fill('样片'); await panel.getByRole('button', {name: '用这个名字', exact: true}).click();
       await panel.getByRole('button', {name: '完成', exact: true}).click();
+      const other = page.getByRole('region', {name: /^去处 新品广告/});
+      await chip('新建 A', other).click(); await pendingInput(other).fill('样片'); await pendingInput(other).blur();
+      await expect(page.getByRole('region', {name: /^去处 /})).toHaveCount(2);
       await expect(confirmButton()).toBeEnabled();
     };
     const dest = (b, id) => b.targets.find(t => t.fileId === id).destination;
-    // Only 穿越计's 样片 was built; 新品广告 keeps asking for its own.
     await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片', projectId: P1, parentId: 'root'}]];});
     await setup2(); await confirmButton().click();
     await expect(page.locator('.fi-body > .fi-error')).toContainText('文件夹「样片」已经建好');
@@ -236,13 +262,10 @@ try {
     await expect(confirmButton()).toBeEnabled(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'nf-a'});
     assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'root', newFolder: {name: '样片'}});
-    // An older receipt without ownership: nothing is re-pointed; the server matches the pending names again.
     await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片'}]];});
     await setup2(); await confirmButton().click(); await expect(page.locator('.fi-body > .fi-error')).toBeVisible();
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.deepEqual(dest(fx.confirmBodies[1], 'v1'), {kind: 'video', scope: 'project', projectId: P1, folderId: 'root', newFolder: {name: '样片'}});
-    assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'root', newFolder: {name: '样片'}});
-    // Both built: each row takes its own project's folder.
     await fresh(f => {two(f); f.confirmFail = [[{id: 'nf-a', name: '样片', relativePath: '样片', projectId: P1, parentId: 'root'}, {id: 'nf-b', name: '样片', relativePath: '样片', projectId: P2, parentId: 'root'}]];});
     await setup2(); await confirmButton().click(); await expect(page.locator('.fi-body > .fi-error')).toBeVisible();
     await confirmButton().click(); await expect(accepted()).toBeVisible();
@@ -250,22 +273,9 @@ try {
     assert.deepEqual(dest(fx.confirmBodies[1], 'v2'), {kind: 'video', scope: 'project', projectId: P2, folderId: 'nf-b'});
   });
 
-  await check('photos only: no reveal option; name pieces that do not add up fall back to the plain name', async () => {
+  await check('photos keep the grouped list; no Finder option; name preview errors are shown', async () => {
     await fresh(f => {f.handoff.files = [file('p1', 'image_1.png', 'photo')];});
-    await expect(revealBox()).toHaveCount(0);
-    await fresh(f => {f.parts = 'broken';});
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('穿越计S02E05_B_017.mov'); await expect(nameCard().locator('.fi-newname-tag')).toHaveCount(0);
-    await fresh(f => {f.parts = 'none';});
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('穿越计S02E05_B_017.mov'); await expect(nameCard().locator('.fi-newname-tag')).toHaveCount(0);
-    await renameBox().uncheck(); await expect(nameCard()).toHaveCount(0);
-  });
-
-  await check('a standalone project keeps project name and has no series place', async () => {
-    await fresh(f => {f.handoff.routingPreferences.lastProjectId.video = P2;});
-    await expect(page.locator('.fi-single-dest')).toContainText('新品广告');
-    await expect(page.locator('.fi-single-dest')).not.toContainText('第');
-    await expect(nameCard().locator('.fi-newname-full')).toHaveText('新品广告_017.mov');
-    await expect(nameCard().locator('.fi-newname-tag')).toHaveText(['项目新品广告', '序号017']);
+    await expect(revealBox()).toHaveCount(0); await expect(chips()).toHaveCount(0);
   });
 
   assert.ok(checks.length, 'selected case must run'); assert.deepEqual(errors, []); assert.deepEqual(external, []); passed = true;
