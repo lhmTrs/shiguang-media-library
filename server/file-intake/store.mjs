@@ -45,6 +45,11 @@ export class FileIntake {
       // A shared journal location does not make another library's receipts ours.
       // Leave foreign bytes untouched and out of the active library's task list.
       if(b.libraryId!==this.libraryId){this.foreignIds.add(b.id);continue;}
+      // Early v2 receipts only kept the option in the normalized request.
+      if(b.version===2&&b.revealWhenDone===undefined){
+        try{b.revealWhenDone=JSON.parse(b.args)?.revealWhenDone===true;}
+        catch{b.revealWhenDone=false;}
+      }
       let removalInterrupted=false;
       for(const i of b.items)if(b.mode==='move'&&i.status==='ready'&&i.removal!=='complete') {
         i.status=i.removal==='planned'?'unknown':'source_retained';
@@ -81,7 +86,7 @@ export class FileIntake {
     b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
   acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
   dto(b) {return {version:b.version,id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
-    mode:b.mode,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
+    mode:b.mode,revealWhenDone:b.revealWhenDone===true,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
     canAcknowledge:this.canAcknowledge(b),acknowledged:this.acknowledged(b),acknowledgedAt:this.acknowledged(b)?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
   batch(id) {if(this.foreignIds.has(id))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
   list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
@@ -383,11 +388,11 @@ export class FileIntake {
     }
     for(const [i,item] of items.entries())item.plannedFileName=(await finalPlanner.plan(item,plans[i])).proposedFileName;
     const labels=[...new Set(items.map(i=>i.destinationLabel))],projectIds=[...new Set(items.map(i=>i.destination.projectId||''))];
-    const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items};
+    const b={version:2,id:input.requestId,handoffId,args,libraryId:this.libraryId,projectId:projectIds.length===1?projectIds[0]:'',projectName:labels.length===1?labels[0]:'多种素材收纳',folderId:'',folderName:labels.length>1?labels.length+' 个固定目标':'',mode:input.mode,revealWhenDone:revealWhenDone===true,createdAt:Date.now(),updatedAt:Date.now(),status:'queued',items};
     acceptanceStarted=true;
     await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);
     if(singleVideo&&sessionId)this.receiptSessions.set(b.id,sessionId);
-    if(revealWhenDone)this.liveReveal.add(b.id);
+    if(b.revealWhenDone)this.liveReveal.add(b.id);
     await this.rememberTargets(items.map(i=>i.resolvedFolder?{...i.destination,folderId:i.resolvedFolder.id}:i.destination),{
       mode:input.mode,standardNames:input.standardNames,revealWhenDone:singleVideo?revealWhenDone:undefined,
     });

@@ -501,9 +501,10 @@ test('Finder operations verify the current batch and directory, persist only the
   const sessionId='session-a',dest={kind:'video',scope:'project',projectId:f.project.id,newFolder:{name:'入库'}};
   const {h,input}=await videoSelection(f,[f.file],dest,{revealWhenDone:true});
   const b=await f.intake.confirm(h.id,input,{sessionId});
+  assert.equal(b.revealWhenDone,true);
   await settled(f.intake);
   const raw=await f.intake.receipts.read('batches',b.id);
-  assert.equal(reveals,1);assert.equal(raw.status,'completed');assert.equal(raw.items[0].reveal.status,'unknown');
+  assert.equal(reveals,1);assert.equal(raw.status,'completed');assert.equal(raw.revealWhenDone,true);assert.equal(raw.items[0].reveal.status,'unknown');
   assert.equal(raw.items[0].reveal.error.code,'INTAKE_DESKTOP_UNKNOWN');
   assert.equal((await f.intake.intakePreferences()).routingPreferences.revealWhenDone,true);
   const app=express();
@@ -530,9 +531,11 @@ test('Finder operations verify the current batch and directory, persist only the
   await fs.rename(folder,folder+'-moved');await fs.mkdir(folder);
   const changed=await open(sessionId);
   assert.equal(changed.status,409);assert.equal((await changed.json()).code,'TARGET_CHANGED');assert.equal(opens,3);
+  delete raw.revealWhenDone; // early v2 receipt had the option only in args
+  await f.intake.receipts.write('batches',raw.id,raw);
   const reboot=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:{},desktop:f.intake.desktop}).init();
   t.after(()=>reboot.close());
-  await reboot.confirm(h.id,input,{sessionId});
+  assert.equal((await reboot.confirm(h.id,input,{sessionId})).revealWhenDone,true);
   await assert.rejects(reboot.openFolder(b.id,undefined,{sessionId}),{code:'INTAKE_INVALID_INPUT'});
   await reboot.reconcile(b.id);assert.equal(reveals,1);
 });
@@ -547,6 +550,7 @@ test('multi-video true is refused, and omitted reveal and false replay the same 
   const accepted=await f.intake.confirm(single.h.id,single.input);
   const replay=await f.intake.confirm(single.h.id,{...single.input,revealWhenDone:false});
   assert.equal(replay.id,accepted.id);
+  assert.equal(accepted.revealWhenDone,false);assert.equal(replay.revealWhenDone,false);
   await settled(f.intake);
 });
 
