@@ -3,9 +3,13 @@ import { canonical, digest, idOK, nameKey } from './model.mjs';
 import { isRecord } from '../project-attributes/model.mjs';
 import { creativeReferenceSlots, explicitAssetShots, shotReferenceRows } from '../storyboard/asset-references.mjs';
 import { timeline } from '../storyboard/shared/model.mjs';
-import { activeChild, lookPlan, mergeError, planScores } from './character-merge-plan.mjs';
+import { activeChild, lookPlan, mergeError, planScores, validLookChoices } from './character-merge-plan.mjs';
 import { applyCharacterMerge, planCharacterUndo, applyCharacterUndo, snapshotRows } from './character-merge-write.mjs';
 
+import { rejectedMergeId, rejectionReceipt, rejectedResponse } from './character-merge-receipts.mjs';
+
+const tokenFormat = /^[a-f0-9]{64}$/;
+const isToken = value => typeof value === 'string' && tokenFormat.test(value);
 const stale = () => mergeError('CHARACTER_MERGE_STALE', '人物资料、评分、引用或归组已变化，请重新预览');
 const undoStale = () => mergeError('CHARACTER_MERGE_UNDO_STALE', '撤销预览已变化，请重新核对');
 const invalid = () => mergeError('CHARACTER_MERGE_INVALID_INPUT', '合并人物请求格式无效', 422);
@@ -278,34 +282,47 @@ export class CharacterMerges {
     return this.alignment.read(() => this.buildPreview(seriesId, input).view);
   }
 
-  run(seriesId, input, operation, action) {
-    if (!idOK(input.request_id)) throw invalid();
+  run(seriesId, input, operation, prepare, apply) {
+    if (!idOK(input?.request_id)) throw invalid();
     if (this.store.lib.migrating) throw mergeError('CHARACTER_MERGE_BUSY', '数据库正在迁移，请稍后合并人物', 423);
     const id = input.request_id.toLowerCase(), hash = digest([seriesId, operation, input]);
     if (this.db.kind === 'mysql') this.db.exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
-    return this.directory.transaction(() => {
+    const result = this.directory.transaction(() => {
       this.directory.series(seriesId);
       const old = this.db.prepare('SELECT * FROM creative_character_merge_requests WHERE id=?').get(id);
       if (old) {
         if (old.request_hash !== hash) throw mergeError('REQUEST_ID_CONFLICT', '请求编号已用于不同操作');
-        return this.result(seriesId, JSON.parse(old.result_json));
+        const saved = JSON.parse(old.result_json);
+        return saved.status === 'rejected' ? saved : this.result(seriesId, saved);
       }
       this.alignment.lock(this.episodes(seriesId).map(row => row.project_id));
-      const result = action(id);
+      let plan, receipt;
+      // Only read-only preconditions can settle a business rejection. A write,
+      // receipt insertion, or commit failure must leave the transaction by throwing.
+      try { plan = prepare(); }
+      catch (error) {
+        receipt = rejectionReceipt(id, error);
+        if (!receipt) throw error;
+      }
+      if (!receipt) receipt = apply(plan, id);
       const now = Date.now();
       this.db.prepare('INSERT INTO creative_character_merge_requests (id,series_id,merge_id,request_hash,result_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
-        .run(id, seriesId, result.merge_id, hash, canonical(result), now, now);
-      return result;
+        .run(id, seriesId, receipt.merge_id ?? rejectedMergeId, hash, canonical(receipt), now, now);
+      return receipt;
     });
+    // Throw only after the receipt has committed, including on replay.
+    if (result.status === 'rejected') throw rejectedResponse(result);
+    return result;
   }
 
   confirm(seriesId, input) {
-    if (!shape(input, ['request_id', 'preview_token', 'context_token', 'choices']) ||
-      typeof input.preview_token !== 'string' || !isRecord(input.choices)) throw invalid();
-    return this.run(seriesId, input, 'confirm', requestId => {
-      if (this.alignment.state(seriesId).status !== 'aligned') throw mergeError('ATTRIBUTE_ALIGNMENT_REQUIRED', '请先统一目标剧的人物属性维度');
+    return this.run(seriesId, input, 'confirm', () => {
+      if (!shape(input, ['request_id', 'preview_token', 'context_token', 'choices']) ||
+          typeof input.preview_token !== 'string' || !isToken(input.context_token) ||
+          !validLookChoices(input.choices)) throw invalid();
       const [hash, group, primary, extra] = input.preview_token.split('.');
-      if (!/^[a-f0-9]{64}$/.test(hash) || !/^[a-f0-9]{64}$/.test(group) || !idOK(primary) || extra !== undefined) throw stale();
+      if (!isToken(hash) || !isToken(group) || !idOK(primary) || extra !== undefined) throw invalid();
+      if (this.alignment.state(seriesId).status !== 'aligned') throw mergeError('ATTRIBUTE_ALIGNMENT_REQUIRED', '请先统一目标剧的人物属性维度');
       let plan;
       try {
         plan = this.buildPreview(seriesId, { context_token: input.context_token, choices: input.choices,
@@ -316,8 +333,8 @@ export class CharacterMerges {
       }
       if (!plan.view.ready || !this.alignment.matchesToken(plan.view.preview_token.split('.')[0], hash) || plan.view.preview_token !== input.preview_token ||
           canonical(plan.view.choices) !== canonical(input.choices)) throw stale();
-      return applyCharacterMerge(this, seriesId, requestId, plan);
-    });
+      return plan;
+    }, (plan, requestId) => applyCharacterMerge(this, seriesId, requestId, plan));
   }
 
   request(seriesId, requestId) {
@@ -331,6 +348,10 @@ export class CharacterMerges {
   }
 
   result(seriesId, result) {
+    if (result.status === 'rejected') {
+      const { http_status, ...receipt } = result;
+      return receipt;
+    }
     if (result.status !== 'merged') return result;
     return { ...result, can_undo: this.undoPlan(seriesId, result.merge_id).ready };
   }
@@ -381,16 +402,18 @@ export class CharacterMerges {
   }
 
   undo(seriesId, mergeId, input) {
-    if (!shape(input, ['request_id', 'context_token', 'undo_token', 'accept_restore_changes']) ||
-      typeof input.accept_restore_changes !== 'boolean' || typeof input.undo_token !== 'string') throw invalid();
-    return this.run(seriesId, input, ['undo', mergeId], requestId => {
+    return this.run(seriesId, input, ['undo', mergeId], () => {
+      if (!shape(input, ['request_id', 'context_token', 'undo_token', 'accept_restore_changes']) ||
+          typeof input.accept_restore_changes !== 'boolean' ||
+          !isToken(input.context_token) || !isToken(input.undo_token)) throw invalid();
+      const record = this.record(seriesId, mergeId);
       try { this.store.scoped.assertContextToken(this.store.scoped.scope('series', seriesId), input.context_token); }
       catch (error) { if (error.code === 'ASSET_SCOPE_CHANGED') throw undoStale(); throw error; }
-      const plan = this.undoPlan(seriesId, mergeId);
+      const plan = planCharacterUndo(this, record);
       if (!plan.ready) throw mergeError('CHARACTER_MERGE_UNDO_BLOCKED', '存在不能安全恢复的引用或后续操作', 409, { blockers: plan.blockers });
       if (!this.alignment.matchesToken(plan.undo_token, input.undo_token)) throw undoStale();
       if (plan.status === 'review_required' && !input.accept_restore_changes) throw mergeError('CHARACTER_MERGE_UNDO_BLOCKED', '请确认将被恢复的更改');
-      return applyCharacterUndo(this, plan, requestId);
-    });
+      return plan;
+    }, (plan, requestId) => applyCharacterUndo(this, plan, requestId));
   }
 }

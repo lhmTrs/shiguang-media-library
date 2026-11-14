@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { creativeFixture, addLook, addImage } from './helpers/creative-fixture.mjs';
+import { assertCharacterMergeRequestRace } from './helpers/character-merge-request-race.mjs';
 import express from 'express';
 import { once } from 'node:events';
 import { StoryboardDatabase } from '../server/storyboard/database.mjs';
@@ -242,16 +243,27 @@ test('series HTTP contract supports durable request lookup and reports alignment
   const preview = await api('/character-merges/preview', input);
   assert.equal(preview.result.ready, true);
   f.db.prepare('DELETE FROM series_attribute_alignment WHERE id=?').run(f.drama.id);
-  const commit = {request_id:randomUUID(), context_token:groups.context_token,
+  const inputCommit = {request_id:randomUUID(), context_token:groups.context_token,
     preview_token:preview.result.preview_token, choices:preview.result.choices};
-  assert.equal((await api('/character-merges/confirm', commit)).result.code, 'ATTRIBUTE_ALIGNMENT_REQUIRED');
-  assert.deepEqual((await api('/character-merge-requests/' + commit.request_id)).result, {found:false});
+  const rejected = await api('/character-merges/confirm', inputCommit);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.result.code, 'ATTRIBUTE_ALIGNMENT_REQUIRED');
+  assert.deepEqual(rejected.result.details, {request_settled:true});
+  assert.deepEqual(await api('/character-merge-requests/' + inputCommit.request_id), {
+    status:200, result:{found:true, result:{request_id:inputCommit.request_id, status:'rejected',
+      code:rejected.result.code, message:rejected.result.error}},
+  });
   assert.equal(f.store.get(b.id).archived_at, 0);
   f.store.attributes.alignment.markAligned(f.drama.id);
+  assert.deepEqual(await api('/character-merges/confirm', inputCommit), rejected);
+  const commit = {...inputCommit, request_id:randomUUID()};
   const confirmed = await api('/character-merges/confirm', commit);
   assert.equal(confirmed.status, 200);
+  assert.deepEqual(await api('/character-merges/confirm', commit), confirmed);
   assert.equal((await api('/character-merge-requests/' + commit.request_id)).result.result.merge_id, confirmed.result.merge_id);
-  assert.equal((await api('/character-merges/confirm', {...commit, preview_token:'different'})).result.code, 'REQUEST_ID_CONFLICT');
+  assert.deepEqual(await api('/character-merges/confirm', {...commit, preview_token:'different'}), {
+    status:409, result:{code:'REQUEST_ID_CONFLICT', error:'请求编号已用于不同操作'},
+  });
 });
 
 test('a shared primary preserves its score and unrelated overrides while a source clear wins on its own cell', async t => {
@@ -280,4 +292,130 @@ test('a shared primary preserves its score and unrelated overrides while a sourc
   assert.equal(f.store.scoped.attributeScores('series', f.drama.id, a.id).scores[first].value, 80);
   f.undo(result.merge_id, f.undoPreview(result.merge_id));
   assert.equal(effective()[first].value.value, 42);
+});
+
+test('two SQLite connections serialize the same request after either terminal result commits', async t => {
+  const f = await creativeFixture({onDisk:true});
+  t.after(f.close);
+  const options = {filename:f.db.name};
+  await assertCharacterMergeRequestRace(f.store, options, false);
+  await assertCharacterMergeRequestRace(f.store, options, true);
+});
+
+test('temporary migration and generation locks and failed rejection writes leave the original request available', async t => {
+  const f = await setup(t), a = await f.character(f.first), b = await f.character(f.second);
+  const view = f.preview(a), requestId = randomUUID();
+  const before = f.store.backup().checksum;
+  const unknown = () => assert.deepEqual(f.svc.request(f.drama.id, requestId), {found:false});
+  const transient = error => error.status === 423 && !error.details?.request_settled;
+  f.lib.migrating = true;
+  assert.throws(() => f.commit(view, requestId), transient);
+  f.lib.migrating = false;
+  unknown();
+  f.store.generationLocks = { assertWritable() {
+    throw Object.assign(Error('夹具生成中'), {status:423, code:'STORYBOARD_GENERATION_LOCKED'});
+  } };
+  assert.throws(() => f.commit(view, requestId), transient);
+  f.store.generationLocks = null;
+  unknown();
+  f.db.exec('DELETE FROM series_attribute_alignment');
+  f.db.exec("CREATE TRIGGER fail_rejected_receipt BEFORE INSERT ON creative_character_merge_requests BEGIN SELECT RAISE(ABORT, 'rejection storage failed'); END");
+  assert.throws(() => f.commit(view, requestId), error => /rejection storage failed/.test(error.message) && !error.details?.request_settled);
+  unknown();
+  f.db.exec('DROP TRIGGER fail_rejected_receipt');
+  f.store.attributes.alignment.markAligned(f.drama.id);
+  assert.equal(f.store.backup().checksum, before);
+  assert.equal(f.commit(view, requestId).status, 'merged');
+  assert.ok(f.store.get(b.id).archived_at > 0);
+});
+
+test('only well-formed business failures settle and preserve original HTTP statuses and details', async t => {
+  const f = await setup(t), a = await f.character(f.first, {look:true}), b = await f.character(f.second, {look:true});
+  const view = f.preview(a);
+  const input = {request_id:randomUUID(), context_token:f.context(), preview_token:view.preview_token, choices:view.choices};
+  const confirm = value => f.svc.confirm(f.drama.id, value);
+  for (const changes of [
+    {preview_token:'malformed'}, {context_token:null}, {choices:{}},
+    {choices:{look_choices:[{conflict_id:view.look_plan.conflicts[0].conflict_id, action:'invented'}]}},
+  ]) {
+    assert.throws(() => confirm({...input, ...changes}), {status:422, code:'CHARACTER_MERGE_INVALID_INPUT'});
+    assert.deepEqual(f.svc.request(f.drama.id, input.request_id), {found:false});
+  }
+  const illegalTarget = {...input, request_id:randomUUID(), choices:{look_choices:[
+    {conflict_id:view.look_plan.conflicts[0].conflict_id, action:'merge_into', target_look_id:randomUUID()},
+  ]}};
+  const choiceError = {status:422, code:'CHARACTER_MERGE_CHOICE_INVALID', details:{request_settled:true}};
+  assert.throws(() => confirm(illegalTarget), choiceError);
+  assert.throws(() => confirm(illegalTarget), choiceError);
+  const merge = confirm(input);
+  assert.throws(() => confirm({request_id:input.request_id}), {code:'REQUEST_ID_CONFLICT'});
+  const clean = f.undoPreview(merge.merge_id);
+  const undo = {request_id:randomUUID(), context_token:f.context(), undo_token:clean.undo_token, accept_restore_changes:false};
+  const submitUndo = (input, id = merge.merge_id) => f.svc.undo(f.drama.id, id, input);
+  assert.throws(() => submitUndo(undo, randomUUID()), {status:404, code:'CHARACTER_MERGE_NOT_FOUND'});
+  assert.deepEqual(f.svc.request(f.drama.id, undo.request_id), {found:false});
+  const stale = {...undo, request_id:randomUUID(), undo_token:'0'.repeat(64)};
+  assert.throws(() => submitUndo(stale), {status:409, code:'CHARACTER_MERGE_UNDO_STALE', details:{request_settled:true}});
+  const board = new StoryboardDatabase(f.lib, f.store).init();
+  const source = syntheticSource();
+  source.characters[0].name = source.asset_manifest.character[0].name = a.name;
+  board.initialize(f.second.id, {source, request_id:randomUUID(), expected_revision:null});
+  const blocked = f.undoPreview(merge.merge_id);
+  assert.equal(blocked.status, 'blocked');
+  const code = 'CHARACTER_MERGE_UNDO_BLOCKED';
+  const message = '存在不能安全恢复的引用或后续操作';
+  const details = {blockers:blocked.blockers};
+  assert.throws(() => submitUndo(undo), {status:409, code, message, details:{...details, request_settled:true}});
+  assert.throws(() => submitUndo(undo), {status:409, code, message, details:{...details, request_settled:true}});
+  assert.deepEqual(f.svc.request(f.drama.id, undo.request_id), {
+    found:true, result:{request_id:undo.request_id, status:'rejected', code, message, details},
+  });
+  assert.equal(f.store.get(b.id).archived_at > 0, true);
+});
+
+
+test('old and mixed backup receipts restore, and invalid rejected receipt shapes fail validation', async t => {
+  const f = await setup(t), a = await f.character(f.first), b = await f.character(f.second);
+  const view = f.preview(a), merged = f.commit(view);
+  const oldBackup = f.store.backup();
+  const rejectInput = {request_id:randomUUID(), context_token:f.context(), preview_token:view.preview_token, choices:view.choices};
+  assert.throws(() => f.svc.confirm(f.drama.id, rejectInput), {
+    status:409, code:'CHARACTER_MERGE_STALE', details:{request_settled:true},
+  });
+  const undone = f.undo(merged.merge_id, f.undoPreview(merged.merge_id));
+  const mixedBackup = f.store.backup();
+  const restore = async backup => {
+    const target = await creativeFixture();
+    t.after(target.close);
+    target.projects.save(target.a.id, {name:'备份目标甲'});
+    target.projects.save(target.b.id, {name:'备份目标乙'});
+    await target.store.restore(backup);
+    return target.store.characterMerges;
+  };
+  const legacy = await restore(oldBackup);
+  assert.deepEqual(legacy.request(f.drama.id, merged.request_id).result, merged);
+  assert.deepEqual(legacy.request(f.drama.id, rejectInput.request_id), {found:false});
+  const restored = await restore(mixedBackup);
+  assert.deepEqual(restored.request(f.drama.id, merged.request_id).result, {...merged, can_undo:false});
+  assert.deepEqual(restored.request(f.drama.id, undone.request_id).result, undone);
+  assert.deepEqual(restored.request(f.drama.id, rejectInput.request_id), f.svc.request(f.drama.id, rejectInput.request_id));
+  assert.throws(() => restored.confirm(f.drama.id, rejectInput), {
+    status:409, code:'CHARACTER_MERGE_STALE', details:{request_settled:true},
+  });
+  for (const change of [
+    (row, result) => { row.merge_id = merged.merge_id; },
+    (row, result) => { result.code = 'STORYBOARD_GENERATION_LOCKED'; result.http_status = 423; },
+    (row, result) => { result.http_status = 400; },
+    (row, result) => { result.details = {request_settled:true}; },
+  ]) {
+    const corrupted = structuredClone(mixedBackup);
+    const row = corrupted.tables.creative_character_merge_requests.find(row => row.id === rejectInput.request_id);
+    const result = JSON.parse(row.result_json);
+    change(row, result);
+    row.result_json = canonical(result);
+    const {format, schema_version, checksum, ...content} = corrupted;
+    corrupted.checksum = digest(content);
+    assert.throws(() => f.store.validateBackup(corrupted), /备份中包含无效/);
+  }
+  assert.equal(f.store.get(b.id).archived_at, 0);
 });
