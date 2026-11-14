@@ -42,10 +42,10 @@ export function useMergeGroups(api: Api, seriesId: string | null, enabled: boole
 }
 
 /** 当前剧结果不明的合并 / 撤销（组合验收 R1 复验）：不依赖候选组或「能否撤销」，只看待核对记录本身。 */
-export function usePendingMerge(seriesId: string | null): { merge: PendingMerge | null; undo: PendingUndo | null } {
+export function usePendingMerge(libraryId: string, seriesId: string | null): { merge: PendingMerge | null; undo: PendingUndo | null } {
   const [, bump] = useState(0);
   useEffect(() => subscribePending(() => bump(n => n + 1)), []);
-  return seriesId ? { merge: pendingStore.merge(seriesId), undo: pendingStore.undosOf(seriesId)[0] ?? null } : { merge: null, undo: null };
+  return libraryId && seriesId ? { merge: pendingStore.merge(libraryId, seriesId), undo: pendingStore.undosOf(libraryId, seriesId)[0] ?? null } : { merge: null, undo: null };
 }
 /** 人物页独立提示：上次合并 / 撤销的结果还没核对到。合并已经让候选组变成 0、或撤销后不再「可撤销」时，入口都还在。 */
 export function MergePendingBar({ merge, undo, onCheck }: { merge: PendingMerge | null; undo: PendingUndo | null; onCheck: () => void }) {
@@ -81,8 +81,8 @@ export function MergeDoneBar({ receipt, name, lookCount, onUndo, onNext, onClose
 
 type Step = 'pick' | 'impact' | 'issues';
 /** 合并浮窗：选主体 → 合并后的样子 → 同名造型（有冲突才出现）→ 确认。 */
-export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: initialToken, initialPrimary, reloadGroups, guard, onClose, onMerged }: {
-  api: Api; seriesId: string; group: MergeGroup; contextToken?: string; initialPrimary?: string;
+export function MergeDialog({ api, libraryId, seriesId, group: initialGroup, contextToken: initialToken, initialPrimary, reloadGroups, guard, onClose, onMerged }: {
+  api: Api; libraryId: string; seriesId: string; group: MergeGroup; contextToken?: string; initialPrimary?: string;
   /** 重新提交前的草稿保护：返回非空文字就不提交，并显示它。 */
   guard?: () => string;
   /** 依赖变了：重新读组（拿到新的成员和凭证）。 */
@@ -91,7 +91,7 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
 }) {
   const m = useMemo(() => mergeApi(api, seriesId), [api, seriesId]);
   // 组合验收 R1：上次结果不明的原请求存在浮窗之外，再打开同组时恢复并锁定，继续按原编号核对
-  const stored = useMemo(() => { const p = pendingStore.merge(seriesId); return p && p.group.group_id === initialGroup.group_id ? p : null; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const stored = useMemo(() => { const p = pendingStore.merge(libraryId, seriesId); return p && p.group.group_id === initialGroup.group_id ? p : null; }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [group, setGroup] = useState(stored?.group ?? initialGroup), [token, setToken] = useState(initialToken);
   const locked = group.members.find(x => x.primary_locked);
   const [primary, setPrimary] = useState(locked?.asset_id ?? (group.members.some(x => x.asset_id === initialPrimary) ? initialPrimary! : group.members[0]?.asset_id));
@@ -100,7 +100,7 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
   const [edits, setEdits] = useState<Record<string, LookChoice>>({});
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [note, setNote] = useState('');
   const pendingRef = useRef<MergeConfirmBody | null>(stored?.body ?? null), [pending, setPendingState] = useState<MergeConfirmBody | null>(stored?.body ?? null);
-  const setPending = (p: MergeConfirmBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setMerge(seriesId, p ? { seriesId, group, body: p } : null); };
+  const setPending = (p: MergeConfirmBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setMerge(libraryId, seriesId, p ? { libraryId, seriesId, group, body: p } : null); };
   const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
   const seasons = spansSeasons(group.members);
   const member = (id: string) => group.members.find(x => x.asset_id === id);
@@ -292,8 +292,8 @@ function MergeImpact({ preview, group, label, placeOf, lookName, primary }: {
 
 const ENTITY: Record<string, string> = { asset: '人物资料', look: '造型', image: '图片', score: '分数', override: '本集覆盖', default: '默认设置', reference: '分镜引用', manifest: '素材清单', mapping: '合并映射' };
 /** 撤销合并：先看撤销会恢复什么；合并后又改过的，列出来确认后才撤销；有阻断就不能撤销。 */
-export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, reloadToken, guard, onClose, onUndone }: {
-  api: Api; seriesId: string; mergeId: string; name: string; contextToken?: string;
+export function UndoMergeDialog({ api, libraryId, seriesId, mergeId, name, contextToken, reloadToken, guard, onClose, onUndone }: {
+  api: Api; libraryId: string; seriesId: string; mergeId: string; name: string; contextToken?: string;
   /** 重新提交前的草稿保护：返回非空文字就不提交，并显示它。 */
   guard?: () => string;
   /** 凭证过期时重读这部剧的上下文凭证（分组列表顶层的 context_token）。 */
@@ -301,11 +301,11 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
   onClose: () => void; onUndone: (r: UndoReceipt) => void;
 }) {
   const m = useMemo(() => mergeApi(api, seriesId), [api, seriesId]);
-  const stored = useMemo(() => pendingStore.undo(seriesId, mergeId), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const stored = useMemo(() => pendingStore.undo(libraryId, seriesId, mergeId), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [pv, setPv] = useState<UndoPreview | null>(null), [accept, setAccept] = useState(false), [token, setToken] = useState(contextToken);
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [note, setNote] = useState('');
   const pendingRef = useRef<UndoBody | null>(stored?.body ?? null), [pending, setPendingState] = useState<UndoBody | null>(stored?.body ?? null);
-  const setPending = (p: UndoBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setUndo(seriesId, mergeId, p ? { seriesId, mergeId, name, body: p } : null); };
+  const setPending = (p: UndoBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setUndo(libraryId, seriesId, mergeId, p ? { libraryId, seriesId, mergeId, name, body: p } : null); };
   const stale = (code?: string) => code === 'CHARACTER_MERGE_UNDO_STALE' || code === 'ASSET_SCOPE_CHANGED' || code === 'CHARACTER_MERGE_STALE';
   /** 核对撤销会恢复什么。凭证过期（组合验收 R2）：先重读这部剧的凭证再预览；重读或预览失败就清掉旧预览，只给「重新核对」。 */
   async function load(message = '', tok = token, retried = false): Promise<void> {

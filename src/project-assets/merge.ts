@@ -137,9 +137,16 @@ export function siblingHint(group: MergeGroup, assetId: string) {
  * 写入 localStorage，同一浏览器的各标签页共享（收口标准：待核对期间这部剧只读，多开标签页也一样），
  * 其他标签页改动经 storage 事件同步；存储不可用时只用内存（仅保证当前标签页）。
  */
-export type PendingMerge = { seriesId: string; group: MergeGroup; body: MergeConfirmBody };
-export type PendingUndo = { seriesId: string; mergeId: string; name: string; body: UndoBody };
-const PENDING_KEY = 'shiguang.characterMerge.pending.v2';
+/** libraryId = 本机服务的资料库实例身份（/api/session 的 instanceId）：同源换库时互不套用（收口验收 R3）。 */
+export type PendingMerge = { libraryId: string; seriesId: string; group: MergeGroup; body: MergeConfirmBody };
+export type PendingUndo = { libraryId: string; seriesId: string; mergeId: string; name: string; body: UndoBody };
+const PENDING_KEY = 'shiguang.characterMerge.pending.v3';
+let libraryIdPromise: Promise<string> | null = null;
+/** 读当前资料库身份（只读，不换发会话）；失败时下次再读。 */
+export function readLibraryId(): Promise<string> {
+  libraryIdPromise ??= fetch('/api/session', { cache: 'no-store', credentials: 'same-origin' }).then(r => r.json()).then(j => { if (typeof j?.instanceId !== 'string' || !j.instanceId) throw Error('资料库身份未知'); return j.instanceId as string; });
+  return libraryIdPromise.catch(e => { libraryIdPromise = null; throw e; });
+}
 const readPending = (): { merges: PendingMerge[]; undos: PendingUndo[] } => {
   try { const v = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); if (v && Array.isArray(v.merges) && Array.isArray(v.undos)) return v; } catch { /* 无存储时只用内存 */ }
   return { merges: [], undos: [] };
@@ -151,10 +158,11 @@ export const subscribePending = (fn: () => void) => { pendingListeners.add(fn); 
 const savePending = () => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } pendingListeners.forEach(fn => fn()); };
 // 其他标签页登记或解除了待核对：读回最新状态并通知页面
 try { window.addEventListener('storage', e => { if (e.key === PENDING_KEY) { pendingMem = readPending(); pendingListeners.forEach(fn => fn()); } }); } catch { /* 非浏览器环境 */ }
+/** 所有查找都按（资料库身份, 剧）：换到另一个资料库时不套用，旧库的记录保留，回去后照常核对。 */
 export const pendingStore = {
-  merge: (seriesId: string) => pendingMem.merges.find(p => p.seriesId === seriesId) ?? null,
-  setMerge(seriesId: string, p: PendingMerge | null) { pendingMem.merges = pendingMem.merges.filter(x => x.seriesId !== seriesId); if (p) pendingMem.merges.push(p); savePending(); },
-  undo: (seriesId: string, mergeId: string) => pendingMem.undos.find(p => p.seriesId === seriesId && p.mergeId === mergeId) ?? null,
-  undosOf: (seriesId: string) => pendingMem.undos.filter(p => p.seriesId === seriesId),
-  setUndo(seriesId: string, mergeId: string, p: PendingUndo | null) { pendingMem.undos = pendingMem.undos.filter(x => !(x.seriesId === seriesId && x.mergeId === mergeId)); if (p) pendingMem.undos.push(p); savePending(); },
+  merge: (lib: string, seriesId: string) => lib ? pendingMem.merges.find(p => p.libraryId === lib && p.seriesId === seriesId) ?? null : null,
+  setMerge(lib: string, seriesId: string, p: PendingMerge | null) { pendingMem.merges = pendingMem.merges.filter(x => !(x.libraryId === lib && x.seriesId === seriesId)); if (p) pendingMem.merges.push(p); savePending(); },
+  undo: (lib: string, seriesId: string, mergeId: string) => lib ? pendingMem.undos.find(p => p.libraryId === lib && p.seriesId === seriesId && p.mergeId === mergeId) ?? null : null,
+  undosOf: (lib: string, seriesId: string) => lib ? pendingMem.undos.filter(p => p.libraryId === lib && p.seriesId === seriesId) : [],
+  setUndo(lib: string, seriesId: string, mergeId: string, p: PendingUndo | null) { pendingMem.undos = pendingMem.undos.filter(x => !(x.libraryId === lib && x.seriesId === seriesId && x.mergeId === mergeId)); if (p) pendingMem.undos.push(p); savePending(); },
 };

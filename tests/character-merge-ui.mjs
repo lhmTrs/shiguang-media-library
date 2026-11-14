@@ -369,6 +369,47 @@ try {
     await expect(bar).toHaveCount(0); await expect(undo.getByRole('status')).toContainText('暂时不能完整撤销'); await undo.getByRole('button', { name: '取消' }).click();
   });
 
+  await check('收口验收 R1–R3：有未保存评分不能发起撤销；另一标签页在途导入在锁定后不再上传；换资料库不套用旧库待核对、换回仍可核对', async () => {
+    fake.lisiMerged = false; await page.reload(); await expect(work()).toBeVisible(); // 上一项结束时替身里的李四停在已合并：重读候选组
+    let dlg = await mergeLisi(); await dlg.getByRole('button', { name: '确认合并' }).click(); await expect(dlg).toHaveCount(0);
+    // R1：李四的评分改成 61 没保存 → 点撤销被拦下，不开始撤销
+    await scopeSwitch().getByRole('button').first().click();
+    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    const attrs = work().getByRole('region', { name: '人物属性' }); await attrs.getByRole('button', { name: '编辑' }).click(); await attrs.locator('input[type=number]').first().fill('61');
+    const pv0 = fake.undoPreviews.length; await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    await expect(work().getByRole('alert').first()).toContainText('包括评分'); await expect(page.getByRole('dialog', { name: /撤销合并/ })).toHaveCount(0);
+    assert.equal(fake.undoPreviews.length, pv0, '评分未保存时不应开始撤销');
+    await attrs.getByRole('button', { name: '取消' }).click();
+    // R2：另一个标签页给李四导入参考图，扣住第一步 → 本页进入待核对 → 放行 → 后续上传内容被闸住
+    const page2 = await page.context().newPage(); page2.on('pageerror', e => errors.push('page2: ' + e.message));
+    const work2 = () => page2.getByRole('region', { name: '项目资产库' });
+    await page2.goto(origin + '/#/all'); await expect(page2.locator('.ppb').first()).toHaveAttribute('data-project', /./);
+    await selectProjectInBar(page2, eps[0].id); await page2.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '项目资产', exact: true }).click();
+    await work2().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work2().locator('.ca-name-input')).toHaveValue('李四'); // 有造型才有导入参考图入口
+    let release; const hold = new Promise(r => release = r); const contentPuts = [];
+    await page2.route(u => new URL(u).pathname === '/api/project-assets/image-imports', async route => { await hold; return route.continue(); });
+    page2.on('request', r => { if (/\/image-imports\/[^/]+\/content$/.test(new URL(r.url()).pathname)) contentPuts.push(r.method()); });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await work2().locator('input[type=file][aria-label="选择一张参考图片"]').setInputFiles({ name: '在途.png', mimeType: 'image/png', buffer: png });
+    const undo = await startUndoLisi(); fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
+    await expect(work2().locator('.cm-pending')).toBeVisible(); release();
+    await expect(work2().locator('[role=alert]').filter({ hasText: '只能看、不能改' }).first()).toBeVisible();
+    await page2.waitForTimeout(800); assert.deepEqual(contentPuts, [], '锁定后不应再上传图片内容');
+    await page2.close();
+    // R3：同一浏览器里另一个资料库实例（同一剧编号）留着一条待核对合并 → 本库不套用它，只显示本库的待核对撤销；
+    //     本库核对完后恢复可编辑，另一个库的记录原样保留（回到那个库还能核对）
+    await page.evaluate(([sid, group]) => { const k = 'shiguang.characterMerge.pending.v3', v = JSON.parse(localStorage.getItem(k) || '{"merges":[],"undos":[]}');
+      v.merges.push({ libraryId: 'another-library', seriesId: sid, group, body: { request_id: 'other-lib-req', preview_token: 't', context_token: 'c', choices: { look_choices: [] } } }); localStorage.setItem(k, JSON.stringify(v)); }, [S.id, lisi()]);
+    await page.reload(); await expect(work()).toBeVisible();
+    const bar = work().locator('.cm-pending'); await expect(bar).toContainText('上次撤销合并「李四」'); await expect(bar).not.toContainText('上次合并「李四」'); await shot('13-other-library-isolated');
+    await bar.getByRole('button', { name: '核对上次结果' }).click();
+    const u2 = page.getByRole('dialog', { name: '撤销合并「李四」' }); await u2.getByRole('button', { name: '核对上次结果' }).click(); await expect(u2).toHaveCount(0);
+    await expect(bar).toHaveCount(0); await expect(work().getByRole('button', { name: /^新建/ }).first()).toBeEnabled();
+    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('shiguang.characterMerge.pending.v3') || '{}'));
+    assert.deepEqual(kept.merges.map(m => m.libraryId), ['another-library'], '另一个资料库的待核对原样保留'); assert.equal(kept.undos.length, 0);
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {
