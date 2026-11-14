@@ -288,7 +288,9 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   const draftMeta = draft && scopeBase ? metas[draft.id] : undefined;
   /** 集视图里继承自全剧的资产：基础字段只读，默认造型 / 默认图在「本集设置」里覆盖。 */
   const inheritedHere = !!draftMeta && !seriesView && draftOwner?.type === 'series';
-  const scopeLock = !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
+  /** 合并 / 撤销已落定后，当前人物换了位置而这里还有未保存修改（组合验收复验）：锁住、不往旧位置保存，文字保留可复制。 */
+  const [orphan, setOrphan] = useState<{ id: string; text: string } | null>(null);
+  const scopeLock = orphan && draft && orphan.id === draft.id ? orphan.text : !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
   // 集视图共享人物的评分维度：按人物读（服务端按归属返回剧级维度），版本与详情里的 attribute_config_revision 对齐才可改分
   const [scopeDims, setScopeDims] = useState<{ revision: number; dims: ScoreDimension[] } | null>(null);
   useEffect(() => {
@@ -538,7 +540,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   }
   /** Clicking the character whose detail is already open does nothing (no reload, no flash). */
   const alreadyOpen = (id: string) => draft?.id === id && !detailLoading;
-  function dropDetail() { selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
+  function dropDetail() { setOrphan(null); selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   type NameCheck = { status: 'available' | 'existing_local' | 'inherit_shared' | 'conflict'; match?: { id: string; name: string }; conflicts?: { id: string; name: string; scope_name?: string }[]; context_token?: string; related_characters?: RelatedCharacters };
@@ -867,8 +869,9 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (pu && !pm) { setNotice('上次撤销合并「' + pu.name + '」的结果还没核对到，先核对它'); openUndo(pu.mergeId, pu.name); return; }
     if (pm && pm.group.group_id !== group.group_id) { setNotice('上次合并「' + pm.group.name + '」的结果还没核对到，先核对它，再合并别的'); group = pm.group; primary = undefined; }
     if (merges.data?.alignment_status === 'pending') { setError(mergeErrorText.ATTRIBUTE_ALIGNMENT_REQUIRED); return; }
-    if (dirty) { setError('当前人物有未保存的修改：请先保存或放弃修改，再合并同名人物'); return; }
-    if (!canLeave()) return;
+    const checking = !!pm && pm.group.group_id === group.group_id; // 核对已发出的合并是只读，不要求先处理草稿
+    if (!checking && dirty) { setError('当前人物有未保存的修改：请先保存或放弃修改，再合并同名人物'); return; }
+    if (!checking && !canLeave()) return;
     setMenu(''); setQuick(null); setMergeDone(null); setError(''); setMergeOpen({ group, primary });
   }
   /** 撤销入口（完成提示、来源与版本、待核对提示条）：有未核对的合并或别的撤销时先引导核对它。 */
@@ -876,13 +879,15 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     const pm = mergeSeries ? pendingStore.merge(mergeSeries) : null, pu = mergeSeries ? pendingStore.undosOf(mergeSeries)[0] : null;
     if (pm) { openMerge(pm.group); return; }
     if (pu && pu.mergeId !== mergeId) { setNotice('上次撤销合并「' + pu.name + '」的结果还没核对到，先核对它'); mergeId = pu.mergeId; name = pu.name; }
-    setMenu(''); setQuick(null); setMergeUndo({ mergeId, name });
+    if (!pu && dirtyRef.current) { setError('当前人物有未保存的修改：请先保存或放弃，再撤销合并（撤销会让相关人物换回原来的位置）'); return; }
+    setMenu(''); setQuick(null); setError(''); setMergeUndo({ mergeId, name });
   }
   /** 合并 / 撤销完成后的详情处理（组合验收 R1 复验）：只处理这次涉及的人物，无关人物和它的未保存草稿原样保留；
    *  涉及的人物没改过就关掉（下次打开读新资料），有未保存修改就保留草稿并提示，保存时由版本冲突保护核对。 */
   function settleDetail(ids: string[], what: string) {
     const d = draftRef.current; if (!d || !ids.includes(d.id)) return;
-    if (dirtyRef.current) setError('「' + d.name + '」刚因' + what + '变了，你未保存的修改还在、没有丢；保存时会提示版本冲突，请核对后再保存');
+    // 有未保存修改：人物已换了位置（全剧 ↔ 集），往原位置保存会失败，也不能把整份旧草稿写到新位置 → 锁住，保留文字可复制
+    if (dirtyRef.current) setOrphan({ id: d.id, text: '「' + d.name + '」已因' + what + '换了位置，这里的修改不能再保存到原来的位置，也不会自动写到新位置。你的修改还在下面：可以先「复制我改的文字」，再「放弃修改并关闭」，到它现在的位置重新编辑。' });
     else dropDetail();
   }
   async function afterMerge(r: MergeReceipt, group: MergeGroup, lookCount?: number) {
@@ -1419,6 +1424,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
           </div>
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
           {!!scopeLock && !draft.archived_at && <div className="ca-archive-note ca-scope-lock" role="status"><Layers size={15}/>{scopeLock}</div>}
+          {orphan?.id === draft.id && <div className="cm-orphan-actions"><button type="button" onClick={() => void navigator.clipboard.writeText([draft.name, draft.base_info, draft.performance_info].filter(Boolean).join('\n\n')).then(() => setNotice('已复制你改的文字（名称、基础信息、性格与表演）'), () => setError('复制没成功，可以直接选中下面的文字复制'))}><Copy size={14}/>复制我改的文字</button>
+            <button type="button" onClick={dropDetail}><X size={14}/>放弃修改并关闭</button></div>}
           {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides key={draft.id + ':' + scopeBase} asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} dims={dimsAligned ? scopeDims!.dims : undefined} onPickImage={lk => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: lk } }); }} append={appendHandlers} seriesName={assetCtx?.series?.name} dimsNote={scopeDims && !dimsAligned ? '评分维度刚在全剧改过，请重新打开这个人物后再改分' : ''} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。{sharedRestoreBlocked ? sharedRestoreNote : '在右上角“⋯”中选择“恢复”后可继续编辑。'}</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}

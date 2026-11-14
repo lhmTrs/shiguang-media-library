@@ -291,6 +291,39 @@ try {
     await expect(work()).toContainText('已撤销合并「李四」');
   });
 
+  await check('复验：新撤销前要先处理未保存修改；核对已落定的撤销时相关人物有草稿 → 锁住不往旧位置保存，可复制文字、可放弃关闭，不发写请求', async () => {
+    page.once('dialog', d => d.accept()); // 上一项留着钱八的未保存草稿：切换时确认放弃
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
+    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
+    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click();
+    await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click(); await dlg.getByRole('button', { name: '确认合并' }).click(); await expect(dlg).toHaveCount(0);
+    // 新撤销：当前人物有未保存修改 → 先处理，不弹撤销
+    await scopeSwitch().getByRole('button').first().click();
+    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    const info = work().getByLabel('基础信息', { exact: true }); await info.fill('李四的草稿');
+    const undosBefore = fake.undos.length, previewsBefore = fake.undoPreviews.length;
+    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    await expect(work().getByRole('alert').first()).toContainText('请先保存或放弃'); await expect(page.getByRole('dialog', { name: /撤销合并/ })).toHaveCount(0);
+    assert.equal(fake.undoPreviews.length, previewsBefore, '有草稿时不应开始撤销');
+    // 放弃修改后发起撤销：写入但回应和第一次查询都丢 → 待核对
+    page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '放弃修改' }).click(); await expect(info).not.toHaveValue('李四的草稿');
+    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check();
+    fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
+    // 待核对期间又改了相关人物李四 → 核对已落定的撤销（只读，允许）→ 李四换了位置：锁住、文字保留
+    await info.fill('李四的草稿第二版'); const writesBefore = writes.length;
+    await work().locator('.cm-pending').getByRole('button', { name: '核对上次结果' }).click();
+    const again = page.getByRole('dialog', { name: '撤销合并「李四」' }); await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
+    assert.equal(fake.undos.length, undosBefore + 1, '核对只查原编号');
+    await expect(work().locator('.ca-scope-lock')).toContainText('已因撤销合并换了位置'); await expect(info).toHaveValue('李四的草稿第二版');
+    await expect(work().getByRole('button', { name: '保存资料' })).toBeDisabled(); await shot('11-orphan-locked');
+    await work().getByRole('button', { name: '复制我改的文字' }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('李四的草稿第二版');
+    await work().getByRole('button', { name: '放弃修改并关闭' }).click(); await expect(work().locator('.ca-name-input')).toHaveCount(0);
+    assert.deepEqual(writes.slice(writesBefore), [], '不应往任何位置写这份草稿');
+  });
+
   assert.deepEqual(errors, [], '页面不应出现脚本错误');
   passed = true;
 } finally {

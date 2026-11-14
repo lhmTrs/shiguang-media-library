@@ -76,6 +76,13 @@ try {
     const li = (await seriesPeople()).find(x => x.asset.name === '李四'); assert.ok(li, '全剧应有李四');
     assert.equal(li.asset.id, A.id, '主体保留所选的原 ID'); assert.equal(li.asset.looks.filter(l => !l.archived_at).length, 4, '两份的造型都并进来');
     assert.equal(li.asset.base_info, '卖油郎的结拜兄弟，嘴硬心软', '资料用主体的');
+    // 复验：在全剧打开合并后的李四改资料不保存，再点撤销 → 先要求处理修改，不发起撤销（撤销会让李四回到集里）
+    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
+    const info = work().getByLabel('基础信息', { exact: true }); await info.fill('全剧李四的草稿');
+    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    await expect(work().getByRole('alert').first()).toContainText('请先保存或放弃'); await expect(page.getByRole('dialog', { name: /撤销合并/ })).toHaveCount(0);
+    page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '放弃修改' }).click(); await expect(info).toHaveValue('卖油郎的结拜兄弟，嘴硬心软');
+    assert.equal((await groups()).summary.group_count, 0, '没有撤销');
   });
 
   await check('B3 真实：来源与版本里有合并记录，「撤销这次合并…」恢复成两份', async () => {
