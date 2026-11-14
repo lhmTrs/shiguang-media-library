@@ -168,6 +168,7 @@ export class ProjectAttributes {
     const changes = scoreChanges(input?.changes);
     if (!isRevision(input.expected_attribute_revision)) throw fault('评分修订号无效');
     return this.write(input.project_id, projectId => {
+      this.assets.characterMerges.assertCurrent({ series_id: this.assets.lib.projectSeries?.membership(projectId).series_id }, id);
       const asset = this.requireAsset(id, projectId);
       this.assets.generationLocks?.assertWritable(projectId);
       const config = this.effectiveConfig(projectId), record = this.record(asset.id);

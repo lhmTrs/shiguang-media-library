@@ -2,6 +2,7 @@ import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
 import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn, Layers } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
+import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
 import {imageNamePreset} from '../import-presets.mjs';
 import './asset-library.css';
@@ -11,6 +12,9 @@ import {ScopeOverrides, withEffective, type AppendHandlers, type AppendPreview, 
 import {ImpactPreview, type ImpactPreviewData} from './ImpactPreview';
 import {SeasonSettings} from './SeasonSettings';
 import {SeriesAlignment} from './SeriesAlignment';
+import {hasUnsavedChild} from './unsaved';
+import {MergeBanner, MergeDialog, MergeDoneBar, MergePendingBar, UndoMergeDialog, useMergeGroups, usePendingMerge} from './CharacterMerge';
+import {memberPlaces, mergeErrorText, pendingStore, readLibraryId, siblingHint, type MergeGroup, type MergeReceipt, type RelatedCharacters, type UndoReceipt} from './merge';
 import {ProjectScript} from './ProjectScript';
 import {CharacterVoice} from './CharacterVoice';
 import {CharacterAttributes} from './CharacterAttributes';
@@ -142,7 +146,15 @@ function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span classN
 function Cover({ a, binding }: { a: Asset; binding?: Binding | null }) { const b = binding === undefined ? coverOf(a) : binding; return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
 export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, active, request, activeProject, refreshSeconds, onSettings, onOpenShot, registerProjectSwitchGuard }: ProjectAssetProps) {
-  const api = <T = any,>(url: string, body?: unknown, method?: string) => request<T>('/project-assets' + url, body, method);
+  /** 收口标准：这部剧有合并 / 撤销待核对时，人物写请求在这里统一拦下（预览、撞名检查、复制到剪贴板、在访达中显示等只读请求照常）。 */
+  const holdRef = useRef('');
+  const guardedRequest = (<T,>(url: string, body?: unknown, method?: string) => {
+    const verb = (method ?? (body !== undefined ? 'POST' : 'GET')).toUpperCase();
+    if (holdRef.current && verb !== 'GET' && url.startsWith('/project-assets') && !/(preview|names\/check)(\?|$)|\/images\/(clipboard|reveal)(\?|$)/.test(url))
+      return Promise.reject(Object.assign(Error(holdRef.current), { code: 'MERGE_PENDING' }));
+    return request<T>(url, body, method);
+  }) as PromptRequest;
+  const api = <T = any,>(url: string, body?: unknown, method?: string) => guardedRequest<T>('/project-assets' + url, body, method);
   // v2：新画廊默认卡片显示，不沿用旧版窄列表时期保存的“列表”偏好。
   const prefKey = 'shiguang.creative.preferences.v2';
   const remembered = () => readMemory().display ? readStored<{ kind: Kind; layout: string }>(prefKey, { kind: 'character', layout: 'grid' }, (v): v is { kind: Kind; layout: string } => !!v && typeof v === 'object' && ['character', 'scene', 'prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout)) : { kind: 'character' as Kind, layout: 'grid' };
@@ -286,7 +298,15 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   const draftMeta = draft && scopeBase ? metas[draft.id] : undefined;
   /** 集视图里继承自全剧的资产：基础字段只读，默认造型 / 默认图在「本集设置」里覆盖。 */
   const inheritedHere = !!draftMeta && !seriesView && draftOwner?.type === 'series';
-  const scopeLock = !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
+  /** 合并 / 撤销已落定后，当前人物换了位置而这里还有未保存修改（组合验收复验）：锁住、不往旧位置保存，文字保留可复制。 */
+  const mergeSeries = scoped && !publicScope && assetCtx?.series ? assetCtx.series.id : null;
+  // 资料库身份（/api/session 的 instanceId）：待核对按（资料库, 剧）隔离，换库不套用（收口验收 R3）
+  const [libraryId, setLibraryId] = useState('');
+  useEffect(() => { let live = true; void readLibraryId().then(id => { if (live) setLibraryId(id); }).catch(() => {}); return () => { live = false; }; }, []);
+  const held = usePendingMerge(libraryId, mergeSeries);
+  const holdReason = kind === 'character' && (held.merge || held.undo) ? '这部剧有一次' + (held.merge ? '合并同名人物' : '撤销合并') + '的结果还没核对到：核对前这部剧的人物只能看、不能改，已有的修改会保留。请先点顶部的「核对上次结果」。' : '';
+  holdRef.current = holdReason;
+  const scopeLock = holdReason && draft ? holdReason : !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
   // 集视图共享人物的评分维度：按人物读（服务端按归属返回剧级维度），版本与详情里的 attribute_config_revision 对齐才可改分
   const [scopeDims, setScopeDims] = useState<{ revision: number; dims: ScoreDimension[] } | null>(null);
   useEffect(() => {
@@ -539,7 +559,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   function dropDetail() { selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
-  type NameCheck = { status: 'available' | 'existing_local' | 'inherit_shared' | 'conflict'; match?: { id: string; name: string }; conflicts?: { id: string; name: string; scope_name?: string }[]; context_token?: string };
+  type NameCheck = { status: 'available' | 'existing_local' | 'inherit_shared' | 'conflict'; match?: { id: string; name: string }; conflicts?: { id: string; name: string; scope_name?: string }[]; context_token?: string; related_characters?: RelatedCharacters };
   /** 新建：作用域模式先查同名（全剧已有 → 问继承还是另建；本集已有或冲突 → 说明改名），再按选择创建；旧模式照旧。 */
   async function submitCreate(name: string, onShared: 'reject' | 'reuse') {
     const base = scopeBaseRef.current;
@@ -549,6 +569,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
         const c = await api<NameCheck>(base + '/names/check', { kind, name }, 'POST');
         if (c.status === 'inherit_shared') { setModal((m: any) => m && m.type === 'create' ? { ...m, check: c } : m); return; }
         if (c.status === 'existing_local') throw Error('本集已有同名的「' + name + '」，请换个名字');
+        // 合同 B0：别的集已有同名人物（集与集允许同名，但多半是同一个人）→ 先问是合并 / 提升到全剧，还是换个名字
+        if (c.related_characters && c.related_characters.action !== 'none' && c.related_characters.items.length) { setModal((m: any) => m && m.type === 'create' ? { ...m, check: c } : m); return; }
         if (c.status === 'conflict') throw Error('和' + (c.conflicts ?? []).map(x => '「' + (x.scope_name ? x.scope_name + ' · ' : '') + x.name + '」').join('、') + '同名冲突，请换个名字');
       }
       const r = await scopedWrite<(ScopedItem<Asset> & { reused?: boolean }) | ({ id: string; reused?: boolean })>(api, base + '/assets', { request_id: crypto.randomUUID(), context_token: scopeToken() ?? assetCtx?.context_token, kind, name, on_shared: onShared }, 'POST');
@@ -849,6 +871,73 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (next.length === 1 && draft?.id !== next[0]) { if (!asked && !canLeave()) return false; setPickedAssets([]); void openAsset(next[0], true); return true; }
     setPickedAssets([]); return true;
   }
+  // —— 合并同名人物（合同 v1 · B）：同一部剧里各集同名人物的候选组；全剧提示条、卡片提示、菜单入口、新建撞名都用它 ——
+  const [mergeVersion, setMergeVersion] = useState(0), [mergeOpen, setMergeOpen] = useState<{ group: MergeGroup; primary?: string } | null>(null);
+  const [mergeDone, setMergeDone] = useState<{ receipt: MergeReceipt; name: string; lookCount?: number } | null>(null), [mergeUndo, setMergeUndo] = useState<{ mergeId: string; name: string } | null>(null);
+  const merges = useMergeGroups(request, mergeSeries, !!mergeSeries && kind === 'character' && active, `${mergeVersion}:${listRevision}:${total}`);
+  const mergeGroupOf = (id: string) => merges.byAsset.get(id);
+  function openMerge(group: MergeGroup, primary?: string) {
+    // 组合验收 R1：这部剧有一次合并 / 撤销结果还不明，先核对它，不发起新的操作
+    const pm = mergeSeries ? pendingStore.merge(libraryId, mergeSeries) : null, pu = mergeSeries ? pendingStore.undosOf(libraryId, mergeSeries)[0] : null;
+    // 两种都有时先核对合并（openUndo 遇到待核对的合并也会回到这里），避免互相跳转
+    if (pu && !pm) { setNotice('上次撤销合并「' + pu.name + '」的结果还没核对到，先核对它'); openUndo(pu.mergeId, pu.name); return; }
+    if (pm && pm.group.group_id !== group.group_id) { setNotice('上次合并「' + pm.group.name + '」的结果还没核对到，先核对它，再合并别的'); group = pm.group; primary = undefined; }
+    if (merges.data?.alignment_status === 'pending') { setError(mergeErrorText.ATTRIBUTE_ALIGNMENT_REQUIRED); return; }
+    const checking = !!pm && pm.group.group_id === group.group_id; // 核对已发出的合并是只读，不要求先处理草稿
+    if (!libraryId) { setError('正在确认资料库身份，请稍后再试'); return; }
+    const blocked = checking ? '' : editBlock(); if (blocked) { setError(blocked + '，再合并同名人物'); return; }
+    if (!checking && !canLeave()) return;
+    setMenu(''); setQuick(null); setMergeDone(null); setError(''); setMergeOpen({ group, primary });
+  }
+  /** 发起新的合并 / 撤销 / 重新提交前的保护：主资料草稿、子编辑器未保存内容（评分、本集改分、新增造型）、进行中的保存或导入。 */
+  const editBlock = () => dirtyRef.current || hasUnsavedChild() ? '当前人物有未保存的修改（包括评分、本集改分或新增造型的输入）：请先保存或放弃'
+    : busy || importActivity.current.size || dropJobRef.current?.running ? '还有正在进行的保存或导入：请等它完成' : '';
+  const draftGuard = () => { const why = editBlock(); return why ? why + '，再重新提交（重新提交会让相关人物换位置）' : ''; };
+  /** 撤销入口（完成提示、来源与版本、待核对提示条）：有未核对的合并或别的撤销时先引导核对它。 */
+  function openUndo(mergeId: string, name: string) {
+    const pm = mergeSeries ? pendingStore.merge(libraryId, mergeSeries) : null, pu = mergeSeries ? pendingStore.undosOf(libraryId, mergeSeries)[0] : null;
+    if (pm) { openMerge(pm.group); return; }
+    if (pu && pu.mergeId !== mergeId) { setNotice('上次撤销合并「' + pu.name + '」的结果还没核对到，先核对它'); mergeId = pu.mergeId; name = pu.name; }
+    if (!libraryId) { setError('正在确认资料库身份，请稍后再试'); return; }
+    const blocked = pu ? '' : editBlock(); if (blocked) { setError(blocked + '，再撤销合并（撤销会让相关人物换回原来的位置）'); return; }
+    setMenu(''); setQuick(null); setError(''); setMergeUndo({ mergeId, name });
+  }
+  /** 合并 / 撤销落定后的详情处理（收口标准）：只处理这次涉及的人物。没改过就关掉，下次打开读新资料；
+   *  还有草稿（待核对期间写入口锁住，只可能来自别的标签页或旧会话）就保留并说明，保存会由版本 / 作用域校验拦下。 */
+  function settleDetail(ids: string[], what: string) {
+    const d = draftRef.current; if (!d || !ids.includes(d.id)) return;
+    if (dirtyRef.current || hasUnsavedChild()) setError('「' + d.name + '」刚因' + what + '换了位置，你的修改还在这里、没有保存。请先复制需要的内容，再放弃修改，到它现在的位置重新编辑。');
+    else dropDetail();
+  }
+  async function afterMerge(r: MergeReceipt, group: MergeGroup, lookCount?: number) {
+    setMergeOpen(null); setMergeDone({ receipt: r, name: group.name, lookCount }); setMergeVersion(v => v + 1);
+    settleDetail([...group.members.map(m => m.asset_id), r.canonical_asset_id], '合并同名人物');
+    await loadList().catch(e => setError(e.message)); // 设计稿 B4：只在顶部提示，不替用户打开人物
+  }
+  async function nextMerge(r: MergeReceipt) {
+    const fresh = await merges.reload().catch(() => null);
+    const g = fresh?.items.find(x => x.group_id === r.next_group_id) ?? fresh?.items[0];
+    if (!g) { setMergeDone(null); setNotice('这部剧里已经没有需要合并的同名人物了'); return; }
+    openMerge(g);
+  }
+  function afterUndo(name: string, r: UndoReceipt) {
+    setMergeUndo(null); setMergeDone(null); setMergeVersion(v => v + 1); settleDetail(r.restored_asset_ids ?? [], '撤销合并');
+    setNotice('已撤销合并「' + name + '」，恢复成合并前的几份');
+    void loadList().catch(e => setError(e.message));
+  }
+  /** 新建撞名里的「合并这几个…」：按检查给的组编号找组（列表还没读到就重读一次）。 */
+  async function mergeFromCreate(rel: RelatedCharacters) {
+    const data = merges.data?.items.some(g => g.group_id === rel.group_id) ? merges.data : await merges.reload().catch(() => null);
+    const g = data?.items.find(x => x.group_id === rel.group_id);
+    if (!g) { setError('没找到这几个同名人物的合并组，请刷新列表后再试'); return; }
+    setModal(null); openMerge(g);
+  }
+  const relatedText = (rel: RelatedCharacters, name: string) => {
+    const places = memberPlaces(rel.items), where = places.join('、') + (places.length > 1 ? '已经各有一个' : '已经有一个') + '「' + name + '」。';
+    return rel.action === 'merge' ? <>{where}<br/>· 是同一个人：合并成一个全剧人物，各集共用。<br/>· 不是同一个人：换个名字再创建。</>
+      : <>{where}<br/>· 是同一个人：到{places[0]}把它提升到全剧，各集共用。<br/>· 不是同一个人：换个名字再创建。</>;
+  };
+
   function pickCard(e: React.MouseEvent, a: Asset) {
     const mod = e.metaKey || e.ctrlKey && !isMac;
     if (!mod && !e.shiftKey) { if (!pickedAssets.length && alreadyOpen(a.id)) { lastPick.current.assets = a.id; return; } if (busy || !canLeave()) return; setPickedAssets([]); lastPick.current.assets = a.id; void openAsset(a.id, true); return; }
@@ -1055,14 +1144,14 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       }
       if (it.stage === 'import') {
         const imports = '/project-assets/image-imports';
-        const start = () => request<Receipt>(imports, { requestId: it.requestId, assetId: it.assetId, projectId: job.projectId, lookId: job.kind === 'character' ? it.lookId : null, fileName: it.file.name, bytes: it.file.size });
+        const start = () => guardedRequest<Receipt>(imports, { requestId: it.requestId, assetId: it.assetId, projectId: job.projectId, lookId: job.kind === 'character' ? it.lookId : null, fileName: it.file.name, bytes: it.file.size });
         let r: Receipt;
-        if (choice) r = await request<Receipt>(imports + '/' + it.requestId + '/resolve', choice);
+        if (choice) r = await guardedRequest<Receipt>(imports + '/' + it.requestId + '/resolve', choice);
         else {
           // 同一编号再次发送只会返回原回执，用来核对上次是否已经上传。
           r = await start();
           if (retrying && (r.status === 'failed' || r.status === 'cancelled')) { sync({ requestId: crypto.randomUUID() }); r = await start(); }
-          if (r.status === 'waiting') r = await request<Receipt>(imports + '/' + it.requestId + '/content', it.file, 'PUT');
+          if (r.status === 'waiting') r = await guardedRequest<Receipt>(imports + '/' + it.requestId + '/content', it.file, 'PUT');
         }
         if (r.status === 'duplicate') { sync({ state: 'duplicate', receipt: r, candidate: r.candidates.some(c => c.id === it.candidate) ? it.candidate : r.candidates[0]?.id, message: '发现同名或相同内容的图片，请选择使用原图或继续导入' }); return; }
         if (r.status === 'preparing' || r.status === 'uploading') { sync({ state: 'unknown', message: '服务器仍在接收或保存这张图片，请稍后点击“核对结果”' }); return; }
@@ -1219,6 +1308,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       <hr/>
       <button role="menuitem" disabled={!cover} onClick={() => { setQuick(null); setImageViewer({ src: bindingSrc(cover!), name: cover!.last_known_name || a.name, from: 'card' }); }}><ZoomIn size={14}/>放大查看</button>
       {a.kind === 'character' && !publicScope && <button role="menuitem" onClick={() => setQuick({ ...quick!, mode: 'attrs' })}><Radar size={14}/>查看属性图</button>}
+      {a.kind === 'character' && !a.archived_at && mergeGroupOf(a.id) && <button role="menuitem" onClick={() => openMerge(mergeGroupOf(a.id)!, a.id)}><Users size={14}/>合并同名人物…</button>}
       <button role="menuitem" onClick={() => { setQuick(null); if (!alreadyOpen(a.id)) void openAsset(a.id); }}>打开详情</button>
     </div>;
     if (quick!.mode === 'attrs' || quick!.mode === 'compare') {
@@ -1261,7 +1351,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
           {!!assetCtx?.season && !publicScope && <button type="button" className="ca-season-entry" disabled={!!busy || !!modal || !!dropJob} onClick={() => void openSeasonSettings()}>{assetCtx.season.name}设定</button>}</div>
         {!scriptView && <div className="ca-head-tools">
           <label className="ca-search"><Search size={15} aria-hidden="true"/><input aria-label="搜索资产" placeholder={'搜索' + labels[kind]} value={q} onChange={e => { setQ(e.target.value); setPage(1); }}/></label>
-          <button className="ca-primary" disabled={!scope || !!busy} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
+          <button className="ca-primary" disabled={!scope || !!busy || !!holdReason} title={holdReason || undefined} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
           <div className="ca-menu-wrap"><button className="ca-icon-button" aria-label="更多资产操作" aria-haspopup="menu" aria-expanded={menu === 'page'} onClick={() => setMenu(m => m === 'page' ? '' : 'page')}><MoreHorizontal size={17}/></button>
             {menu === 'page' && <div className="ca-menu" role="menu">
               {kind === 'character' && <button role="menuitem" disabled={!!busy} onClick={() => { setMenu(''); if (!canLeave()) return; setModal({ type: 'import', source_project: scopes.find(s => s.id !== scope)?.id ?? '', source_rows: [], selected: '' }); }}><Copy size={15}/>从项目／公共库复制</button>}
@@ -1278,6 +1368,9 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       </div>
       {!publicScope && seriesView && assetCtx?.series && <p className="ca-public-note ca-series-note" role="note"><Layers size={13} aria-hidden="true"/>正在看「{assetCtx.series.name}」全剧的资产：这里的改动影响所有没有单独覆盖的集。顶栏的当前项目没有变，点「{currentScope?.name ?? '当前集'}」回到它的资产。只在某一集的资产不在这里显示。</p>}
       {!publicScope && seriesView && assetCtx?.series && <SeriesAlignment request={request} seriesId={assetCtx.series.id} seriesName={assetCtx.series.name} active={active} onAligned={() => setAttrConfigVersion(v => v + 1)}/>}
+      {!publicScope && kind === 'character' && <MergePendingBar merge={held.merge} undo={held.undo} onCheck={() => held.merge ? openMerge(held.merge.group) : held.undo && openUndo(held.undo.mergeId, held.undo.name)}/>}
+      {!publicScope && seriesView && assetCtx?.series && kind === 'character' && !mergeDone && !held.merge && !held.undo && <MergeBanner groups={merges.data} seriesName={assetCtx.series.name} onStart={g => openMerge(g)}/>}
+      {mergeDone && <MergeDoneBar receipt={mergeDone.receipt} name={mergeDone.name} lookCount={mergeDone.lookCount} onUndo={() => openUndo(mergeDone.receipt.merge_id, mergeDone.name)} onNext={() => void nextMerge(mergeDone.receipt)} onClose={() => setMergeDone(null)}/>}
       {publicScope && <p className="ca-public-note" role="note"><Globe2 size={13} aria-hidden="true"/>正在看公共人物库：这里的人物所有项目都能复制使用。顶栏的当前项目没有变{currentScope ? <>，点「{currentScope.name}」回到它的资产</> : null}。</p>}
       <div className="ca-tabs" role="tablist" aria-label="资产类别">{(Object.keys(labels) as Kind[]).map(k => <button role="tab" key={k} aria-selected={!scriptView && kind === k} disabled={!!busy || publicScope && k !== 'character'} onClick={() => switchKind(k)}>{labels[k]}{!scriptView && kind === k && !listLoading && scopesKnown && <span className="ca-tab-count">{total}</span>}</button>)}<button role="tab" aria-selected={scriptView} disabled={!!busy||publicScope||!scopes.some(s=>s.id===scope&&s.project_kind==='normal')} onClick={()=>{if(scriptView||!canLeave())return;selectionGeneration.current++; setDetailLoading(false);setModal(null);setScriptView(true);}}>剧本</button></div>
     </header>
@@ -1305,7 +1398,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
             {visibleRows.map(a => { const cover = coverFor(a), owner = scopeBase ? metas[a.id]?.owner : undefined, imageCount = (a.images ?? []).filter(b => !b.archived_at).length; const picked = (marqueeHits ?? pickedAssets).includes(a.id); return <div key={a.id} className={'ca-card-wrap' + (quick?.id === a.id ? ' is-quick' : '') + (picked ? ' is-picked' : '')} data-pick-id={pickableAsset(a) ? a.id : undefined}
               onContextMenu={e => { e.preventDefault(); openMenu(a, e.clientX, e.clientY); }}><button className={'ca-card' + (draft?.id === a.id ? ' selected' : '') + (dragTarget === a.id ? ' is-drop' : '') + (a.archived_at ? ' is-archived' : '')} aria-current={draft?.id === a.id ? 'true' : undefined} aria-pressed={kind === 'character' && pickedAssets.length ? picked : undefined} onClick={e => { if (kind === 'character') pickCard(e, a); else if (!alreadyOpen(a.id)) void openAsset(a.id); }} onDoubleClick={e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; const c = coverOf(a); if (c) setImageViewer({ src: bindingSrc(c), name: c.last_known_name || a.name, from: 'card' }); }} {...dragProps(a.id, e => void dropOnCard(e, a))}>
               <Cover a={a} binding={cover}/>
-              <span className="ca-card-body"><strong>{a.name}</strong>{owner && <span className={'ca-owner-src ' + (owner.type === 'series' ? 'is-series' : 'is-local')}>{ownerLabel(owner)}</span>}<small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>
+              <span className="ca-card-body"><strong>{a.name}</strong>{owner && <span className={'ca-owner-src ' + (owner.type === 'series' ? 'is-series' : 'is-local')}>{ownerLabel(owner)}</span>}<small>{a.base_info?.slice(0, 65) || '基础信息待完善'}</small>{a.kind === 'character' && (() => { const g = mergeGroupOf(a.id); return g ? <span className="cm-card-hint">{siblingHint(g, a.id)}</span> : null; })()}
                 <span className="ca-card-meta">{a.kind === 'character' ? <span className="ca-pill">{a.look_count ?? a.looks?.length ?? 0} 造型 · {imageCount} 图</span> : <span className="ca-pill">{imageCount} 张参考图</span>}{!cover && <span className="ca-pill warn">缺参考图</span>}{!!a.archived_at && <span className="ca-pill">已归档</span>}{a.source && <span className="ca-pill" title={'复制自 ' + a.source.project_name}>复制自 {a.source.project_name}</span>}</span>
               </span>
               {dragTarget === a.id && <span className="ca-card-drop">添加为“{a.name}”的参考图</span>}
@@ -1341,6 +1434,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
                 {draft.kind === 'character' && <button role="menuitem" disabled={!!busy || dirty || locked} title={dirty ? '请先保存当前修改' : undefined} onClick={() => { setMenu(''); void openCopy(); }}><Copy size={15}/>复制到其他项目</button>}
                 <button role="menuitem" onClick={() => { setMenu(''); setModal({ type: 'history' }); }}><History size={15}/>来源与版本（V{draft.revision}）</button>
                 <hr/>
+                {draft.kind === 'character' && !draft.archived_at && mergeGroupOf(draft.id) && <button role="menuitem" disabled={!!busy || dirty} title={dirty ? '请先保存当前修改' : undefined} onClick={() => openMerge(mergeGroupOf(draft.id)!, draft.id)}><Users size={15}/>合并同名人物…</button>}
                 {!!scopeBase && !seriesView && draftOwner?.type === 'project' && draftMeta?.capabilities.promote && !draft.archived_at && <button role="menuitem" disabled={!!busy || dirty} title={dirty ? '请先保存当前修改' : undefined} onClick={() => { setMenu(''); void previewPromotion(); }}><Layers size={15}/>提升到全剧…</button>}
                 {!(draft.archived_at && sharedRestoreBlocked) && <button role="menuitem" title={draft.storyboard_protected ? '属于当前分镜清单，请重新初始化后移出清单再归档' : dirty ? '请先保存当前修改' : undefined} disabled={!!busy || dirty || !!draft.storyboard_protected || inheritedHere} onClick={() => { setMenu(''); if (archiveViaPreview && !draft.archived_at) void previewArchive({ type: 'asset', id: draft.id }, '「' + draft.name + '」'); else void toggleArchive(); }}><Archive size={15}/>{draft.archived_at ? '恢复' : archiveViaPreview ? '归档…' : '归档'}</button>}
               </div>}
@@ -1394,14 +1488,14 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
                   <span className="ca-tile-name" title={name}>{name}</span>
                 </div>; })}</div>
                 {!images.length && empty('还没有参考图片，可以在下方导入，或从访达拖到这里')}
-                <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary>{seriesImport ? <ReferenceImageImport key={'series:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} target={{assetId:draft.id,projectId:seriesImport,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:'全剧「'+(assetCtx?.series?.name??'')+'」',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy} scoped={{startExtra:{series_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'关联需点击“保存”，保存后各集沿用',confirmNote:'确认后复制到这部剧的 picture 文件夹；关联仍需点击下方“保存”，保存后各集都能看到。'}}/>
-                  : inheritedHere ? (draftMeta?.capabilities.append && !draft.archived_at ? <ReferenceImageImport key={'append:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: draft.kind==='character'?currentLook!.id:null } }); }}><ImagePlus size={16}/>从素材库选择</button>} target={{assetId:draft.id,projectId:assetCtx?.project.id??scope,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:currentScope?.name||'本集',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy} request={request} onReady={r=>{if(r.mediaAssetId)setAppendReady({assetId:r.target.assetId,projectId:r.target.projectId,mediaId:r.mediaAssetId,name:r.fileName,lookId:r.target.lookId});}} onBusy={importBusy} scoped={{startExtra:{append_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'上传后先预览，确认才追加到全剧',confirmNote:'确认后复制到本集的 picture 文件夹，接着预览「追加到全剧」的影响，需要你再确认一次。'}}/> : <p className="ca-muted">这是全剧共享的资产，当前没有在本集追加图片的权限。</p>)
-                  : <ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/>}<details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
+                <details className="ca-add-images" key={draft.id+':'+lookId} open={images.length ? undefined : true}><summary><ImagePlus size={14}/>添加参考图片<span>导入文件 / 从素材库绑定</span></summary>{seriesImport ? <ReferenceImageImport key={'series:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} target={{assetId:draft.id,projectId:seriesImport,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:'全剧「'+(assetCtx?.series?.name??'')+'」',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={guardedRequest} onReady={importedImage} onBusy={importBusy} scoped={{startExtra:{series_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'关联需点击“保存”，保存后各集沿用',confirmNote:'确认后复制到这部剧的 picture 文件夹；关联仍需点击下方“保存”，保存后各集都能看到。'}}/>
+                  : inheritedHere ? (draftMeta?.capabilities.append && !draft.archived_at ? <ReferenceImageImport key={'append:'+draft.id+':'+(currentLook?.id||'')} libraryAction={<button disabled={!!busy} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: draft.kind==='character'?currentLook!.id:null } }); }}><ImagePlus size={16}/>从素材库选择</button>} target={{assetId:draft.id,projectId:assetCtx?.project.id??scope,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:currentScope?.name||'本集',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy} request={guardedRequest} onReady={r=>{if(r.mediaAssetId)setAppendReady({assetId:r.target.assetId,projectId:r.target.projectId,mediaId:r.mediaAssetId,name:r.fileName,lookId:r.target.lookId});}} onBusy={importBusy} scoped={{startExtra:{append_context_token:scopeToken() ?? draftMeta?.context_token ?? ''},verify:verifyScopedTarget,note:'上传后先预览，确认才追加到全剧',confirmNote:'确认后复制到本集的 picture 文件夹，接着预览「追加到全剧」的影响，需要你再确认一次。'}}/> : <p className="ca-muted">这是全剧共享的资产，当前没有在本集追加图片的权限。</p>)
+                  : <ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={guardedRequest} onReady={importedImage} onBusy={importBusy}/>}<details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
-            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? scopeToken() ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={guardedRequest} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? scopeToken() ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
             {draft.kind === 'character' && !!scopeBase && draftOwner?.type === 'series' && !seriesView && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><h3>属性</h3><p className="ca-muted">这是全剧共享的人物：评分在上方「本集设置」里按维度覆盖，没有覆盖的维度沿用全剧。</p></section>}
-            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
+            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={guardedRequest} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头">{!!scopeBase && seriesView && draftOwner?.type === 'series' ? <p className="ca-muted">全剧没有单集的镜号列表：切到某一集，可以看这个人物在那一集的出场镜头。</p> : <AssociatedShots key={draft.id + (inheritedHere ? ':ep' : '')} assetId={draft.id} active={active} request={request} onOpen={onOpenShot} basePath={inheritedHere ? '/project-assets' + scopeBase : undefined}/>}</section>
           </div>
           <footer className={'ca-savebar' + (dirty ? ' is-dirty' : '')}>
@@ -1416,7 +1510,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     {active && attrDialog > 0 && scope && !publicScope && (() => {
       const seq = attrDialog, ser = seriesView && scopeBase && assetCtx?.series ? assetCtx.series : null;
       // 全剧视图改的是全剧维度（<series>/attribute-config），不能落到本集的配置上
-      return <AttributeConfig key={(ser ? 'series:' + ser.id : scope) + ':' + seq} projectId={ser ? ser.id : scope} projectName={ser ? '全剧「' + ser.name + '」' : scopes.find(s => s.id === scope)?.name ?? ''} request={request}
+      return <AttributeConfig key={(ser ? 'series:' + ser.id : scope) + ':' + seq} projectId={ser ? ser.id : scope} projectName={ser ? '全剧「' + ser.name + '」' : scopes.find(s => s.id === scope)?.name ?? ''} request={guardedRequest}
         series={ser ? { base: scopeBase, token: () => scopeToken() ?? assetCtx?.context_token } : undefined} onGoSeries={!ser && assetCtx?.series ? goSeriesAttrConfig : undefined}
         onClose={() => setAttrDialog(cur => cur === seq ? 0 : cur)} onSaved={c => { if (ser || c.project_id === scopeRef.current) setAttrConfigVersion(v => v + 1); }}/>; })()}
     {active && desktop.action && desktopStatus()}
@@ -1481,6 +1575,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       <footer>{(() => { const todo = dropJob.items.filter(i => i.include && (i.state === 'waiting' || i.state === 'failed' || i.state === 'unknown')), checkOnly = todo.length > 0 && todo.every(i => i.state === 'unknown'); return todo.length && !(dropJob.mode === 'attach' && dropJob.kind === 'character' && !dropJob.lookId) ? <button className="ca-primary" disabled={dropJob.running || !!busy && !dropJob.running} onClick={() => void runDropJob()}>{dropJob.running ? '正在处理…' : checkOnly ? '核对结果' : todo.some(i => i.state !== 'waiting') ? '继续处理' : dropJob.mode === 'create' ? `新建 ${todo.length} 个${labels[dropJob.kind]}` : '添加图片'}</button> : null; })()}<button disabled={dropJob.running} onClick={closeDropJob}>{dropJob.items.some(i => i.state === 'done') ? '完成' : '取消'}</button></footer>
     </div></div>}
     {seasonOpen && <SeasonSettings key={seasonOpen.id + ':' + seasonOpen.source.projectId} api={api} base={scopePath('season', seasonOpen.id)} source={seasonOpen.source} seasonName={seasonOpen.name} seriesName={seasonOpen.seriesName} onClose={() => setSeasonOpen(null)} onScopeChanged={() => { const opened = seasonOpen; setSeasonOpen(cur => cur === opened ? null : cur); void fetchContext(); setNotice('这一集的所属剧或季刚变了，已重新读取；请重新打开本季设定'); }} onChanged={() => { void loadList(); const d = draftRef.current; if (d) void refreshDetail(d.id); }}/>}
+    {mergeOpen && mergeSeries && <MergeDialog key={mergeOpen.group.group_id} libraryId={libraryId} guard={draftGuard} api={request} seriesId={mergeSeries} group={mergeOpen.group} initialPrimary={mergeOpen.primary} contextToken={merges.data?.context_token} reloadGroups={merges.reload} onClose={() => setMergeOpen(null)} onMerged={(r, g, n) => void afterMerge(r, g, n)}/>}
+    {mergeUndo && mergeSeries && <UndoMergeDialog libraryId={libraryId} guard={draftGuard} api={request} seriesId={mergeSeries} mergeId={mergeUndo.mergeId} name={mergeUndo.name} contextToken={merges.data?.context_token} reloadToken={async () => (await merges.reload())?.context_token} onClose={() => setMergeUndo(null)} onUndone={r => afterUndo(mergeUndo.name, r)}/>}
     {impactState && <ImpactPreview title={impactState.kind === 'archive' ? '归档' + impactState.label : '把' + impactState.label + '提升到全剧'} confirmLabel={impactState.kind === 'archive' ? '确认归档' : '确认提升'}
       intro={impactState.kind === 'archive' ? <>归档后，下面这些季和集里的显示会按预览回退；这些层上相关的单独设置会失效（记录留在操作历史里）。明确引用它的镜头需要先在分镜里处理。</> : <>提升后它变成整部剧共享：原来的造型、图片、版本和镜头引用都保持不变，只是归属从本集变成全剧，其他集也能看到它。</>}
       data={impactState.data} nameOf={impactNameOf} busy={!!busy} replacement={impactState.replacement}
@@ -1489,13 +1585,14 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       {modal.type === 'media' && <div className="ca-media-toolbar"><label className="ca-media-search"><Search size={17}/><input aria-label="搜索图片素材" placeholder="按名称搜索素材库图片" value={mediaQ} onChange={e => { setMediaQ(e.target.value); setMediaPage(1); }}/></label><div className="ca-media-info" role="status">{mediaLoading ? '正在查找图片…' : <>共 {mediaTotal} 张图片<span>{modal.replace_id ? '点击图片，替换当前绑定' : '点击图片，绑定到当前资料'}</span></>}</div></div>}
       <div className="ca-modal-scroll" ref={modalScroll} tabIndex={0} aria-label={modal.type === 'media' ? '可滚动图片列表' : '可滚动弹窗内容'}><fieldset disabled={!!busy} className="ca-modal-content">{error && <div className="ca-alert" role="alert">{error}</div>}
       {modal.type === 'create' && <><Field label="新资产名称" value={modal.name} onChange={v => setModal({ ...modal, name: v, check: null })}/>
+        {modal.check?.status !== 'inherit_shared' && modal.check?.related_characters && modal.check.related_characters.action !== 'none' && <p className="cm-create-ask" role="alert">{relatedText(modal.check.related_characters, modal.check.match?.name ?? modal.name)}</p>}
         {modal.check?.status === 'inherit_shared' && <p className="ca-inherit-ask" role="alert">全剧已经有「{modal.check.match?.name ?? modal.name}」。要在本集用全剧的这个人，还是新建另一个？继承后本集可以单独设置默认造型、默认图和评分。</p>}
         {modal.renameHint && !modal.check && <p className="ca-muted">同一部剧里不能有两个同名的{labels[kind]}，请换个名字再创建。</p>}
         {!!scopeBase && seriesView && <p className="ca-muted">在「全剧」新建：这个{labels[kind]}会在整部剧共享。如果某一集已有同名的，会提示冲突。</p>}</>}
       {modal.type === 'media' && <><div className="ca-media-picker">{mediaRows.map(m => <button disabled={!!busy || mediaLoading} key={m.id} onClick={() => modal.append ? void appendImagePick(m) : void run('正在校验图片…', async () => { const h = await api<any>('/media/' + m.id + '/inspect'); if (h.state !== 'available') throw Error(h.label); edit(a => { if (modal.replace_id) { const b = a.images.find(b => b.id === modal.replace_id)!; b.media_asset_id = m.id; b.accept_current = true; b.last_known_name = m.name; } else { const id = crypto.randomUUID(); a.images.push({ id, look_id: a.kind === 'character' ? lookId : null, media_asset_id: m.id, reference_type: '人物身份', purpose: '', locks: '', ignores: '', confirmed: false, archived_at: null, crop: { x: 50, y: 50, zoom: 1 }, last_known_name: m.name }); if (!representative) setDefault(a, id); } }); setModal(null); })}><span className="ca-media-thumb"><img loading="lazy" src={'/api/media/' + m.id + '/original'} alt=""/></span><span className="ca-media-name" title={m.name}>{m.name}</span></button>)}</div>{!mediaLoading && !mediaRows.length && <div className="ca-empty">{mediaQ ? '没有匹配的图片，试试其他名称。' : '暂无图片，请先在素材库添加图片目录。'}</div>}</>}
       {modal.type === 'import' && <><label className="ca-field"><span>来源项目</span><select aria-label="来源项目" value={modal.source_project} onChange={e => setModal({ ...modal, source_project: e.target.value, source_rows: [] })}>{scopes.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button disabled={!!busy} onClick={() => void run('正在读取来源人物…', async () => { const r = await api<any>('/assets?' + new URLSearchParams({ project_id: modal.source_project, kind: 'character', page: String(modal.source_page ?? 1) })); setModal({ ...modal, source_rows: r.items, source_total: r.total }); })}>读取人物</button>{modal.source_rows.map((a: Asset) => <button className="ca-source-choice" key={a.id} onClick={() => void run('正在准备复制…', async () => { const p = await api<any>('/assets/' + a.id + '/copy-preview?project_id=' + scope); setModal({ type: 'copy', ...p, project_id: scope, name: a.name, base_info: a.base_info, performance_info: a.performance_info }); })}>{a.name} · V{a.revision}</button>)}{modal.source_total > 40 && <div className="ca-pagination"><button disabled={(modal.source_page ?? 1) === 1} onClick={() => setModal({ ...modal, source_page: (modal.source_page ?? 1) - 1, source_rows: [] })}>上一页</button><span>第 {modal.source_page ?? 1} 页，切换后点击读取人物</span><button disabled={(modal.source_page ?? 1) * 40 >= modal.source_total} onClick={() => setModal({ ...modal, source_page: (modal.source_page ?? 1) + 1, source_rows: [] })}>下一页</button></div>}</>}
       {modal.type === 'copy' && <><p>复制来源：{modal.source.name} · V{modal.source_revision}。将复制未归档造型、图片绑定、职责和默认设置，原图片文件复用。</p><label className="ca-field"><span>目标项目</span><select aria-label="目标项目" value={modal.project_id} disabled={!!modal.pending} onChange={e => setModal({ ...modal, project_id: e.target.value })}>{scopes.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label><Field label="复制后人物名称" value={modal.name} onChange={v => setModal({ ...modal, name: v })}/><Field label="复制后基础信息" long value={modal.base_info} onChange={v => setModal({ ...modal, base_info: v })}/><Field label="复制后性格与表演" long value={modal.performance_info} onChange={v => setModal({ ...modal, performance_info: v })}/><p>{modal.source.looks.filter((l: Look) => !l.archived_at).length} 套造型 · {modal.source.images.filter((b: Binding) => !b.archived_at).length} 张图片绑定</p>{modal.pending && <p role="alert">上次复制结果尚未确认，请先查询结果。不要再次创建另一份复制。</p>}</>}
-      {modal.type === 'history' && draft && <div className="ca-form"><p>创建于 {date(draft.created_at)} · 当前 V{draft.revision}</p>{inheritedHere && <p className="ca-muted" role="note">这是全剧共享的资产：版本历史属于全剧，请切到「全剧」后在这里查看。</p>}{draft.source ? <div className="ca-source"><strong>复制来源：{draft.source.project_name} / {draft.source.asset_name}</strong><p>来源 V{draft.source.revision} · {date(draft.source.copied_at)}</p><small>当前副本独立编辑；共用的原图片文件仍受素材库可用性影响。</small></div> : <p className="ca-muted">在当前项目创建</p>}<code>{draft.id}</code><h3>数据版本</h3>{!versions.length && <p className="ca-muted">正在读取版本…</p>}{versions.map(v => <div className="ca-version" key={v.id}><strong>V{v.version}</strong><span>{v.summary} · {date(v.created_at)}</span><button onClick={() => void run('正在读取版本…', async () => { setModal({ type: 'version', data: await api(assetReadBase(draft.id) + '/assets/' + draft.id + '/versions/' + v.version) }); })}>查看</button></div>)}</div>}
+      {modal.type === 'history' && draft && <div className="ca-form"><p>创建于 {date(draft.created_at)} · 当前 V{draft.revision}</p>{inheritedHere && <p className="ca-muted" role="note">这是全剧共享的资产：版本历史属于全剧，请切到「全剧」后在这里查看。</p>}{draft.source ? <div className="ca-source"><strong>复制来源：{draft.source.project_name} / {draft.source.asset_name}</strong><p>来源 V{draft.source.revision} · {date(draft.source.copied_at)}</p><small>当前副本独立编辑；共用的原图片文件仍受素材库可用性影响。</small></div> : <p className="ca-muted">在当前项目创建</p>}<code>{draft.id}</code><h3>数据版本</h3>{!versions.length && <p className="ca-muted">正在读取版本…</p>}{versions.map(v => <div className="ca-version" key={v.id ?? v.merge_id + ':' + v.kind}><strong>{v.version != null ? 'V' + v.version : v.kind === 'character_merge_undo' ? '撤销合并' : '合并'}</strong><span>{v.summary ?? (v.kind === 'character_merge' ? '合并同名人物' : v.kind === 'character_merge_undo' ? '撤销合并' : '')} · {date(v.created_at ?? v.at)}</span>{v.kind === 'character_merge' && v.can_undo && mergeSeries && <button onClick={() => { setModal(null); openUndo(v.merge_id, draft.name); }}>撤销这次合并…</button>}{v.version != null && <button onClick={() => void run('正在读取版本…', async () => { setModal({ type: 'version', data: await api(assetReadBase(draft.id) + '/assets/' + draft.id + '/versions/' + v.version) }); })}>查看</button>}</div>)}</div>}
       {modal.type === 'append-image' && draft && <div className="ca-form ca-append-image" role="group" aria-label="确认追加图片">
         {modal.previewUrl && <img className="ca-append-thumb" src={modal.previewUrl} alt=""/>}
         <p>图片「{modal.fileName}」会加到{assetCtx?.series ? '「' + assetCtx.series.name + '」' : ''}全剧「{draft.name}」{modal.lookId ? '的造型「' + (draft.looks.find(l => l.id === modal.lookId)?.name ?? '') + '」' : ''}，记下来源是本集。其他集也能看到这张图，但不会改它们的默认图。</p>
@@ -1503,6 +1600,6 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
       </div>}
       {modal.type === 'version' && <pre>{JSON.stringify(modal.data, null, 2)}</pre>}{modal.type === 'usage' && <>{modal.rows.map((r: any) => <p key={r.id}>{scopes.find(s => s.id === r.project_id)?.name} / {r.name}{r.archived_at ? '（归档）' : ''} · {r.look_id ? '造型图片' : '资产参考图'}</p>)}{!modal.rows.length && <p>尚无已保存的库内使用记录</p>}</>}
       {modal.type === 'compare' && <><div className="ca-compare"><section><h3>本地编辑</h3><pre>{JSON.stringify(draft, null, 2)}</pre></section><section><h3>数据库最新 V{modal.latest.revision}</h3><pre>{JSON.stringify(modal.latest, null, 2)}</pre></section></div><p>请核对资料。合并以当前本地内容为基础，采用最新版本号后仍需再次保存；再次发生更新时仍会阻止覆盖。</p><button onClick={() => { edit(a => { a.revision = modal.latest.revision; }); setConflict(null); setModal(null); setNotice('已保留本地内容，请完成核对后点击保存'); }}>保留本地内容，进入核对保存</button></>}
-    </fieldset></div><footer>{modal.type === 'media' && <div className="ca-pagination ca-media-pagination"><span>第 {mediaPage} / {Math.max(1, Math.ceil(mediaTotal / 40))} 页</span><button disabled={!!busy || mediaLoading || mediaPage === 1} onClick={() => setMediaPage(v => v - 1)}>上一页</button><button disabled={!!busy || mediaLoading || mediaPage * 40 >= mediaTotal} onClick={() => setMediaPage(v => v + 1)}>下一页</button></div>}{modal.type === 'append-image' && <><button disabled={!!busy} onClick={() => setModal(null)}>取消</button><button className="ca-primary" disabled={!!busy || modal.preview.sets_series_default && !modal.allow} onClick={() => void appendHandlers.confirm(modal.preview.preview_token, modal.preview.sets_series_default && !!modal.allow).then(ok => { if (ok) setModal(null); }, () => {})}>确认追加</button></>}{modal.type === 'create' && !modal.check && <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void submitCreate(modal.name.trim(), 'reject')}>创建并编辑</button>}{modal.type === 'create' && modal.check?.status === 'inherit_shared' && <><button disabled={!!busy} onClick={() => setModal({ ...modal, check: null, renameHint: true })}>新建另一个（改个名字）</button><button className="ca-primary" disabled={!!busy} onClick={() => void submitCreate(modal.name.trim(), 'reuse')}>继承全剧的「{modal.check.match?.name ?? modal.name}」</button></>}{modal.type === 'copy' && <>{modal.pending ? <button onClick={() => void run('正在查询复制结果…', async () => { const r = await api<any>('/copies/' + modal.request_id); if (r.completed) await afterCopy(r.asset, '人物已复制'); else setModal({ ...modal, pending: false }); })}>查询复制结果</button> : <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在复制人物…', async () => { try { const a = await api<Asset>('/assets/' + modal.source.id + '/copy', { project_id: modal.project_id, name: modal.name, base_info: modal.base_info, performance_info: modal.performance_info, source_revision: modal.source_revision, request_id: modal.request_id }); await afterCopy(a, '已复制人物，副本可独立编辑'); } catch (e: any) { if (!/同名|已经更新|无效|归档/.test(e.message)) setModal({ ...modal, pending: true }); throw e; } })}><Copy size={15}/>确认复制</button>}</>}<button disabled={!!busy} onClick={() => setModal(null)}>关闭</button></footer></div></div>}
+    </fieldset></div><footer>{modal.type === 'media' && <div className="ca-pagination ca-media-pagination"><span>第 {mediaPage} / {Math.max(1, Math.ceil(mediaTotal / 40))} 页</span><button disabled={!!busy || mediaLoading || mediaPage === 1} onClick={() => setMediaPage(v => v - 1)}>上一页</button><button disabled={!!busy || mediaLoading || mediaPage * 40 >= mediaTotal} onClick={() => setMediaPage(v => v + 1)}>下一页</button></div>}{modal.type === 'append-image' && <><button disabled={!!busy} onClick={() => setModal(null)}>取消</button><button className="ca-primary" disabled={!!busy || modal.preview.sets_series_default && !modal.allow} onClick={() => void appendHandlers.confirm(modal.preview.preview_token, modal.preview.sets_series_default && !!modal.allow).then(ok => { if (ok) setModal(null); }, () => {})}>确认追加</button></>}{modal.type === 'create' && !modal.check && <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void submitCreate(modal.name.trim(), 'reject')}>创建并编辑</button>}{modal.type === 'create' && modal.check?.status !== 'inherit_shared' && modal.check?.related_characters && modal.check.related_characters.action !== 'none' && <><button disabled={!!busy} onClick={() => setModal({ ...modal, check: null, renameHint: true })}>换个名字</button>{modal.check.related_characters.action === 'merge' && <button className="ca-primary" disabled={!!busy} onClick={() => void mergeFromCreate(modal.check.related_characters)}>合并这几个「{modal.name}」…</button>}</>}{modal.type === 'create' && modal.check?.status === 'inherit_shared' && <><button disabled={!!busy} onClick={() => setModal({ ...modal, check: null, renameHint: true })}>新建另一个（改个名字）</button><button className="ca-primary" disabled={!!busy} onClick={() => void submitCreate(modal.name.trim(), 'reuse')}>继承全剧的「{modal.check.match?.name ?? modal.name}」</button></>}{modal.type === 'copy' && <>{modal.pending ? <button onClick={() => void run('正在查询复制结果…', async () => { const r = await api<any>('/copies/' + modal.request_id); if (r.completed) await afterCopy(r.asset, '人物已复制'); else setModal({ ...modal, pending: false }); })}>查询复制结果</button> : <button className="ca-primary" disabled={!!busy || !modal.name.trim()} onClick={() => void run('正在复制人物…', async () => { try { const a = await api<Asset>('/assets/' + modal.source.id + '/copy', { project_id: modal.project_id, name: modal.name, base_info: modal.base_info, performance_info: modal.performance_info, source_revision: modal.source_revision, request_id: modal.request_id }); await afterCopy(a, '已复制人物，副本可独立编辑'); } catch (e: any) { if (!/同名|已经更新|无效|归档/.test(e.message)) setModal({ ...modal, pending: true }); throw e; } })}><Copy size={15}/>确认复制</button>}</>}<button disabled={!!busy} onClick={() => setModal(null)}>关闭</button></footer></div></div>}
   </section>;
 }

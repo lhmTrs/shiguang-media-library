@@ -54,7 +54,11 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
   router.use((error, _req, res, next) => {
     if (res.headersSent) return next(error);
     const status = error.status ?? (error.code === 'ENOENT' ? 404 : 500);
-    res.status(status).json({ message: error.message, ...error.details, errors: error.errors, current_revision: error.current_revision });
+    res.status(status).json({
+      message: error.message,
+      ...(error.code === 'ASSET_MERGED' && { code: error.code }),
+      ...error.details, errors: error.errors, current_revision: error.current_revision,
+    });
   });
   return {
     router, store,

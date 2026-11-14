@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { isRecord, isRevision, isScore } from '../project-attributes/model.mjs';
+import { scoreValue } from './character-merge-plan.mjs';
 import { canonical, digest, fault, idOK } from './model.mjs';
 
 const KINDS = ['character', 'scene', 'prop'];
@@ -16,9 +16,6 @@ const positiveInt = (value, fallback, max) => {
 function parseOverride(raw) {
   try { return JSON.parse(raw); } catch { return undefined; }
 }
-
-const manualScore = score => isRecord(score) && score.source === 'manual' &&
-  score.reason === null && isRevision(score.updated_at) && (score.value === null || isScore(score.value));
 
 function matchesToken(expected, supplied) {
   return typeof expected === 'string' && typeof supplied === 'string' &&
@@ -183,7 +180,8 @@ export class ScopedProjectAssets {
       const archived = query.archived === 'true' || query.archived === true;
       const { sql, params } = this.#owners(scope);
       const fields = 'id,project_id,owner_type,owner_id,kind,revision,archived_at';
-      const where = `FROM creative_assets WHERE ${sql} AND kind=? AND archived_at${archived ? '>0' : '=0'}`;
+      const where = `FROM creative_assets WHERE ${sql} AND kind=? AND archived_at${archived ? '>0' : '=0'}
+        AND NOT EXISTS (SELECT 1 FROM creative_character_aliases WHERE id=creative_assets.id)`;
       const args = [...params, kind];
       let total, rows;
       const offset = (page - 1) * size;
@@ -246,20 +244,23 @@ export class ScopedProjectAssets {
   }
 
   detailInTransaction(scope, assetId) {
-    return this.#item(scope, this.#visibleRow(scope, assetId), new Map());
+    const resolution = this.store.characterMerges.destination(scope, assetId);
+    if (!resolution) return this.#item(scope, this.#visibleRow(scope, assetId), new Map());
+    const item = this.#item(scope, this.#visibleRow(scope, resolution.canonical_asset_id), new Map());
+    return { ...item, resolution };
   }
 
   async health(type, id, assetId) {
     const before = this.#snapshot(() => {
       const scope = this.scope(type, id);
-      return { scope, row: this.#visibleRow(scope, assetId) };
+      return { scope, row: this.#visibleRow(scope, this.store.characterMerges.destination(scope, assetId)?.canonical_asset_id ?? assetId) };
     });
     const result = await this.store.health(before.row.id);
     this.#snapshot(() => {
       const scope = this.scope(type, id);
       this.assertContextToken(scope, before.scope.context_token);
-      const row = this.#visibleRow(scope, assetId);
-      if (row.revision !== before.row.revision || row.revision !== result.revision) {
+      const row = this.#visibleRow(scope, this.store.characterMerges.destination(scope, assetId)?.canonical_asset_id ?? assetId);
+      if (row.id !== before.row.id || row.revision !== before.row.revision || row.revision !== result.revision) {
         throw fault('资产已更新，请重新读取图片状态', 409, { code: 'ASSET_STALE' });
       }
     });
@@ -270,7 +271,7 @@ export class ScopedProjectAssets {
     return this.#snapshot(() => {
       const scope = this.scope(type, id);
       if (type !== 'episode') throw notFound();
-      const row = this.#visibleRow(scope, assetId);
+      const row = this.#visibleRow(scope, this.store.characterMerges.destination(scope, assetId)?.canonical_asset_id ?? assetId);
       const board = this.store.storyboards;
       if (!board) throw fault('分镜模块尚未就绪，请稍后重试', 503);
       return board.assetShots(row.id, scope.id);
@@ -283,6 +284,11 @@ export class ScopedProjectAssets {
       const row = this.#visibleRow(scope, assetId);
       const owns = type === 'series' || type === 'episode' && row.owner_type === 'project';
       if (!owns) throw notFound();
+      const history = this.store.characterMerges.assetHistory(scope.series_id, assetId);
+      const byMergeVersion = new Map(history.map(entry => [
+        (entry.kind === 'character_merge' ? '合并同名人物 ' : '撤销同名人物合并 ') + entry.merge_id, entry,
+      ]));
+      const addHistory = entries => entries.map(entry => ({ ...entry, ...byMergeVersion.get(entry.summary) }));
       // Keep earlier local snapshots in backups without granting a new owner
       // access to the originating episode's drafts or images.
       if (type === 'series') {
@@ -292,11 +298,11 @@ export class ScopedProjectAssets {
           if (!belongs(snapshot)) throw notFound();
           return snapshot;
         }
-        return this.db.prepare(`SELECT id,version,summary,created_at,snapshot FROM creative_asset_versions
+        return addHistory(this.db.prepare(`SELECT id,version,summary,created_at,snapshot FROM creative_asset_versions
           WHERE asset_id=? ORDER BY version DESC`).all(row.id)
-          .filter(entry => belongs(JSON.parse(entry.snapshot))).map(({ snapshot, ...entry }) => entry);
+          .filter(entry => belongs(JSON.parse(entry.snapshot))).map(({ snapshot, ...entry }) => entry));
       }
-      return version === undefined ? this.store.versions(row.id) : this.store.version(row.id, version);
+      return version === undefined ? addHistory(this.store.versions(row.id)) : this.store.version(row.id, version);
     });
   }
 
@@ -411,7 +417,7 @@ export class ScopedProjectAssets {
     const effective = { default_images: {}, attribute_scores: {}, cover: null };
     let coverId;
     if (row.kind === 'character') {
-      const validLook = id => looks.has(id);
+      const validLook = id => id === null || looks.has(id);
       effective.default_look = field('default_look', validLook(asset.default_look_id) ? asset.default_look_id : null,
         row.revision, layers, validLook, id => looks.get(id)?.revision ?? null);
       effective.default_images = Object.fromEntries([...looks.values()].map(look => [look.id, imageField(look.id, look.default_image_id, look.revision)]));
@@ -424,7 +430,7 @@ export class ScopedProjectAssets {
       effective.attribute_config_scope = config.config_scope;
       effective.attribute_scores = Object.fromEntries(config.dimensions.map(dim => [
         dim.id, field('attribute_score:' + dim.id, Object.hasOwn(record.scores, dim.id) ? record.scores[dim.id] : null,
-          record.revision, scoreLayers, manualScore, () => null, config.alignment_status === 'aligned' ? config.config_token : config.revision),
+          record.revision, scoreLayers, value => scoreValue(value, true), () => null, config.alignment_status === 'aligned' ? config.config_token : config.revision),
       ]));
     } else {
       effective.default_images.null = imageField(null, asset.default_image_id, row.revision);

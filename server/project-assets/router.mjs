@@ -6,7 +6,7 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   const router = express.Router(),scripts=new ProjectScripts(store).init();
   router.post('/assets/:id/voice',express.json({limit:'15mb'}),asyncRoute(async(req,res)=>{
     const id=req.params.id;
-    const guard=()=>{const a=store.get(id);store.project(a.project_id);store.expected(a,req.body.expected_revision);if(a.archived_at||a.kind!=='character')throw Object.assign(Error('请先选择未归档人物'),{status:409});store.generationLocks?.assertWritable(a.project_id);if(store.lib.migrating)throw Object.assign(Error('数据库正在迁移'),{status:423});};
+    const guard=()=>{const a=store.get(id);store.assertNotMerged(id,a);store.project(a.project_id);store.expected(a,req.body.expected_revision);if(a.archived_at||a.kind!=='character')throw Object.assign(Error('请先选择未归档人物'),{status:409});store.generationLocks?.assertWritable(a.project_id);if(store.lib.migrating)throw Object.assign(Error('数据库正在迁移'),{status:423});};
     guard();res.json({clip:await store.voices.upload(store.get(id),req.body,guard)});
   }));
   router.put('/image-imports/:id/content',asyncRoute(async(req,res)=>{if(!req.is('application/octet-stream'))return res.status(415).json({error:'请发送所选图片原文件'});res.json(await store.imageImports.upload(req.params.id,req));}));
@@ -90,7 +90,11 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
   route('get', '/scopes', () => store.scopes());
   route('get', '/assets', req => store.list(req.query));
   route('post', '/assets', req => store.create(req.body));
-  route('get', '/assets/:id', req => store.localAsset(store.get(req.params.id)));
+  route('get', '/assets/:id', req => {
+    const asset = store.get(req.params.id);
+    store.assertNotMerged(asset.id, asset);
+    return store.localAsset(asset);
+  });
   router.get('/assets/:id/voice/:voiceId',asyncRoute(async(req,res)=>{const result=await store.voices.preview(store.get(req.params.id),req.params.voiceId);res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"});res.type(result.mime).send(result.bytes);}));
   route('put', '/assets/:id', async req => {
     const previous=store.get(req.params.id),saved=await store.save(req.params.id, req.body.asset, req.body.expected_revision);
@@ -116,7 +120,7 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     store.localAsset(store.head(req.params.id));
     return store.version(req.params.id, req.params.version);
   });
-  route('get', '/assets/:id/copy-preview', req => store.copyPreview(req.params.id, req.query.project_id));
+  route('get', '/assets/:id/copy-preview', req => store.copyPreview(req.params.id, req.query.project_id, req.query.source_project_id));
   route('post', '/assets/:id/copy', req => store.copy(req.params.id, req.body));
   route('get', '/copies/:id', req => store.copyStatus(req.params.id));
   route('get', '/media/:id/inspect', req => store.inspect(req.params.id));

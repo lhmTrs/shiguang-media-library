@@ -70,6 +70,7 @@ export class ScopedAssetAppend {
   }
 
   #target(scope, assetId) {
+    this.store.characterMerges.assertCurrent(scope, assetId);
     const item = this.reads.detailInTransaction(scope, assetId);
     if (item.owner.type !== 'series' || item.asset.archived_at) throw readOnly();
     return item.asset;

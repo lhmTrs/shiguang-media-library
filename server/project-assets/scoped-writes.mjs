@@ -64,12 +64,16 @@ export class ScopedAssetWrites {
   assertSeriesRemovable(id) {
     const shared = this.db.prepare("SELECT id FROM creative_assets WHERE owner_type='series' AND owner_id=? LIMIT 1").get(id);
     const configured = this.db.prepare('SELECT id FROM series_attribute_configs WHERE id=?').get(id);
-    if (shared || configured) throw conflict('ASSET_IN_USE', '该剧仍有共享资产或属性配置，无法移除');
+    const merges = this.db.prepare('SELECT id FROM creative_character_merges WHERE series_id=? LIMIT 1').get(id);
+    if (shared || configured || merges) throw conflict('ASSET_IN_USE', '该剧仍有共享资产或属性配置，无法移除');
   }
 
   assertMembershipChange({ project_id, before, after }) {
     if (before.series_id === after.series_id) return;
     if (before.series_id !== null) {
+      if (this.db.prepare('SELECT id FROM creative_character_aliases WHERE project_id=? AND series_id=? LIMIT 1').get(project_id, before.series_id)) {
+        throw conflict('ASSET_IN_USE', '该集保留已合并人物身份，请先撤销相关合并');
+      }
       const board = this.assets.storyboards;
       const storyboard = board?.head(project_id);
       const links = storyboard ? board.linked(storyboard)
@@ -77,22 +81,15 @@ export class ScopedAssetWrites {
       if (storyboard) {
         const shared = this.db.prepare("SELECT id,kind,name FROM creative_assets WHERE owner_type='series' AND owner_id=?")
           .all(before.series_id);
-        const children = table => this.db.prepare(`SELECT c.id,c.asset_id FROM ${table} c JOIN creative_assets a ON a.id=c.asset_id
-          WHERE a.owner_type='series' AND a.owner_id=?`).all(before.series_id);
-        const looks = Map.groupBy(children('creative_looks'), row => row.asset_id);
-        const images = Map.groupBy(children('creative_image_bindings'), row => row.asset_id);
         const manifestIds = new Set(links.map(row => row.id));
         const project = JSON.parse(storyboard.document_json);
         const blocked = [], shots = [];
         for (const asset of shared) {
-          const matches = new Map(explicitAssetShots(project, {
-            assetIds: new Set([asset.id]), lookIds: new Set((looks.get(asset.id) ?? []).map(row => row.id)),
-            imageIds: new Set((images.get(asset.id) ?? []).map(row => row.id)),
-          }).map(shot => [shot.shotId, shot]));
-          if (manifestIds.has(asset.id)) {
-            for (const shot of board.assetShots(asset.id, project_id).items) matches.set(shot.shotId, shot);
-          }
-          if (manifestIds.has(asset.id) || matches.size) blocked.push(asset);
+          const family = this.assets.characterMerges.family(asset.id);
+          const matches = new Map(explicitAssetShots(project, family).map(shot => [shot.shotId, shot]));
+          const reference = board.assetShots(asset.id, project_id);
+          for (const shot of reference.items) matches.set(shot.shotId, shot);
+          if (manifestIds.has(asset.id) || reference.listed || matches.size) blocked.push(asset);
           for (const shot of matches.values()) {
             shots.push({ asset_id: asset.id, shot_id: shot.shotId, number: shot.number, scene_id: shot.sceneId });
           }
@@ -175,26 +172,34 @@ export class ScopedAssetWrites {
       FROM creative_assets a JOIN project_series_members m ON m.id=a.owner_id
       WHERE m.series_id=? AND a.owner_type='project' AND a.kind=? AND a.name_key=? AND a.archived_at=0 ORDER BY a.id`)
       .all(scope.series_id, kind, key).filter(row => row.id !== exclude) : [];
+    const merges = this.assets.characterMerges;
+    const episodes = new Map((scope.series_id ? merges.episodes(scope.series_id) : []).map(row => [row.project_id, row]));
+    const enrich = row => ({ ...row, series_id: scope.series_id,
+      episode: row.owner_type === 'project' ? episodes.get(row.owner_id) ?? null : null });
+    const related_characters = merges.related(kind === 'character' ? scope.series_id : null, name);
     if (memberConflicts.length || shared.length + local.length > 1) {
-      return { status: 'conflict', conflicts: [...shared, ...local, ...memberConflicts] };
+      return { status: 'conflict', conflicts: [...shared, ...local, ...memberConflicts].map(enrich), related_characters };
     }
-    if (local.length) return { status: 'existing_local', match: local[0] };
-    if (shared.length) return { status: scope.type === 'series' ? 'existing_local' : 'inherit_shared', match: shared[0] };
-    return { status: 'available' };
+    if (local.length) return { status: 'existing_local', match: enrich(local[0]), related_characters };
+    if (shared.length) return { status: scope.type === 'series' ? 'existing_local' : 'inherit_shared', match: enrich(shared[0]), related_characters };
+    return { status: 'available', related_characters };
   }
 
   checkNames(type, id, input) {
-    const scope = this.scope(type, id);
-    return { ...this.findNames(scope, nameInput(input)), context_token: scope.context_token };
+    const names = nameInput(input);
+    return this.assets.attributes.alignment.read(() => {
+      const scope = this.scope(type, id);
+      return { ...this.findNames(scope, names), context_token: scope.context_token };
+    });
   }
 
   assertAvailable(names) {
     if (names.status === 'available') return;
     if (names.status === 'inherit_shared') {
-      throw conflict('SHARED_ASSET_EXISTS', '全剧已有同名资产，请选择沿用或改名', { match: names.match });
+      throw conflict('SHARED_ASSET_EXISTS', '全剧已有同名资产，请选择沿用或改名', { match: names.match, related_characters: names.related_characters });
     }
     throw conflict('ASSET_NAME_CONFLICT', '资产名称已存在，请核对后改名', {
-      conflicts: names.conflicts ?? [names.match],
+      conflicts: names.conflicts ?? [names.match], related_characters: names.related_characters,
     });
   }
 
@@ -218,6 +223,7 @@ export class ScopedAssetWrites {
 
   writableBase(scope, assetId, input) {
     const { type } = scope;
+    this.assets.characterMerges.assertCurrent(scope, assetId);
     const item = this.reads.detailInTransaction(scope, assetId);
     const before = item.asset;
     if (type === 'season' || before.archived_at || (type === 'series' ? item.owner.type !== 'series' : item.owner.type !== 'project')) {
@@ -288,6 +294,7 @@ export class ScopedAssetWrites {
     const changes = scoreChanges(input.changes);
     return this.mutation(type, id, 'scores:' + assetId, input, scope => {
       this.lockProjects(scope);
+      this.assets.characterMerges.assertCurrent(scope, assetId);
       const item = this.reads.detailInTransaction(scope, assetId);
       if (item.asset.kind !== 'character') throw fault('人物不存在', 404);
       if (item.asset.archived_at || item.owner.type !== 'series') throw readOnly();
@@ -461,6 +468,7 @@ export class ScopedAssetWrites {
 
   setOverride(type, id, assetId, input) {
     return this.mutation(type, id, 'override:' + assetId, input, scope => {
+      this.assets.characterMerges.assertCurrent(scope, assetId);
       const item = this.reads.detailInTransaction(scope, assetId);
       if (!['season', 'episode'].includes(type) || item.owner.type !== 'series' || item.asset.archived_at) throw readOnly();
       const { field, action, source_project_id, source_context_token } = input;

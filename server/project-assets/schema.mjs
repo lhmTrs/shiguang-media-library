@@ -11,6 +11,13 @@ const LEGACY_CREATIVE_TABLES = {
   creative_asset_versions: { id: 'id', asset_id: 'ref', version: 'integer', snapshot: 'text', summary: 'text', created_at: 'integer', updated_at: 'integer' },
   creative_asset_copy_records: { id: 'id', source_id: 'ref', target_id: 'ref', request_hash: 'key', source_json: 'text', created_at: 'integer', updated_at: 'integer' },
 };
+export const CHARACTER_MERGE_TABLES = {
+  creative_character_merges: { id: 'id', series_id: 'ref', canonical_asset_id: 'ref', status: 'key', created_at: 'integer', updated_at: 'integer', data_json: 'text' },
+  creative_character_aliases: { id: 'id', series_id: 'ref', project_id: 'ref', target_id: 'ref', merge_id: 'ref' },
+  creative_character_look_aliases: { id: 'id', series_id: 'ref', source_asset_id: 'ref', target_id: 'ref', merge_id: 'ref' },
+  creative_character_merge_requests: { id: 'id', series_id: 'ref', merge_id: 'ref', request_hash: 'key', result_json: 'text', created_at: 'integer', updated_at: 'integer' },
+};
+
 export const CREATIVE_TABLES = {
   ...LEGACY_CREATIVE_TABLES,
   creative_assets: { ...LEGACY_CREATIVE_TABLES.creative_assets, project_id: 'optional_ref', owner_type: 'key', owner_id: 'ref' },
@@ -19,6 +26,7 @@ export const CREATIVE_TABLES = {
   creative_asset_scope_requests: { id: 'id', scope_type: 'key', scope_id: 'ref', request_hash: 'key', result_json: 'text', created_at: 'integer', updated_at: 'integer' },
   series_attribute_configs: { id: 'id', revision: 'integer', data_json: 'text', created_at: 'integer', updated_at: 'integer' },
   series_character_attributes: { id: 'id', series_id: 'ref', revision: 'integer', data_json: 'text', created_at: 'integer', updated_at: 'integer' },
+  ...CHARACTER_MERGE_TABLES,
 };
 
 export const creativeSchemaVersion = 3;
@@ -41,6 +49,8 @@ export const creativeIndexes = {
   creative_images_asset: ['creative_image_bindings', 'asset_id'],
   creative_images_media: ['creative_image_bindings', 'media_asset_id'],
   creative_scope_override_asset: ['creative_asset_overrides', 'asset_id'],
+  creative_character_alias_target: ['creative_character_aliases', 'target_id'],
+  creative_character_look_alias_target: ['creative_character_look_aliases', 'target_id'],
   creative_scope_clock_asset: ['creative_asset_override_clocks', 'asset_id'],
 };
 

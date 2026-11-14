@@ -1,3 +1,4 @@
+import { scoreValue } from './character-merge-plan.mjs';
 import { canonical, digest, fault, idOK } from './model.mjs';
 import { DEFAULT_DIMENSIONS, dimensionsInput, isRecord, isRevision, isScore, textField } from '../project-attributes/model.mjs';
 
@@ -49,9 +50,9 @@ export function validateScopedAssetBackup(tables, directory) {
     const [key, target, extra] = row.field_key.split(':');
     if (extra !== undefined) throw invalid();
     if (key === 'attribute_score') {
-      if (row.scope_type !== 'episode' || asset.kind !== 'character' || !axes(ownerId).has(target) || !validScore(value, true)) throw invalid();
+      if (row.scope_type !== 'episode' || asset.kind !== 'character' || !axes(ownerId).has(target) || !scoreValue(value, true)) throw invalid();
     } else if (key === 'default_look') {
-      if (target !== undefined || asset.kind !== 'character' || looks.get(value)?.asset_id !== asset.id) throw invalid();
+      if (target !== undefined || asset.kind !== 'character' || value !== null && looks.get(value)?.asset_id !== asset.id) throw invalid();
     } else if (key === 'default_image') {
       const binding = bindings.get(value);
       const look = target === undefined ? null : looks.get(target);

@@ -4,6 +4,7 @@ import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { useFeedbackToast } from '../global-feedback';
 import { AttributeRadar } from './AttributeRadar';
 import { scopedWrite } from './scoped';
+import { useUnsavedMark } from './unsaved';
 import { type AssetAttributes, type AttrConfig, SINGLE_COLOR, attrApi, clampScore, errCode, readConsistent, scoreValue, signed, sourceSummary, tierText } from './attributes';
 
 const when = (t: number) => new Date(t).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
@@ -48,6 +49,7 @@ export function CharacterAttributes({ assetId, projectId, name, request, active,
   const startEdit = () => { if (!attrs) return; setNotice(''); setEdited(new Set()); setDraft(Object.fromEntries(dims.map(d => [d.id, scoreValue(attrs.scores[d.id])]))); };
   const setValue = (id: string, v: number | null) => { setEdited(e => new Set(e).add(id)); setDraft(d => d && { ...d, [id]: v }); };
   const changes = draft && attrs ? dims.filter(d => edited.has(d.id) && draft[d.id] !== scoreValue(attrs.scores[d.id]) && !(draft[d.id] === null && !attrs.scores[d.id])).map(d => ({ dimension_id: d.id, value: draft[d.id] })) : [];
+  useUnsavedMark(changes.length > 0); // 有改了没保存的评分：父页面发起合并 / 撤销前要先处理（收口验收 R1）
 
   async function save() {
     if (!config || !attrs || !changes.length || saving) return;

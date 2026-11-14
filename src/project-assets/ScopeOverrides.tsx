@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { ImagePlus, RotateCcw } from 'lucide-react';
 import type { EffectiveField, FieldSource, ScopedItem } from './scoped';
+import { useUnsavedMark } from './unsaved';
 
 type LookLike = { id: string; name: string; archived_at: number | null };
 type BindingLike = { id: string; look_id: string | null; archived_at: number | null; last_known_name?: string | null };
@@ -24,6 +25,7 @@ export type AppendHandlers = { preview: (name: string) => Promise<AppendPreview>
 /** 在本集新增造型：先预览，确认后写到全剧（服务端记录来源集）；成为全剧默认时需明确勾选。 */
 function AppendLook({ busy, handlers, seriesName }: { busy: boolean; handlers: AppendHandlers; seriesName: string }) {
   const [name, setName] = useState(''), [preview, setPreview] = useState<AppendPreview | null>(null), [allow, setAllow] = useState(false), [working, setWorking] = useState(false);
+  useUnsavedMark(!!name.trim() || !!preview); // 填了新造型名或停在确认步：算未保存
   const off = busy || working;
   const run = async (fn: () => Promise<void>) => { setWorking(true); try { await fn(); } finally { setWorking(false); } };
   if (!preview) return <div className="ca-override-row ca-append" role="group" aria-label="在本集新增造型">
@@ -57,6 +59,7 @@ function SourceTag({ field }: { field?: EffectiveField<unknown> }) {
 function ScoreRow({ dim, field, busy, canWrite, onOverride }: { dim: ScoreDimension; field: EffectiveField<unknown>; busy: boolean; canWrite: boolean; onOverride: OverrideRequest }) {
   const current = (field.value as ScoreValue)?.value ?? null;
   const [input, setInput] = useState(current === null ? '' : String(current));
+  useUnsavedMark(input !== (current === null ? '' : String(current))); // 改了本集分数还没点「本集改分」
   const parsed = input.trim() === '' ? null : Math.max(-100, Math.min(100, Math.round(Number(input))));
   const valid = input.trim() === '' || Number.isFinite(Number(input));
   return <div className="ca-override-row ca-score-row" role="group" aria-label={'评分「' + dim.name + '」'}>
