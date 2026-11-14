@@ -18,6 +18,10 @@ const DONE = [
   'src/storyboard/storyboard.css',
   'src/storyboard/video-preview.css',
   'src/storyboard/generation.css',
+  // 第三批
+  'src/prompt-template-workspace.css',
+  'src/prompts/codex-chat.css',
+  'src/concierge/concierge.css',
 ];
 
 test('已统一的 CSS 文件里没有档位以外的字号', () => {
