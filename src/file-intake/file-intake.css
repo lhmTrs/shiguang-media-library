@@ -307,3 +307,6 @@
 .fi-simple .fi-vfile>strong{flex:0 1 auto}
 .fi-root.fi-simple .fi-chip-edit input{max-width:min(220px,100%)}
 .fi-simple .fi-form-label-place{align-self:start;padding-top:4px}
+.fi-root .fi-install .fi-install-latest{display:flex;align-items:center;gap:6px;color:var(--fi-accent);font-weight:600}
+.fi-root .fi-install .fi-install-help{font-size:12px;color:var(--fi-muted);margin:4px 0 0}
+.fi-root .fi-install .fi-install-help .fi-link{min-height:24px;padding:0 3px;border:0;background:transparent;font-size:12px;text-decoration:underline;text-underline-offset:2px;display:inline}
