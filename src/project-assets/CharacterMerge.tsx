@@ -5,7 +5,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Users, X } from 'lucide-react';
 import { contextUnavailable, outcomeUnknown } from './scoped';
 import {
-  lookupOnly, memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons, subscribePending,
+  isRejected, lookupOnly, memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, NOT_FOUND_NOTE, pendingStore, refShots, settledRejection, spansSeasons, subscribePending,
+  type RejectedReceipt,
   type PendingMerge, type PendingUndo,
   type LookChoice, type MergeConfirmBody, type MergeGroup, type MergeGroups, type MergeMember, type MergePreview, type MergeReceipt,
   type UndoBody, type UndoPreview, type UndoReceipt,
@@ -142,37 +143,47 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
   }
   const recheck = () => preview && void loadPreview(preview.choices.look_choices.map(x => edits[x.conflict_id] ?? x), '', true);
 
-  /** 核对已发出的原请求查无回执：上次请求没有送达。由用户决定按原内容重新提交（要过草稿保护）还是不提交了。 */
+  /** 待核对的原请求暂未查到回执（收口标准）：原请求仍可能完成。只给「稍后再核对」和「按原内容重新提交」。 */
   const [notFound, setNotFound] = useState(false);
+  const lookCount = () => preview ? new Set(preview.look_plan.items.map(i => i.result_look_id)).size : undefined;
+  /** 服务端确认的拒绝（首次发出的直接业务响应、或已落定的拒绝回执）：解除待核对，按原因处理；要改选择就重新预览，下次用新编号。 */
+  async function onRejected(e: { code?: string; message?: string }) {
+    setPending(null); setNotFound(false);
+    if (e?.code === 'CHARACTER_MERGE_STALE' || e?.code === 'ASSET_SCOPE_CHANGED') { await refresh(mergeErrorText.CHARACTER_MERGE_STALE); return; }
+    if (e?.code === 'CHARACTER_MERGE_CHOICE_INVALID') { await loadPreview(undefined, mergeErrorText.CHARACTER_MERGE_CHOICE_INVALID); return; }
+    setError(mergeErr(e, '合并没有执行'));
+  }
+  /** 只按原编号查一次，不重发：成功 → 完成；已落定的拒绝 → 解除；暂未查到 → 保留待核对。查询本身失败由调用方显示「结果不明」。 */
+  async function checkOnce(body: MergeConfirmBody) {
+    const r = await lookupOnly<MergeReceipt | RejectedReceipt>(() => m.request(body.request_id));
+    if (!r) { setNotFound(true); setNote(NOT_FOUND_NOTE('合并')); return; }
+    if (isRejected(r, body.request_id)) { await onRejected(r); return; }
+    setPending(null); setNotFound(false); onMerged(r as MergeReceipt, group, lookCount());
+  }
   async function confirm() {
     const held = pendingRef.current;
     if (busy || (!held && (!preview?.ready || !preview.preview_token || unchecked || preview.blockers.length))) return;
-    // 核对（组合验收复验 R3）：只读。查到回执就用；查无回执不自动重发，交给用户
+    // 核对：只读，只查原编号
     if (held && !notFound) {
       setBusy('正在核对上次结果…'); setError(''); setNote('');
-      try {
-        const r = await lookupOnly<MergeReceipt>(() => m.request(held.request_id));
-        if (r) { setPending(null); onMerged(r, group, undefined); }
-        else { setNotFound(true); setNote('服务端没有这次合并的记录：上次的请求没有送达，什么都没有改。可以按原内容重新提交，或者不提交了。'); }
-      } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
+      try { await checkOnce(held); } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
       finally { if (alive.current) setBusy(''); }
       return;
     }
-    if (held && notFound) { const why = guard?.(); if (why) { setError(why); return; } } // 用户明确发起的重新提交也要过草稿保护
+    // 按原内容重新提交：用户明确发起，先过草稿和在途写入保护
+    if (held && notFound) { const why = guard?.(); if (why) { setError(why); return; } }
+    const resend = !!held;
     const body = held ?? { request_id: newId(), preview_token: preview!.preview_token!, context_token: token, choices: preview!.choices };
-    setPending(body); setNotFound(false); setBusy('正在合并…'); setError(''); setNote('');
-    try {
-      let r: MergeReceipt;
-      // 用户这一次点击发出的请求：回应丢了按原编号查，确定没有才原样重发（点击当下浮窗锁定，草稿没法改）
-      try { r = await m.confirm(body); }
-      catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<MergeReceipt>(() => m.request(body.request_id), () => m.confirm(body)); }
-      setPending(null); onMerged(r, group, preview ? new Set(preview.look_plan.items.map(i => i.result_look_id)).size : undefined); // 关窗重开后核对到的：没有预览就不报造型数
-    } catch (e: any) {
-      if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
-      setPending(null);
-      if (e?.code === 'CHARACTER_MERGE_STALE' || e?.code === 'ASSET_SCOPE_CHANGED') { await refresh(mergeErrorText.CHARACTER_MERGE_STALE); return; }
-      if (e?.code === 'CHARACTER_MERGE_CHOICE_INVALID') { await loadPreview(undefined, mergeErrorText.CHARACTER_MERGE_CHOICE_INVALID); return; }
-      setError(mergeErr(e, '合并失败，没有改动'));
+    setPending(body); setBusy('正在合并…'); setError(''); setNote('');
+    try { const r = await m.confirm(body); setPending(null); setNotFound(false); onMerged(r, group, lookCount()); }
+    catch (e: any) {
+      if (outcomeUnknown(e)) { // 回应丢了：只查一次，不自动再发
+        try { await checkOnce(body); } catch (e2: any) { setError(e2?.code === 'OUTCOME_UNKNOWN' ? e2.message : mergeErr(e2, '核对失败，请稍后再试')); }
+        return;
+      }
+      // 重新提交时可能还有在途的原请求：只有服务端已落定的拒绝才解除待核对
+      if (resend && !settledRejection(e)) { setNotFound(true); setError(mergeErr(e, '这次没有执行') + '。原请求仍可能完成，待核对记录保留：可以稍后再核对，或稍后再按原内容提交'); return; }
+      await onRejected(e);
     } finally { if (alive.current) setBusy(''); }
   }
 
@@ -233,7 +244,7 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
           {unchecked && <button type="button" disabled={!!busy} onClick={recheck}>重新核对</button>}
           {step === 'impact' && conflicts.length > 0 && !pending
             ? <button type="button" className="ca-primary" disabled={!!busy || !preview} onClick={() => setStep('issues')}>处理 {conflicts.length} 个同名造型</button>
-            : <>{pending && notFound && <button type="button" disabled={!!busy} onClick={() => { setPending(null); setNotFound(false); setNote(''); onClose(); }}>不提交了</button>}
+            : <>{pending && notFound && <button type="button" disabled={!!busy} onClick={onClose}>稍后再核对</button>}
               <button type="button" className="ca-primary" disabled={!canConfirm} onClick={() => void confirm()}>{busy ? busy : pending ? (notFound ? '按原内容重新提交' : '核对上次结果') : '确认合并'}</button></>}
         </>}
       </footer>
@@ -313,38 +324,41 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
   const needAccept = pv?.status === 'review_required';
   const ok = !busy && (!!pending || (!!pv?.ready && !!pv.undo_token && pv.status !== 'blocked' && pv.status !== 'undone' && (!needAccept || accept)));
   const [notFound, setNotFound] = useState(false);
+  /** 服务端确认的拒绝：解除待核对。过期或新阻断时旧预览作废，重读凭证后重新核对，由用户再确认（下次用新编号）。 */
+  async function onRejected(e: { code?: string; message?: string }) {
+    setPending(null); setNotFound(false);
+    if (stale(e?.code) || e?.code === 'CHARACTER_MERGE_UNDO_BLOCKED') {
+      setPv(null);
+      const fresh = stale(e?.code) ? await reloadToken().catch(() => undefined) : token;
+      if (!fresh) { setError('撤销用的凭证过期了，重新读取也没成功，没有撤销；请点「重新核对」'); return; }
+      setToken(fresh); await load(mergeErrorText[e.code!] ?? mergeErrorText.CHARACTER_MERGE_UNDO_STALE, fresh, true); return;
+    }
+    setError(mergeErr(e, '撤销没有执行'));
+  }
+  async function checkOnce(body: UndoBody) {
+    const r = await lookupOnly<UndoReceipt | RejectedReceipt>(() => m.request(body.request_id));
+    if (!r) { setNotFound(true); setNote(NOT_FOUND_NOTE('撤销')); return; }
+    if (isRejected(r, body.request_id)) { await onRejected(r); return; }
+    setPending(null); setNotFound(false); onUndone(r as UndoReceipt);
+  }
   async function undo() {
     const held = pendingRef.current;
     if (!ok) return;
-    // 核对（组合验收复验 R3）：只读。查到回执就用；查无回执不自动重发，交给用户
     if (held && !notFound) {
       setBusy('正在核对上次结果…'); setError(''); setNote('');
-      try {
-        const r = await lookupOnly<UndoReceipt>(() => m.request(held.request_id));
-        if (r) { setPending(null); onUndone(r); }
-        else { setNotFound(true); setNote('服务端没有这次撤销的记录：上次的请求没有送达，什么都没有改。可以按原内容重新提交，或者不提交了。'); }
-      } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
+      try { await checkOnce(held); } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
       finally { setBusy(''); }
       return;
     }
     if (held && notFound) { const why = guard?.(); if (why) { setError(why); return; } }
+    const resend = !!held;
     const body = held ?? { request_id: newId(), context_token: token, undo_token: pv!.undo_token!, accept_restore_changes: needAccept && accept };
-    setPending(body); setNotFound(false); setBusy('正在撤销…'); setError('');
-    try {
-      let r: UndoReceipt;
-      try { r = await m.undo(mergeId, body); } catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<UndoReceipt>(() => m.request(body.request_id), () => m.undo(mergeId, body)); }
-      setPending(null); onUndone(r);
-    } catch (e: any) {
-      if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
-      setPending(null);
-      // 过期或新出现阻断：旧预览作废（不能再拿它提交），重读凭证后重新核对，由用户再确认
-      if (stale(e?.code) || e?.code === 'CHARACTER_MERGE_UNDO_BLOCKED') {
-        setPv(null);
-        const fresh = stale(e?.code) ? await reloadToken().catch(() => undefined) : token;
-        if (!fresh) { setError('撤销用的凭证过期了，重新读取也没成功，没有撤销；请点「重新核对」'); return; }
-        setToken(fresh); await load(mergeErrorText[e.code] ?? mergeErrorText.CHARACTER_MERGE_UNDO_STALE, fresh, true); return;
-      }
-      setError(mergeErr(e, '撤销失败，没有改动'));
+    setPending(body); setBusy('正在撤销…'); setError('');
+    try { const r = await m.undo(mergeId, body); setPending(null); setNotFound(false); onUndone(r); }
+    catch (e: any) {
+      if (outcomeUnknown(e)) { try { await checkOnce(body); } catch (e2: any) { setError(e2?.code === 'OUTCOME_UNKNOWN' ? e2.message : mergeErr(e2, '核对失败，请稍后再试')); } return; }
+      if (resend && !settledRejection(e)) { setNotFound(true); setError(mergeErr(e, '这次没有执行') + '。原请求仍可能完成，待核对记录保留：可以稍后再核对，或稍后再按原内容提交'); return; }
+      await onRejected(e);
     } finally { setBusy(''); }
   }
   const close = () => { if (!busy) onClose(); };
@@ -370,7 +384,7 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
       </div>
       <footer><button type="button" disabled={!!busy} onClick={close}>{pv?.status === 'blocked' || pv?.status === 'undone' ? '关闭' : '取消'}</button>
         {!pv && !pending && !busy && <button type="button" onClick={() => void load()}>重新核对</button>}
-        {pending && notFound && <button type="button" disabled={!!busy} onClick={() => { setPending(null); setNotFound(false); setNote(''); onClose(); }}>不提交了</button>}
+        {pending && notFound && <button type="button" disabled={!!busy} onClick={onClose}>稍后再核对</button>}
         {(pv || pending) && pv?.status !== 'blocked' && pv?.status !== 'undone' && <button type="button" className="ca-primary" disabled={!ok} onClick={() => void undo()}>{busy ? busy : pending ? (notFound ? '按原内容重新提交' : '核对上次结果') : '撤销合并'}</button>}</footer>
     </div>
   </div>;

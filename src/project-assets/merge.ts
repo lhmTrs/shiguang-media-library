@@ -76,6 +76,11 @@ export const lostOutcome = () => Object.assign(Error('网络中断，暂时确�
  * 已发出、结果不明的写请求：先按原请求号查回执；查到就用原结果，确定没有才用原编号、原内容重发。
  * 查询失败、或重发的回应又丢了，都仍是「结果不明」——调用方保留原请求并锁定，绝不换新编号（A 的 R2 教训）。
  */
+/** 后端持久化的拒绝终态（收口标准）：GET 原编号查到 status:"rejected"，或 4xx 带 details.request_settled:true。 */
+export type RejectedReceipt = { request_id: string; status: 'rejected'; code: string; message?: string; details?: unknown };
+export const isRejected = (r: unknown, requestId: string): r is RejectedReceipt => (r as RejectedReceipt)?.status === 'rejected' && (r as RejectedReceipt).request_id === requestId;
+export const settledRejection = (e: unknown) => (e as { details?: { request_settled?: boolean } })?.details?.request_settled === true;
+export const NOT_FOUND_NOTE = (what: string) => '暂未查到这次' + what + '的结果，原请求仍可能完成。可以稍后再核对；也可以按原内容重新提交（同一请求号，服务端只会执行一次）。';
 /** 只读核对已发出的原请求（组合验收复验 R3）：查到回执返回它，查无回执返回 null，绝不自动重发；查询本身失败仍算结果不明。 */
 export async function lookupOnly<T>(lookup: () => Promise<{ found: boolean; result?: unknown }>): Promise<T | null> {
   try { const r = await lookup(); return r.found && r.result ? r.result as T : null; }
@@ -129,19 +134,23 @@ export function siblingHint(group: MergeGroup, assetId: string) {
 /**
  * 结果不明的合并 / 撤销原请求：存在浮窗之外（组合验收 R1）。关浮窗、切项目再回来都还在，
  * 再打开时继续按原剧、原编号、原内容核对；未落定前不发起新的合并。
- * 内存为准，同时写入 sessionStorage（刷新页面也不丢）；存储不可用时只用内存。
+ * 写入 localStorage，同一浏览器的各标签页共享（收口标准：待核对期间这部剧只读，多开标签页也一样），
+ * 其他标签页改动经 storage 事件同步；存储不可用时只用内存（仅保证当前标签页）。
  */
 export type PendingMerge = { seriesId: string; group: MergeGroup; body: MergeConfirmBody };
 export type PendingUndo = { seriesId: string; mergeId: string; name: string; body: UndoBody };
-const PENDING_KEY = 'shiguang.characterMerge.pending.v1';
-const pendingMem: { merges: PendingMerge[]; undos: PendingUndo[] } = (() => {
-  try { const v = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); if (v && Array.isArray(v.merges) && Array.isArray(v.undos)) return v; } catch { /* 无存储时只用内存 */ }
+const PENDING_KEY = 'shiguang.characterMerge.pending.v2';
+const readPending = (): { merges: PendingMerge[]; undos: PendingUndo[] } => {
+  try { const v = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); if (v && Array.isArray(v.merges) && Array.isArray(v.undos)) return v; } catch { /* 无存储时只用内存 */ }
   return { merges: [], undos: [] };
-})();
+};
+let pendingMem = readPending();
 const pendingListeners = new Set<() => void>();
 /** 待核对记录变了就通知（页面上的「上次操作还没核对」提示条据此显示或消失）。 */
 export const subscribePending = (fn: () => void) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn); }; };
-const savePending = () => { try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } pendingListeners.forEach(fn => fn()); };
+const savePending = () => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } pendingListeners.forEach(fn => fn()); };
+// 其他标签页登记或解除了待核对：读回最新状态并通知页面
+try { window.addEventListener('storage', e => { if (e.key === PENDING_KEY) { pendingMem = readPending(); pendingListeners.forEach(fn => fn()); } }); } catch { /* 非浏览器环境 */ }
 export const pendingStore = {
   merge: (seriesId: string) => pendingMem.merges.find(p => p.seriesId === seriesId) ?? null,
   setMerge(seriesId: string, p: PendingMerge | null) { pendingMem.merges = pendingMem.merges.filter(x => x.seriesId !== seriesId); if (p) pendingMem.merges.push(p); savePending(); },

@@ -2,6 +2,7 @@ import {useFeedbackToast} from '../global-feedback';
 import React, { useEffect, useRef, useState } from 'react';
 import { Plus, Save, Globe2, Archive, Copy, ImagePlus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, X, Search, FolderKanban, FolderOpen, MoreHorizontal, Undo2, Maximize2, History, Star, Users, ScanFace, Radar, SlidersHorizontal, ZoomIn, Layers } from 'lucide-react';
 import type { ProjectAssetProps } from '../ProjectAssetWorkspace';
+import type { PromptRequest } from '../PromptTemplateWorkspace';
 import { readMemory, readStored, saveStored } from '../browser-preferences';
 import {imageNamePreset} from '../import-presets.mjs';
 import './asset-library.css';
@@ -39,46 +40,6 @@ const headRetry = (h: HeadState) => !['loading', 'not_found', 'unsupported', 'st
 type Binding = { id: string; look_id: string | null; media_asset_id: string; reference_type: string; purpose: string; locks: string; ignores: string; confirmed: boolean; archived_at: number | null; crop: { x: number; y: number; zoom: number }; last_known_name?: string; accept_current?: boolean; revision?: number; expected_sha256?: string | null; crop_source?: CropSource | null; crop_manually_edited?: boolean; was_card_default?: boolean };
 type Asset = { id: string; project_id: string; kind: Kind; name: string; base_info: string; performance_info: string; details: Record<string, string>; revision: number; default_look_id: string | null; default_image_id: string | null; archived_at: number; storyboard_protected?: boolean; looks: Look[]; images: Binding[]; updated_at: number; created_at: number; source: null | { project_name: string; asset_name: string; revision: number; copied_at: number }; cover?: Binding | null; look_count?: number };
 type Scope = { id: string; name: string; project_kind: string };
-/**
- * 草稿相对读取时原资料的全部改动（合并 / 撤销让人物换位置后锁定用，组合验收复验 R1）：
- * 文字改动给完整新内容，非文字改动（顺序、默认项、归档、裁切等）给明细，方便到新位置手动重做。
- */
-function describeChanges(prev: Asset, next: Asset): string[] {
-  const out: string[] = [], text = (label: string, a: string | undefined | null, b: string | undefined | null) => { if ((a ?? '') !== (b ?? '')) out.push(label + '：' + (b ? '\n' + b : '（清空）')); };
-  text('名称', prev.name, next.name); text('基础信息', prev.base_info, next.base_info); text('性格与表演', prev.performance_info, next.performance_info);
-  for (const k of new Set([...Object.keys(prev.details ?? {}), ...Object.keys(next.details ?? {})])) text('资料「' + k + '」', prev.details?.[k], next.details?.[k]);
-  const lookName = (id: string | null, a: Asset) => a.looks.find(l => l.id === id)?.name ?? '（无）';
-  const imgName = (b: Binding) => '「' + (b.last_known_name || b.id.slice(0, 8)) + '」';
-  const pl = new Map(prev.looks.map(l => [l.id, l])), nl = new Map(next.looks.map(l => [l.id, l]));
-  for (const l of next.looks) {
-    const o = pl.get(l.id);
-    if (!o) { out.push('新增造型「' + l.name + '」' + (l.description ? '，说明：\n' + l.description : '')); continue; }
-    text('造型「' + o.name + '」名称', o.name, l.name); text('造型「' + l.name + '」说明', o.description, l.description);
-    if ((o.tags ?? []).join('、') !== (l.tags ?? []).join('、')) out.push('造型「' + l.name + '」类型：' + ((l.tags ?? []).join('、') || '（无）'));
-    if (!!o.archived_at !== !!l.archived_at) out.push((l.archived_at ? '归档' : '恢复') + '造型「' + l.name + '」');
-    if (o.default_image_id !== l.default_image_id) out.push('造型「' + l.name + '」默认图：改成' + (next.images.find(b => b.id === l.default_image_id) ? imgName(next.images.find(b => b.id === l.default_image_id)!) : '（无）'));
-  }
-  for (const o of prev.looks) if (!nl.has(o.id)) out.push('删除造型「' + o.name + '」');
-  const order = (a: Asset, ids: Set<string>) => a.looks.filter(l => ids.has(l.id)).map(l => l.id).join();
-  const both = new Set(prev.looks.filter(l => nl.has(l.id)).map(l => l.id));
-  if (order(prev, both) !== order(next, both)) out.push('造型顺序：' + next.looks.map(l => l.name).join(' → '));
-  if (prev.default_look_id !== next.default_look_id) out.push('默认造型：改成「' + lookName(next.default_look_id, next) + '」');
-  if (prev.default_image_id !== next.default_image_id) out.push('默认图：有改动');
-  const pi = new Map(prev.images.map(b => [b.id, b])), ni = new Set(next.images.map(b => b.id));
-  for (const b of next.images) {
-    const o = pi.get(b.id), where = '图片' + imgName(b);
-    if (!o) { out.push('新增' + where + '（造型「' + lookName(b.look_id, next) + '」）'); continue; }
-    for (const [k, label] of [['purpose', '用途'], ['locks', '锁定'], ['ignores', '忽略'], ['reference_type', '参考类型']] as const) text(where + label, o[k], b[k]);
-    if (o.look_id !== b.look_id) out.push(where + '改归造型「' + lookName(b.look_id, next) + '」');
-    if (o.confirmed !== b.confirmed) out.push(where + (b.confirmed ? '标为已确认' : '取消确认'));
-    if (!!o.archived_at !== !!b.archived_at) out.push((b.archived_at ? '解绑' : '恢复') + where);
-    if (JSON.stringify(o.crop) !== JSON.stringify(b.crop)) out.push(where + '裁切有调整');
-  }
-  for (const o of prev.images) if (!ni.has(o.id)) out.push('移除图片' + imgName(o));
-  const iorder = (a: Asset) => a.images.filter(b => pi.has(b.id) && ni.has(b.id)).map(b => b.id).join();
-  if (iorder(prev) !== iorder(next)) out.push('图片顺序有调整（按现在的顺序：' + next.images.filter(b => !b.archived_at).map(imgName).join('、') + '）');
-  return out;
-}
 type Health = { id: string; state: string; label: string };
 type Receipt = { id: string; status: string; mediaAssetId?: string; fileName: string; error?: string; candidates: { id: string; name: string; reason: string; previewUrl: string }[] };
 // 每个拖入项固定导入编号、绑定编号和新造型编号：回应丢失后按原编号核对，不重新上传、不重复绑定。
@@ -184,7 +145,15 @@ function Avatar({ a }: { a: Asset }) { const b = coverOf(a); return <span classN
 function Cover({ a, binding }: { a: Asset; binding?: Binding | null }) { const b = binding === undefined ? coverOf(a) : binding; return <span className={'ca-card-cover' + (b ? '' : ' is-empty')}>{b ? <CroppedImage binding={b}/> : <span className="ca-card-initial">{a.name.slice(0, 1)}</span>}</span>; }
 
 export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, active, request, activeProject, refreshSeconds, onSettings, onOpenShot, registerProjectSwitchGuard }: ProjectAssetProps) {
-  const api = <T = any,>(url: string, body?: unknown, method?: string) => request<T>('/project-assets' + url, body, method);
+  /** 收口标准：这部剧有合并 / 撤销待核对时，人物写请求在这里统一拦下（预览、撞名检查、复制到剪贴板、在访达中显示等只读请求照常）。 */
+  const holdRef = useRef('');
+  const guardedRequest = (<T,>(url: string, body?: unknown, method?: string) => {
+    const verb = (method ?? (body !== undefined ? 'POST' : 'GET')).toUpperCase();
+    if (holdRef.current && verb !== 'GET' && url.startsWith('/project-assets') && !/(preview|names\/check)(\?|$)|\/images\/(clipboard|reveal)(\?|$)/.test(url))
+      return Promise.reject(Object.assign(Error(holdRef.current), { code: 'MERGE_PENDING' }));
+    return request<T>(url, body, method);
+  }) as PromptRequest;
+  const api = <T = any,>(url: string, body?: unknown, method?: string) => guardedRequest<T>('/project-assets' + url, body, method);
   // v2：新画廊默认卡片显示，不沿用旧版窄列表时期保存的“列表”偏好。
   const prefKey = 'shiguang.creative.preferences.v2';
   const remembered = () => readMemory().display ? readStored<{ kind: Kind; layout: string }>(prefKey, { kind: 'character', layout: 'grid' }, (v): v is { kind: Kind; layout: string } => !!v && typeof v === 'object' && ['character', 'scene', 'prop'].includes((v as any).kind) && ['grid','list'].includes((v as any).layout)) : { kind: 'character' as Kind, layout: 'grid' };
@@ -286,8 +255,6 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     finally{revealingRef.current.delete(b.id);setRevealing([...revealingRef.current]);}
   }
   const dirty = !!draft && JSON.stringify(draft) !== base, dirtyRef = useRef(dirty); dirtyRef.current = dirty;
-  /** 读取时的原资料（JSON），供合并 / 撤销后整理改动清单、绑定锁定。 */
-  const baseRef = useRef(base); baseRef.current = base;
   const lastActiveProject = useRef(activeProject);
   const scopeRef = useRef(scope); scopeRef.current = scope; const scopeBaseRef = useRef(''); const listTokenRef = useRef<{ base: string; token: string } | null>(null);
   /** 当前作用域列表返回的 context_token；作用域变了就不用旧的。 */
@@ -331,12 +298,11 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   /** 集视图里继承自全剧的资产：基础字段只读，默认造型 / 默认图在「本集设置」里覆盖。 */
   const inheritedHere = !!draftMeta && !seriesView && draftOwner?.type === 'series';
   /** 合并 / 撤销已落定后，当前人物换了位置而这里还有未保存修改（组合验收复验）：锁住、不往旧位置保存，文字保留可复制。 */
-  // 只锁「同一个人物、还是那份原资料」：切走、重新载入、从别处打开拿到新资料后自然失效（组合验收复验 R2）
-  const [orphan, setOrphan] = useState<{ id: string; base: string; text: string; changes: string[] } | null>(null);
-  const orphanHere = !!orphan && !!draft && orphan.id === draft.id && orphan.base === base;
-  // 详情被清空（切作用域、切类别、关闭）也清掉锁定；取消切换时详情不变，锁定保留
-  useEffect(() => { if (!draft) setOrphan(null); }, [draft]);
-  const scopeLock = orphanHere ? orphan!.text : !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
+  const mergeSeries = scoped && !publicScope && assetCtx?.series ? assetCtx.series.id : null;
+  const held = usePendingMerge(mergeSeries);
+  const holdReason = kind === 'character' && (held.merge || held.undo) ? '这部剧有一次' + (held.merge ? '合并同名人物' : '撤销合并') + '的结果还没核对到：核对前这部剧的人物只能看、不能改，已有的修改会保留。请先点顶部的「核对上次结果」。' : '';
+  holdRef.current = holdReason;
+  const scopeLock = holdReason && draft ? holdReason : !draft || !scopeBase ? '' : seriesView ? (draftMeta?.capabilities.edit_base === false ? '当前没有编辑全剧资料的权限。' : '') : inheritedHere ? '这是全剧共享的资产：名字、造型、图片和裁切在本集只读；默认造型和默认图可以在上方「本集设置」里单独改。要改全剧资料，请切到「全剧」。' : '';
   // 集视图共享人物的评分维度：按人物读（服务端按归属返回剧级维度），版本与详情里的 attribute_config_revision 对齐才可改分
   const [scopeDims, setScopeDims] = useState<{ revision: number; dims: ScoreDimension[] } | null>(null);
   useEffect(() => {
@@ -439,8 +405,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     return canLeave();
   };
   useEffect(() => { if (!registerProjectSwitchGuard) return; registerProjectSwitchGuard(() => switchGuard.current()); return () => registerProjectSwitchGuard(null); }, [registerProjectSwitchGuard]);
-  function install(a: Asset) { setOrphan(null); // 载入新资料：之前的换位置锁定作废（组合验收复验 R2）
-    if (draftRef.current?.id !== a.id || draftRef.current?.kind !== a.kind) setVersions([]); if (draftRef.current?.id !== a.id || draftRef.current?.revision !== a.revision) setHealth([]); setDraft(a); setBase(JSON.stringify(a)); setLookId(old => draftIdRef.current === a.id && a.looks.some(l => l.id === old) ? old : a.default_look_id ?? a.looks.find(l => !l.archived_at)?.id ?? ''); setConflict(null); }
+  function install(a: Asset) { if (draftRef.current?.id !== a.id || draftRef.current?.kind !== a.kind) setVersions([]); if (draftRef.current?.id !== a.id || draftRef.current?.revision !== a.revision) setHealth([]); setDraft(a); setBase(JSON.stringify(a)); setLookId(old => draftIdRef.current === a.id && a.looks.some(l => l.id === old) ? old : a.default_look_id ?? a.looks.find(l => !l.archived_at)?.id ?? ''); setConflict(null); }
   const edit = (fn: (a: Asset) => void) => setDraft(old => { if (!old || old.archived_at) return old; const next = structuredClone(old); fn(next); return next; });
   // The last list query that came back successfully, with its own count. "Empty" is only shown when that confirmed
   // result belongs to the query on screen and was itself zero (FE1-R1: a failed read is not empty; FE2-R3: coming
@@ -587,7 +552,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   }
   /** Clicking the character whose detail is already open does nothing (no reload, no flash). */
   const alreadyOpen = (id: string) => draft?.id === id && !detailLoading;
-  function dropDetail() { setOrphan(null); selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
+  function dropDetail() { selectionGeneration.current++; setDetailLoading(false); setDraft(null); setBase(''); setLookId(''); setConflict(null); setHealth([]); setVersions([]); setImageId(null); setMenu(''); }
   function closeDetail() { if (busy || !canLeave()) return false; dropDetail(); return true; }
   function discard() { if (!draft || !dirty || busy || !window.confirm('放弃当前修改，恢复到上次读取的资料？已导入的图片文件仍保留在项目文件夹。')) return; install(JSON.parse(base)); setNotice('已放弃修改'); }
   type NameCheck = { status: 'available' | 'existing_local' | 'inherit_shared' | 'conflict'; match?: { id: string; name: string }; conflicts?: { id: string; name: string; scope_name?: string }[]; context_token?: string; related_characters?: RelatedCharacters };
@@ -905,10 +870,8 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
   // —— 合并同名人物（合同 v1 · B）：同一部剧里各集同名人物的候选组；全剧提示条、卡片提示、菜单入口、新建撞名都用它 ——
   const [mergeVersion, setMergeVersion] = useState(0), [mergeOpen, setMergeOpen] = useState<{ group: MergeGroup; primary?: string } | null>(null);
   const [mergeDone, setMergeDone] = useState<{ receipt: MergeReceipt; name: string; lookCount?: number } | null>(null), [mergeUndo, setMergeUndo] = useState<{ mergeId: string; name: string } | null>(null);
-  const mergeSeries = scoped && !publicScope && assetCtx?.series ? assetCtx.series.id : null;
   const merges = useMergeGroups(request, mergeSeries, !!mergeSeries && kind === 'character' && active, `${mergeVersion}:${listRevision}:${total}`);
   const mergeGroupOf = (id: string) => merges.byAsset.get(id);
-  const held = usePendingMerge(mergeSeries);
   function openMerge(group: MergeGroup, primary?: string) {
     // 组合验收 R1：这部剧有一次合并 / 撤销结果还不明，先核对它，不发起新的操作
     const pm = mergeSeries ? pendingStore.merge(mergeSeries) : null, pu = mergeSeries ? pendingStore.undosOf(mergeSeries)[0] : null;
@@ -930,15 +893,11 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     if (!pu && dirtyRef.current) { setError('当前人物有未保存的修改：请先保存或放弃，再撤销合并（撤销会让相关人物换回原来的位置）'); return; }
     setMenu(''); setQuick(null); setError(''); setMergeUndo({ mergeId, name });
   }
-  /** 合并 / 撤销完成后的详情处理（组合验收 R1 复验）：只处理这次涉及的人物，无关人物和它的未保存草稿原样保留；
-   *  涉及的人物没改过就关掉（下次打开读新资料），有未保存修改就保留草稿并提示，保存时由版本冲突保护核对。 */
+  /** 合并 / 撤销落定后的详情处理（收口标准）：只处理这次涉及的人物。没改过就关掉，下次打开读新资料；
+   *  还有草稿（待核对期间写入口锁住，只可能来自别的标签页或旧会话）就保留并说明，保存会由版本 / 作用域校验拦下。 */
   function settleDetail(ids: string[], what: string) {
     const d = draftRef.current; if (!d || !ids.includes(d.id)) return;
-    // 有未保存修改：人物已换了位置（全剧 ↔ 集），往原位置保存会失败，也不能把整份旧草稿写到新位置 → 锁住，保留文字可复制
-    if (dirtyRef.current) {
-      let changes: string[] = []; try { changes = describeChanges(JSON.parse(baseRef.current) as Asset, d); } catch { changes = ['（没能整理出改动清单，请对照下面的资料）']; }
-      setOrphan({ id: d.id, base: baseRef.current, changes, text: '「' + d.name + '」已因' + what + '换了位置，这里的修改不能再保存到原来的位置，也不会自动写到新位置。下面列出了你的全部改动：先「复制全部改动」，关闭后到它现在的位置手动重做。' });
-    }
+    if (dirtyRef.current) setError('「' + d.name + '」刚因' + what + '换了位置，你的修改还在这里、没有保存。请先复制需要的内容，再放弃修改，到它现在的位置重新编辑。');
     else dropDetail();
   }
   async function afterMerge(r: MergeReceipt, group: MergeGroup, lookCount?: number) {
@@ -1383,7 +1342,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
           {!!assetCtx?.season && !publicScope && <button type="button" className="ca-season-entry" disabled={!!busy || !!modal || !!dropJob} onClick={() => void openSeasonSettings()}>{assetCtx.season.name}设定</button>}</div>
         {!scriptView && <div className="ca-head-tools">
           <label className="ca-search"><Search size={15} aria-hidden="true"/><input aria-label="搜索资产" placeholder={'搜索' + labels[kind]} value={q} onChange={e => { setQ(e.target.value); setPage(1); }}/></label>
-          <button className="ca-primary" disabled={!scope || !!busy} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
+          <button className="ca-primary" disabled={!scope || !!busy || !!holdReason} title={holdReason || undefined} onClick={() => void create()}><Plus size={15}/>新建{labels[kind]}</button>
           <div className="ca-menu-wrap"><button className="ca-icon-button" aria-label="更多资产操作" aria-haspopup="menu" aria-expanded={menu === 'page'} onClick={() => setMenu(m => m === 'page' ? '' : 'page')}><MoreHorizontal size={17}/></button>
             {menu === 'page' && <div className="ca-menu" role="menu">
               {kind === 'character' && <button role="menuitem" disabled={!!busy} onClick={() => { setMenu(''); if (!canLeave()) return; setModal({ type: 'import', source_project: scopes.find(s => s.id !== scope)?.id ?? '', source_rows: [], selected: '' }); }}><Copy size={15}/>从项目／公共库复制</button>}
@@ -1475,11 +1434,6 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
           </div>
           {draft.storyboard_protected && <p className="ca-detail-note">分镜清单已保护 · 可编辑，移出清单后可归档。</p>}
           {!!scopeLock && !draft.archived_at && <div className="ca-archive-note ca-scope-lock" role="status"><Layers size={15}/>{scopeLock}</div>}
-          {orphanHere && <div className="cm-orphan">
-            <b>你的全部改动（{orphan!.changes.length} 项，关闭后需要到「{draft.name}」现在的位置手动重做）：</b>
-            <pre className="cm-orphan-changes" tabIndex={0} aria-label="全部改动">{orphan!.changes.join('\n\n') || '（没有发现改动）'}</pre>
-            <div className="cm-orphan-actions"><button type="button" onClick={() => void navigator.clipboard.writeText('「' + draft.name + '」的改动：\n\n' + orphan!.changes.join('\n\n')).then(() => setNotice('已复制全部改动，到它现在的位置手动重做'), () => setError('复制没成功：可以直接选中上面框里的文字复制'))}><Copy size={14}/>复制全部改动</button>
-              <button type="button" onClick={dropDetail}><X size={14}/>放弃修改并关闭</button></div></div>}
           {inheritedHere && !draft.archived_at && draftMeta && <ScopeOverrides key={draft.id + ':' + scopeBase} asset={draft} meta={draftMeta} lookId={lookId || null} busy={!!busy} dims={dimsAligned ? scopeDims!.dims : undefined} onPickImage={lk => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media', append: { lookId: lk } }); }} append={appendHandlers} seriesName={assetCtx?.series?.name} dimsNote={scopeDims && !dimsAligned ? '评分维度刚在全剧改过，请重新打开这个人物后再改分' : ''} thumb={b => <ReferencePreview src={bindingSrc(b as Binding)} alt={b.last_known_name || '参考图片'}/>} onOverride={(f, a, v, t) => void applyOverride(f, a, v, t)}/>}
           {!!draft.archived_at && <div className="ca-archive-note" role="status"><Archive size={15}/>该{labels[draft.kind]}已归档，资料和图片设置只读。{sharedRestoreBlocked ? sharedRestoreNote : '在右上角“⋯”中选择“恢复”后可继续编辑。'}</div>}
           {conflict && <div className="ca-conflict" role="alert"><strong>{labels[draft.kind]}已经更新：当前 V{draft.revision}，数据库 V{conflict.revision}</strong><p>本地修改仍保留。请先比较变化，再决定采用最新资料或核对后合并保存。</p><button onClick={() => setModal({ type: 'compare', latest: conflict })}>比较资料</button><button onClick={() => { if (canLeave()) install(conflict); }}>载入最新资料</button></div>}
@@ -1530,9 +1484,9 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
                   : <ReferenceImageImport libraryAction={<button disabled={!!busy || locked} onClick={() => { setMediaQ(''); setMediaPage(1); setModal({ type: 'media' }); }}><ImagePlus size={16}/>从素材库绑定图片</button>} key={draft.id+':'+(currentLook?.id||'')} target={{assetId:draft.id,projectId:draft.project_id,lookId:draft.kind==='character'?currentLook!.id:null}} context={{projectName:owner?.name||'当前项目',assetName:draft.name,lookName:currentLook?.name||'',revision:draft.revision,kind:draft.kind,available:active&&!scriptView&&!draft.archived_at&&!dropJob&&(!currentLook||!currentLook.archived_at)}} disabled={!!busy||locked} request={request} onReady={importedImage} onBusy={importBusy}/>}<details className="ca-reference-help"><summary>导入与保存说明</summary><p>导入文件会立即保留在 picture 的项目文件夹；图片关联和代表图需点击下方“保存”后生效，放弃修改不会删除文件。</p><p>拖动图片调整顺序，或在图片设置里前移、后移；代表图仅用于列表展示。参考说明选填，不会自动发送给生成工具。</p></details></details>
               </>}
             </section>
-            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={request} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? scopeToken() ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
+            {draft.kind === 'character' && owner?.project_kind !== 'public' && !(scopeBase && draftOwner?.type === 'series' && !seriesView) && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><CharacterAttributes key={draft.id + (seriesView ? ':series' : '')} assetId={draft.id} projectId={draft.project_id} name={draft.name} request={guardedRequest} active={active && !scriptView} readOnly={!!draft.archived_at} onOpenConfig={() => openAttrConfig()} configVersion={attrConfigVersion} seriesScope={scopeBase && seriesView && draftOwner?.type === 'series' ? { base: scopeBase, contextToken: draftMeta?.context_token ?? scopeToken() ?? assetCtx?.context_token ?? '' } : undefined}/></section>}
             {draft.kind === 'character' && !!scopeBase && draftOwner?.type === 'series' && !seriesView && <section className="ca-sec" id="ca-sec-attrs" aria-label="属性"><h3>属性</h3><p className="ca-muted">这是全剧共享的人物：评分在上方「本集设置」里按维度覆盖，没有覆盖的维度沿用全剧。</p></section>}
-            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={request} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
+            {draft.kind === 'character' && <section className="ca-sec" id="ca-sec-voice" aria-label="语音"><CharacterVoice key={draft.id} assetId={draft.id} revision={draft.revision} value={draft.details.character_voice} disabled={locked||!!busy} active={active&&!scriptView} request={guardedRequest} onChange={value=>{const ownerId=draft.id;edit(a=>{if(a.id===ownerId)a.details.character_voice=value;});}} onBusy={value=>setBusy(current=>value?'正在添加角色语音…':current==='正在添加角色语音…'?'':current)}/></section>}
             <section className="ca-sec" id="ca-sec-shots" aria-label="出场镜头">{!!scopeBase && seriesView && draftOwner?.type === 'series' ? <p className="ca-muted">全剧没有单集的镜号列表：切到某一集，可以看这个人物在那一集的出场镜头。</p> : <AssociatedShots key={draft.id + (inheritedHere ? ':ep' : '')} assetId={draft.id} active={active} request={request} onOpen={onOpenShot} basePath={inheritedHere ? '/project-assets' + scopeBase : undefined}/>}</section>
           </div>
           <footer className={'ca-savebar' + (dirty ? ' is-dirty' : '')}>
@@ -1547,7 +1501,7 @@ export function AssetLibrary({ focusProject, openSeasonSettings: seasonFocus, ac
     {active && attrDialog > 0 && scope && !publicScope && (() => {
       const seq = attrDialog, ser = seriesView && scopeBase && assetCtx?.series ? assetCtx.series : null;
       // 全剧视图改的是全剧维度（<series>/attribute-config），不能落到本集的配置上
-      return <AttributeConfig key={(ser ? 'series:' + ser.id : scope) + ':' + seq} projectId={ser ? ser.id : scope} projectName={ser ? '全剧「' + ser.name + '」' : scopes.find(s => s.id === scope)?.name ?? ''} request={request}
+      return <AttributeConfig key={(ser ? 'series:' + ser.id : scope) + ':' + seq} projectId={ser ? ser.id : scope} projectName={ser ? '全剧「' + ser.name + '」' : scopes.find(s => s.id === scope)?.name ?? ''} request={guardedRequest}
         series={ser ? { base: scopeBase, token: () => scopeToken() ?? assetCtx?.context_token } : undefined} onGoSeries={!ser && assetCtx?.series ? goSeriesAttrConfig : undefined}
         onClose={() => setAttrDialog(cur => cur === seq ? 0 : cur)} onSaved={c => { if (ser || c.project_id === scopeRef.current) setAttrConfigVersion(v => v + 1); }}/>; })()}
     {active && desktop.action && desktopStatus()}

@@ -28,7 +28,7 @@ const scopeSwitch = () => work().getByRole('group', { name: '看哪里的资产'
 let S, eps = [], A, B; const writes = [];
 const ep = (i, project) => ({ project_id: project.id, project_name: project.name, episode_no: i, season_id: 'q1', season_no: 1, season_label: '第 1 季' });
 const member = (id, owner, episode, extra = {}) => ({ asset_id: id, asset_revision: 1, owner_type: owner, owner_id: owner === 'series' ? S.id : episode.project_id, episode, look_count: 2, image_count: 3, scored_dimensions: 6, default_look_id: 'l-' + id, references: { shots: 20, manifests: 1, manifest_entries: 2 }, base_info_excerpt: '资料摘要', performance_info_excerpt: null, primary_locked: false, ...extra });
-const fake = { failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
+const fake = { rejected: {}, confirmErrorOnce: null, undoErrorOnce: null, failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
 const lisi = () => ({ group_id: 'g-lisi', name: '李四', references: { shots: 51, manifests: 2, manifest_entries: 4 }, members: [member(A, 'project', ep(1, eps[0]), { references: { shots: 31 } }), member(B, 'project', ep(2, eps[1]), { references: { shots: 20 } })] });
 const zhao = () => ({ group_id: 'g-zhao', name: '赵六', references: { shots: 9 }, members: [member('z-series', 'series', null, { primary_locked: true }), member('z-ep2', 'project', ep(2, eps[1]))] });
 function groups() {
@@ -57,14 +57,16 @@ function preview(body) {
 async function installMocks() {
   const under = (u, tail) => new URL(u).pathname.startsWith('/api/project-series/') && new URL(u).pathname.endsWith(tail);
   const underScope = (u, tail) => new URL(u).pathname.startsWith('/api/project-assets/scopes/') && new URL(u).pathname.endsWith(tail);
-  await page.route(u => under(u, '/character-merge-groups'), route => { if (fake.failGroupsOnce) { fake.failGroupsOnce = false; return route.abort('connectionreset'); } fake.groupReads++; return route.fulfill({ json: groups() }); });
-  await page.route(u => under(u, '/character-merges/preview'), async route => {
+  await page.context().route(u => under(u, '/character-merge-groups'), route => { if (fake.failGroupsOnce) { fake.failGroupsOnce = false; return route.abort('connectionreset'); } fake.groupReads++; return route.fulfill({ json: groups() }); });
+  await page.context().route(u => under(u, '/character-merges/preview'), async route => {
     const body = route.request().postDataJSON(); fake.previews.push(body);
     if (fake.dropPreview) { fake.dropPreview = false; return route.abort('connectionreset'); }
     return route.fulfill({ json: preview(body) });
   });
-  await page.route(u => under(u, '/character-merges/confirm'), async route => {
-    const body = route.request().postDataJSON(); fake.confirms.push(body); const mode = fake.confirmPlan.shift();
+  await page.context().route(u => under(u, '/character-merges/confirm'), async route => {
+    const body = route.request().postDataJSON(); fake.confirms.push(body);
+    if (fake.confirmErrorOnce) { const e = fake.confirmErrorOnce; fake.confirmErrorOnce = null; return route.fulfill({ status: e.status, json: e.json }); }
+    const mode = fake.confirmPlan.shift();
     if (mode === 'abort') return route.abort('connectionreset');
     if (fake.staleOnce) { fake.staleOnce = false; return route.fulfill({ status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_STALE' } }); }
     const g = fake.previews.at(-1).group_id, isLisi = g === 'g-lisi';
@@ -74,28 +76,30 @@ async function installMocks() {
     if (mode === 'drop') return route.abort('connectionreset');
     return route.fulfill({ json: receipt });
   });
-  await page.route(u => /\/character-merge-requests\/[^/]+$/.test(new URL(u).pathname), route => {
+  await page.context().route(u => /\/character-merge-requests\/[^/]+$/.test(new URL(u).pathname), route => {
     if (fake.failLookupOnce) { fake.failLookupOnce = false; return route.abort('connectionreset'); }
     const id = new URL(route.request().url()).pathname.split('/').pop(), r = fake.receipts[id];
+    if (fake.rejected[id]) return route.fulfill({ json: { found: true, result: { request_id: id, status: 'rejected', ...fake.rejected[id] } } }); // 已落定的拒绝回执
     return route.fulfill({ json: r ? { found: true, result: r } : { found: false } });
   });
-  await page.route(u => /\/character-merges\/[^/]+\/undo-preview$/.test(new URL(u).pathname), route => { const b = route.request().postDataJSON(); fake.undoPreviews.push(b);
+  await page.context().route(u => /\/character-merges\/[^/]+\/undo-preview$/.test(new URL(u).pathname), route => { const b = route.request().postDataJSON(); fake.undoPreviews.push(b);
     if (b.context_token !== 'grp-tok-' + fake.groupReads) return route.fulfill({ status: 409, json: { error: '作用域已变化', code: 'ASSET_SCOPE_CHANGED' } });
     return route.fulfill({ json: { ready: true, undo_token: 'ud-1', merge_id: 'm-g-zhao', status: 'review_required', blockers: [], changes: [{ entity: 'image', entity_id: 'i9', project_id: null, kind: '合并后新加的图片', action: 'restore_with_confirmation' }] } }); });
-  await page.route(u => /\/character-merges\/[^/]+\/undo$/.test(new URL(u).pathname), route => { const body = route.request().postDataJSON(); fake.undos.push(body);
+  await page.context().route(u => /\/character-merges\/[^/]+\/undo$/.test(new URL(u).pathname), route => { const body = route.request().postDataJSON(); fake.undos.push(body);
     if (fake.staleUndoOnce) { fake.staleUndoOnce = false; return route.fulfill({ status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_UNDO_STALE' } }); }
+    if (fake.undoErrorOnce) { const e = fake.undoErrorOnce; fake.undoErrorOnce = null; return route.fulfill({ status: e.status, json: e.json }); }
     const mode = fake.undoPlan.shift(); if (mode === 'abort') return route.abort('connectionreset'); // 没到服务端
     const mergeId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2));
     if (mergeId === 'm-g-lisi') fake.lisiMerged = false; else fake.zhaoMerged = false;
     const receipt = { request_id: body.request_id, merge_id: mergeId, status: 'undone', restored_asset_ids: mergeId === 'm-g-lisi' ? [A, B] : ['z-series', 'z-ep2'], history_id: 'h2' }; fake.receipts[body.request_id] = receipt;
     if (mode === 'drop') return route.abort('connectionreset'); // 撤销真实写入，只丢回应
     return route.fulfill({ json: receipt }); });
-  await page.route(u => new RegExp('/assets/' + A + '/versions$').test(new URL(u).pathname), async route => {
+  await page.context().route(u => new RegExp('/assets/' + A + '/versions$').test(new URL(u).pathname), async route => {
     const res = await route.fetch(), data = await res.json();
     return route.fulfill({ json: [{ id: 'v-merge', version: 9, summary: '合并同名人物：合入第 2 集的「李四」', created_at: Date.now(), kind: 'character_merge', merge_id: 'm-g-lisi', request_id: 'r1', at: Date.now(), can_undo: true }, ...data] });
   });
   // 新建撞名：真实检查照常，按合同补 related_characters
-  await page.route(u => underScope(u, '/names/check'), async route => {
+  await page.context().route(u => underScope(u, '/names/check'), async route => {
     const body = route.request().postDataJSON(), res = await route.fetch(), data = await res.json();
     const s2 = (id, season, n, owner = 'project') => ({ ...member(id, owner, { project_id: 'p-' + id, project_name: '第' + n + '集', episode_no: n, season_id: 'q' + season, season_no: season, season_label: '第 ' + season + ' 季' }) });
     if (body.name === '张三') return route.fulfill({ json: { ...data, related_characters: { group_id: 'g-zhang', action: 'merge', items: [s2('zs1', 1, 1), s2('zs2', 2, 1)] } } });
@@ -170,24 +174,21 @@ try {
     assert.equal(fake.previews.at(-1).choices.look_choices[0].action, 'keep_both'); assert.equal(fake.confirms.length, 0, '核对失败期间不应提交');
   });
 
-  await check('B1 确认：首发未达 → 查无回执 → 原样重发写入但回应再丢 → 保留原请求并锁定 → 核对上次结果读回原回执；完成提示带撤销和下一个', async () => {
-    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); const lastToken = 'mp-' + fake.previews.length; // 替身凭证编号 = 计入后的预览次数
-    fake.confirmPlan.push('abort', 'drop'); await dlg.getByRole('button', { name: '确认合并' }).click();
+  await check('B1 确认：写入成功但回应丢、第一次查询也丢 → 保留原请求并锁定（不自动重发）→ 关窗、切集再回来，由独立提示条核对读回原回执；完成提示带撤销和下一个', async () => {
+    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); const lastToken = 'mp-' + fake.previews.length, sent = fake.confirms.length; // 替身凭证编号 = 计入后的预览次数
+    fake.confirmPlan.push('drop'); fake.failLookupOnce = true; await dlg.getByRole('button', { name: '确认合并' }).click();
     await expect(dlg.getByRole('alert')).toContainText('原请求已保留'); await expect(dlg.getByRole('button', { name: '核对上次结果' })).toBeEnabled(); await shot('4-lost-locked');
     await expect(dlg.getByRole('radio', { name: /都保留/ })).toBeDisabled(); await expect(dlg.getByRole('button', { name: '上一步' })).toHaveCount(0);
-    assert.equal(fake.confirms.length, 2); assert.equal(fake.confirms[1].request_id, fake.confirms[0].request_id, '重发应沿用原请求号');
-    const c = fake.confirms[0]; assert.equal(c.preview_token, lastToken, '确认用最后一次成功核对的凭证'); assert.match(c.context_token, /^grp-tok-/); assert.deepEqual(c.choices.look_choices, [{ conflict_id: 'c-casual', action: 'keep_both', rename_to: '常服（第 2 集）' }]);
-    // R1：结果不明时关掉浮窗、切到集再回全剧；独立提示条引导核对，不发起新合并
+    assert.equal(fake.confirms.length, sent + 1, '回应丢了只按原编号查一次，不自动再发');
+    const c = fake.confirms.at(-1); assert.equal(c.preview_token, lastToken, '确认用最后一次成功核对的凭证'); assert.match(c.context_token, /^grp-tok-/); assert.deepEqual(c.choices.look_choices, [{ conflict_id: 'c-casual', action: 'keep_both', rename_to: '常服（第 2 集）' }]);
     await dlg.getByRole('button', { name: '关闭' }).click(); await expect(dlg).toHaveCount(0);
     await scopeSwitch().getByRole('button').first().click(); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
-    // 待核对期间「逐个合并」提示条不出现，由独立的待核对提示条引导先核对
-    await expect(work().locator('.cm-banner')).toHaveCount(0);
+    await expect(work().locator('.cm-banner')).toHaveCount(0); // 待核对期间不出现「逐个合并」
     const pendingBar = work().locator('.cm-pending'); await expect(pendingBar).toContainText('上次合并「李四」的结果还没核对到');
     await pendingBar.getByRole('button', { name: '核对上次结果' }).click();
-    const again = page.getByRole('dialog', { name: '合并「李四」' }); await expect(again.getByRole('button', { name: '核对上次结果' })).toBeEnabled();
-    await expect(again).toContainText('已锁定'); assert.equal(fake.confirms.length, 2, '重开后不应自动提交');
+    const again = page.getByRole('dialog', { name: '合并「李四」' }); await expect(again).toContainText('已锁定'); assert.equal(fake.confirms.length, sent + 1, '重开后不应自动提交');
     await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
-    assert.equal(fake.confirms.length, 2, '查到原回执后不应再发确认，更不应换新编号');
+    assert.equal(fake.confirms.length, sent + 1, '查到原回执，不再发确认');
     const done = work().locator('.cm-done'); await expect(done).toContainText('已合并「李四」：现在是全剧共享人物，51 个镜头都指向它');
     await expect(done.getByRole('button', { name: '撤销' })).toBeVisible(); await expect(done.getByRole('button', { name: '下一个（还剩 1 个）' })).toBeVisible(); await shot('5-done');
   });
@@ -258,121 +259,114 @@ try {
     await undo.getByRole('button', { name: '取消' }).click();
   });
 
-  await check('R1 复验：只剩一组时合并写入但回应和第一次查询都丢 → 刷新后候选为 0，人物页独立提示仍能「核对上次结果」；撤销同理，核对前不能发起新合并', async () => {
-    fake.zhaoMerged = true; fake.lisiMerged = false;
+  const mergeLisi = async () => {
     await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
     await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
-    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click();
-    await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click(); const sent = fake.confirms.length;
+    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click(); await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click();
+    return dlg;
+  };
+  const startUndoLisi = async () => {
+    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check(); return undo;
+  };
+
+  await check('收口 R1：只剩一组时合并写入但回应和首次查询都丢 → 刷新后候选为 0 仍能核对；撤销同理；待核对期间这部剧人物只读（新建禁用、详情锁住、零写请求），核对后恢复', async () => {
+    fake.zhaoMerged = true; fake.lisiMerged = false;
+    let dlg = await mergeLisi(); const sent = fake.confirms.length;
     fake.confirmPlan.push('drop'); fake.failLookupOnce = true; await dlg.getByRole('button', { name: '确认合并' }).click();
     await expect(dlg.getByRole('alert')).toContainText('原请求已保留'); assert.equal(fake.confirms.length, sent + 1);
     await dlg.getByRole('button', { name: '关闭' }).click(); await page.reload(); await expect(work()).toBeVisible();
     const bar = work().locator('.cm-pending'); await expect(bar).toContainText('上次合并「李四」的结果还没核对到'); await shot('9-pending-after-reload');
     await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await expect(work().locator('.cm-banner')).toHaveCount(0); // 候选已是 0
     await bar.getByRole('button', { name: '核对上次结果' }).click();
-    const again = page.getByRole('dialog', { name: '合并「李四」' }); await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
+    dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '核对上次结果' }).click(); await expect(dlg).toHaveCount(0);
     assert.equal(fake.confirms.length, sent + 1, '按原号查到回执，不再发确认'); await expect(bar).toHaveCount(0); await expect(work().locator('.cm-done')).toContainText('已合并「李四」');
-    // 撤销：写入但回应和第一次查询都丢 → 刷新后历史不再「可撤销」，独立提示仍在；核对前「逐个合并」不出现
-    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
-    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check();
-    const undos = fake.undos.length; fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    // 撤销：写入但回应和首次查询都丢 → 刷新后历史不再「可撤销」，独立提示仍在；核对前「逐个合并」不出现
+    let undo = await startUndoLisi(); const undos = fake.undos.length;
+    fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
     await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
     await page.reload(); await expect(work()).toBeVisible(); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
     await expect(bar).toContainText('上次撤销合并「李四」的结果还没核对到'); await expect(work().locator('.cm-banner')).toHaveCount(0);
-    // 复验阻断：先在第 1 集打开无关的「钱八」改资料不保存，再从独立提示核对已成功的撤销 → 钱八和草稿原样保留，不发任何写请求
+    // 待核对期间这部剧人物只读：新建禁用；集里打开无关的钱八，详情锁住、说明原因
+    await expect(work().getByRole('button', { name: /^新建/ }).first()).toBeDisabled();
     await scopeSwitch().getByRole('button').first().click();
     await work().locator('.ca-card').filter({ hasText: '钱八' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('钱八');
-    await work().getByLabel('基础信息', { exact: true }).fill('钱八的草稿，还没保存'); const writesBefore = writes.length;
+    await expect(work().locator('.ca-scope-lock')).toContainText('只能看、不能改'); await expect(work().getByLabel('基础信息', { exact: true })).toBeDisabled();
+    await expect(work().getByRole('button', { name: '保存资料' })).toBeDisabled(); await shot('10-hold-locked'); const writesBefore = writes.length;
     await bar.getByRole('button', { name: '核对上次结果' }).click();
-    const undo2 = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo2.getByRole('button', { name: '核对上次结果' }).click(); await expect(undo2).toHaveCount(0);
+    undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('button', { name: '核对上次结果' }).click(); await expect(undo).toHaveCount(0);
     assert.equal(fake.undos.length, undos + 1, '按原号查到撤销回执，不再发撤销'); await expect(bar).toHaveCount(0);
-    await expect(work().locator('.ca-name-input')).toHaveValue('钱八'); await expect(work().getByLabel('基础信息', { exact: true })).toHaveValue('钱八的草稿，还没保存');
-    assert.deepEqual(writes.slice(writesBefore), [], '核对时不应发出任何写请求'); await shot('10-draft-kept');
-    // 核对完恢复正常入口：撤销后两份李四回来了，卡片上的同名提示和合并入口重新出现
+    // 核对完恢复：钱八详情仍开着、解锁可编辑；李四卡片的同名提示回来；零写请求
+    await expect(work().locator('.ca-name-input')).toHaveValue('钱八'); await expect(work().getByLabel('基础信息', { exact: true })).toBeEditable();
+    assert.deepEqual(writes.slice(writesBefore), [], '核对时不应发出任何写请求');
     await expect(work().locator('.ca-card-wrap').filter({ hasText: '李四' }).first().locator('.cm-card-hint')).toHaveText('第 2 集也有一个「李四」');
     await expect(work()).toContainText('已撤销合并「李四」');
   });
 
-  await check('复验：新撤销前要先处理未保存修改；核对已落定的撤销时相关人物有草稿 → 锁住不往旧位置保存，可复制文字、可放弃关闭，不发写请求', async () => {
-    page.once('dialog', d => d.accept()); // 上一项留着钱八的未保存草稿：切换时确认放弃
-    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
-    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
-    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click();
-    await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click(); await dlg.getByRole('button', { name: '确认合并' }).click(); await expect(dlg).toHaveCount(0);
+  await check('收口：新撤销前要先处理未保存修改；另一个标签页的草稿在待核对期间保留、暂停提交，核对后两页都解锁', async () => {
+    let dlg = await mergeLisi(); await dlg.getByRole('button', { name: '确认合并' }).click(); await expect(dlg).toHaveCount(0);
     // 新撤销：当前人物有未保存修改 → 先处理，不弹撤销
     await scopeSwitch().getByRole('button').first().click();
     await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
-    const info = work().getByLabel('基础信息', { exact: true }); await info.fill('李四的草稿');
-    const undosBefore = fake.undos.length, previewsBefore = fake.undoPreviews.length;
+    const info = work().getByLabel('基础信息', { exact: true }); await info.fill('李四的草稿'); const previewsBefore = fake.undoPreviews.length;
     await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
     await expect(work().getByRole('alert').first()).toContainText('请先保存或放弃'); await expect(page.getByRole('dialog', { name: /撤销合并/ })).toHaveCount(0);
     assert.equal(fake.undoPreviews.length, previewsBefore, '有草稿时不应开始撤销');
-    // 放弃修改后发起撤销：写入但回应和第一次查询都丢 → 待核对
     page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '放弃修改' }).click(); await expect(info).not.toHaveValue('李四的草稿');
-    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
-    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check();
-    fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    // 另一个标签页：同一集打开钱八，留草稿
+    const page2 = await page.context().newPage(); page2.on('pageerror', e => errors.push('page2: ' + e.message));
+    const work2 = () => page2.getByRole('region', { name: '项目资产库' });
+    await page2.goto(origin + '/#/all'); await expect(page2.locator('.ppb').first()).toHaveAttribute('data-project', /./);
+    await selectProjectInBar(page2, eps[0].id); await page2.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '项目资产', exact: true }).click();
+    await work2().locator('.ca-card').filter({ hasText: '钱八' }).first().click(); const info2 = work2().getByLabel('基础信息', { exact: true }); await info2.fill('另一个标签页的草稿');
+    // 本页发起撤销：写入但回应和首次查询都丢 → 待核对（两个标签页共享）
+    const undo = await startUndoLisi(); fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
     await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
-    // 待核对期间又改了相关人物李四：基础信息、夜行服说明、夜行服上移 → 核对已落定的撤销（只读，允许）→ 李四换了位置：锁住、改动全列出
-    await info.fill('李四的草稿第二版');
-    await work().locator('.ca-look-list button').filter({ hasText: '夜行服' }).first().click();
-    await work().getByText('造型设置', { exact: true }).click(); await work().getByLabel('造型说明').fill('夜行服新说明'); await work().getByRole('button', { name: '造型上移' }).click();
-    const writesBefore = writes.length;
+    // 另一个标签页：锁住、草稿还在、不能保存
+    await expect(work2().locator('.cm-pending')).toContainText('上次撤销合并「李四」'); await expect(work2().locator('.ca-scope-lock')).toContainText('只能看、不能改');
+    await expect(info2).toHaveValue('另一个标签页的草稿'); await expect(work2().getByRole('button', { name: '保存资料' })).toBeDisabled();
+    await page2.screenshot({ path: evidence ? path.join(evidence, '11-other-tab-locked.png') : path.join(os.tmpdir(), 'cm-other-tab.png') }).catch(() => {});
+    // 本页核对 → 两页都解锁，另一个标签页的草稿保留、可以继续编辑
     await work().locator('.cm-pending').getByRole('button', { name: '核对上次结果' }).click();
-    const again = page.getByRole('dialog', { name: '撤销合并「李四」' }); await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
-    assert.equal(fake.undos.length, undosBefore + 1, '核对只查原编号');
-    await expect(work().locator('.ca-scope-lock')).toContainText('已因撤销合并换了位置'); await expect(info).toHaveValue('李四的草稿第二版');
-    await expect(work().getByRole('button', { name: '保存资料' })).toBeDisabled(); await shot('11-orphan-locked');
-    const changes = work().getByLabel('全部改动');
-    for (const t of ['基础信息：', '李四的草稿第二版', '造型「夜行服」说明：', '夜行服新说明', '造型顺序：夜行服 → 常服']) await expect(changes).toContainText(t);
-    await work().getByRole('button', { name: '复制全部改动' }).click();
-    const copied = await page.evaluate(() => navigator.clipboard.readText());
-    for (const t of ['李四的草稿第二版', '夜行服新说明', '造型顺序：夜行服 → 常服']) assert.ok(copied.includes(t), '复制内容应含：' + t);
-    await expect(work().getByRole('button', { name: '放弃修改并关闭' })).toBeVisible();
-    assert.deepEqual(writes.slice(writesBefore), [], '不应往任何位置写这份草稿');
-    // R2：在锁定详情里直接切到全剧（确认放弃草稿），再回集打开李四 → 读到新资料，可以编辑，不再带上一个锁
-    page.once('dialog', d => d.accept()); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
-    await scopeSwitch().getByRole('button').first().click();
-    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); await expect(work().locator('.ca-name-input')).toHaveValue('李四');
-    await expect(work().locator('.ca-scope-lock')).toHaveCount(0); await expect(work().getByLabel('基础信息', { exact: true })).toBeEditable();
+    const u2 = page.getByRole('dialog', { name: '撤销合并「李四」' }); await u2.getByRole('button', { name: '核对上次结果' }).click(); await expect(u2).toHaveCount(0);
+    await expect(work2().locator('.cm-pending')).toHaveCount(0); await expect(work2().locator('.ca-scope-lock')).toHaveCount(0);
+    await expect(info2).toHaveValue('另一个标签页的草稿'); await expect(info2).toBeEditable();
+    await page2.close();
   });
 
-  await check('复验 R3：首次请求没到服务端、首次查询也丢 → 核对只读：查无回执不自动重发；重新提交由用户发起且过草稿保护（撤销、合并同理）', async () => {
-    // 合并：没到服务端 → 待核对 → 核对查无 → 不提交了，恢复正常入口（上一项结束时李四没有未保存修改，切换不会弹确认）
-    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
-    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
-    let dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click(); await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click();
+  await check('收口 R3/R4：首次请求没到服务端、首次查询也丢 → 核对只读，暂未查到只给「稍后再核对」「按原内容重新提交」；稍后再核对保留记录；重新提交沿用原编号；未落定的 423 保留、已落定的拒绝解除（直接响应和核对查到两种）', async () => {
+    // 合并：没到服务端
+    let dlg = await mergeLisi(); const sent = fake.confirms.length;
     fake.confirmPlan.push('abort'); fake.failLookupOnce = true; await dlg.getByRole('button', { name: '确认合并' }).click();
-    await expect(dlg.getByRole('alert')).toContainText('原请求已保留'); const sent = fake.confirms.length; await dlg.getByRole('button', { name: '关闭' }).click();
-    await work().locator('.cm-pending').getByRole('button', { name: '核对上次结果' }).click();
-    dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '核对上次结果' }).click();
-    await expect(dlg.getByRole('status').filter({ hasText: '服务端没有这次合并的记录' })).toBeVisible(); assert.equal(fake.confirms.length, sent, '查无回执不应自动重发');
-    await dlg.getByRole('button', { name: '不提交了' }).click(); await expect(dlg).toHaveCount(0);
-    await expect(work().locator('.cm-pending')).toHaveCount(0); await expect(work().locator('.cm-banner')).toBeVisible();
-    // 先正常合并一次，再撤销：没到服务端 → 待核对
-    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
-    dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click(); await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click();
-    await dlg.getByRole('button', { name: '确认合并' }).click(); await expect(dlg).toHaveCount(0);
-    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
-    let undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check();
-    fake.undoPlan.push('abort'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
-    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); const undoSent = fake.undos.length, firstId = fake.undos.at(-1).request_id; await undo.getByRole('button', { name: '关闭' }).click();
-    // 编辑相关人物李四后核对：只查不发；「按原内容重新提交」被草稿保护拦下
-    await scopeSwitch().getByRole('button').first().click();
-    await work().locator('.ca-card').filter({ hasText: '李四' }).first().click(); const info = work().getByLabel('基础信息', { exact: true }); await info.fill('核对期间的草稿');
-    await work().locator('.cm-pending').getByRole('button', { name: '核对上次结果' }).click();
-    undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('button', { name: '核对上次结果' }).click();
-    await expect(undo.getByRole('status').filter({ hasText: '服务端没有这次撤销的记录' })).toBeVisible(); assert.equal(fake.undos.length, undoSent, '查无回执不应自动重发');
+    await expect(dlg.getByRole('alert')).toContainText('原请求已保留'); const firstId = fake.confirms.at(-1).request_id; await dlg.getByRole('button', { name: '关闭' }).click();
+    const bar = work().locator('.cm-pending');
+    await bar.getByRole('button', { name: '核对上次结果' }).click(); dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '核对上次结果' }).click();
+    await expect(dlg.getByRole('status').filter({ hasText: '暂未查到这次合并的结果，原请求仍可能完成' })).toBeVisible(); assert.equal(fake.confirms.length, sent + 1, '查无不自动重发');
+    await expect(dlg.getByRole('button', { name: '不提交了' })).toHaveCount(0); await shot('12-not-found'); // 鼠标仍停在主按钮上：悬停时文字须仍是白色
+    assert.equal(await dlg.getByRole('button', { name: '按原内容重新提交' }).evaluate(b => getComputedStyle(b).color), 'rgb(255, 255, 255)', '悬停的主按钮文字应为白色');
+    await dlg.getByRole('button', { name: '稍后再核对' }).click(); await expect(dlg).toHaveCount(0); await expect(bar).toBeVisible(); // 记录保留
+    await bar.getByRole('button', { name: '核对上次结果' }).click(); dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '核对上次结果' }).click();
+    await dlg.getByRole('button', { name: '按原内容重新提交' }).click(); await expect(dlg).toHaveCount(0);
+    assert.equal(fake.confirms.length, sent + 2); assert.equal(fake.confirms.at(-1).request_id, firstId, '重新提交沿用原请求号'); await expect(bar).toHaveCount(0);
+    // 撤销：没到服务端 → 重新提交遇到未落定的 423 → 仍保留 → 再重新提交遇到已落定的拒绝 → 解除，重新核对撤销
+    let undo = await startUndoLisi(); fake.undoPlan.push('abort'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); const undoId = fake.undos.at(-1).request_id; await undo.getByRole('button', { name: '关闭' }).click();
+    await bar.getByRole('button', { name: '核对上次结果' }).click(); undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('button', { name: '核对上次结果' }).click();
+    await expect(undo.getByRole('status').filter({ hasText: '暂未查到这次撤销的结果' })).toBeVisible();
+    fake.undoErrorOnce = { status: 423, json: { error: '正在生成分镜', code: 'STORYBOARD_GENERATION_LOCKED' } };
     await undo.getByRole('button', { name: '按原内容重新提交' }).click();
-    await expect(undo.getByRole('alert')).toContainText('请先保存或放弃'); assert.equal(fake.undos.length, undoSent, '有草稿时不应重新提交'); await page.mouse.move(5, 5); await shot('12-resend-guarded');
-    // 放弃草稿后由用户明确重新提交：沿用原请求号
+    await expect(undo.getByRole('alert')).toContainText('原请求仍可能完成'); await expect(undo.getByRole('button', { name: '按原内容重新提交' })).toBeVisible(); await expect(bar).toBeVisible();
+    fake.undoErrorOnce = { status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_UNDO_STALE', details: { request_settled: true } } };
+    await undo.getByRole('button', { name: '按原内容重新提交' }).click();
+    await expect(bar).toHaveCount(0); await expect(undo.getByRole('button', { name: '撤销合并' })).toBeVisible(); // 已落定的拒绝：解除，按新凭证重新核对撤销
+    assert.ok(fake.undos.slice(-3).every(u => u.request_id === undoId), '重新提交都沿用原请求号');
     await undo.getByRole('button', { name: '取消' }).click();
-    page.once('dialog', d => d.accept()); await work().getByRole('button', { name: '放弃修改' }).click(); await expect(info).not.toHaveValue('核对期间的草稿');
-    await work().locator('.cm-pending').getByRole('button', { name: '核对上次结果' }).click();
-    undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('button', { name: '核对上次结果' }).click();
-    await undo.getByRole('button', { name: '按原内容重新提交' }).click(); await expect(undo).toHaveCount(0);
-    assert.equal(fake.undos.length, undoSent + 1); assert.equal(fake.undos.at(-1).request_id, firstId, '重新提交沿用原请求号');
-    await expect(work()).toContainText('已撤销合并「李四」'); await expect(work().locator('.cm-pending')).toHaveCount(0);
+    // 核对查到已落定的拒绝回执：解除待核对
+    undo = await startUndoLisi(); fake.undoPlan.push('abort'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); const blockedId = fake.undos.at(-1).request_id; await undo.getByRole('button', { name: '关闭' }).click();
+    fake.rejected[blockedId] = { code: 'CHARACTER_MERGE_UNDO_BLOCKED', message: '有新的引用，暂时不能撤销' };
+    await bar.getByRole('button', { name: '核对上次结果' }).click(); undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('button', { name: '核对上次结果' }).click();
+    await expect(bar).toHaveCount(0); await expect(undo.getByRole('status')).toContainText('暂时不能完整撤销'); await undo.getByRole('button', { name: '取消' }).click();
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

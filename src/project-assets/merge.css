@@ -42,7 +42,7 @@
 .cm-card-hint { display: block; margin-top: 2px; font-size: 12px; color: #8a4b00; }
 .cm-create-ask { margin: 0; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, #b26b00 8%, transparent); color: #6b4300; line-height: 1.7; }
 @media (max-width: 700px) { .cm-banner, .cm-done { flex-wrap: wrap; } }
-.cm-orphan { margin: 6px 18px 10px; display: grid; gap: 6px; font-size: 13px; }
-.cm-orphan-changes { margin: 0; max-height: 220px; overflow: auto; padding: 8px 10px; border: 1px solid var(--line, #dfe3e1); border-radius: 8px; background: var(--ca-card, #fff); white-space: pre-wrap; font: inherit; user-select: text; }
-.cm-orphan-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.cm-orphan-actions button { display: inline-flex; gap: 4px; align-items: center; }
+/* 共享规则 .ca-workspace button:hover 把悬停文字改成绿色，主按钮底色也是绿色 → 字看不见（按钮文字常在原地切换，鼠标正停在上面）。
+   照 .ca-pickbar / .ca-reference-drop-actions 的做法在本组件内修正 */
+.ca-workspace .cm-dialog button.ca-primary:hover:not(:disabled), .ca-workspace .cm-banner button.ca-primary:hover:not(:disabled),
+.ca-workspace .cm-done button.ca-primary:hover:not(:disabled), .ca-workspace .cm-pending button.ca-primary:hover:not(:disabled) { color: #fff; filter: brightness(.95); }
