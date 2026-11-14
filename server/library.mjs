@@ -1024,8 +1024,11 @@ export class Library {
       return this.asset(assetId);
     }, { source });
   }
+  assertOperationDatabase(admittedDb,{operationId=null,fileChanged=false}={}) {
+    if(this.db!==admittedDb)throw Object.assign(Error(fileChanged?'素材库实例已变化；文件已移动，请回到原素材库核对原操作':'素材库实例已变化，未继续文件操作'),{code:'LOCAL_INSTANCE_CHANGED',status:409,details:{operationId,fileChanged,needsReview:fileChanged}});
+  }
   assertRenderFileMutable(file,stat,admittedDb=this.db) {
-    if(this.db!==admittedDb)throw Object.assign(Error('素材库实例已变化，未改动文件'),{code:'LOCAL_INSTANCE_CHANGED',status:409,details:{}});
+    this.assertOperationDatabase(admittedDb);
     if(this.projectRenders){this.projectRenders.assertNotInUse({path:file,identity:{dev:String(stat?.dev),ino:String(stat?.ino)}});return;}
     const table=this.db.kind==='mysql'?this.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_renders'").get():this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_renders'").get();
     if(table)throw Object.assign(Error('成片引用状态暂时无法核对，未改动文件'),{code:'RENDER_INFO_UNAVAILABLE',status:503,details:{}});
@@ -1045,6 +1048,7 @@ export class Library {
       try {
         if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
+        this.assertOperationDatabase(admittedDb);
         const { a, p, stat } = await this.source(assetId);
         this.assertRenderFileMutable(p,stat,admittedDb);
         if(this.storyboardVideos?.catalog?.ownsMediaAsset(assetId))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
@@ -1175,6 +1179,7 @@ export class Library {
       const operation = id();
       let changed = false;
       try {
+        this.assertOperationDatabase(admittedDb);
         if (this.storyboardVideos?.catalog?.ownsMediaAsset(p.id)) throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
         if ([...this.jobs.values()].some((j) => j.status === "running" && j.id !== jobId))
           throw Error("素材扫描进行中，请完成后再整理文件");
@@ -1216,6 +1221,7 @@ export class Library {
             .prepare("UPDATE operations SET target=? WHERE id=?")
             .run(trash, operation);
           changed = true;
+          this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:true});
           if (!path.isAbsolute(trash) || !/(^|\/)\.Trash(es)?\//.test(trash))
             throw Error("废纸篓返回位置异常，请查看操作记录");
           admittedDb
@@ -1225,6 +1231,7 @@ export class Library {
           await this.relocate(p.source, p.target, stat);
           changed = true;
           const s = await fs.stat(p.target);
+          this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:true});
           admittedDb
             .prepare(
               "UPDATE assets SET path=?,name=?,root_id=?,mtime=?,size=?,created_ms=?,dev=?,ino=? WHERE id=?",
@@ -1244,9 +1251,13 @@ export class Library {
         admittedDb
           .prepare("UPDATE operations SET status='done' WHERE id=?")
           .run(operation);
+        this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:changed});
         this.directoryClassification?.sync(null, p.id);
+        this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:changed});
         this.onMetadataChanged?.(a.root_id);
+        this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:changed});
         if (input.action === "move" && input.rootId !== a.root_id) this.onMetadataChanged?.(input.rootId);
+        this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:changed});
         results.push({ ...p, ok: true, operation });
       } catch (e) {
         let uncertain = changed;
@@ -1277,6 +1288,7 @@ export class Library {
     if (!op) throw Error("该操作不能撤销");
     if (this.locks.has(op.asset_id)) throw Error("素材正在处理");
     this.locks.add(op.asset_id);
+    let changed=false;
     try {
       const a = this.asset(op.asset_id);
       const later = admittedDb
@@ -1300,7 +1312,9 @@ export class Library {
       const actual=await fs.stat(target);this.assertRenderFileMutable(target,actual,admittedDb);
       if(this.storyboardVideos?.catalog?.ownsMediaAsset(a.id))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
       await this.relocate(target, op.source);
+      changed=true;
       const s = await fs.stat(op.source);
+      this.assertOperationDatabase(admittedDb,{operationId:op.id,fileChanged:true});
       admittedDb.transaction(() => {
         admittedDb
           .prepare(
@@ -1319,10 +1333,21 @@ export class Library {
           );
         admittedDb.prepare("UPDATE operations SET undone=1 WHERE id=?").run(op.id);
       })();
+      this.assertOperationDatabase(admittedDb,{operationId:op.id,fileChanged:true});
       this.directoryClassification?.sync(null, a.id);
+      this.assertOperationDatabase(admittedDb,{operationId:op.id,fileChanged:true});
       this.onMetadataChanged?.(a.root_id);
+      this.assertOperationDatabase(admittedDb,{operationId:op.id,fileChanged:true});
       if (root.id !== a.root_id) this.onMetadataChanged?.(root.id);
+      this.assertOperationDatabase(admittedDb,{operationId:op.id,fileChanged:true});
       return this.asset(a.id);
+    } catch(e) {
+      if(e.code==='LOCAL_INSTANCE_CHANGED'&&changed){
+        // The physical undo already happened. Preserve that uncertainty in the
+        // admitted library; never classify, notify or journal through the new one.
+        try{admittedDb.prepare("UPDATE operations SET status='interrupted',error=? WHERE id=?").run(e.message,op.id);}catch{e.details={...e.details,receiptStatus:'unknown'};}
+      }
+      throw e;
     } finally {
       this.locks.delete(op.asset_id);
     }

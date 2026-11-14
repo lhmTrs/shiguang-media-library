@@ -193,7 +193,9 @@ export class ProjectRenders {
    const p=this.payload(row);if(p.schemaVersion===2&&p.link===null)continue;
    let other=p.schemaVersion===2&&p.link==='project-video'?this.db.prepare('SELECT * FROM storyboard_video_sources WHERE id=? AND project_id=?').get(p.sourceId,row.project_id):null;
    other=other?{...JSON.parse(other.data_json),id:other.id,project_id:other.project_id}:null;
-   const old=p.schemaVersion===2?p.snapshot:p;
+   // A project-video snapshot is display history, never a reservation of its
+   // former pathname. Only legacy links use a saved path as their live target.
+   const old=p.schemaVersion===2?(p.link==='legacy-path'?p.snapshot:null):p;
    if(p.sourceId===source.id&&row.project_id===source.project_id||other&&(other.path===source.path||other.identity.dev===source.identity.dev&&other.identity.ino===source.identity.ino)||old?.path===source.path||old?.dev===source.identity.dev&&old?.ino===source.identity.ino)result.push({projectId:row.project_id,timelineId:row.id,renderRevision:this.revision(row)});
   }return result;
  }
