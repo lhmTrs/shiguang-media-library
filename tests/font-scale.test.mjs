@@ -1,5 +1,5 @@
 // 字号统一防回退（UI 审计第二档）：已完成批次的 CSS 只能用 11/12/13/14/16/18/20/24（另保留 27、40 两个大字特例），
-// 最小 11px。分批推进：DONE 列出已统一的文件，最后一批改为 src 下全部 CSS。
+// 最小 11px。分四批推进，第四批起覆盖 src 下全部 CSS。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,24 +7,12 @@ import path from 'node:path';
 import { rewrite, offenders, maskSizes } from './helpers/font-scale.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
-const DONE = [
-  // 第一批
-  'src/project-assets/asset-library.css',
-  'src/project-videos/project-videos.css',
-  'src/file-intake/file-intake.css',
-  'src/library-workspace.css',
-  'src/codex-task-drawer.css',
-  // 第二批
-  'src/storyboard/storyboard.css',
-  'src/storyboard/video-preview.css',
-  'src/storyboard/generation.css',
-  // 第三批
-  'src/prompt-template-workspace.css',
-  'src/prompts/codex-chat.css',
-  'src/concierge/concierge.css',
-];
+// 四批已全部完成：src 下所有 CSS 文件都必须在档位内（themes.css 由脚本生成、不含字号，也一并检查）。
+const listCss = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? listCss(path.join(dir, e.name)) : e.name.endsWith('.css') ? [path.join(dir, e.name)] : []);
+const DONE = listCss(path.join(root, 'src')).map(f => path.relative(root, f)).sort();
 
-test('已统一的 CSS 文件里没有档位以外的字号', () => {
+test('src 下全部 CSS 文件里没有档位以外的字号', () => {
+  assert.ok(DONE.length >= 20 && DONE.includes('src/style.css'), '没有找到 CSS 文件：' + DONE.length);
   const report = DONE.map(f => [f, offenders(fs.readFileSync(path.join(root, f), 'utf8'))]).filter(([, bad]) => bad.length);
   assert.deepEqual(report, [], report.map(([f, bad]) => `${f}:\n  ${bad.join('\n  ')}`).join('\n'));
 });
