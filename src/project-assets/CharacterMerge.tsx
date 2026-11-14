@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Users, X } from 'lucide-react';
 import { contextUnavailable, outcomeUnknown } from './scoped';
 import {
-  memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, refShots, settleRequest, spansSeasons,
+  memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons,
   type LookChoice, type MergeConfirmBody, type MergeGroup, type MergeGroups, type MergeMember, type MergePreview, type MergeReceipt,
   type UndoBody, type UndoPreview, type UndoReceipt,
 } from './merge';
@@ -69,18 +69,20 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
   api: Api; seriesId: string; group: MergeGroup; contextToken?: string; initialPrimary?: string;
   /** 依赖变了：重新读组（拿到新的成员和凭证）。 */
   reloadGroups: () => Promise<MergeGroups | null>;
-  onClose: () => void; onMerged: (r: MergeReceipt, group: MergeGroup, lookCount: number) => void;
+  onClose: () => void; onMerged: (r: MergeReceipt, group: MergeGroup, lookCount?: number) => void;
 }) {
   const m = useMemo(() => mergeApi(api, seriesId), [api, seriesId]);
-  const [group, setGroup] = useState(initialGroup), [token, setToken] = useState(initialToken);
+  // 组合验收 R1：上次结果不明的原请求存在浮窗之外，再打开同组时恢复并锁定，继续按原编号核对
+  const stored = useMemo(() => { const p = pendingStore.merge(seriesId); return p && p.group.group_id === initialGroup.group_id ? p : null; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [group, setGroup] = useState(stored?.group ?? initialGroup), [token, setToken] = useState(initialToken);
   const locked = group.members.find(x => x.primary_locked);
   const [primary, setPrimary] = useState(locked?.asset_id ?? (group.members.some(x => x.asset_id === initialPrimary) ? initialPrimary! : group.members[0]?.asset_id));
-  const [step, setStep] = useState<Step>('pick'), [preview, setPreview] = useState<MergePreview | null>(null);
+  const [step, setStep] = useState<Step>(stored ? 'impact' : 'pick'), [preview, setPreview] = useState<MergePreview | null>(null);
   /** 还没被服务端核对的造型改选：屏幕上显示它，但不能拿去确认。 */
   const [edits, setEdits] = useState<Record<string, LookChoice>>({});
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [note, setNote] = useState('');
-  const pendingRef = useRef<MergeConfirmBody | null>(null), [pending, setPendingState] = useState<MergeConfirmBody | null>(null);
-  const setPending = (p: MergeConfirmBody | null) => { pendingRef.current = p; setPendingState(p); };
+  const pendingRef = useRef<MergeConfirmBody | null>(stored?.body ?? null), [pending, setPendingState] = useState<MergeConfirmBody | null>(stored?.body ?? null);
+  const setPending = (p: MergeConfirmBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setMerge(seriesId, p ? { seriesId, group, body: p } : null); };
   const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
   const seasons = spansSeasons(group.members);
   const member = (id: string) => group.members.find(x => x.asset_id === id);
@@ -135,7 +137,7 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
         try { r = await m.confirm(body); }
         catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<MergeReceipt>(() => m.request(body.request_id), () => m.confirm(body)); }
       }
-      setPending(null); onMerged(r, group, new Set((preview?.look_plan.items ?? []).map(i => i.result_look_id)).size);
+      setPending(null); onMerged(r, group, preview ? new Set(preview.look_plan.items.map(i => i.result_look_id)).size : undefined); // 关窗重开后核对到的：没有预览就不报造型数
     } catch (e: any) {
       if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
       setPending(null);
@@ -249,28 +251,39 @@ function MergeImpact({ preview, group, label, placeOf, lookName, primary }: {
 
 const ENTITY: Record<string, string> = { asset: '人物资料', look: '造型', image: '图片', score: '分数', override: '本集覆盖', default: '默认设置', reference: '分镜引用', manifest: '素材清单', mapping: '合并映射' };
 /** 撤销合并：先看撤销会恢复什么；合并后又改过的，列出来确认后才撤销；有阻断就不能撤销。 */
-export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, onClose, onUndone }: {
-  api: Api; seriesId: string; mergeId: string; name: string; contextToken?: string; onClose: () => void; onUndone: (r: UndoReceipt) => void;
+export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, reloadToken, onClose, onUndone }: {
+  api: Api; seriesId: string; mergeId: string; name: string; contextToken?: string;
+  /** 凭证过期时重读这部剧的上下文凭证（分组列表顶层的 context_token）。 */
+  reloadToken: () => Promise<string | undefined>;
+  onClose: () => void; onUndone: (r: UndoReceipt) => void;
 }) {
   const m = useMemo(() => mergeApi(api, seriesId), [api, seriesId]);
-  const [pv, setPv] = useState<UndoPreview | null>(null), [accept, setAccept] = useState(false);
+  const stored = useMemo(() => pendingStore.undo(seriesId, mergeId), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [pv, setPv] = useState<UndoPreview | null>(null), [accept, setAccept] = useState(false), [token, setToken] = useState(contextToken);
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [note, setNote] = useState('');
-  const pendingRef = useRef<UndoBody | null>(null), [pending, setPendingState] = useState<UndoBody | null>(null);
-  const setPending = (p: UndoBody | null) => { pendingRef.current = p; setPendingState(p); };
-  async function load(message = '') {
+  const pendingRef = useRef<UndoBody | null>(stored?.body ?? null), [pending, setPendingState] = useState<UndoBody | null>(stored?.body ?? null);
+  const setPending = (p: UndoBody | null) => { pendingRef.current = p; setPendingState(p); pendingStore.setUndo(seriesId, mergeId, p ? { seriesId, mergeId, name, body: p } : null); };
+  const stale = (code?: string) => code === 'CHARACTER_MERGE_UNDO_STALE' || code === 'ASSET_SCOPE_CHANGED' || code === 'CHARACTER_MERGE_STALE';
+  /** 核对撤销会恢复什么。凭证过期（组合验收 R2）：先重读这部剧的凭证再预览；重读或预览失败就清掉旧预览，只给「重新核对」。 */
+  async function load(message = '', tok = token, retried = false): Promise<void> {
     setBusy('正在核对撤销会恢复什么…'); setError(''); setAccept(false);
-    try { setPv(await m.undoPreview(mergeId, contextToken)); setNote(message); }
-    catch (e) { setError(mergeErr(e, '核对失败，请稍后再试')); }
-    finally { setBusy(''); }
+    try { setPv(await m.undoPreview(mergeId, tok)); setNote(message); }
+    catch (e: any) {
+      if (stale(e?.code) && !retried) {
+        const fresh = await reloadToken().catch(() => undefined);
+        if (fresh) { setToken(fresh); setBusy(''); return load(message || mergeErrorText.CHARACTER_MERGE_UNDO_STALE, fresh, true); }
+      }
+      setPv(null); setNote(''); setError(mergeErr(e, '核对失败') + '。没有撤销；请点「重新核对」');
+    } finally { setBusy(''); }
   }
-  useEffect(() => { void load(); }, [mergeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!pendingRef.current) void load(); }, [mergeId]); // eslint-disable-line react-hooks/exhaustive-deps
   const review = (pv?.changes ?? []).filter(c => c.action === 'restore_with_confirmation'), blocks = (pv?.changes ?? []).filter(c => c.action === 'block');
   const needAccept = pv?.status === 'review_required';
   const ok = !busy && (!!pending || (!!pv?.ready && !!pv.undo_token && pv.status !== 'blocked' && pv.status !== 'undone' && (!needAccept || accept)));
   async function undo() {
     const held = pendingRef.current;
     if (!ok) return;
-    const body = held ?? { request_id: newId(), context_token: contextToken, undo_token: pv!.undo_token!, accept_restore_changes: needAccept && accept };
+    const body = held ?? { request_id: newId(), context_token: token, undo_token: pv!.undo_token!, accept_restore_changes: needAccept && accept };
     setPending(body); setBusy('正在撤销…'); setError('');
     try {
       let r: UndoReceipt;
@@ -280,7 +293,13 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, on
     } catch (e: any) {
       if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
       setPending(null);
-      if (e?.code === 'CHARACTER_MERGE_UNDO_STALE' || e?.code === 'CHARACTER_MERGE_UNDO_BLOCKED') { await load(mergeErrorText[e.code]); return; }
+      // 过期或新出现阻断：旧预览作废（不能再拿它提交），重读凭证后重新核对，由用户再确认
+      if (stale(e?.code) || e?.code === 'CHARACTER_MERGE_UNDO_BLOCKED') {
+        setPv(null);
+        const fresh = stale(e?.code) ? await reloadToken().catch(() => undefined) : token;
+        if (!fresh) { setError('撤销用的凭证过期了，重新读取也没成功，没有撤销；请点「重新核对」'); return; }
+        setToken(fresh); await load(mergeErrorText[e.code] ?? mergeErrorText.CHARACTER_MERGE_UNDO_STALE, fresh, true); return;
+      }
       setError(mergeErr(e, '撤销失败，没有改动'));
     } finally { setBusy(''); }
   }
@@ -306,7 +325,8 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, on
         </>}
       </div>
       <footer><button type="button" disabled={!!busy} onClick={close}>{pv?.status === 'blocked' || pv?.status === 'undone' ? '关闭' : '取消'}</button>
-        {pv?.status !== 'blocked' && pv?.status !== 'undone' && <button type="button" className="ca-primary" disabled={!ok} onClick={() => void undo()}>{busy === '正在撤销…' ? busy : pending ? '核对上次结果' : '撤销合并'}</button>}</footer>
+        {!pv && !pending && !busy && <button type="button" onClick={() => void load()}>重新核对</button>}
+        {(pv || pending) && pv?.status !== 'blocked' && pv?.status !== 'undone' && <button type="button" className="ca-primary" disabled={!ok} onClick={() => void undo()}>{busy === '正在撤销…' ? busy : pending ? '核对上次结果' : '撤销合并'}</button>}</footer>
     </div>
   </div>;
 }

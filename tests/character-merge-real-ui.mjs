@@ -98,13 +98,13 @@ try {
     assert.ok(!(await seriesPeople()).some(x => x.asset.name === '李四'), '提示期间不应新建');
   });
 
-  await check('B0 真实：第 2 集新建「王五」→ 只有第 1 集有 → 提示到第 1 集提升到全剧，只给「换个名字」', async () => {
+  await check('B0 真实：第 2 集新建「王五」→ 只有第 1 季第 1 集有 → 提示到那一集提升到全剧（带季号），只给「换个名字」', async () => {
     // 顶栏的「下一集」切到第 2 集（当前在第 1 集，顶栏第一个下拉列的是剧）
     const next = projectInBar(page).getByRole('button', { name: /^下一集/ }); await next.focus(); await page.keyboard.press('Enter');
     await expect(projectInBar(page)).toHaveAttribute('data-project', eps[1].id); await expect(scopeSwitch().getByRole('button').first()).toHaveAttribute('aria-pressed', 'true');
     await work().getByRole('button', { name: /^新建/ }).first().click(); const dlg = page.getByRole('dialog', { name: '新建资产' });
     await dlg.getByLabel('新资产名称').fill('王五'); await dlg.getByRole('button', { name: '创建并编辑' }).click();
-    const ask = dlg.locator('.cm-create-ask'); await expect(ask).toContainText('第 1 集已经有一个「王五」'); await expect(ask).toContainText('到第 1 集把它提升到全剧');
+    const ask = dlg.locator('.cm-create-ask'); await expect(ask).toContainText('第 1 季第 1 集已经有一个「王五」'); await expect(ask).toContainText('到第 1 季第 1 集把它提升到全剧'); // 只有一份时总带季号（组合验收 R3）
     await expect(dlg.getByRole('button', { name: /合并这几个/ })).toHaveCount(0); await shot('7-create-promote');
     await dlg.getByRole('button', { name: '换个名字' }).click(); await expect(ask).toHaveCount(0);
   });

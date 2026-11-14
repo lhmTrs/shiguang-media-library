@@ -110,6 +110,8 @@ export function memberPlace(m: Pick<MergeMember, 'owner_type' | 'episode'>, with
 }
 export const spansSeasons = (members: MergeMember[]) => new Set(members.filter(m => m.episode).map(m => m.episode!.season_id ?? '')).size > 1;
 export const memberLabel = (m: MergeMember, name: string, withSeason = false) => memberPlace(m, withSeason) + '的「' + name + '」';
+/** 一组成员的位置：跨季时都带季号；只有一份（提升指引）时有季号就带上，免得多季时指不准是哪一季。 */
+export const memberPlaces = (members: MergeMember[]) => { const withSeason = members.length === 1 || spansSeasons(members); return members.map(m => memberPlace(m, withSeason)); };
 export const refShots = (r?: Partial<MergeRefs> | null) => r?.shots ?? 0;
 /** 卡片提示：对某个人物，列出同组其他几份所在的位置。 */
 export function siblingHint(group: MergeGroup, assetId: string) {
@@ -118,3 +120,23 @@ export function siblingHint(group: MergeGroup, assetId: string) {
   const places = others.map(m => memberPlace(m, seasons));
   return (places.length > 2 ? places.slice(0, 2).join('、') + ' 等 ' + places.length + ' 处' : places.join('、')) + '也有一个「' + group.name + '」';
 }
+
+/**
+ * 结果不明的合并 / 撤销原请求：存在浮窗之外（组合验收 R1）。关浮窗、切项目再回来都还在，
+ * 再打开时继续按原剧、原编号、原内容核对；未落定前不发起新的合并。
+ * 内存为准，同时写入 sessionStorage（刷新页面也不丢）；存储不可用时只用内存。
+ */
+export type PendingMerge = { seriesId: string; group: MergeGroup; body: MergeConfirmBody };
+export type PendingUndo = { seriesId: string; mergeId: string; name: string; body: UndoBody };
+const PENDING_KEY = 'shiguang.characterMerge.pending.v1';
+const pendingMem: { merges: PendingMerge[]; undos: PendingUndo[] } = (() => {
+  try { const v = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); if (v && Array.isArray(v.merges) && Array.isArray(v.undos)) return v; } catch { /* 无存储时只用内存 */ }
+  return { merges: [], undos: [] };
+})();
+const savePending = () => { try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } };
+export const pendingStore = {
+  merge: (seriesId: string) => pendingMem.merges.find(p => p.seriesId === seriesId) ?? null,
+  setMerge(seriesId: string, p: PendingMerge | null) { pendingMem.merges = pendingMem.merges.filter(x => x.seriesId !== seriesId); if (p) pendingMem.merges.push(p); savePending(); },
+  undo: (seriesId: string, mergeId: string) => pendingMem.undos.find(p => p.seriesId === seriesId && p.mergeId === mergeId) ?? null,
+  setUndo(seriesId: string, mergeId: string, p: PendingUndo | null) { pendingMem.undos = pendingMem.undos.filter(x => !(x.seriesId === seriesId && x.mergeId === mergeId)); if (p) pendingMem.undos.push(p); savePending(); },
+};
