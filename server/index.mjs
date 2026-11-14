@@ -459,6 +459,7 @@ app.use("/api", (req, res, next) => {
     return res.status(401).json({ error: "本机会话失效，请刷新页面" });
   if (req.method !== "GET" && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
+  res.locals.localSessionId = cookie;
   // A different tab can establish a valid cookie while this page still belongs to its old library.
   const expectedLibrary = req.get("X-Shiguang-Library-Id");
   if (expectedLibrary !== undefined && expectedLibrary !== mysqlStorage.sourceId)

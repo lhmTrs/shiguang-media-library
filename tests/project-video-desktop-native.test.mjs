@@ -50,6 +50,7 @@ async function fixture(t, {respond, hang, stat, stubborn = false, eligible = tru
           case 'clipboard-version': finish({changeCount: 41}); break;
           case 'copy-files': finish({ack: 'written', count: call.request.paths.length, changeCount: 42}); break;
           case 'reveal-files': finish({ack: 'dispatched', count: call.request.paths.length}); break;
+          case 'open-folder': finish({ack: 'dispatched'}); break;
           default: throw Error('unexpected fixture request');
           }
         } catch (e) { finish('fixture failure', 1); }
@@ -349,4 +350,17 @@ test('image and video clipboard mutations through the shared helper cannot overl
   assert.deepEqual(called,['/tmp/owned.png']);
   admit();await a;await failed;
   assert.deepEqual(writes,['/tmp/owned.png']);
+});
+
+test('openFolder sends the fixed folder identity only after validation and classifies pre-dispatch refusals', async t => {
+  const {native, calls} = await fixture(t);
+  const identity={dev:'1',ino:'2'};
+  await assert.rejects(native.openFolder('/tmp/owned',{identity,beforeDispatch(){
+    throw Object.assign(new Error('changed'),{code:'TARGET_CHANGED'});
+  }}),{code:'TARGET_CHANGED',effectUnknown:false});
+  assert.ok(!operations(calls).includes('open-folder'));
+  assert.deepEqual(await native.openFolder('/tmp/owned',{identity}),{ack:'dispatched'});
+  assert.deepEqual(calls.find(c=>c.request?.operation==='open-folder').request,{
+    protocol:1,operation:'open-folder',target:'/tmp/owned',identity,
+  });
 });

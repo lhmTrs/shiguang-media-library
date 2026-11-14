@@ -1,4 +1,5 @@
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
+import { shortVideoName } from './display-name.mjs';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
 import type {
@@ -134,10 +135,14 @@ export function ProjectVideoWorkspace(props: ProjectVideoWorkspaceProps) {
   </section>;
 }
 
-function ProjectVideoSession({ active, projectId, projects, request, onStoryboard, importOwner, acquireImport, releaseImport, focusVideo }: ProjectVideoWorkspaceProps & {
+function ProjectVideoSession({ active, projectId, projects, request, onStoryboard, importOwner, acquireImport, releaseImport, focusVideo, namePrefixFor }: ProjectVideoWorkspaceProps & {
   importOwner: string; acquireImport: (id: string) => boolean; releaseImport: (id: string) => void;
 }) {
   const [collection, setCollection] = useState<ProjectVideoCollection | null>(null);
+  // Names renamed by the intake rule start with this episode's 「剧名SxxEyy_」; cards show the rest, hover keeps the full name.
+  // Only a title that is still the file name is shortened: a title typed by hand is shown exactly as typed.
+  const namePrefix = namePrefixFor?.(projectId) ?? null;
+  const shownName = (v: {name?: string; fileName: string}) => !v.name || v.name === v.fileName ? shortVideoName(v.fileName, namePrefix) : v.name;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   useFeedbackToast(error, {source: '生成视频'});
@@ -859,7 +864,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
                 if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); if (!e.repeat) { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); } } }} aria-haspopup="dialog" aria-keyshortcuts="Enter" title="单击查看资料；⌘ 单击多选、⇧ 单击连选、空白处拖动框选；右键可复制或在访达中显示；双击或按 Enter 查看原视频">
               <span className="pv-thumbnail">{(video.thumbnailUrl || video.thumbUrl) ? <img src={video.thumbnailUrl || video.thumbUrl} alt="" loading="lazy" onError={e => { e.currentTarget.hidden = true; }}/> : null}<Film size={30} aria-hidden="true"/>
                 <span className={`pv-adoption-badge${video.adoptedShots.length ? ' is-adopted' : ''}`}>{video.adoptedShots.length ? `已采用 · ${video.adoptedShots.length} 镜` : '候选'}</span><span className="pv-duration">{duration(video.durationMs)}</span></span>
-              <span className="pv-card-body"><strong title={video.name || video.fileName}>{video.name || video.fileName}</strong>
+              <span className="pv-card-body"><strong title={video.name || video.fileName}>{shownName(video)}</strong>
                 <small className="pv-card-prompt">{video.promptId ? prompts.find(p => p.id === video.promptId)?.title || '已关联参考提示词' : '无参考提示词'}</small>
                 {(folderId === 'all' || folderId === 'reject') && <small className="pv-card-folder" title={cardFolder(video)}>{cardFolder(video)}</small>}
                 {(showStatus(video) || !video.managed || draftDirty(video)) && <span className="pv-card-flags">{showStatus(video) && <span data-status={video.verification?.state === 'content_changed' ? 'missing' : video.status} title={statusLabel[video.status]}>{video.verification?.state === 'content_changed' ? '内容已变化' : statusShort[video.status]}</span>}{!video.managed && <span data-tone="warn">待升级</span>}{draftDirty(video) && <span data-tone="draft">草稿未保存</span>}</span>}</span>
@@ -885,7 +890,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               <div><dt>文件需处理</dt><dd>{pickedVideos.filter(v => ['missing', 'changed', 'untrusted'].includes(v.status)).length} 个（复制时会逐个核验，不能复制的会列出原因）</dd></div>
               <div><dt>旧视频</dt><dd>{pickedVideos.filter(v => !v.managed).length} 个（原位置文件，复制的是原文件）</dd></div>
             </dl>
-            <ul className="pv-picked-list">{pickedVideos.slice(0, 12).map(v => <li key={v.id}><span>{v.name || v.fileName}</span><small>{cardFolder(v)}</small></li>)}{pickedVideos.length > 12 && <li className="pv-muted">另外 {pickedVideos.length - 12} 个…</li>}</ul>
+            <ul className="pv-picked-list">{pickedVideos.slice(0, 12).map(v => <li key={v.id}><span title={v.name || v.fileName}>{shownName(v)}</span><small>{cardFolder(v)}</small></li>)}{pickedVideos.length > 12 && <li className="pv-muted">另外 {pickedVideos.length - 12} 个…</li>}</ul>
             <div className="pv-actions">
               <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制到剪贴板</button>
               <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>在访达中显示</button>

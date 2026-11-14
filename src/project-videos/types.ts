@@ -147,6 +147,8 @@ export interface ProjectVideoWorkspaceProps {
   request: ProjectVideoRequest;
   onProject: (id: string) => void;
   onStoryboard: () => void;
+  /** 本集视频名的重复前缀（如「穿越计S02E05_」），由宿主按剧集位置给出；只用于缩短显示，可不传。 */
+  namePrefixFor?: (projectId: string) => string | null;
   /** Compatibility callback; background tasks do not lock host navigation. */
   onBusyChange?: (busy: boolean) => void;
   /** Explicit navigation from a completed file task, without replacing drafts. */

@@ -1,7 +1,7 @@
 import {useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode} from 'react';
-import {ArrowRight, ChevronDown, ChevronRight, Film, Image as ImageIcon, Music, RefreshCw, X} from 'lucide-react';
-import {INTAKE_API, bytes, encoded, kindLabel, type IntakeFile, type RoutingOptions, type RoutingProject} from './types';
-import type {DestinationDraft} from './TargetEditor';
+import {ArrowRight, Check, ChevronDown, ChevronRight, Film, FolderPlus, Image as ImageIcon, Music, RefreshCw, X} from 'lucide-react';
+import {INTAKE_API, bytes, encoded, kindLabel, type IntakeFile, type IntakeFolder, type NamePart, type RoutingOptions, type RoutingProject} from './types';
+import {findSibling, newFolderProblem, type DestinationDraft} from './TargetEditor';
 
 export type Row = {
   file: IntakeFile; name: string; destination: DestinationDraft | null; reason: string; hint?: string;
@@ -79,13 +79,17 @@ export function CategoryPopover({categories, count, onApply, onClose}: {categori
   </Popover>;
 }
 
-export function FolderPopover({options, projectId, folderId, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; count: number; onApply: (projectId: string, folderId: string) => void; onClose: () => void}) {
-  const [p, setP] = useState(projectId), [f, setF] = useState(folderId), project = options.projects.find(x => x.id === p);
+export function FolderPopover({options, projectId, folderId, count, onApply, onClose}: {options: RoutingOptions; projectId: string; folderId: string; count: number; onApply: (projectId: string, folderId: string, newFolder?: string) => void; onClose: () => void}) {
+  const [p, setP] = useState(projectId), [f, setF] = useState(folderId), [name, setName] = useState(''), project = options.projects.find(x => x.id === p);
+  const folders = project?.videoFolders || [], same = findSibling(folders, f, name), problem = name.trim() ? newFolderProblem(name) : '';
+  const apply = () => {if (!project || problem) return; if (name.trim() && !same) onApply(p, f, name.trim().normalize('NFC')); else onApply(p, same ? same.id : f);};
   return <Popover label="改视频去处" onClose={onClose}>
     <div className="fi-pop-title">把 {count} 个视频放进</div>
     <label>项目<select aria-label="视频项目" value={p} onChange={e => {setP(e.target.value); setF('root');}}>{options.projects.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{(project?.videoFolders || []).map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.relativePath || x.name}</option>)}</select></label>
-    <div className="fi-pop-actions"><button onClick={onClose}>取消</button><button className="fi-primary" disabled={!project} onClick={() => onApply(p, f)}>放进去</button></div>
+    <label>文件夹<select aria-label="视频文件夹" value={f} onChange={e => setF(e.target.value)}>{folders.map(x => <option key={x.id} value={x.id}>{x.id === 'root' ? '项目根目录' : x.relativePath || x.name}</option>)}</select></label>
+    <label>在这里新建（可不填）<input aria-label="新文件夹名字" value={name} onChange={e => setName(e.target.value)} placeholder="例如：A"/></label>
+    <small className={problem ? 'fi-error' : 'fi-muted'}>{problem || (same ? '已有同名文件夹「' + same.relativePath + '」，直接放进去' : name.trim() ? '点「收纳」时才真正建；取消收纳不会留下空文件夹' : '')}</small>
+    <div className="fi-pop-actions"><button onClick={onClose}>取消</button><button className="fi-primary" disabled={!project || !!problem} onClick={apply}>放进去</button></div>
   </Popover>;
 }
 
@@ -160,6 +164,72 @@ export function ProjectPicker({projects, value, placeholder, recent, disabled, o
           {rest.map((p, i) => option(p, recentRows.length + i))}
           {!flat.length && <p className="fi-muted fi-picker-empty">没有名字含「{query.trim()}」的项目</p>}
         </div>
+      </div>
+    </Popover>}
+  </span>;
+}
+
+const partLabel: Record<NamePart['role'], string> = {series: '剧名', season: '季', episode: '集', project: '项目', folder: '文件夹', number: '序号', ext: '原格式'};
+/** Parts are glued the way the server builds the name: series runs straight into SxxEyy/EPyy, the extension keeps its dot. */
+export function joinParts(parts: NamePart[]) {
+  return parts.map((p, i) => {
+    const prev = parts[i - 1];
+    const glue = !prev || p.role === 'ext' || prev.role === 'series' && (p.role === 'season' || p.role === 'episode') || prev.role === 'season' && p.role === 'episode' ? '' : '_';
+    return glue + p.text;
+  }).join('');
+}
+/** The new name on one line; below it, what each piece is, when the server sent pieces that add up to the exact name. */
+export function NamePreview({name, parts, hint}: {name: string; parts?: NamePart[]; hint?: string}) {
+  const usable = !!parts?.length && joinParts(parts) === name;
+  const legend: {text: string; label: string}[] = [];
+  if (usable) parts!.forEach((p, i) => {
+    const last = legend[legend.length - 1];
+    if (p.role === 'ext') return;
+    if (p.role === 'episode' && parts![i - 1]?.role === 'season' && last) {last.text += p.text; last.label = '季 · 集'; return;}
+    legend.push({text: p.text, label: partLabel[p.role]});
+  });
+  return <section className="fi-newname" aria-label="收纳后的名字">
+    <span className="fi-newname-title">收纳后改名为</span>
+    <strong className="fi-newname-full" title={name}>{name}</strong>
+    {legend.length > 0 && <span className="fi-newname-legend">{legend.map((l, i) => <span key={i} className="fi-newname-tag"><small>{l.label}</small>{l.text}</span>)}</span>}
+    {hint && <small>{hint}</small>}
+  </section>;
+}
+
+/**
+ * Video folder chooser drawn by the page (same reason as ProjectPicker). The last entry keeps a new
+ * folder's name only; the folder is created when 收纳 is confirmed, so cancelling leaves nothing behind.
+ */
+export function FolderPicker({folders, folderId, newFolder, remembered, disabled, onChange}: {
+  folders: IntakeFolder[]; folderId: string; newFolder?: string; remembered?: string; disabled?: boolean;
+  onChange: (folderId: string, newFolder?: string) => void;
+}) {
+  const [open, setOpen] = useState(false), [name, setName] = useState(''), [parent, setParent] = useState(folderId || 'root');
+  const label = (id: string) => id === 'root' ? '项目根目录' : folders.find(f => f.id === id)?.relativePath || '项目文件夹';
+  const same = findSibling(folders, parent, name), problem = name.trim() ? newFolderProblem(name) : '';
+  const close = () => {setOpen(false); setName('');};
+  const pick = (id: string) => {onChange(id); close();};
+  const create = () => {if (!name.trim() || problem) return; if (same) pick(same.id); else {onChange(parent, name.trim().normalize('NFC')); close();}};
+  const current = newFolder ? newFolder : label(folderId || 'root');
+  return <span className="fi-anchor fi-folder-picker">
+    <button type="button" className={'fi-picker' + (open ? ' fi-picker-open' : '')} data-popover-trigger aria-label="视频文件夹" aria-haspopup="dialog" aria-expanded={open}
+      data-value={newFolder ? 'new:' + newFolder : folderId || 'root'} disabled={disabled} onClick={() => {if (open) close(); else {setParent(folderId || 'root'); setOpen(true);}}}>
+      <span>{current}{newFolder && <small className="fi-picker-note">（收纳时新建{folderId && folderId !== 'root' ? '，在「' + label(folderId) + '」里' : ''}）</small>}</span><ChevronDown size={14} aria-hidden="true"/>
+    </button>
+    {open && <Popover label="选择文件夹" align="left" onClose={close}>
+      <div className="fi-picker-list" role="listbox" aria-label="文件夹">
+        {folders.map(f => <div key={f.id} role="option" tabIndex={0} aria-selected={!newFolder && f.id === (folderId || 'root')} className="fi-picker-option"
+          onClick={() => pick(f.id)} onKeyDown={e => {if (e.key === 'Enter' || e.key === ' ') {e.preventDefault(); pick(f.id);}}}>
+          <span>{label(f.id)}</span>{f.id === remembered && <small>上次用的</small>}{!newFolder && f.id === (folderId || 'root') && <Check size={13} aria-hidden="true"/>}</div>)}
+      </div>
+      <div className="fi-newfolder" role="group" aria-label="新建文件夹">
+        <span className="fi-newfolder-title"><FolderPlus size={14} aria-hidden="true"/>新建文件夹</span>
+        <div className="fi-newfolder-row">
+          <label>名字<input aria-label="新文件夹名字" value={name} placeholder="例如：A" onChange={e => setName(e.target.value)} onKeyDown={e => {if (e.key === 'Enter') {e.preventDefault(); create();}}}/></label>
+          <label>建在<select aria-label="建在哪里" value={parent} onChange={e => setParent(e.target.value)}>{folders.map(f => <option key={f.id} value={f.id}>{label(f.id)}</option>)}</select></label>
+          <button type="button" className="fi-primary" disabled={!name.trim() || !!problem} onClick={create}>{same ? '用已有的' : '用这个'}</button>
+        </div>
+        <small className={problem ? 'fi-error' : 'fi-muted'}>{problem || (same ? '已有同名文件夹「' + same.relativePath + '」，会直接放进去' : '现在只记下名字，点「收纳」时才真正建；取消收纳不会留下空文件夹。')}</small>
       </div>
     </Popover>}
   </span>;

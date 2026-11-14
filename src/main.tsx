@@ -106,6 +106,7 @@ import { SeriesAssetList, type AssetSeries } from "./SeriesAssetList";
 import { PaginationControls } from "./PaginationControls";
 import type {GenerationFocus,GenerationTask} from './storyboard/generation-types';
 import {ProjectVideoWorkspace} from "./project-videos/ProjectVideoWorkspace";
+import {prefixForProject} from "./project-videos/display-name.mjs";
 import {FileIntakeWindow,FileTaskEntry} from "./file-intake";
 import { StoryboardWorkspace } from "./StoryboardWorkspace";
 import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemplateWorkspace";
@@ -709,6 +710,9 @@ function App() {
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
   const [projects, setProjects] = useState<GroupedProject[]>([]), [projectRevision, setProjectRevision] = useState(0);
   const [projectDirectory, setProjectDirectory] = useState<{ projects: GroupedProject[]; series: Series[] } | null>(null);
+  const namePrefixFor = useCallback((id: string) =>
+    prefixForProject(projectDirectory?.projects.find(project => project.id === id), projectDirectory?.series),
+  [projectDirectory]);
   const [directoryError, setDirectoryError] = useState("");
   const projectReadVersion = useRef(0);
   const [projectsKnown,setProjectsKnown]=useState(false),[projectsError,setProjectsError]=useState('');
@@ -2043,7 +2047,7 @@ function App() {
         {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
         <ProjectAssetWorkspace focusProject={projectAssetFocus} openSeasonSettings={seasonSettingsFocus?.projectId === activeProject ? seasonSettingsFocus : undefined} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} onTaskViewing={codexTasks.viewed}/>
-        <ProjectVideoWorkspace focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
+        <ProjectVideoWorkspace namePrefixFor={namePrefixFor} focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
         {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
