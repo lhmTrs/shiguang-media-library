@@ -71,11 +71,16 @@ export type MergeApi = ReturnType<typeof mergeApi>;
 export type MergeConfirmBody = { request_id: string; preview_token: string; context_token?: string; choices: MergeChoices };
 export type UndoBody = { request_id: string; context_token?: string; undo_token: string; accept_restore_changes: boolean };
 
-export const lostOutcome = () => Object.assign(Error('网络中断，暂时确认不了这次有没有完成。原请求已保留：点「核对上次结果」会按原请求号查询，不会重复执行。'), { code: 'OUTCOME_UNKNOWN' });
+export const lostOutcome = () => Object.assign(Error('网络中断，暂时确认不了这次有没有完成。原请求已保留：点「核对上次结果」只按原请求号查询，不会自己重新提交。'), { code: 'OUTCOME_UNKNOWN' });
 /**
  * 已发出、结果不明的写请求：先按原请求号查回执；查到就用原结果，确定没有才用原编号、原内容重发。
  * 查询失败、或重发的回应又丢了，都仍是「结果不明」——调用方保留原请求并锁定，绝不换新编号（A 的 R2 教训）。
  */
+/** 只读核对已发出的原请求（组合验收复验 R3）：查到回执返回它，查无回执返回 null，绝不自动重发；查询本身失败仍算结果不明。 */
+export async function lookupOnly<T>(lookup: () => Promise<{ found: boolean; result?: unknown }>): Promise<T | null> {
+  try { const r = await lookup(); return r.found && r.result ? r.result as T : null; }
+  catch (e) { if (outcomeUnknown(e)) throw lostOutcome(); throw e; }
+}
 export async function settleRequest<T>(lookup: () => Promise<{ found: boolean; result?: unknown }>, resend: () => Promise<T>): Promise<T> {
   let r: { found: boolean; result?: unknown };
   try { r = await lookup(); } catch (e) { if (outcomeUnknown(e)) throw lostOutcome(); throw e; }

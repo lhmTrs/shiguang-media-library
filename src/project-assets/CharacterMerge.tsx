@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Users, X } from 'lucide-react';
 import { contextUnavailable, outcomeUnknown } from './scoped';
 import {
-  memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons, subscribePending,
+  lookupOnly, memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons, subscribePending,
   type PendingMerge, type PendingUndo,
   type LookChoice, type MergeConfirmBody, type MergeGroup, type MergeGroups, type MergeMember, type MergePreview, type MergeReceipt,
   type UndoBody, type UndoPreview, type UndoReceipt,
@@ -80,8 +80,10 @@ export function MergeDoneBar({ receipt, name, lookCount, onUndo, onNext, onClose
 
 type Step = 'pick' | 'impact' | 'issues';
 /** 合并浮窗：选主体 → 合并后的样子 → 同名造型（有冲突才出现）→ 确认。 */
-export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: initialToken, initialPrimary, reloadGroups, onClose, onMerged }: {
+export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: initialToken, initialPrimary, reloadGroups, guard, onClose, onMerged }: {
   api: Api; seriesId: string; group: MergeGroup; contextToken?: string; initialPrimary?: string;
+  /** 重新提交前的草稿保护：返回非空文字就不提交，并显示它。 */
+  guard?: () => string;
   /** 依赖变了：重新读组（拿到新的成员和凭证）。 */
   reloadGroups: () => Promise<MergeGroups | null>;
   onClose: () => void; onMerged: (r: MergeReceipt, group: MergeGroup, lookCount?: number) => void;
@@ -140,18 +142,30 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
   }
   const recheck = () => preview && void loadPreview(preview.choices.look_choices.map(x => edits[x.conflict_id] ?? x), '', true);
 
+  /** 核对已发出的原请求查无回执：上次请求没有送达。由用户决定按原内容重新提交（要过草稿保护）还是不提交了。 */
+  const [notFound, setNotFound] = useState(false);
   async function confirm() {
     const held = pendingRef.current;
     if (busy || (!held && (!preview?.ready || !preview.preview_token || unchecked || preview.blockers.length))) return;
+    // 核对（组合验收复验 R3）：只读。查到回执就用；查无回执不自动重发，交给用户
+    if (held && !notFound) {
+      setBusy('正在核对上次结果…'); setError(''); setNote('');
+      try {
+        const r = await lookupOnly<MergeReceipt>(() => m.request(held.request_id));
+        if (r) { setPending(null); onMerged(r, group, undefined); }
+        else { setNotFound(true); setNote('服务端没有这次合并的记录：上次的请求没有送达，什么都没有改。可以按原内容重新提交，或者不提交了。'); }
+      } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
+      finally { if (alive.current) setBusy(''); }
+      return;
+    }
+    if (held && notFound) { const why = guard?.(); if (why) { setError(why); return; } } // 用户明确发起的重新提交也要过草稿保护
     const body = held ?? { request_id: newId(), preview_token: preview!.preview_token!, context_token: token, choices: preview!.choices };
-    setPending(body); setBusy('正在合并…'); setError(''); setNote('');
+    setPending(body); setNotFound(false); setBusy('正在合并…'); setError(''); setNote('');
     try {
       let r: MergeReceipt;
-      if (held) r = await settleRequest<MergeReceipt>(() => m.request(body.request_id), () => m.confirm(body));
-      else {
-        try { r = await m.confirm(body); }
-        catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<MergeReceipt>(() => m.request(body.request_id), () => m.confirm(body)); }
-      }
+      // 用户这一次点击发出的请求：回应丢了按原编号查，确定没有才原样重发（点击当下浮窗锁定，草稿没法改）
+      try { r = await m.confirm(body); }
+      catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<MergeReceipt>(() => m.request(body.request_id), () => m.confirm(body)); }
       setPending(null); onMerged(r, group, preview ? new Set(preview.look_plan.items.map(i => i.result_look_id)).size : undefined); // 关窗重开后核对到的：没有预览就不报造型数
     } catch (e: any) {
       if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
@@ -175,7 +189,7 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
       <div className="ca-modal-content cm-body">
         {error && <div className="ca-alert" role="alert">{error}</div>}
         {note && !error && <p className="cm-note" role="status">{note}</p>}
-        {pending && !busy && <p className="cm-note" role="status">上次「确认合并」的结果还没核对到。下面是那次提交的选择，已锁定；点「核对上次结果」会按原请求查询或原样重发，不会重复合并。</p>}
+        {pending && !busy && !notFound && <p className="cm-note" role="status">上次「确认合并」的结果还没核对到。下面是那次提交的选择，已锁定；点「核对上次结果」只按原请求号查询，不会自己重新提交。</p>}
         {busy && !preview && <p className="ca-muted" role="status">{busy}</p>}
 
         {step === 'pick' && <>
@@ -219,7 +233,8 @@ export function MergeDialog({ api, seriesId, group: initialGroup, contextToken: 
           {unchecked && <button type="button" disabled={!!busy} onClick={recheck}>重新核对</button>}
           {step === 'impact' && conflicts.length > 0 && !pending
             ? <button type="button" className="ca-primary" disabled={!!busy || !preview} onClick={() => setStep('issues')}>处理 {conflicts.length} 个同名造型</button>
-            : <button type="button" className="ca-primary" disabled={!canConfirm} onClick={() => void confirm()}>{busy === '正在合并…' ? busy : pending ? '核对上次结果' : '确认合并'}</button>}
+            : <>{pending && notFound && <button type="button" disabled={!!busy} onClick={() => { setPending(null); setNotFound(false); setNote(''); onClose(); }}>不提交了</button>}
+              <button type="button" className="ca-primary" disabled={!canConfirm} onClick={() => void confirm()}>{busy ? busy : pending ? (notFound ? '按原内容重新提交' : '核对上次结果') : '确认合并'}</button></>}
         </>}
       </footer>
     </div>
@@ -266,8 +281,10 @@ function MergeImpact({ preview, group, label, placeOf, lookName, primary }: {
 
 const ENTITY: Record<string, string> = { asset: '人物资料', look: '造型', image: '图片', score: '分数', override: '本集覆盖', default: '默认设置', reference: '分镜引用', manifest: '素材清单', mapping: '合并映射' };
 /** 撤销合并：先看撤销会恢复什么；合并后又改过的，列出来确认后才撤销；有阻断就不能撤销。 */
-export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, reloadToken, onClose, onUndone }: {
+export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, reloadToken, guard, onClose, onUndone }: {
   api: Api; seriesId: string; mergeId: string; name: string; contextToken?: string;
+  /** 重新提交前的草稿保护：返回非空文字就不提交，并显示它。 */
+  guard?: () => string;
   /** 凭证过期时重读这部剧的上下文凭证（分组列表顶层的 context_token）。 */
   reloadToken: () => Promise<string | undefined>;
   onClose: () => void; onUndone: (r: UndoReceipt) => void;
@@ -295,15 +312,27 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
   const review = (pv?.changes ?? []).filter(c => c.action === 'restore_with_confirmation'), blocks = (pv?.changes ?? []).filter(c => c.action === 'block');
   const needAccept = pv?.status === 'review_required';
   const ok = !busy && (!!pending || (!!pv?.ready && !!pv.undo_token && pv.status !== 'blocked' && pv.status !== 'undone' && (!needAccept || accept)));
+  const [notFound, setNotFound] = useState(false);
   async function undo() {
     const held = pendingRef.current;
     if (!ok) return;
+    // 核对（组合验收复验 R3）：只读。查到回执就用；查无回执不自动重发，交给用户
+    if (held && !notFound) {
+      setBusy('正在核对上次结果…'); setError(''); setNote('');
+      try {
+        const r = await lookupOnly<UndoReceipt>(() => m.request(held.request_id));
+        if (r) { setPending(null); onUndone(r); }
+        else { setNotFound(true); setNote('服务端没有这次撤销的记录：上次的请求没有送达，什么都没有改。可以按原内容重新提交，或者不提交了。'); }
+      } catch (e: any) { setError(e?.code === 'OUTCOME_UNKNOWN' ? e.message : mergeErr(e, '核对失败，请稍后再试')); }
+      finally { setBusy(''); }
+      return;
+    }
+    if (held && notFound) { const why = guard?.(); if (why) { setError(why); return; } }
     const body = held ?? { request_id: newId(), context_token: token, undo_token: pv!.undo_token!, accept_restore_changes: needAccept && accept };
-    setPending(body); setBusy('正在撤销…'); setError('');
+    setPending(body); setNotFound(false); setBusy('正在撤销…'); setError('');
     try {
       let r: UndoReceipt;
-      if (held) r = await settleRequest<UndoReceipt>(() => m.request(body.request_id), () => m.undo(mergeId, body));
-      else { try { r = await m.undo(mergeId, body); } catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<UndoReceipt>(() => m.request(body.request_id), () => m.undo(mergeId, body)); } }
+      try { r = await m.undo(mergeId, body); } catch (e) { if (!outcomeUnknown(e)) throw e; r = await settleRequest<UndoReceipt>(() => m.request(body.request_id), () => m.undo(mergeId, body)); }
       setPending(null); onUndone(r);
     } catch (e: any) {
       if (e?.code === 'OUTCOME_UNKNOWN') { setError(e.message); return; }
@@ -325,7 +354,7 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
       <div className="ca-modal-content cm-body">
         {error && <div className="ca-alert" role="alert">{error}</div>}
         {note && !error && <p className="cm-note" role="status">{note}</p>}
-        {pending && !busy && <p className="cm-note" role="status">上次「撤销」的结果还没核对到，已锁定；点「核对上次结果」会按原请求查询或原样重发，不会重复撤销。</p>}
+        {pending && !busy && !notFound && <p className="cm-note" role="status">上次「撤销」的结果还没核对到，已锁定；点「核对上次结果」只按原请求号查询，不会自己重新提交。</p>}
         {!pv && busy && <p className="ca-muted" role="status">{busy}</p>}
         {pv?.status === 'undone' && <p>这次合并已经撤销过了。</p>}
         {pv && pv.status !== 'undone' && <>
@@ -341,7 +370,8 @@ export function UndoMergeDialog({ api, seriesId, mergeId, name, contextToken, re
       </div>
       <footer><button type="button" disabled={!!busy} onClick={close}>{pv?.status === 'blocked' || pv?.status === 'undone' ? '关闭' : '取消'}</button>
         {!pv && !pending && !busy && <button type="button" onClick={() => void load()}>重新核对</button>}
-        {(pv || pending) && pv?.status !== 'blocked' && pv?.status !== 'undone' && <button type="button" className="ca-primary" disabled={!ok} onClick={() => void undo()}>{busy === '正在撤销…' ? busy : pending ? '核对上次结果' : '撤销合并'}</button>}</footer>
+        {pending && notFound && <button type="button" disabled={!!busy} onClick={() => { setPending(null); setNotFound(false); setNote(''); onClose(); }}>不提交了</button>}
+        {(pv || pending) && pv?.status !== 'blocked' && pv?.status !== 'undone' && <button type="button" className="ca-primary" disabled={!ok} onClick={() => void undo()}>{busy ? busy : pending ? (notFound ? '按原内容重新提交' : '核对上次结果') : '撤销合并'}</button>}</footer>
     </div>
   </div>;
 }
