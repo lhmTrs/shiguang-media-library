@@ -28,7 +28,7 @@ const scopeSwitch = () => work().getByRole('group', { name: '看哪里的资产'
 let S, eps = [], A, B;
 const ep = (i, project) => ({ project_id: project.id, project_name: project.name, episode_no: i, season_id: 'q1', season_no: 1, season_label: '第 1 季' });
 const member = (id, owner, episode, extra = {}) => ({ asset_id: id, asset_revision: 1, owner_type: owner, owner_id: owner === 'series' ? S.id : episode.project_id, episode, look_count: 2, image_count: 3, scored_dimensions: 6, default_look_id: 'l-' + id, references: { shots: 20, manifests: 1, manifest_entries: 2 }, base_info_excerpt: '资料摘要', performance_info_excerpt: null, primary_locked: false, ...extra });
-const fake = { staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
+const fake = { failLookupOnce: false, undoPlan: [], staleUndoOnce: false, failGroupsOnce: false, lisiMerged: false, zhaoMerged: false, previews: [], confirms: [], confirmPlan: [], receipts: {}, dropPreview: false, staleOnce: false, groupReads: 0, undoPreviews: [], undos: [] };
 const lisi = () => ({ group_id: 'g-lisi', name: '李四', references: { shots: 51, manifests: 2, manifest_entries: 4 }, members: [member(A, 'project', ep(1, eps[0]), { references: { shots: 31 } }), member(B, 'project', ep(2, eps[1]), { references: { shots: 20 } })] });
 const zhao = () => ({ group_id: 'g-zhao', name: '赵六', references: { shots: 9 }, members: [member('z-series', 'series', null, { primary_locked: true }), member('z-ep2', 'project', ep(2, eps[1]))] });
 function groups() {
@@ -75,6 +75,7 @@ async function installMocks() {
     return route.fulfill({ json: receipt });
   });
   await page.route(u => /\/character-merge-requests\/[^/]+$/.test(new URL(u).pathname), route => {
+    if (fake.failLookupOnce) { fake.failLookupOnce = false; return route.abort('connectionreset'); }
     const id = new URL(route.request().url()).pathname.split('/').pop(), r = fake.receipts[id];
     return route.fulfill({ json: r ? { found: true, result: r } : { found: false } });
   });
@@ -83,8 +84,11 @@ async function installMocks() {
     return route.fulfill({ json: { ready: true, undo_token: 'ud-1', merge_id: 'm-g-zhao', status: 'review_required', blockers: [], changes: [{ entity: 'image', entity_id: 'i9', project_id: null, kind: '合并后新加的图片', action: 'restore_with_confirmation' }] } }); });
   await page.route(u => /\/character-merges\/[^/]+\/undo$/.test(new URL(u).pathname), route => { const body = route.request().postDataJSON(); fake.undos.push(body);
     if (fake.staleUndoOnce) { fake.staleUndoOnce = false; return route.fulfill({ status: 409, json: { error: '已变化', code: 'CHARACTER_MERGE_UNDO_STALE' } }); }
-    fake.zhaoMerged = false;
-    return route.fulfill({ json: { request_id: body.request_id, merge_id: 'm-g-zhao', status: 'undone', restored_asset_ids: ['z-series', 'z-ep2'], history_id: 'h2' } }); });
+    const mergeId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2));
+    if (mergeId === 'm-g-lisi') fake.lisiMerged = false; else fake.zhaoMerged = false;
+    const receipt = { request_id: body.request_id, merge_id: mergeId, status: 'undone', restored_asset_ids: ['a', 'b'], history_id: 'h2' }; fake.receipts[body.request_id] = receipt;
+    if (fake.undoPlan.shift() === 'drop') return route.abort('connectionreset'); // 撤销真实写入，只丢回应
+    return route.fulfill({ json: receipt }); });
   await page.route(u => new RegExp('/assets/' + A + '/versions$').test(new URL(u).pathname), async route => {
     const res = await route.fetch(), data = await res.json();
     return route.fulfill({ json: [{ id: 'v-merge', version: 9, summary: '合并同名人物：合入第 2 集的「李四」', created_at: Date.now(), kind: 'character_merge', merge_id: 'm-g-lisi', request_id: 'r1', at: Date.now(), can_undo: true }, ...data] });
@@ -169,11 +173,13 @@ try {
     await expect(dlg.getByRole('radio', { name: /都保留/ })).toBeDisabled(); await expect(dlg.getByRole('button', { name: '上一步' })).toHaveCount(0);
     assert.equal(fake.confirms.length, 2); assert.equal(fake.confirms[1].request_id, fake.confirms[0].request_id, '重发应沿用原请求号');
     const c = fake.confirms[0]; assert.equal(c.preview_token, lastToken, '确认用最后一次成功核对的凭证'); assert.match(c.context_token, /^grp-tok-/); assert.deepEqual(c.choices.look_choices, [{ conflict_id: 'c-casual', action: 'keep_both', rename_to: '常服（第 2 集）' }]);
-    // R1：结果不明时关掉浮窗、切到集再回全剧；提示条只剩「赵六」组，打开它会被引回待核对的「李四」，不发起新合并
+    // R1：结果不明时关掉浮窗、切到集再回全剧；独立提示条引导核对，不发起新合并
     await dlg.getByRole('button', { name: '关闭' }).click(); await expect(dlg).toHaveCount(0);
     await scopeSwitch().getByRole('button').first().click(); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
-    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
-    await expect(work().getByRole('status').filter({ hasText: '上次合并「李四」的结果还没核对到' })).toBeVisible();
+    // 待核对期间「逐个合并」提示条不出现，由独立的待核对提示条引导先核对
+    await expect(work().locator('.cm-banner')).toHaveCount(0);
+    const pendingBar = work().locator('.cm-pending'); await expect(pendingBar).toContainText('上次合并「李四」的结果还没核对到');
+    await pendingBar.getByRole('button', { name: '核对上次结果' }).click();
     const again = page.getByRole('dialog', { name: '合并「李四」' }); await expect(again.getByRole('button', { name: '核对上次结果' })).toBeEnabled();
     await expect(again).toContainText('已锁定'); assert.equal(fake.confirms.length, 2, '重开后不应自动提交');
     await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
@@ -246,6 +252,33 @@ try {
     await hist.getByRole('button', { name: '撤销这次合并…' }).click(); await expect(hist).toHaveCount(0);
     const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await expect(undo).toBeVisible(); assert.equal(fake.undoPreviews.length, previewsBefore + 1, '打开时应核对一次撤销');
     await undo.getByRole('button', { name: '取消' }).click();
+  });
+
+  await check('R1 复验：只剩一组时合并写入但回应和第一次查询都丢 → 刷新后候选为 0，人物页独立提示仍能「核对上次结果」；撤销同理，核对前不能发起新合并', async () => {
+    fake.zhaoMerged = true; fake.lisiMerged = false;
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
+    await work().locator('.cm-banner').getByRole('button', { name: '逐个合并' }).click();
+    const dlg = page.getByRole('dialog', { name: '合并「李四」' }); await dlg.getByRole('button', { name: '看合并后的样子' }).click();
+    await dlg.getByRole('button', { name: '处理 1 个同名造型' }).click(); const sent = fake.confirms.length;
+    fake.confirmPlan.push('drop'); fake.failLookupOnce = true; await dlg.getByRole('button', { name: '确认合并' }).click();
+    await expect(dlg.getByRole('alert')).toContainText('原请求已保留'); assert.equal(fake.confirms.length, sent + 1);
+    await dlg.getByRole('button', { name: '关闭' }).click(); await page.reload(); await expect(work()).toBeVisible();
+    const bar = work().locator('.cm-pending'); await expect(bar).toContainText('上次合并「李四」的结果还没核对到'); await shot('9-pending-after-reload');
+    await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click(); await expect(work().locator('.cm-banner')).toHaveCount(0); // 候选已是 0
+    await bar.getByRole('button', { name: '核对上次结果' }).click();
+    const again = page.getByRole('dialog', { name: '合并「李四」' }); await again.getByRole('button', { name: '核对上次结果' }).click(); await expect(again).toHaveCount(0);
+    assert.equal(fake.confirms.length, sent + 1, '按原号查到回执，不再发确认'); await expect(bar).toHaveCount(0); await expect(work().locator('.cm-done')).toContainText('已合并「李四」');
+    // 撤销：写入但回应和第一次查询都丢 → 刷新后历史不再「可撤销」，独立提示仍在；核对前「逐个合并」不出现
+    await work().locator('.cm-done').getByRole('button', { name: '撤销' }).click();
+    const undo = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo.getByRole('checkbox', { name: /我已核对/ }).check();
+    const undos = fake.undos.length; fake.undoPlan.push('drop'); fake.failLookupOnce = true; await undo.getByRole('button', { name: '撤销合并' }).click();
+    await expect(undo.getByRole('alert')).toContainText('原请求已保留'); await undo.getByRole('button', { name: '关闭' }).click();
+    await page.reload(); await expect(work()).toBeVisible(); await scopeSwitch().getByRole('button', { name: '全剧', exact: true }).click();
+    await expect(bar).toContainText('上次撤销合并「李四」的结果还没核对到'); await expect(work().locator('.cm-banner')).toHaveCount(0);
+    await bar.getByRole('button', { name: '核对上次结果' }).click();
+    const undo2 = page.getByRole('dialog', { name: '撤销合并「李四」' }); await undo2.getByRole('button', { name: '核对上次结果' }).click(); await expect(undo2).toHaveCount(0);
+    assert.equal(fake.undos.length, undos + 1, '按原号查到撤销回执，不再发撤销'); await expect(bar).toHaveCount(0);
+    await expect(work()).toContainText('已撤销合并「李四」'); await expect(work().locator('.cm-banner')).toBeVisible(); // 核对完恢复正常入口
   });
 
   assert.deepEqual(errors, [], '页面不应出现脚本错误');

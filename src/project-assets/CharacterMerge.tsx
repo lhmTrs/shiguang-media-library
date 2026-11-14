@@ -5,7 +5,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Users, X } from 'lucide-react';
 import { contextUnavailable, outcomeUnknown } from './scoped';
 import {
-  memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons,
+  memberLabel, memberPlace, mergeApi, mergeErr, mergeErrorText, pendingStore, refShots, settleRequest, spansSeasons, subscribePending,
+  type PendingMerge, type PendingUndo,
   type LookChoice, type MergeConfirmBody, type MergeGroup, type MergeGroups, type MergeMember, type MergePreview, type MergeReceipt,
   type UndoBody, type UndoPreview, type UndoReceipt,
 } from './merge';
@@ -37,6 +38,20 @@ export function useMergeGroups(api: Api, seriesId: string | null, enabled: boole
   useEffect(() => { void load().catch(() => {}); return () => { seq.current++; }; }, [seriesId, enabled, version]); // eslint-disable-line react-hooks/exhaustive-deps
   const byAsset = useMemo(() => { const map = new Map<string, MergeGroup>(); for (const g of data?.items ?? []) for (const m of g.members) map.set(m.asset_id, g); return map; }, [data]);
   return { data, byAsset, reload: load };
+}
+
+/** 当前剧结果不明的合并 / 撤销（组合验收 R1 复验）：不依赖候选组或「能否撤销」，只看待核对记录本身。 */
+export function usePendingMerge(seriesId: string | null): { merge: PendingMerge | null; undo: PendingUndo | null } {
+  const [, bump] = useState(0);
+  useEffect(() => subscribePending(() => bump(n => n + 1)), []);
+  return seriesId ? { merge: pendingStore.merge(seriesId), undo: pendingStore.undosOf(seriesId)[0] ?? null } : { merge: null, undo: null };
+}
+/** 人物页独立提示：上次合并 / 撤销的结果还没核对到。合并已经让候选组变成 0、或撤销后不再「可撤销」时，入口都还在。 */
+export function MergePendingBar({ merge, undo, onCheck }: { merge: PendingMerge | null; undo: PendingUndo | null; onCheck: () => void }) {
+  if (!merge && !undo) return null;
+  const what = merge ? '合并「' + merge.group.name + '」' : '撤销合并「' + undo!.name + '」';
+  return <div className="cm-pending" role="alert"><span>上次{what}的结果还没核对到。核对前不能发起新的合并或撤销；核对会按原请求号查询，不会重复执行。</span>
+    <button type="button" className="ca-primary" onClick={onCheck}>核对上次结果</button></div>;
 }
 
 /** ① 全剧视图顶部提示（有同名才出现）。 */

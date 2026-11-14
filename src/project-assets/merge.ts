@@ -133,10 +133,14 @@ const pendingMem: { merges: PendingMerge[]; undos: PendingUndo[] } = (() => {
   try { const v = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); if (v && Array.isArray(v.merges) && Array.isArray(v.undos)) return v; } catch { /* 无存储时只用内存 */ }
   return { merges: [], undos: [] };
 })();
-const savePending = () => { try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } };
+const pendingListeners = new Set<() => void>();
+/** 待核对记录变了就通知（页面上的「上次操作还没核对」提示条据此显示或消失）。 */
+export const subscribePending = (fn: () => void) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn); }; };
+const savePending = () => { try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(pendingMem)); } catch { /* 无存储时只用内存 */ } pendingListeners.forEach(fn => fn()); };
 export const pendingStore = {
   merge: (seriesId: string) => pendingMem.merges.find(p => p.seriesId === seriesId) ?? null,
   setMerge(seriesId: string, p: PendingMerge | null) { pendingMem.merges = pendingMem.merges.filter(x => x.seriesId !== seriesId); if (p) pendingMem.merges.push(p); savePending(); },
   undo: (seriesId: string, mergeId: string) => pendingMem.undos.find(p => p.seriesId === seriesId && p.mergeId === mergeId) ?? null,
+  undosOf: (seriesId: string) => pendingMem.undos.filter(p => p.seriesId === seriesId),
   setUndo(seriesId: string, mergeId: string, p: PendingUndo | null) { pendingMem.undos = pendingMem.undos.filter(x => !(x.seriesId === seriesId && x.mergeId === mergeId)); if (p) pendingMem.undos.push(p); savePending(); },
 };

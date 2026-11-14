@@ -4,6 +4,8 @@
 .cm-banner > span, .cm-done > span { flex: 1; min-width: 0; line-height: 1.6; }
 .cm-banner small { display: block; color: #8a4b00; }
 .cm-banner svg, .cm-done svg { flex: none; color: var(--green, #1f6b4f); }
+.cm-pending { display: flex; align-items: center; gap: 10px; margin: 8px 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; border: 1px solid color-mix(in srgb, #b26b00 30%, transparent); background: color-mix(in srgb, #b26b00 8%, transparent); color: #6b4300; }
+.cm-pending > span { flex: 1; min-width: 0; line-height: 1.6; }
 .cm-done { border: 1px solid color-mix(in srgb, var(--green, #1f6b4f) 28%, transparent); background: color-mix(in srgb, var(--green, #1f6b4f) 8%, transparent); color: var(--green-ink, #164d39); }
 .cm-dialog { width: min(720px, calc(100vw - 32px)); }
 .cm-body { display: grid; gap: 12px; font-size: 13px; }
