@@ -67,7 +67,7 @@ export const encoded = (id: string) => encodeURIComponent(id);
 
 export function sameTarget(batch: IntakeBatch, input: ConfirmInput) {
   const requested = new Set(input.fileIds), received = new Set(batch.items.map(item => item.id));
-  return batch.id === input.requestId && (input.version===2 ? batch.version===2 && input.targets.every(t=>{const item=batch.items.find(i=>i.id===t.fileId);return destinationKey(t.destination)===destinationKey(item?.destination)&&(t.nameMode||'keep')===(item?.nameMode||'keep');}) : batch.version!==2 && batch.projectId === input.projectId && batch.folderId === input.folderId) && batch.mode === input.mode && (input.version !== 2 || !!input.revealWhenDone === !!batch.revealWhenDone)
+  return batch.id === input.requestId && (input.version===2 ? batch.version===2 && input.targets.every(t=>{const item=batch.items.find(i=>i.id===t.fileId);return destinationKey(t.destination)===destinationKey(item?.destination)&&(t.nameMode||'keep')===(item?.nameMode||'keep');}) : batch.version!==2 && batch.projectId === input.projectId && batch.folderId === input.folderId) && batch.mode === input.mode && (input.version !== 2 || typeof batch.revealWhenDone !== 'boolean' || !!input.revealWhenDone === batch.revealWhenDone)
     && requested.size === input.fileIds.length && received.size === batch.items.length && requested.size === received.size
     && [...requested].every(id => received.has(id));
 }

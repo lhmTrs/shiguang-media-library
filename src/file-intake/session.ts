@@ -20,7 +20,7 @@ export async function intakeSession(signal?: AbortSignal): Promise<IntakeRequest
     if (body !== undefined) headers.set('content-type', 'application/json');
     const response = await fetch('/api' + url, {method: verb, headers, ...(body === undefined ? {} : {body: JSON.stringify(body)}), credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.any([AbortSignal.timeout(20000), ...(options?.signal ? [options.signal] : [])])});
     const value = await response.json();
-    if (!response.ok) throw Object.assign(Error(value.error || value.message || '收纳请求未完成'), {status: response.status, code: value.code, accepted: value.accepted, requestId: value.requestId});
+    if (!response.ok) throw Object.assign(Error(value.error || value.message || '收纳请求未完成'), {status: response.status, code: value.code, accepted: value.accepted, requestId: value.requestId, ...(Array.isArray(value.resolvedFolders) ? {resolvedFolders: value.resolvedFolders} : {})});
     return value as T;
   };
   return Object.assign(request, {libraryId: original.instanceId});

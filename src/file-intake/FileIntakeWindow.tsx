@@ -239,16 +239,31 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       const unsure = !err.status || err.code === 'REVEAL_UNKNOWN' || err.code === 'INTAKE_DESKTOP_UNKNOWN';
       setFolderOpen({state: 'idle', error: unsure ? '没能确认访达是否已经打开，请先看一眼访达；没打开再点一次。'
         : err.code === 'INTAKE_DESKTOP_UNAVAILABLE' ? '这台电脑现在连不上访达，没能打开文件夹。收纳不受影响，可以稍后在拾光里查看这个视频。'
+        : err.code === 'INTAKE_DESKTOP_FAILED' ? '访达拒绝了这次打开请求：' + (err.message || '') + '。收纳不受影响。'
         : err.code === 'TARGET_CHANGED' ? '目标文件夹已经不在原来的位置：' + (err.message || '') + '。可在拾光里查看这个视频。' : errorMessage(e)});
     }
   }
+  // A folder named here may already exist when the batch itself failed: say so, and point the rows at it
+  // so the next 收纳 uses that folder instead of asking to create it again.
+  const builtFolders = (e: unknown) => ((e as {resolvedFolders?: {id: string; name: string; relativePath: string}[]})?.resolvedFolders || []).filter(f => f && typeof f.id === 'string');
+  const builtNote = (e: unknown) => {const f = builtFolders(e); return f.length ? '。文件夹「' + f.map(x => x.relativePath || x.name).join('」「') + '」已经建好，下次直接放进去' : '';};
+  const adoptBuilt = (e: unknown) => {
+    const built = builtFolders(e); if (!built.length) return;
+    setOptionsReload(n => n + 1);
+    for (const r of rows) {
+      const d = r.destination; if (!d?.newFolder || d.kind !== 'video') continue;
+      const parent = d.folderId && d.folderId !== 'root' ? folderPath(d.projectId, d.folderId) + '/' : '';
+      const hit = built.find(f => (f.relativePath || f.name).normalize('NFC').toLocaleLowerCase() === (parent + d.newFolder!.name).normalize('NFC').toLocaleLowerCase());
+      if (hit) setDestination([r.file.id], {...d, folderId: hit.id, newFolder: undefined});
+    }
+  };
   async function confirm() {
     if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || unknown || handoff.batchId || batch || !canConfirm) return;
     const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}),
       targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
-    catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。'));}}
+    catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + builtNote(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。')); adoptBuilt(e);}}
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }
 
@@ -386,6 +401,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // One file renamed by the rule: the new name gets its own card, the file line keeps the original.
   const singleNew = single && standardNames && single.newName && single.newName !== single.file.name ? single.newName : '';
   const singleParts = singleNew && single ? names[single.file.id]?.nameParts : undefined;
+  const singleNameError = single && standardNames && single.destination && names[single.file.id]?.for === nameKey(single.destination) ? names[single.file.id]?.error : undefined;
   const singleVideoProject = single && single.destination?.kind === 'video' && single.destination.scope === 'project' ? options?.projects.find(p => p.id === single.destination!.projectId) : undefined;
   const oneVideoReceipt = !!batch && receiptKind === 'submitted' && oneVideo(batch);
   const lastIds: {photo?: string | null; video?: string | null} = prefs?.lastProjectId || {};
@@ -441,6 +457,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
             <span className="fi-single-actions">
               <button data-popover-trigger data-file-id={single.file.id} aria-label={(locked ? '查看 ' : '改去处 ') + single.file.name} onClick={e => openPanel(single.file.id, e.currentTarget)}>{locked ? '查看…' : '改去处…'}</button>
             </span>
+            {singleNameError && <p className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「改去处…」在「文件名」里手动起名。' : ''}</p>}
             {singleNew && <NamePreview name={singleNew} parts={singleParts}
               hint={single.file.mediaKind === 'video' ? (single.destination?.newFolder ? '「' + single.destination.newFolder.name + '」是新文件夹，从 001 开始。' : '') + '序号接着这个文件夹里最大的号往后排；真正收纳时如果被别的任务先占用，会顺延，以回执为准。' : undefined}/>}
           </div>

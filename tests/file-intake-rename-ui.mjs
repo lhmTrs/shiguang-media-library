@@ -61,8 +61,9 @@ async function routeApi(route) {
   if (ep === '/handoffs/' + H + '/confirm') {
     fx.confirmBodies.push(body); await pause(60);
     const items = body.fileIds.map(id => {const t = body.targets.find(x => x.fileId === id); return {...fx.handoff.files.find(f => f.id === id), destination: clone(t.destination), ...(t.nameMode ? {nameMode: t.nameMode} : {}), plannedFileName: t.nameMode ? previewName(t).name : undefined, copiedBytes: 0, status: 'queued'};});
-    const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items, ...(body.revealWhenDone ? {revealWhenDone: true} : {})};
-    if (fx.receipt === 'reveal-dropped') delete batch.revealWhenDone;
+    const batch = {version: 2, id: body.requestId, projectId: '', projectName: '多种素材收纳', folderId: '', folderName: '', mode: body.mode, createdAt: 1, updatedAt: 1, status: 'queued', items, revealWhenDone: !!body.revealWhenDone};
+    if (fx.receipt === 'reveal-flipped') batch.revealWhenDone = !batch.revealWhenDone;
+    if (fx.receipt === 'reveal-missing') delete batch.revealWhenDone; // older receipt shape: nothing to compare
     fx.handoff.batchId = batch.id; fx.batches.unshift(batch);
     return respond(batch);
   }
@@ -154,7 +155,8 @@ try {
     await fresh(); await revealBox().uncheck(); await confirmButton().click(); await expect(accepted()).toBeVisible();
     assert.equal(fx.confirmBodies[0].revealWhenDone, false);
     await expect(page.getByRole('region', {name: '收完以后', exact: true})).not.toContainText('打开访达');
-    await fresh(f => {f.receipt = 'reveal-dropped';}); await confirmButton().click();
+    await fresh(f => {f.receipt = 'reveal-missing';}); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    await fresh(f => {f.receipt = 'reveal-flipped';}); await confirmButton().click();
     await expect(page.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible();
     await expect(page.getByRole('button', {name: '打开目标文件夹', exact: true})).toHaveCount(0);
   });
