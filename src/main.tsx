@@ -2684,6 +2684,9 @@ function App() {
                   </div>
                 )}
                 </div>
+                {/* 素材很少（不论选几条/页都只有一页）且稳定读取完成时不显示分页条，免得「共 N 项 · 第 1 页」停在中间、下面空一大块（UI 审计⑥）。
+                    读取中、出错、参数读取中仍显示原提示；超过 20 项（最小每页数量）时照常显示，保留改每页数量的入口。 */}
+                {!(!listLoading && !listError && pending === 0 && pages <= 1 && (grouped ? seriesEntries : total) <= 20) && (
                 <footer className="pagination">
                   <span>
                     {(listLoading||listError)&&!assets.length?'数量尚未读到':`共 ${total.toLocaleString()} 项`}
@@ -2706,6 +2709,7 @@ function App() {
                     {(listLoading||listError)&&!assets.length?null:<PaginationControls page={page} pages={pages} change={setPage} disabled={loading || refreshing}/>}
                   </div>
                 </footer>
+                )}
               </section>
               <aside id="asset-details" aria-label="素材详情" aria-hidden={detailsHidden} className={"details " + (selected ? "has-selection" : "")}>
                 <div className="details-resizer" role="separator" aria-label="调整详情宽度" aria-orientation="vertical" aria-valuemin={280} aria-valuemax={600} aria-valuenow={detailsWidth} tabIndex={0}
