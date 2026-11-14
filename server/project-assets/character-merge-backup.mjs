@@ -5,7 +5,7 @@ import { rejectedMergeId, validRejectionReceipt } from './character-merge-receip
 import { CREATIVE_TABLES } from './schema.mjs';
 import { ATTRIBUTE_TABLES } from '../project-attributes/schema.mjs';
 
-export function validateCharacterMergeBackup(tables, directory) {
+export function validateCharacterMergeBackup(tables, directory, projects) {
   const invalid = () => fault('备份中包含无效的合并人物、造型映射或回执');
   const byId = rows => new Map(rows.map(row => [row.id, row]));
   const assets = byId(tables.creative_assets), looks = byId(tables.creative_looks), bindings = byId(tables.creative_image_bindings);
@@ -13,6 +13,23 @@ export function validateCharacterMergeBackup(tables, directory) {
   const requests = byId(tables.creative_character_merge_requests);
   const memberships = new Map((directory?.project_series_members ?? []).map(row => [row.id, row.series_id]));
   const series = byId(directory?.project_series ?? []);
+  const projectIds = new Set(projects.map(row => row.id));
+  const historicalMembers = new Set();
+  for (const request of directory?.project_series_requests ?? []) {
+    const result = JSON.parse(request.result_json);
+    if (request.kind === 'create-episode') historicalMembers.add(result.project.id + '/' + result.project.series_id);
+    if (['move', 'organize', 'undo-move'].includes(request.kind)) {
+      for (const change of result.changes) {
+        for (const position of [change.before, change.after]) if (position.series_id)
+          historicalMembers.add(change.project_id + '/' + position.series_id);
+      }
+    }
+  }
+  const historicalMember = (projectId, seriesId) => memberships.get(projectId) === seriesId ||
+    !projectIds.has(projectId) || historicalMembers.has(projectId + '/' + seriesId);
+  const versions = new Map(tables.creative_asset_versions.map(row => [
+    row.asset_id + '/' + row.version, JSON.parse(row.snapshot),
+  ]));
   const checkSnapshot = (snapshot, ids, seriesId, allowedEpisodes) => {
     if (!isRecord(snapshot) || canonical(Object.keys(snapshot).sort()) !== canonical(Object.keys(mergeEntities).sort())) throw invalid();
     for (const [table, [, owner]] of Object.entries(mergeEntities)) {
@@ -34,6 +51,16 @@ export function validateCharacterMergeBackup(tables, directory) {
           const child = (table === 'creative_looks' ? looks : bindings).get(row.id);
           if (!child || !ids.has(child.asset_id)) throw invalid();
         }
+        // A historical membership list cannot invent an episode owner. The
+        // exact asset revision must independently record that same owner.
+        // Older versions may still name episodes that have since moved or
+        // been removed; the live undo planner rechecks its actual write scope.
+        if (table === 'creative_assets') {
+          const version = versions.get(row.id + '/' + row.revision);
+          if (!version || version.kind !== row.kind || version.project_id !== row.project_id ||
+              (version.owner_type ?? 'project') !== row.owner_type ||
+              (version.owner_id ?? version.project_id) !== row.owner_id) throw invalid();
+        }
         if (table === 'creative_assets' && (row.kind !== 'character' || row.owner_type === 'series' && row.owner_id !== seriesId ||
             row.owner_type === 'project' && (!allowedEpisodes.has(row.project_id) || row.project_id !== row.owner_id) ||
             !['series', 'project'].includes(row.owner_type))) throw invalid();
@@ -53,7 +80,8 @@ export function validateCharacterMergeBackup(tables, directory) {
         canonical(data.source_asset_ids.slice().sort()) !== canonical([...ids].filter(id => id !== row.canonical_asset_id).sort()) ||
         [...ids].some(id => assets.get(id)?.kind !== 'character') || data.episode_ids.some(id => !idOK(id))) throw invalid();
     if (data.membership.some(pair => !Array.isArray(pair) || pair.length !== 2 || !idOK(pair[0]) ||
-        pair[1] !== null && !idOK(pair[1]))) throw invalid();
+        pair[1] !== null && !idOK(pair[1]) || !historicalMember(pair[0], row.series_id))) throw invalid();
+    if (new Set(data.membership.map(pair => pair[0])).size !== data.membership.length) throw invalid();
     const episodes = new Set(data.membership.map(pair => pair[0]));
     checkSnapshot(data.before, ids, row.series_id, episodes);
     checkSnapshot(data.after, ids, row.series_id, episodes);

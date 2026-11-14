@@ -379,7 +379,7 @@ export class ProjectAssets {
       if (!valid) throw fault('备份资产归属无效');
     }
     validateScopedAssetBackup(t, input.project_series);
-    validateCharacterMergeBackup(t, input.project_series);
+    validateCharacterMergeBackup(t, input.project_series, input.projects);
     for (const l of looks.values()) if (assets.get(l.asset_id)?.kind !== 'character') throw fault('备份造型归属无效');
     for (const b of t.creative_image_bindings) if (!assets.has(b.asset_id) || b.look_id !== null && looks.get(b.look_id)?.asset_id !== b.asset_id || !/^[a-f0-9]{64}$/.test(b.expected_sha256)) throw fault('备份图片归属或摘要无效');
     const versionKeys = new Set();
