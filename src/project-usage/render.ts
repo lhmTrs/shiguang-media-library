@@ -52,38 +52,64 @@ export const renderApi = {
   receipt: <R,>(request: ProjectRequest, statusUrl: string) => request<Receipt<R>>(stripApi(statusUrl)),
 };
 
-const terminal = (r: Receipt) => r.status === "completed" || r.status === "failed" || r.status === "unknown";
-/** 202 checking/running 时按原 statusUrl 查询，最多等 maxMs；不重发写请求。返回最后一次读到的回执。 */
-export async function settle<R>(request: ProjectRequest, first: Receipt<R>, alive: () => boolean, maxMs = 20000): Promise<Receipt<R>> {
-  let receipt = first, wait = 400;
-  const until = Date.now() + maxMs;
-  while (!terminal(receipt) && Date.now() < until && alive()) {
-    await new Promise(r => setTimeout(r, wait)); wait = Math.min(2000, wait * 1.6);
-    if (!alive()) break;
-    try { receipt = await renderApi.receipt<R>(request, receipt.statusUrl); }
-    catch (e) { const err = e as RequestError; if (err.code === "OPERATION_NOT_FOUND" || (err.status ?? 0) >= 500 || !err.status) return { ...receipt, status: "unknown", error: { code: err.code || "OPERATION_UNSETTLED", message: err.message } }; throw e; }
-  }
-  return receipt;
-}
+const terminal = (r: Receipt) => r.status === "completed" || r.status === "failed";
 
-/** 原请求的回执地址（与后端 action-journal 一致）；没收到答复时只能按它核对。 */
+/** 原回执地址（与后端 action-journal 一致）；按 action 推导，不采用响应里给的地址。 */
 export const renderStatusUrl = (projectId: string, timelineId: string, requestId: string) => `${base(projectId, timelineId)}/requests/${requestId}`;
 export const operationStatusUrl = (projectId: string, requestId: string) => `/project-videos/projects/${projectId}/operations/${requestId}`;
 
 /**
- * 写请求抛错时区分两种情况：明确的业务拒绝（有 4xx 状态和错误码，服务器说了没做）可以改了再提交；
- * 传输丢失 / 5xx / 后端自己说「结果未核清」则不知道是否已执行——返回一张 unknown 回执，只能按原编号核对，不能开新写入。
+ * 一次写入的原意图：提交前就冻结项目、时间线、编号和查询地址。之后的错误体、轮询回执、核对结果都不能替换它；
+ * 编号/项目/时间线/动作对不上的回执一律不算这条请求的结果。
  */
-export function unsettledReceipt(error: RequestError, requestId: string, statusUrl: string, action: Receipt["action"], projectId: string, timelineId: string | null): Receipt | null {
+export type Intent = { action: Receipt["action"]; projectId: string; timelineId: string | null; requestId: string; statusUrl: string };
+export function intentOf(action: Receipt["action"], projectId: string, timelineId: string | null): Intent {
+  const requestId = newRequestId(), scoped = action === "render-link" || action === "render-unlink" ? timelineId : null;
+  return { action, projectId, timelineId: scoped, requestId, statusUrl: scoped ? renderStatusUrl(projectId, scoped, requestId) : operationStatusUrl(projectId, requestId) };
+}
+/** 待核对按「这条时间线」或「这一集的这类操作」分开保存，一处的结果不会删掉另一处。 */
+export const scopeOf = (i: Intent) => i.timelineId ? `timeline:${i.projectId}:${i.timelineId}` : `project:${i.projectId}:${i.action}`;
+export const belongs = (r: Receipt, i: Intent) => r.requestId === i.requestId && r.projectId === i.projectId && (r.timelineId ?? null) === i.timelineId && r.action === i.action;
+export const RECEIPT_MISMATCH = "查到的回执不属于原请求，已忽略；原请求仍待核对。";
+export const NOT_FOUND_YET = "还查不到原请求的回执；这不代表它没有执行，请稍后再核对。";
+export function unknownReceipt<R = unknown>(i: Intent, code: string, message: string): Receipt<R> {
+  return { schemaVersion: 1, requestId: i.requestId, projectId: i.projectId, timelineId: i.timelineId, action: i.action, status: "unknown", statusUrl: i.statusUrl, result: null, error: { code, message } };
+}
+/** 收到的回执先核身份：不是原请求的，当作结果不明（不放行、不当完成）。查询地址固定成原地址。 */
+const own = <R,>(r: Receipt<R>, i: Intent): Receipt<R> => belongs(r as Receipt, i) ? { ...r, statusUrl: i.statusUrl } : unknownReceipt<R>(i, "RECEIPT_MISMATCH", RECEIPT_MISMATCH);
+
+/** 按原地址查一次原请求。查不到（404）、断网、5xx 都仍是结果不明；其它 4xx 原样抛出。 */
+export async function checkOriginal<R = unknown>(request: ProjectRequest, i: Intent): Promise<Receipt<R>> {
+  try { return own(await renderApi.receipt<R>(request, i.statusUrl), i); }
+  catch (e) {
+    const err = e as RequestError;
+    if (err.code === "OPERATION_NOT_FOUND") return unknownReceipt<R>(i, "OPERATION_NOT_FOUND", NOT_FOUND_YET);
+    if (!err.status || err.status >= 500) return unknownReceipt<R>(i, err.code || "OPERATION_UNSETTLED", err.status ? err.message : "没收到服务器的答复，不知道原请求是否已执行");
+    throw e;
+  }
+}
+
+/** 202 checking/running 时按原地址查询，最多等 maxMs；不重发写请求。返回最后一次读到的（已核身份的）回执。 */
+export async function settle<R>(request: ProjectRequest, i: Intent, first: Receipt<R>, alive: () => boolean, maxMs = 20000): Promise<Receipt<R>> {
+  let receipt = own(first, i), wait = 400;
+  const until = Date.now() + maxMs;
+  while (!terminal(receipt as Receipt) && receipt.status !== "unknown" && Date.now() < until && alive()) {
+    await new Promise(r => setTimeout(r, wait)); wait = Math.min(2000, wait * 1.6);
+    if (!alive()) break;
+    receipt = await checkOriginal<R>(request, i);
+  }
+  return receipt;
+}
+
+/**
+ * 写请求抛错时区分两种情况：明确的业务拒绝（4xx，服务器说了没做，含已登记的 accepted 拒绝）可以改了再提交；
+ * 传输丢失 / 5xx / 后端说「结果未核清」则不知道是否已执行——返回原意图的 unknown 回执，只能按原编号核对，不能开新写入。
+ * 错误体里给的编号、地址一律不用。
+ */
+export function unsettledReceipt(error: RequestError, i: Intent): Receipt | null {
   const status = error.status ?? 0;
-  const known = error.details?.statusUrl;
-  // 4xx 且不是「未核清」：服务器明确拒绝（含已登记的 accepted 拒绝），没有执行
-  const unsettled = !status || status >= 500 || /UNSETTLED$/.test(error.code ?? "");
-  if (!unsettled) return null;
-  return {
-    schemaVersion: 1, requestId: error.requestId || requestId, projectId, timelineId, action, status: "unknown", statusUrl: known || statusUrl, result: null,
-    error: { code: error.code || "OPERATION_UNSETTLED", message: status ? error.message : "没收到服务器的答复，不知道刚才的操作是否已执行" },
-  };
+  if (status && status < 500 && !/UNSETTLED$/.test(error.code ?? "")) return null;
+  return unknownReceipt(i, error.code || "OPERATION_UNSETTLED", status ? error.message : "没收到服务器的答复，不知道刚才的操作是否已执行");
 }
 
 /** 已登记的语义拒绝（accepted=true）仍是失败；只给原因，不当作成功。 */

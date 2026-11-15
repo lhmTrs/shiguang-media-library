@@ -6,8 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
-import { clock, newRequestId, reasonOf, renderApi, renderStatus, renderStatusUrl, settle, unsettledReceipt, type RenderV2, type RequestError } from "./render";
-import { RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
+import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, scopeOf, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
+import { pendingOf, RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
 import "./usage.css";
 
 export type Occurrence = { occurrenceId?: string; clipId?: string; clipName?: string; track: number; start: number | null; end: number | null; disabled?: boolean };
@@ -23,7 +23,9 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const [render, setRender] = useState<RenderV2 | null>(null), [renderError, setRenderError] = useState(""), [renderReload, setRenderReload] = useState(0);
   const [t, setT] = useState(0), [playing, setPlaying] = useState(false), [music, setMusic] = useState(true), [overlay, setOverlay] = useState(true), [zoom, setZoom] = useState(1);
   const [picking, setPicking] = useState(false), [mediaFailure, setMediaFailure] = useState<(BlockedSource & { key: string }) | null>(null), [busy, setBusy] = useState("");
-  const [pendingState, setPendingState] = useState<(Pending & { timelineId: string }) | null>(null);
+  // 未决写请求按范围分开保存（每条时间线一格、每类项目级操作一格），一处的结果不会覆盖或删掉另一处
+  const [pendingMap, setPendingMap] = useState<Record<string, Pending>>({});
+  const putPending = (intent: Intent, p: Pending | null) => setPendingMap(old => { const key = scopeOf(intent), next = { ...old }; if (p) next[key] = p; else if (old[key]?.intent.requestId === intent.requestId) delete next[key]; return next; });
   const video = useRef<HTMLVideoElement>(null), generation = useRef(0);
   useFeedbackToast(error || renderError, { source: "素材使用" });
 
@@ -44,8 +46,8 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
 
   const timeline = timelines.find(x => x.id === timelineId);
   const offset = render?.offset ?? 0;
-  const pending = pendingState && pendingState.timelineId === timelineId ? pendingState : null;
-  const setPending = (p: Pending | null) => setPendingState(p && timelineId ? { ...p, timelineId } : null);
+  const pending = pendingMap[`timeline:${projectId}:${timelineId}`] ?? null;
+  const pickerPendings = Object.values(pendingMap).filter(p => p.intent.projectId === projectId && (p.intent.timelineId === null || p.intent.timelineId === timelineId));
   // 同一来源、同一修订、同一地址才算同一次失败；换成片或来源换版后重新核验
   const mediaKey = render?.link ? `${timelineId}|${render.sourceId}|${render.sourceRevision}|${render.playback.mediaUrl}` : "";
   const mediaError = mediaFailure && mediaFailure.key === mediaKey ? mediaFailure.message : "";
@@ -90,31 +92,31 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   async function unlink() {
     if (!render?.link || !timeline || pending) return;
     if (!window.confirm("解除这条时间线的成片关联？不会删除项目视频，也不影响其他用处。")) return;
-    const requestId = newRequestId(), label = "正在解除成片关联…";
+    const intent = intentOf("render-unlink", projectId, timeline.id), label = "正在解除成片关联…";
     setBusy("正在解除…");
     try {
-      const first = await renderApi.unlink(request, projectId, timeline.id, { requestId, expectedRevision: render.revision });
-      const receipt = await settle(request, first, () => true);
-      if (receipt.status === "completed") setRenderReload(n => n + 1);
-      else if (receipt.status === "failed") setRenderError(receipt.error?.message || "解除失败");
-      else setPending({ receipt, label });
+      const receipt = await settle(request, intent, await renderApi.unlink(request, projectId, timeline.id, { requestId: intent.requestId, expectedRevision: render.revision }), () => true);
+      if (receipt.status === "completed") { putPending(intent, null); setRenderReload(n => n + 1); }
+      else if (receipt.status === "failed") { putPending(intent, null); setRenderError(receipt.error?.message || "解除失败"); }
+      else putPending(intent, pendingOf(intent, label, receipt));
     } catch (e) {
       const err = e as RequestError;
-      const unknown = unsettledReceipt(err, requestId, renderStatusUrl(projectId, timeline.id, requestId), "render-unlink", projectId, timeline.id);
-      if (unknown) setPending({ receipt: unknown, label });
+      const unknown = unsettledReceipt(err, intent);
+      if (unknown) putPending(intent, pendingOf(intent, label, unknown));
       else { setRenderError(err.message); setRenderReload(n => n + 1); }
     }
     finally { setBusy(""); }
   }
   async function recheck() {
     if (!pending) return;
+    const p = pending;
     setBusy("正在核对原请求…");
     try {
-      const receipt = await renderApi.receipt(request, pending.receipt.statusUrl);
-      if (receipt.status === "completed") { setPending(null); setRenderReload(n => n + 1); }
-      else if (receipt.status === "failed") { setPending(null); setRenderError(receipt.error?.message || "原请求没有成功"); setRenderReload(n => n + 1); }
-      else setPending({ ...pending, receipt: { ...receipt, requestId: pending.receipt.requestId, statusUrl: pending.receipt.statusUrl } }); // 始终按原编号核对
-    } catch (e) { setRenderError((e as RequestError).code === "OPERATION_NOT_FOUND" ? "还查不到原请求的回执；这不代表它没有执行，请稍后再核对。" : (e as Error).message); }
+      const receipt = await checkOriginal(request, p.intent);
+      if (receipt.status === "completed") { putPending(p.intent, null); setRenderReload(n => n + 1); }
+      else if (receipt.status === "failed") { putPending(p.intent, null); setRenderError(receipt.error?.message || "原请求没有成功"); setRenderReload(n => n + 1); }
+      else { putPending(p.intent, pendingOf(p.intent, p.label, receipt)); if (receipt.error) setRenderError(receipt.error.message); }
+    } catch (e) { setRenderError((e as Error).message); }
     finally { setBusy(""); }
   }
 
@@ -199,6 +201,6 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
       </div>
     </>}
     {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)}
-      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pending={pending} setPending={setPending} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
+      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
   </section>;
 }
