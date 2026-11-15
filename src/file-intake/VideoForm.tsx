@@ -87,7 +87,7 @@ export function VideoDestination({project, projects, recent, destination, rememb
         })}
         {(finalMissing || role) && <button type="button" className={'fi-chip' + (role ? ' fi-chip-on' : '')} aria-pressed={!!role} aria-label="成片（收纳时自动建好）" disabled={locked}
           title={role ? '再点一次放回「' + placeSegments(project)[placeSegments(project).length - 1] + '」本身' : '这一集还没有「成片」文件夹，点收纳时自动建好；已有同名文件夹会直接接管，内容不动'}
-          onClick={() => role ? pick('root') : onChange({kind: 'video', scope: 'project', projectId: destination.projectId, folderRole: 'final', ...(destination.fileName ? {fileName: destination.fileName} : {})})}>
+          onClick={() => role ? pick('root') : onChange({kind: 'video', scope: 'project', projectId: destination.projectId, folderRole: 'final'})}>
           {role && <Check size={13} aria-hidden="true"/>}<span>成片</span><small className="fi-chip-note">收纳时建</small></button>}
         {pending !== undefined ? <PendingFolder name={pending} folders={project.videoFolders || []} locked={locked}
           onRename={name => onChange({...destination, folderId: 'root', newFolder: {name}})}

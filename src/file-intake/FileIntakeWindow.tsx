@@ -214,6 +214,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // A person/look picked here (decision buttons, 放进项目…) is an explicit choice: a later rename keeps it.
   const pinned = (d: DestinationDraft | null) => d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind ? {...d, characterNameManual: true, lookNameManual: true} : d;
   const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination: pinned(destination), manual: true}]))}));
+  // 视频去处（芯片、改文件夹…）只改去处：每个文件自己的手动名留在自己身上，不把某一条的名字广播给同组别的文件
+  const setPlace = (ids: string[], destination: DestinationDraft) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => {
+    const own = (old[id]?.destination ?? rows.find(r => r.file.id === id)?.destination)?.fileName, {fileName: _shared, ...place} = destination;
+    return [id, {...old[id], destination: pinned(own ? {...place, fileName: own} : place), manual: true}];
+  }))}));
   const rename = (id: string, fileName: string) => setDrafts(old => ({...old, [id]: {...old[id], destination: old[id]?.destination ?? null, manual: !!old[id]?.manual, fileName}}));
   const remove = (id: string) => {setSelected(old => old.filter(x => x !== id)); setChecked(old => old.filter(x => x !== id));};
   const pending = rows.filter(r => !r.ready).length;
@@ -397,7 +402,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {g.photos && g.key.startsWith('library:') && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'cat:' + g.key ? '' : 'cat:' + g.key)}>改分类…</button>
         {popover === 'cat:' + g.key && <CategoryPopover categories={options.photoCategories} count={targets.length} onClose={() => setPopover('')} onApply={dir => {setDestination(targets, {kind: 'photo', scope: 'library', directory: dir}); setChecked([]); setPopover('');}}/>}</span>}
       {g.tone === 'video' && options && first && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'folder:' + g.key ? '' : 'folder:' + g.key)}>改文件夹…</button>
-        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} folderRole={first.folderRole} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId, newFolder, folderRole) => {setDestination(ids, folderRole ? {kind: 'video', scope: 'project', projectId, folderRole} : {kind: 'video', scope: 'project', projectId, folderId, ...(newFolder ? {newFolder: {name: newFolder}} : {})}); setPopover('');}}/>}</span>}
+        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} folderRole={first.folderRole} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId, newFolder, folderRole) => {setPlace(ids, folderRole ? {kind: 'video', scope: 'project', projectId, folderRole} : {kind: 'video', scope: 'project', projectId, folderId, ...(newFolder ? {newFolder: {name: newFolder}} : {})}); setPopover('');}}/>}</span>}
     </>;
     return <section key={g.key} className={'fi-group fi-group-' + g.tone} aria-label={g.title}>
       <GroupHeader group={g} open={opened} toggle={() => setOpen(o => ({...o, [g.key]: !opened}))}
@@ -455,7 +460,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
     <div className="fi-form">
       <VideoDestination project={projectOf(r)!} projects={options!.projects} recent={recentProjects} destination={r.destination!} locked={locked}
-        remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setDestination([r.file.id], withRemembered(d, r.destination))}/>
+        remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setPlace([r.file.id], withRemembered(d, r.destination))}/>
       <span className="fi-form-label fi-form-label-top">名字</span>
       <div className="fi-form-name">{renameBox}{nameLine(r)}
         {singleNameError && <small className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「更多设置…」手动起名。' : ''}</small>}
@@ -474,7 +479,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       const first = g.rows[0], d = first.destination, p = projectOf(first);
       return <section key={g.key} className="fi-vblock" aria-label={'去处 ' + (d ? destLabel(d) : '未定')}>
         {p && d ? <div className="fi-form"><VideoDestination project={p} projects={options!.projects} recent={recentProjects} destination={d} locked={locked} count={g.rows.length}
-          remembered={prefs?.lastVideoFolderByProject?.[p.id]} onChange={nd => setDestination(g.rows.map(r => r.file.id), withRemembered(nd, d))}/></div>
+          remembered={prefs?.lastVideoFolderByProject?.[p.id]} onChange={nd => setPlace(g.rows.map(r => r.file.id), withRemembered(nd, d))}/></div>
           : <div className="fi-vblock-head"><strong>{d ? destLabel(d) : '请选择去处'}</strong><small className="fi-muted">{g.rows.length} 个 · 点每行的 ⋯ 改去处</small></div>}
         <ul className="fi-vrows">{g.rows.map(r => <li key={r.file.id} className={'fi-vrow' + (flash === r.file.id ? ' fi-flash' : '')}>
           <span className="fi-vrow-from" title={r.file.name}>{r.file.name}</span><span className="fi-vrow-arrow" aria-hidden="true">→</span>{nameLine(r)}{moreButton(r)}
