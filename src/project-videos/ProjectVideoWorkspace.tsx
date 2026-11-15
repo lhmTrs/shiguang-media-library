@@ -539,6 +539,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const importFrozen = !!taskRef.current || !!sending;
   const editChanged = !!selected && !!draft && JSON.stringify(draft) !== JSON.stringify(editFor(selected));
   const childFolderCount = folders.filter(f => f.parentId === (folderId === 'all' ? 'root' : folderId)).length;
+  // 实际渲染成卡片的子文件夹（不含废片收纳处子树）
+  const visibleChildFolderCount = folders.filter(f => f.parentId === (folderId === 'all' ? 'root' : folderId) && !rejectSet.has(f.id)).length;
   // The whole project has nothing yet (no videos here, no folders, nothing in the reject bin, no search or filter):
   // hide the all-zero search, chips and count, and show one card in the grid that opens the import.
   // FE1-R2: legacy (pre-upgrade) videos live outside any folder, so an empty root is not an empty project while any remain.
@@ -881,7 +883,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {folderId !== 'reject' && <button type="button" disabled={rejectBlocked} title={`移入废片收纳处（一次最多 ${MAX_REJECT} 个），会先核对影响`} onClick={() => markReject(pickedOrdered)}><Archive size={14}/>标记为废片</button>}
             <button type="button" onClick={() => applyPick([])}>取消选择</button>
             {(copyDisabledReason || revealDisabledReason) && <small>{copyDisabledReason || revealDisabledReason}</small>}</div>}
-          {!loading && !projectEmpty && !filtered.length && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
+          {/* 当前目录没有视频、但上面已经摆着可进入的子文件夹卡片时，不再显示大空态（筛选无结果仍提示） */}
+          {!loading && !projectEmpty && !filtered.length && !(!videos.length && visibleChildFolderCount > 0 && (view === 'prompts' || groups.length > 0)) && <div className="pv-empty"><Film size={32}/><h2>{videos.length ? '没有符合筛选条件的视频' : folderId === 'all' ? '本项目还没有生成视频' : '当前目录还没有视频'}</h2><p>{videos.length ? '调整搜索、采用状态或“需处理”筛选。' : childFolderCount ? '可进入上方子文件夹，或导入视频到当前目录。' : '导入一个生成结果，保存后即可在分镜中采用。'}</p></div>}
         </section>
         {multi && <aside className="pv-detail pv-detail-multi" aria-label="已选视频">
           <header className="pv-detail-head"><div className="pv-detail-title"><small>多选</small><h2>已选 {picked.length} 个视频</h2></div>

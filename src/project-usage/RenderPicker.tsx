@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FolderOpen, RefreshCw, Search, X } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
-import { bytesText, checkOriginal, intentOf, renderApi, settle, unsettledReceipt, type FolderRoles, type Intent, type Receipt, type RenderFolder, type RenderV2, type RequestError, type SourceItem, type SourcesPage } from "./render";
+import { bytesText, checkOriginal, intentOf, renderApi, schemaErrorText, settle, unsettledReceipt, type FolderRoles, type Intent, type Receipt, type RenderFolder, type RenderV2, type RequestError, type SourceItem, type SourcesPage } from "./render";
 
 /** 结果不明的写请求：原意图在提交前冻结，只按它核对；放在上层按时间线/操作分开保存，关掉窗口再打开、换到别的时间线都还在。 */
 export type Pending = { intent: Intent; label: string; status: Receipt["status"]; message: string };
@@ -13,10 +13,12 @@ export const pendingOf = (intent: Intent, label: string, r: Receipt): Pending =>
 export type BlockedSource = { sourceId: string; sourceRevision: number | null; message: string };
 const durationText = (ms: number | null) => ms == null ? "时长未知" : `${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
-export function RenderPicker({ projectId, projectName, timelineId, render, request, close, linked, pendings, putPending, begin, blocked }: {
+export function RenderPicker({ projectId, projectName, timelineId, render, request, close, linked, pendings, putPending, begin, blocked, notWritable }: {
   projectId: string; projectName: string; timelineId: string; render: RenderV2 | null; request: ProjectRequest; close: () => void; linked: () => void;
   /** 与这条时间线、这一集相关的未决请求（别的时间线的不在这里，也不会被这里清掉）。 */
   pendings: Pending[]; putPending: (intent: Intent, p: Pending | null) => void; begin: (intent: Intent) => void; blocked: BlockedSource | null;
+  /** 成片表现在不可写的原因（读接口 writable=false）；只禁「用这个作为成片」，准备文件夹、刷新视频信息照常。 */
+  notWritable: string | null;
 }) {
   const linkPending = pendings.find(p => p.intent.timelineId === timelineId) ?? null;
   const ensurePending = pendings.find(p => p.intent.action === "final-folder-ensure") ?? null;
@@ -55,7 +57,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
     try {
       const receipt = await settle(request, intent, await start(), () => alive.current);
       if (receipt.status === "completed") { putPending(intent, null); if (alive.current) done(receipt); else if (intent.action === "render-link") linked(); }
-      else if (receipt.status === "failed") { putPending(intent, null); if (alive.current) { setError(receipt.error?.message || "操作失败"); setReload(n => n + 1); } }
+      else if (receipt.status === "failed") { putPending(intent, null); if (alive.current) { setError(schemaErrorText(receipt.error) ?? (receipt.error?.message || "操作失败")); setReload(n => n + 1); } }
       else { putPending(intent, pendingOf(intent, label, receipt as Receipt)); if (alive.current && receipt.error?.code === "RECEIPT_MISMATCH") setError(receipt.error.message); }
     } catch (e) {
       const err = e as RequestError;
@@ -63,7 +65,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
       if (unknown) { putPending(intent, pendingOf(intent, label, unknown)); return; }
       putPending(intent, null); // 明确的业务拒绝：没有执行，注销
       if (!alive.current) return;
-      setError(err.message || "操作失败"); setReload(n => n + 1);
+      setError(schemaErrorText(err) ?? (err.message || "操作失败")); setReload(n => n + 1);
     } finally { if (alive.current) setBusy(""); }
   }
   async function recheck(p: Pending) {
@@ -71,13 +73,13 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
     try {
       const receipt = await checkOriginal(request, p.intent);
       if (receipt.status === "completed") { putPending(p.intent, null); if (p.intent.action === "render-link" || p.intent.action === "render-unlink") linked(); else if (alive.current) { setNotice("原请求已完成"); setReload(n => n + 1); } }
-      else if (receipt.status === "failed") { putPending(p.intent, null); if (alive.current) { setError(receipt.error?.message || "原请求没有成功"); setReload(n => n + 1); } }
+      else if (receipt.status === "failed") { putPending(p.intent, null); if (alive.current) { setError(schemaErrorText(receipt.error) ?? (receipt.error?.message || "原请求没有成功")); setReload(n => n + 1); } }
       else { putPending(p.intent, pendingOf(p.intent, p.label, receipt)); if (alive.current && receipt.error) setError(receipt.error.message); }
     } catch (e) { if (alive.current) setError((e as Error).message); }
     finally { if (alive.current) setBusy(""); }
   }
   const confirm = () => {
-    if (!item || !selectable(item) || !offsetValid || !data || linkPending) return;
+    if (!item || !selectable(item) || !offsetValid || !data || linkPending || notWritable) return;
     const intent = intentOf("render-link", projectId, timelineId);
     void run("正在关联成片…", intent, () => renderApi.link(request, projectId, timelineId, {
       requestId: intent.requestId, sourceId: item.sourceId, offset: offsetValue,
@@ -122,6 +124,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
         </nav>
         <div className="usage-picker-list">
           <label className="usage-picker-search"><Search size={14} aria-hidden="true" /><input type="search" aria-label="搜索项目视频" placeholder="搜索项目视频" value={q} onChange={e => setQ(e.target.value)} /></label>
+          {notWritable && <p className="usage-note" role="note">{notWritable}</p>}
           {notice && <p className="usage-notice" role="status">{notice}</p>}
           {error && <p className="banner error" role="alert">{error}</p>}
           {listError && <p className="banner error" role="alert">项目视频读取失败：{listError}</p>}
@@ -155,7 +158,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
         <span className="usage-spacer" />
         {busy && <span role="status" className="usage-busy">{busy}</span>}
         <button type="button" className="plain" disabled={!!busy} onClick={close}>取消</button>
-        <button type="button" className="primary" disabled={!!busy || !item || !selectable(item) || !offsetValid || !!linkPending} onClick={confirm}>用这个作为成片</button>
+        <button type="button" className="primary" disabled={!!busy || !item || !selectable(item) || !offsetValid || !!linkPending || !!notWritable} title={notWritable ?? undefined} onClick={confirm}>用这个作为成片</button>
       </footer>
     </div>
   </div>, document.body);

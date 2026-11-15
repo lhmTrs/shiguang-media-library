@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {FolderVisual} from './FolderVisual';
 import {ChevronRight, FolderOpen, Folder, Layers} from 'lucide-react';
 import type {Folder as VideoFolder, FolderView} from './types';
 import {folderTrail, readVideoDrag, VIDEO_DRAG_TYPE} from './folders';
@@ -56,8 +57,12 @@ export function FolderBrowser({folders, current, breadcrumbs, projectId, onNavig
   if (part === 'cards') return <>{children.map(f => <div className="pv-card-entry pv-folder-entry" key={f.id}>
     <button type="button" className={`pv-card pv-folder-card${!f.available ? ' pv-folder-unavailable' : ''}${f.available && onMoveVideo && dropTarget === f.id ? ' pv-folder-drop-target' : ''}`}
       aria-label={`打开文件夹：${f.name}`} title={`项目根目录 / ${f.path || f.name}`} onClick={() => onNavigate(f.id)} {...cardDrop(f)}>
-      <span className="pv-thumbnail pv-folder-visual" aria-hidden="true"><Folder size={76} strokeWidth={1.3}/><ChevronRight size={18} className="pv-folder-enter"/></span>
-      <span className="pv-card-body"><strong title={f.name}>{f.name}</strong><small title={f.path || f.name}>{current === 'all' || current === 'root' ? '位于项目根目录' : `位于 ${folders.find(parent => parent.id === current)?.path || trail.map(parent => parent.name).join(' / ') || '当前目录'}`}</small>
+      <FolderVisual folder={f}/>
+      <span className="pv-card-body"><strong title={f.name}>{f.name}</strong>
+        {/* 已知视频数时第二行写数量（含子文件夹）；旧后端没有这个字段时照旧写位置 */}
+        {typeof f.videoCount === 'number'
+          ? <small className="pv-folder-count" data-empty={f.videoCount === 0} title="含子文件夹里的视频">{f.videoCount ? `${f.videoCount} 个视频` : '还没有视频'}</small>
+          : <small title={f.path || f.name}>{current === 'all' || current === 'root' ? '位于项目根目录' : `位于 ${folders.find(parent => parent.id === current)?.path || trail.map(parent => parent.name).join(' / ') || '当前目录'}`}</small>}
         <span className="pv-folder-card-hint">{fileDropTarget === f.id ? '请用“导入视频”入口' : !f.available ? '目录不可用 · 查看目录' : onMoveVideo && dropTarget === f.id ? (moveBlockedReason || '松开，预览移动到此文件夹') : onMoveVideo ? '单击进入 · 可拖入视频' : '单击进入文件夹'}</span>
       </span>
     </button>
