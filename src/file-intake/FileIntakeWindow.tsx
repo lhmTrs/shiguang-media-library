@@ -306,7 +306,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     if (!g) {
       const d = r.destination;
       g = key === 'decide' ? {key, title: '需要你决定', detail: '', tone: 'decide', rows: [], photos: false}
-        : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + folderName(d!.projectId, d!.folderId, d!.newFolder), detail: r.reason, tone: 'video', rows: [], photos: false}
+        : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + (d!.folderRole === 'final' ? '成片（收纳时自动建好）' : folderName(d!.projectId, d!.folderId, d!.newFolder)), detail: r.reason, tone: 'video', rows: [], photos: false}
         : key.startsWith('character:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 人物照片', detail: '', tone: 'project', rows: [], photos: true}
         : key.startsWith('asset:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 场景和道具', detail: '', tone: 'project', rows: [], photos: true}
         : {key, title: libraryTitle(d!.kind, d!.directory || ''), detail: d!.kind === 'photo' && !d!.directory ? '名字认不出，将进入摄影照片' : '', tone: d!.kind === 'music' || d!.kind === 'sfx' ? 'audio' : 'library', rows: [], photos: d!.kind === 'photo'};
