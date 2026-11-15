@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
-import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
+import { checkOriginal, clock, intentOf, notWritableText, reasonOf, renderApi, renderStatus, schemaErrorText, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
 import { applyPending, beginPending, emptyPending, type PendingState } from "./pending";
 import { pendingOf, RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
 import { UsageMenu, type MenuTarget } from "./UsageMenu";
@@ -95,6 +95,8 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     seek(target ? target.start : 0);
   };
   const toggle = () => { const v = video.current; if (!v) return; if (v.paused) { stopAudio(); void v.play().catch(() => {}); } else v.pause(); };
+  // 成片表还没升级（读接口 writable=false）：只禁关联/解除并说明原因；播放、浏览、核对原请求照常
+  const lockedReason = notWritableText(render);
   // 播放框：竖屏（宽高比 < 1）固定高度、宽度随比例；横屏宽度占满、按比例算高度，二者都有同一个高度上限
   const knownRatio = videoRatio ?? (render?.video?.width && render.video.height ? render.video.width / render.video.height : null);
   const ratio = knownRatio && Number.isFinite(knownRatio) && knownRatio > 0 ? knownRatio : 16 / 9, portrait = ratio < 1;
@@ -107,20 +109,20 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const status = mediaError ? { tone: "warn" as const, text: mediaError } : renderStatus(render);
 
   async function unlink() {
-    if (!render?.link || !timeline || pending) return;
+    if (!render?.link || !timeline || pending || lockedReason) return;
     if (!window.confirm("解除这条时间线的成片关联？不会删除项目视频，也不影响其他用处。")) return;
     const intent = intentOf("render-unlink", projectId, timeline.id), label = "正在解除成片关联…";
     begin(intent); setBusy("正在解除…");
     try {
       const receipt = await settle(request, intent, await renderApi.unlink(request, projectId, timeline.id, { requestId: intent.requestId, expectedRevision: render.revision }), () => true);
       if (receipt.status === "completed") { putPending(intent, null); setRenderReload(n => n + 1); }
-      else if (receipt.status === "failed") { putPending(intent, null); setRenderError(receipt.error?.message || "解除失败"); }
+      else if (receipt.status === "failed") { putPending(intent, null); setRenderError(schemaErrorText(receipt.error) ?? (receipt.error?.message || "解除失败")); }
       else putPending(intent, pendingOf(intent, label, receipt));
     } catch (e) {
       const err = e as RequestError;
       const unknown = unsettledReceipt(err, intent);
       if (unknown) putPending(intent, pendingOf(intent, label, unknown));
-      else { putPending(intent, null); setRenderError(err.message); setRenderReload(n => n + 1); }
+      else { putPending(intent, null); setRenderError(schemaErrorText(err) ?? err.message); setRenderReload(n => n + 1); }
     }
     finally { setBusy(""); }
   }
@@ -131,7 +133,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     try {
       const receipt = await checkOriginal(request, p.intent);
       if (receipt.status === "completed") { putPending(p.intent, null); setRenderReload(n => n + 1); }
-      else if (receipt.status === "failed") { putPending(p.intent, null); setRenderError(receipt.error?.message || "原请求没有成功"); setRenderReload(n => n + 1); }
+      else if (receipt.status === "failed") { putPending(p.intent, null); setRenderError(schemaErrorText(receipt.error) ?? (receipt.error?.message || "原请求没有成功")); setRenderReload(n => n + 1); }
       else { putPending(p.intent, pendingOf(p.intent, p.label, receipt)); if (receipt.error) setRenderError(receipt.error.message); }
     } catch (e) { setRenderError((e as Error).message); }
     finally { setBusy(""); }
@@ -149,10 +151,11 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
         {timelines.length > 1 ? <select aria-label="时间线" value={timelineId} onChange={e => { setTimelineId(e.target.value); setT(0); setPlaying(false); }}>{timelines.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select> : <span className="usage-timeline-name" title={timeline.name}>时间线「{timeline.name}」</span>}
         <span className="usage-render-status" data-tone={status.tone}><Film size={13} aria-hidden="true" />{status.text}{render?.link && render.name ? <> · <span title={render.folder ? `${render.folder.relativePath}/${render.name}` : render.name}>{render.folder ? `${render.folder.name} / ` : ""}{render.name}</span></> : null}</span>
         <button type="button" className="plain" disabled={!!busy} onClick={() => setPicking(true)}>{render?.link ? "更换成片" : "选择成片"}</button>
-        {render?.link && <button type="button" className="icon-button" aria-label="解除成片关联" title="解除成片关联" disabled={!!busy || !!pending} onClick={() => void unlink()}><Unlink size={15} /></button>}
+        {render?.link && <button type="button" className="icon-button" aria-label="解除成片关联" title={lockedReason ?? "解除成片关联"} disabled={!!busy || !!pending || !!lockedReason} onClick={() => void unlink()}><Unlink size={15} /></button>}
         {busy && <span role="status" className="usage-busy">{busy}</span>}
         {pending && !picking && <span className="usage-pending" role="status"><span>{pending.label.replace("正在", "").replace("…", "")}的结果还没核清；不会自动重试。</span><button type="button" className="plain" disabled={!!busy} onClick={() => void recheck()}><RefreshCw size={14} />核对原请求</button></span>}
       </div>
+      {lockedReason && <p className="usage-note" role="note">{lockedReason}</p>}
 
       <div className="usage-stage">
         <div className="usage-player">
@@ -221,6 +224,6 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     </>}
     {menu && <UsageMenu target={menu} request={request} close={closeMenu} />}
     {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)}
-      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} begin={begin} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
+      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} begin={begin} notWritable={lockedReason} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
   </section>;
 }
