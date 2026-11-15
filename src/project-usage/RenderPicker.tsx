@@ -13,10 +13,10 @@ export const pendingOf = (intent: Intent, label: string, r: Receipt): Pending =>
 export type BlockedSource = { sourceId: string; sourceRevision: number | null; message: string };
 const durationText = (ms: number | null) => ms == null ? "时长未知" : `${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
-export function RenderPicker({ projectId, projectName, timelineId, render, request, close, linked, pendings, putPending, blocked }: {
+export function RenderPicker({ projectId, projectName, timelineId, render, request, close, linked, pendings, putPending, begin, blocked }: {
   projectId: string; projectName: string; timelineId: string; render: RenderV2 | null; request: ProjectRequest; close: () => void; linked: () => void;
   /** 与这条时间线、这一集相关的未决请求（别的时间线的不在这里，也不会被这里清掉）。 */
-  pendings: Pending[]; putPending: (intent: Intent, p: Pending | null) => void; blocked: BlockedSource | null;
+  pendings: Pending[]; putPending: (intent: Intent, p: Pending | null) => void; begin: (intent: Intent) => void; blocked: BlockedSource | null;
 }) {
   const linkPending = pendings.find(p => p.intent.timelineId === timelineId) ?? null;
   const ensurePending = pendings.find(p => p.intent.action === "final-folder-ensure") ?? null;
@@ -51,7 +51,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
   // 原意图（项目、时间线、编号、查询地址）在发出前冻结：没收到答复（断网、5xx、后端说未核清）时只按它核对，不换编号重发；
   // 明确的业务拒绝才放开重新提交。回执身份对不上原意图的，一律当结果不明。
   async function run<R>(label: string, intent: Intent, start: () => Promise<Receipt<R>>, done: (r: Receipt<R>) => void) {
-    setBusy(label); setError(""); setNotice("");
+    begin(intent); setBusy(label); setError(""); setNotice("");
     try {
       const receipt = await settle(request, intent, await start(), () => alive.current);
       if (receipt.status === "completed") { putPending(intent, null); if (alive.current) done(receipt); else if (intent.action === "render-link") linked(); }
@@ -61,6 +61,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
       const err = e as RequestError;
       const unknown = unsettledReceipt(err, intent);
       if (unknown) { putPending(intent, pendingOf(intent, label, unknown)); return; }
+      putPending(intent, null); // 明确的业务拒绝：没有执行，注销
       if (!alive.current) return;
       setError(err.message || "操作失败"); setReload(n => n + 1);
     } finally { if (alive.current) setBusy(""); }

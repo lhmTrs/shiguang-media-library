@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from 
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
 import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
-import { applyPending, emptyPending, type PendingState } from "./pending";
+import { applyPending, beginPending, emptyPending, type PendingState } from "./pending";
 import { pendingOf, RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
 import "./usage.css";
 
@@ -28,6 +28,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   // 保存和清除都只动自己原意图那一格；已结束的请求迟到的回执不再写回（规则见 pending.ts）
   const [pendingState, setPendingState] = useState<PendingState<Pending>>(emptyPending);
   const putPending = (intent: Intent, p: Pending | null) => setPendingState(old => applyPending(old, intent, p));
+  const begin = (intent: Intent) => setPendingState(old => beginPending(old, intent));
   const pendingMap = pendingState.slots;
   const video = useRef<HTMLVideoElement>(null), generation = useRef(0);
   useFeedbackToast(error || renderError, { source: "素材使用" });
@@ -96,7 +97,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     if (!render?.link || !timeline || pending) return;
     if (!window.confirm("解除这条时间线的成片关联？不会删除项目视频，也不影响其他用处。")) return;
     const intent = intentOf("render-unlink", projectId, timeline.id), label = "正在解除成片关联…";
-    setBusy("正在解除…");
+    begin(intent); setBusy("正在解除…");
     try {
       const receipt = await settle(request, intent, await renderApi.unlink(request, projectId, timeline.id, { requestId: intent.requestId, expectedRevision: render.revision }), () => true);
       if (receipt.status === "completed") { putPending(intent, null); setRenderReload(n => n + 1); }
@@ -106,7 +107,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
       const err = e as RequestError;
       const unknown = unsettledReceipt(err, intent);
       if (unknown) putPending(intent, pendingOf(intent, label, unknown));
-      else { setRenderError(err.message); setRenderReload(n => n + 1); }
+      else { putPending(intent, null); setRenderError(err.message); setRenderReload(n => n + 1); }
     }
     finally { setBusy(""); }
   }
@@ -204,6 +205,6 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
       </div>
     </>}
     {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)}
-      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
+      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} begin={begin} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
   </section>;
 }
