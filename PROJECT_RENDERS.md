@@ -46,9 +46,19 @@ RENDER_IN_USE 保护移入废片、移除、覆盖与接受不同内容，包括
 
 界面标题为“此刻时间线上的音效”。t=currentTime-offset；当前区间 start<=t<end，接下来 t<start<=t+10。disabled、retained、位置未知不进入即时清单；未确认的 used=false 不能当成已确认可听。XML/来源版本不匹配时 canSynchronize=false；不改 offset、不拉伸时间。不分析混音或调用模型。
 
-## Schema 2 与显式迁移
+## Schema 2、启动升级与显式离线迁移
 
-唯一 DDL 为 `project_renders.revision INTEGER/BIGINT NOT NULL DEFAULT 1`。新空库可初始化；旧表启动/GET 不 ALTER，旧行读作 revision=1，旧写入须先显式迁移。MySQL 的此列为 BIGINT，时间线自身的 opaque revision 仍为 VARCHAR(36)。
+唯一自动DDL是 `project_renders.revision INTEGER/BIGINT NOT NULL DEFAULT 1`。仅 `server/index.mjs` 的初次服务启动、HTTP接纳写请求之前调用升级模块；普通 `Projects.init`、GET以及运行中切库不自动迁移。新空库照常建表，已有合格列零备份/零DDL；未知列、类型、约束或未核清的旧升级记录降级，不盲改结构。旧payload、ID、行数及关联不转换、不清理，时间线自己的opaque revision仍为VARCHAR(36)。
+
+备份位于数据目录专用 `backups/render-schema-startup/`，目录0700、文件0600。Windows尚未实现相应ACL保证，旧表启动升级保守降级为permission_denied，不写备份或ALTER；新库和已有合格列不受影响。独占文件包含结构、原始行和payload、行数/digest及数据库身份摘要，不含凭据；完整写入、读回校验并fsync文件/目录后才ALTER。限制100000行/64MiB，超过或IO失败先拒，不截断备份或操作原媒体。SQLite使用BEGIN IMMEDIATE有界写锁，在事务内快照、备份、ALTER、核对后提交。MySQL使用原冻结连接GET_LOCK协调加project_renders WRITE表锁，覆盖本次唯一ADD列，禁止START TRANSACTION/USE等破坏窗口操作；真实8.2.0专项验证了ALTER前后均挡非协作写，但不外推其它DDL或MySQL版本。
+
+升级前持久prepared栅栏，只有DDL、原行核对、提交/锁释放和持久完成均确认后才ready。MySQL DDL隐式提交，事后失败/断连保现场与needs_review，不宣称回滚；下次不能因为列已存在吞掉prepared。SQLite即使已回滚也保留真实失败/未知证据。前置失败不执行ALTER，安全摘要按backup_failed/unsupported_schema/busy/permission_denied/verification_failed/unknown_outcome六reason提供，needs_review是state，不是reason。
+
+schema2 GET新增 `writable:boolean`、`details:null|{renderSchemaUpgrade:{state,reason}}`，仅只读投影，不写状态/备份/迁移。正常ready是true/null；未启动评估的旧库是required/unknown_outcome，需重启该实例升级。无法忠实构造成片DTO仍报原错误，不伪造link=null。默认schema1兼容原响应。writable缺失兼容旧后端，不能当所有按钮busy；后端每次关联/解除仍核实际schema、库身份、CAS和journal。
+
+关联/解除的两schema错误，只有原项目/时间线/request/action/规范输入及数据库绑定均匹配且同journal已持久failed，才HTTP200返回原failed终态（含error.details安全摘要）。持久化失败、其它5xx、断连或未知原回执不包装成failed，不换requestId；原请求核对始终保留。
+
+定向作者验证命令（仅全新自有数据）：`node --test tests/render-schema-startup.test.mjs tests/render-schema-http.test.mjs tests/render-startup-app.test.mjs`。原生MySQL专项必须显式运行 `node tests/render-startup-mysql-lock.check.mjs` 与 `node tests/render-startup-mysql-upgrade.check.mjs`，它们自建socket-only数据库并取得正常shutdown回执，不使用系统或现有库；不是普通npm test或CI的隐式依赖。
 
 离线 SQLite，先停止该库的写入并备份整个数据目录（包括完整原库、配置和媒体关联资料），再预演：
 
@@ -57,7 +67,7 @@ node server/project-renders.mjs migrate-sqlite /absolute/test-data/library.sqlit
 node server/project-renders.mjs migrate-sqlite /absolute/test-data/library.sqlite --apply --backup /absolute/backups/renders-before-v2.json
 ```
 
-第二条只有明确授权该库迁移后执行。备份文件必须不存在；写备份后再次比对源行，再 ALTER 并核对 payload 原字节及所有 revision=1。重复调用幂等，不通过启动/GET 隐式执行。程序化入口 `migrateRenderSchema(db,{apply,backupFile})` 同时生成 MySQL BIGINT 预演/执行语句；本批没有真实 MySQL 迁移验证，不能据此声称通过。
+第二条只有明确授权该库迁移后执行。备份文件必须不存在；写备份后再次比对源行，再 ALTER 并核对 payload 原字节及所有 revision=1。重复调用幂等；此离线工具不会被GET或普通init调用，App明确启动入口与它分离。程序化入口 `migrateRenderSchema(db,{apply,backupFile})` 同时生成 MySQL BIGINT 预演/执行语句；离线工具本身不因启动专项通过而获得真实库迁移授权，不能据此直接对现有库操作。
 
 `ProjectRenders.snapshot/validateBackup/restoreRows` 提供严格、带版本的成片元数据导出/导入；schemaVersion=1 旧三列备份补 revision=1，v2 严格检查新列、payload、真实时间线与同项目 sourceId，不覆盖不同已有记录。视频备份继续使用原严格校验，可选 finalFolderId/mediaInfo 不放宽未知 keys；目录跨项目、removed、角色重叠均拒绝。恢复不恢复读取 approvals，所以相同路径也不自动授信。
 

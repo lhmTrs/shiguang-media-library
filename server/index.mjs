@@ -1,4 +1,5 @@
-import {projectRenderRouter} from './project-renders.mjs';
+import {upgradeRenderSchemaAtStartup} from './render-schema-startup.mjs';
+import {projectRenderRouter,validateRenderPayload} from './project-renders.mjs';
 import express from "express";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -121,6 +122,7 @@ lib.onMetadataChanged = (rootId) => manifestSync.touch(rootId);
 const assetFingerprints = new AssetFingerprints(lib);
 const categories = lib.directoryClassification;
 const tags = new Tags(lib).init();
+await upgradeRenderSchemaAtStartup(lib,{dataDir,validatePayload:validateRenderPayload});
 const projects = new Projects(lib).init();
 const projectAssets = new ProjectAssets(lib).init();
 const prompts = new PromptTemplates(lib, { dataDir }).init();

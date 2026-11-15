@@ -1,7 +1,8 @@
+import {renderSchemaStatus} from './render-schema-startup.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {canonical,idOK} from './project-assets/model.mjs';
+import {canonical,idOK,digest} from './project-assets/model.mjs';
 import {usageFail as fail} from './project-videos/action-journal.mjs';
 import {renderFault} from './project-videos/media-info.mjs';
 import express from 'express';
@@ -72,7 +73,7 @@ export class ProjectRenders {
  constructor(projects){this.projects=projects;this.lib=projects.lib;}
  get db(){return this.lib.db;}
  get catalog(){const c=this.lib.storyboardVideos?.catalog;if(!c)fail('RENDER_INFO_UNAVAILABLE','项目视频管理尚未就绪',503);return c;}
- init(){const mysql=this.db.kind==='mysql';this.db.exec(`CREATE TABLE IF NOT EXISTS project_renders (id ${mysql?'VARCHAR(36)':'TEXT'} PRIMARY KEY,project_id ${mysql?'VARCHAR(36)':'TEXT'} NOT NULL,payload ${mysql?'LONGTEXT':'TEXT'} NOT NULL,revision ${mysql?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1)${mysql?' ENGINE=InnoDB':''}`);this.lib.projectRenders=this;return this;}
+ init(){if(!renderSchemaStatus(this.db).writable&&!renderColumns(this.db).length){this.lib.projectRenders=this;return this;}const mysql=this.db.kind==='mysql';this.db.exec(`CREATE TABLE IF NOT EXISTS project_renders (id ${mysql?'VARCHAR(36)':'TEXT'} PRIMARY KEY,project_id ${mysql?'VARCHAR(36)':'TEXT'} NOT NULL,payload ${mysql?'LONGTEXT':'TEXT'} NOT NULL,revision ${mysql?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1)${mysql?' ENGINE=InnoDB':''}`);this.lib.projectRenders=this;return this;}
  validate(projectId,timelineId){this.projects.get(projectId);const t=this.db.prepare('SELECT * FROM project_timelines WHERE project_id=? AND id=?').get(projectId,timelineId);if(!t)fail('TIMELINE_NOT_FOUND','时间线不存在，请重新读取',404);return t;}
  row(projectId,timelineId){return this.db.prepare('SELECT * FROM project_renders WHERE project_id=? AND id=?').get(projectId,timelineId);}
  revision(row){const value=row?(row.revision??1):0;if(!integer(value))fail('RENDER_SCHEMA_UNSUPPORTED','成片修订号不是有效整数',503);return value;}
@@ -104,6 +105,7 @@ export class ProjectRenders {
    result.sync={state,canSynchronize:state==='aligned'};
   }
   if(this.db!==db)fail('LOCAL_INSTANCE_CHANGED','素材库实例已变化',409);
+  if(Number(schema)===2)Object.assign(result,renderSchemaStatus(db));
   return Number(schema)===2?result:link?{path:result.path,offset:result.offset,updatedAt:result.updatedAt}:null;
  }
  async sources(projectId,timelineId,options={}){
@@ -122,13 +124,14 @@ export class ProjectRenders {
   if(Object.keys(input).some(k=>!keys.includes(k))||!integer(input.expectedRevision)||!unlink&&(!idOK(input.sourceId)||!integer(input.expectedSourceRevision)||typeof input.expectedTimelineRevision!=='string'||!input.expectedTimelineRevision||input.expectedTimelineRevision.length>240||!Number.isFinite(input.offset)||Math.abs(input.offset)>86400))fail('INVALID_INPUT','请提供来源、修订号与有限秒数偏移');
   return Object.fromEntries(keys.map(k=>[k,input[k]]));
  }
- requireSchema(){if(!renderColumns(this.db).some(c=>c.name==='revision'))fail('RENDER_SCHEMA_MIGRATION_REQUIRED','旧库需先显式备份并迁移成片修订列',503);}
+ requireSchema(){const state=renderSchemaStatus(this.db);if(!state.writable){const code=state.details.renderSchemaUpgrade.reason==='unsupported_schema'?'RENDER_SCHEMA_UNSUPPORTED':'RENDER_SCHEMA_MIGRATION_REQUIRED';fail(code,'成片资料暂不可写，请核对启动升级状态',503,state.details);}}
  assertRevision(id,tid,n){const current=this.revision(this.row(id,tid));if(current!==n)fail('RENDER_CONFLICT','成片关联已被其他操作更新，请重新读取',409,{currentRevision:current});if(current>=Number.MAX_SAFE_INTEGER)fail('RENDER_CONFLICT','成片修订号已到上限',409);}
  write(id,tid,input,p){this.requireSchema();this.assertRevision(id,tid,input.expectedRevision);const row=this.row(id,tid);if(row){const r=this.db.prepare('UPDATE project_renders SET payload=?,revision=? WHERE project_id=? AND id=? AND revision=?').run(canonical(p),input.expectedRevision+1,id,tid,input.expectedRevision);if(r.changes!==1)fail('RENDER_CONFLICT','成片关联已变化',409);}else{try{this.db.prepare('INSERT INTO project_renders(id,project_id,payload,revision) VALUES(?,?,?,?)').run(tid,id,canonical(p),1);}catch(e){if(['SQLITE_CONSTRAINT_PRIMARYKEY','SQLITE_CONSTRAINT_UNIQUE','ER_DUP_ENTRY'].includes(e.code))fail('RENDER_CONFLICT','成片关联已变化',409);throw e;}}}
  async mutate(id,tid,raw,unlink=false){
   this.validate(id,tid);let input;try{input=this.normalize(raw,unlink);}catch(e){e.accepted=false;e.requestId=idOK(raw?.requestId)?raw.requestId:undefined;throw e;}
   const c=this.catalog,j=c.usageJournal;if(!unlink){try{c.mediaInfo.source(id,input.sourceId);}catch(e){e.accepted=false;e.requestId=input.requestId;throw e;}}
-  return j.start(id,tid,unlink?'render-unlink':'render-link',input,'render:'+tid,async s=>{
+  const admittedDb=this.db,token=c.databaseToken(),action=unlink?'render-unlink':'render-link';
+  try{return await j.start(id,tid,action,input,'render:'+tid,async s=>{
    j.guard(s);this.requireSchema();this.assertRevision(id,tid,input.expectedRevision);const t=this.validate(id,tid);
    let p={schemaVersion:2,link:null,sourceId:null,offset:0,linkedTimelineRevision:null,linkedSourceRevision:null,proof:null,snapshot:null,updatedAt:Date.now()},dto;
    if(!unlink){
@@ -159,7 +162,15 @@ export class ProjectRenders {
     const duration=JSON.parse(current.snapshot).duration;if(!unlink&&Number.isFinite(duration)&&Math.abs(render.video.durationMs/1000-(duration+p.offset))>1)render.sync={state:'duration_mismatch',canSynchronize:false};
     j.complete(s,{render});
    });}finally{if(held)await c.media.release(held.handle);}
-  });
+  });}catch(e){
+   // Only the original, durably failed schema receipt is a 200 terminal result.
+   // No status-code/accepted:false exception for network, storage or other 5xx.
+   if(['RENDER_SCHEMA_MIGRATION_REQUIRED','RENDER_SCHEMA_UNSUPPORTED'].includes(e.code)&&this.db===admittedDb&&c.databaseToken()===token){
+    let stored;try{stored=j.row(id,input.requestId,tid);}catch{throw e;}
+    if(stored.status==='failed'&&stored.action===action&&stored.databaseToken===token&&stored.args===digest({projectId:id,timelineId:tid,action,input})&&stored.error?.code===e.code)return j.dto(stored);
+   }
+   throw e;
+  }
  }
  save(id,tid,input){return this.mutate(id,tid,input);}
  remove(id,tid,input){return this.mutate(id,tid,input,true);}
