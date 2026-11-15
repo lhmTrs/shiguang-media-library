@@ -67,8 +67,6 @@ export function intentOf(action: Receipt["action"], projectId: string, timelineI
   const requestId = newRequestId(), scoped = action === "render-link" || action === "render-unlink" ? timelineId : null;
   return { action, projectId, timelineId: scoped, requestId, statusUrl: scoped ? renderStatusUrl(projectId, scoped, requestId) : operationStatusUrl(projectId, requestId) };
 }
-/** 待核对按「这条时间线」或「这一集的这类操作」分开保存，一处的结果不会删掉另一处。 */
-export const scopeOf = (i: Intent) => i.timelineId ? `timeline:${i.projectId}:${i.timelineId}` : `project:${i.projectId}:${i.action}`;
 export const belongs = (r: Receipt, i: Intent) => r.requestId === i.requestId && r.projectId === i.projectId && (r.timelineId ?? null) === i.timelineId && r.action === i.action;
 export const RECEIPT_MISMATCH = "查到的回执不属于原请求，已忽略；原请求仍待核对。";
 export const NOT_FOUND_YET = "还查不到原请求的回执；这不代表它没有执行，请稍后再核对。";

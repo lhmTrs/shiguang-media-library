@@ -6,7 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
-import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, scopeOf, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
+import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
+import { applyPending, emptyPending, type PendingState } from "./pending";
 import { pendingOf, RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
 import "./usage.css";
 
@@ -24,8 +25,10 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const [t, setT] = useState(0), [playing, setPlaying] = useState(false), [music, setMusic] = useState(true), [overlay, setOverlay] = useState(true), [zoom, setZoom] = useState(1);
   const [picking, setPicking] = useState(false), [mediaFailure, setMediaFailure] = useState<(BlockedSource & { key: string }) | null>(null), [busy, setBusy] = useState("");
   // 未决写请求按范围分开保存（每条时间线一格、每类项目级操作一格），一处的结果不会覆盖或删掉另一处
-  const [pendingMap, setPendingMap] = useState<Record<string, Pending>>({});
-  const putPending = (intent: Intent, p: Pending | null) => setPendingMap(old => { const key = scopeOf(intent), next = { ...old }; if (p) next[key] = p; else if (old[key]?.intent.requestId === intent.requestId) delete next[key]; return next; });
+  // 保存和清除都只动自己原意图那一格；已结束的请求迟到的回执不再写回（规则见 pending.ts）
+  const [pendingState, setPendingState] = useState<PendingState<Pending>>(emptyPending);
+  const putPending = (intent: Intent, p: Pending | null) => setPendingState(old => applyPending(old, intent, p));
+  const pendingMap = pendingState.slots;
   const video = useRef<HTMLVideoElement>(null), generation = useRef(0);
   useFeedbackToast(error || renderError, { source: "素材使用" });
 
