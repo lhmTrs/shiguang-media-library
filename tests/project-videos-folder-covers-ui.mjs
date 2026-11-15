@@ -50,7 +50,9 @@ try {
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await context.route(u => { const p = new URL(u).pathname; return p === `/api/project-videos/projects/${projectId}`; }, async route => {
     const response = await route.fetch(); const json = await response.json();
-    if (patch) json.folders = json.folders.map(f => patch[f.name] ? { ...f, ...patch[f.name] } : f);
+    // patch='legacy'：模拟旧后端（去掉两个字段）；对象：按名字替换；null：真实后端原样
+    if (patch === 'legacy') json.folders = json.folders.map(({ videoCount, covers, ...f }) => f);
+    else if (patch) json.folders = json.folders.map(f => patch[f.name] ? { ...f, ...patch[f.name] } : f);
     return route.fulfill({ response, json });
   });
   await context.route(u => /^\/api\/media\/fake-\d\/thumb$/.test(new URL(u).pathname), r => r.fulfill({ status: 200, contentType: 'image/png', body: PNG }));
@@ -58,7 +60,7 @@ try {
   const open = async () => { await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId); await expect(folderCard('A')).toBeVisible(); };
 
   await check('F1 旧后端（无 videoCount/covers）：卡片照旧显示位置和文件夹图标；根目录有子文件夹时不显示「当前目录还没有视频」', async () => {
-    patch = null; await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
+    patch = 'legacy'; await page.goto(origin + '/#/project-videos'); await expect(work()).toBeVisible(); await selectProjectInBar(page, projectId);
     await work().getByRole('navigation', { name: /视频文件夹/ }).getByRole('button', { name: '项目根目录', exact: true }).click();
     await expect(folderCard('A')).toBeVisible();
     await expect(folderCard('A')).toContainText('位于项目根目录');
@@ -91,11 +93,28 @@ try {
     await expect(folderCard('A')).toContainText('5 个视频');
   });
   await check('F4 进入有视频的文件夹后搜索无结果：仍提示「没有符合筛选条件的视频」', async () => {
-    patch = null; await page.reload();
+    patch = 'legacy'; await page.reload();
     await work().getByRole('navigation', { name: /视频文件夹/ }).getByRole('button', { name: '项目根目录', exact: true }).click();
     await folderCard('A').click();
     await work().getByRole('searchbox', { name: '搜索视频' }).fill('不存在的名字');
     await expect(work().getByText('没有符合筛选条件的视频')).toBeVisible();
+  });
+  await check('F5 真实后端字段（不替身）：A 含子文件夹共 2 个视频、两张真实封面；空文件夹 B 写「还没有视频」', async () => {
+    // A 里已有 1 个视频；再建 A/A1 放 1 个，A 应显示 2 个（含子文件夹）
+    const sub = await api(pv('/folders'), { requestId: crypto.randomUUID(), parentId: F.A, name: 'A1' });
+    const A1 = sub.folder?.id || sub.id || sub.folderId || (await api(pv('?folderId=all'))).folders.find(f => f.name === 'A1').id;
+    const rid = crypto.randomUUID();
+    await api(pv('/imports'), { requestId: rid, folderId: A1, fileName: '子目录.mp4', bytes: bytes.length, prompt: { mode: 'none' } });
+    assert.equal((await api(pv(`/imports/${rid}/content`), bytes, 'PUT')).status, 'ready');
+    const real = (await api(pv('?folderId=root'))).folders;
+    assert.equal(real.find(f => f.name === 'A').videoCount, 2, JSON.stringify(real.find(f => f.name === 'A')));
+    patch = null; await page.reload();
+    await work().getByRole('navigation', { name: /视频文件夹/ }).getByRole('button', { name: '项目根目录', exact: true }).click();
+    await expect(folderCard('A')).toContainText('2 个视频');
+    await expect(folderCard('A').locator('img.pv-folder-cover')).toHaveCount(2);
+    await expect.poll(() => folderCard('A').locator('img.pv-folder-cover').evaluateAll(xs => xs.every(x => x.complete && x.naturalWidth > 0)), { timeout: 20000 }).toBe(true);
+    await expect(folderCard('B')).toContainText('还没有视频');
+    await shot('f5-real');
   });
   assert.deepEqual(errors, []);
   passed = true;
