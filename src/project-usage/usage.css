@@ -10,13 +10,15 @@
 .usage-render-status[data-tone="none"] { background: var(--soft); color: var(--muted); }
 .usage-busy { font-size: 12px; color: var(--muted); }
 
-.usage-stage { display: flex; flex-wrap: wrap; gap: 12px; }
-.usage-player { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); }
-.usage-video-frame { position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; max-height: min(400px, 46vh); }
-.usage-video-frame video { width: 100%; height: 100%; display: block; object-fit: contain; }
+/* 右侧固定约 400 宽，播放区占剩下的；播放框高度上限一致，换横屏 / 竖屏成片时下面的轨道不动 */
+.usage-stage { --usage-frame-h: min(520px, 60vh); display: flex; flex-wrap: wrap; gap: 12px; }
+.usage-player { flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); }
+.usage-video-frame { position: relative; border-radius: 8px; overflow: hidden; background: var(--soft); width: 100%; aspect-ratio: 16 / 9; max-height: var(--usage-frame-h); }
+.usage-video-frame[data-orient="portrait"] { aspect-ratio: auto; height: var(--usage-frame-h); }
+.usage-video-frame video { width: 100%; height: 100%; display: block; object-fit: contain; background: transparent; }
 .usage-overlay { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
 .usage-overlay span { padding: 3px 9px; border-radius: 6px; background: rgba(0, 0, 0, .64); color: #fff; font-size: 13px; }
-.usage-player-empty { aspect-ratio: 16 / 9; max-height: min(400px, 46vh); box-sizing: border-box; padding: 24px; border-radius: 8px; border: 1px dashed var(--line); background: var(--soft); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.usage-player-empty { aspect-ratio: 16 / 9; max-height: var(--usage-frame-h); box-sizing: border-box; padding: 24px; border-radius: 8px; border: 1px dashed var(--line); background: var(--soft); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; font-size: 13px; color: var(--muted); }
 .usage-player-empty strong { font-size: 16px; color: var(--c-24292c); }
 .usage-player-empty code { max-width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--c-fff); border: 1px solid var(--line); font-size: 12px; word-break: break-all; color: var(--c-24292c); }
 .usage-player-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -27,21 +29,30 @@
 .usage-play:disabled { opacity: .45; cursor: not-allowed; }
 .usage-clock { font-variant-numeric: tabular-nums; color: var(--muted); }
 
-.usage-now { flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.usage-now { flex: 1 0 360px; max-width: 400px; min-width: 0; min-height: 320px; box-sizing: border-box; position: relative; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); font-size: 13px; }
+/* 内容绝对定位：右侧高度只跟播放器走，条目多少不改变整行高度 */
+.usage-now-inner { position: absolute; inset: 12px 14px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.usage-now-list { flex: none; max-height: 48%; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.usage-next-list { flex: 1 1 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .usage-now-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .usage-now h3, .usage-tracks h3 { margin: 0; font-size: 14px; }
 .usage-now h4 { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 .usage-now-head span { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
-.usage-now-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--green) 8%, var(--c-fff)); border: 1px solid color-mix(in srgb, var(--green) 26%, var(--c-fff)); }
+.usage-now-item { flex: none; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--green) 8%, var(--c-fff)); border: 1px solid color-mix(in srgb, var(--green) 26%, var(--c-fff)); }
 .usage-now-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.usage-now-item span { font-size: 12px; color: var(--muted); }
+.usage-now-item span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-next-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px dashed var(--line); background: var(--c-fff); color: var(--c-24292c); text-align: left; cursor: pointer; font-size: 13px; }
 .usage-next-item span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-next-item span:last-child { color: var(--muted); font-size: 12px; }
 .usage-next-in { flex: none; color: var(--green); font-weight: 600; font-variant-numeric: tabular-nums; font-size: 12px; }
 .usage-muted { margin: 0; color: var(--muted); font-size: 13px; }
 .usage-note { margin: 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--c-8a6a3a) 12%, var(--c-fff)); color: var(--c-8a6a3a); font-size: 12px; line-height: 1.6; }
-.usage-hint { margin: auto 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.usage-hint { flex: none; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-menu { position: fixed; z-index: 60; min-width: 200px; max-width: 240px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--c-fff); box-shadow: 0 8px 24px rgba(0, 0, 0, .16); display: flex; flex-direction: column; }
+.usage-menu button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--c-24292c); font-size: 13px; text-align: left; cursor: pointer; }
+.usage-menu button:hover:not(:disabled), .usage-menu button:focus-visible { background: var(--soft); outline: none; }
+.usage-menu button:disabled { color: var(--muted); cursor: not-allowed; }
+.usage-menu small { padding: 4px 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .usage-tracks { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--c-fff); }
 .usage-tracks-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }

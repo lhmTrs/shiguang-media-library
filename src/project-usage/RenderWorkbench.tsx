@@ -2,13 +2,14 @@
 // 同步规则：t = video.currentTime − offset（秒）；此刻 start ≤ t < end；接下来 t < start ≤ t + 10；
 // 排除已禁用/静音、上次导入保留和位置未知的引用；成片与时间线未确认匹配时不做自动对照（不高亮、不浮层、不列此刻/接下来）；
 // t < 0（成片片头）或超出时间线时也不列，不钳成首尾段。浏览器实际播放失败按「来源+修订」记住，轻量 GET 不会把它清掉。
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
 import { checkOriginal, clock, intentOf, reasonOf, renderApi, renderStatus, settle, unsettledReceipt, type Intent, type RenderV2, type RequestError } from "./render";
 import { applyPending, beginPending, emptyPending, type PendingState } from "./pending";
 import { pendingOf, RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
+import { UsageMenu, type MenuTarget } from "./UsageMenu";
 import "./usage.css";
 
 export type Occurrence = { occurrenceId?: string; clipId?: string; clipName?: string; track: number; start: number | null; end: number | null; disabled?: boolean };
@@ -23,6 +24,9 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const [loading, setLoading] = useState(true), [error, setError] = useState(""), [reload, setReload] = useState(0);
   const [render, setRender] = useState<RenderV2 | null>(null), [renderError, setRenderError] = useState(""), [renderReload, setRenderReload] = useState(0);
   const [t, setT] = useState(0), [playing, setPlaying] = useState(false), [music, setMusic] = useState(true), [overlay, setOverlay] = useState(true), [zoom, setZoom] = useState(1);
+  // 视频真实宽高比（读到元数据后以它为准）；播放框据此决定横 / 竖
+  const [videoRatio, setVideoRatio] = useState<number | null>(null), [menu, setMenu] = useState<MenuTarget | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const [picking, setPicking] = useState(false), [mediaFailure, setMediaFailure] = useState<(BlockedSource & { key: string }) | null>(null), [busy, setBusy] = useState("");
   // 未决写请求按范围分开保存（每条时间线一格、每类项目级操作一格），一处的结果不会覆盖或删掉另一处
   // 保存和清除都只动自己原意图那一格；已结束的请求迟到的回执不再写回（规则见 pending.ts）
@@ -43,7 +47,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
 
   useEffect(() => {
     if (!timelineId) { setRender(null); return; }
-    const g = ++generation.current; setRenderError("");
+    const g = ++generation.current; setRenderError(""); setVideoRatio(null);
     renderApi.get(request, projectId, timelineId).then(r => { if (g === generation.current) setRender(r); })
       .catch(e => { if (g === generation.current) { setRender(null); setRenderError((e as Error).message); } });
   }, [projectId, timelineId, request, renderReload, revision]);
@@ -91,6 +95,15 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     seek(target ? target.start : 0);
   };
   const toggle = () => { const v = video.current; if (!v) return; if (v.paused) { stopAudio(); void v.play().catch(() => {}); } else v.pause(); };
+  // 播放框：竖屏（宽高比 < 1）固定高度、宽度随比例；横屏宽度占满、按比例算高度，二者都有同一个高度上限
+  const knownRatio = videoRatio ?? (render?.video?.width && render.video.height ? render.video.width / render.video.height : null);
+  const ratio = knownRatio && Number.isFinite(knownRatio) && knownRatio > 0 ? knownRatio : 16 / 9, portrait = ratio < 1;
+  const openMenu = (e: React.MouseEvent<HTMLElement>, c: Clip) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, name: c.ref.name, assetId: c.ref.assetId, returnFocus: e.currentTarget }); };
+  const menuKey = (e: React.KeyboardEvent<HTMLElement>, c: Clip) => {
+    if (e.key !== "ContextMenu" && !(e.key === "F10" && e.shiftKey)) return;
+    e.preventDefault(); const r = e.currentTarget.getBoundingClientRect();
+    setMenu({ x: r.left + 12, y: r.bottom, name: c.ref.name, assetId: c.ref.assetId, returnFocus: e.currentTarget });
+  };
   const status = mediaError ? { tone: "warn" as const, text: mediaError } : renderStatus(render);
 
   async function unlink() {
@@ -143,10 +156,10 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
 
       <div className="usage-stage">
         <div className="usage-player">
-          {playable ? <div className="usage-video-frame">
+          {playable ? <div className="usage-video-frame" data-orient={portrait ? "portrait" : "landscape"} style={{ aspectRatio: portrait ? undefined : String(ratio) }}>
             <video ref={video} key={render!.playback.mediaUrl!} src={render!.playback.mediaUrl!} preload="metadata" aria-label={`成片：${render!.name ?? ""}`}
               onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-              onLoadedMetadata={e => { e.currentTarget.currentTime = Math.max(0, t + offset); }}
+              onLoadedMetadata={e => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoRatio(v.videoWidth / v.videoHeight); v.currentTime = Math.max(0, t + offset); }}
               onTimeUpdate={e => setT(e.currentTarget.currentTime - offset)}
               onError={e => { const code = e.currentTarget.error?.code; setPlaying(false); setMediaFailure({ key: mediaKey, sourceId: render!.sourceId ?? "", sourceRevision: render!.sourceRevision, message: code === 4 ? "当前浏览器无法播放这个成片" : "成片读取失败" }); setRenderReload(n => n + 1); }} />
             {overlay && canSync && now.length > 0 && <div className="usage-overlay" aria-hidden="true">{now.map(c => <span key={c.key}>{c.ref.name}</span>)}</div>}
@@ -169,22 +182,24 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
           </div>
         </div>
 
-        <aside className="usage-now" aria-label="此刻时间线上的音效">
+        <aside className="usage-now" aria-label="此刻时间线上的音效"><div className="usage-now-inner">
           <div className="usage-now-head"><h3>此刻时间线上的音效</h3><span>{clock(t)}</span></div>
           {canSync && t < 0 && <p className="usage-note" role="note">成片还在片头，时间线还没开始。</p>}
           {canSync && t > duration && <p className="usage-note" role="note">已过时间线结尾。</p>}
           {render?.link && playable && !render.sync.canSynchronize && <p className="usage-note" role="note">{render.sync.state === "timeline_changed" ? "时间线重新导入过，成片和新时间线还没确认是否对得上，暂不自动对照。" : "成片和时间线还没确认对得上，暂不自动对照。"}可以点下方轨道查看每段位置。</p>}
-          {now.length ? now.map(c => <div className="usage-now-item" key={c.key}>
-            <strong title={c.ref.name}>{c.ref.name}</strong>
-            <span>{c.ref.kind === "music" ? "音乐" : "音效"} · A{c.occ.track} · {clock(c.start)}–{clock(c.end)}</span>
-            <span>本集共用 {uses.get(c.ref.key || c.ref.name) ?? 1} 次{c.ref.used ? "" : " · 待确认"}</span>
-          </div>) : <p className="usage-muted">这一刻时间线上没有音效</p>}
+          {/* 此刻在上、接下来在下；右侧与播放器同高，条目多了各自在框里滚动，不把下面的轨道推上推下 */}
+          <div className="usage-now-list">{now.length ? now.map(c => {
+            const meta = `${c.ref.kind === "music" ? "音乐" : "音效"} · A${c.occ.track} · ${clock(c.start)}–${clock(c.end)} · 本集共用 ${uses.get(c.ref.key || c.ref.name) ?? 1} 次${c.ref.used ? "" : " · 待确认"}`;
+            return <div className="usage-now-item" key={c.key} tabIndex={0} title={`${c.ref.name}\n${meta}`} onContextMenu={e => openMenu(e, c)} onKeyDown={e => menuKey(e, c)}>
+              <strong>{c.ref.name}</strong><span>{meta}</span>
+            </div>;
+          }) : <p className="usage-muted">这一刻时间线上没有音效</p>}</div>
           <h4>接下来 {AHEAD} 秒</h4>
-          {next.length ? next.map(c => <button type="button" className="usage-next-item" key={c.key} onClick={() => seek(c.start)}>
-            <span className="usage-next-in">{(c.start - t).toFixed(1)} 秒后</span><span title={c.ref.name}>{c.ref.name}</span><span>A{c.occ.track}</span>
-          </button>) : <p className="usage-muted">没有新的音效</p>}
-          <p className="usage-hint">按时间线推定，看不出混音、音量变化和嵌套片段。{unknownCount ? `另有 ${unknownCount} 处引用缺少位置。` : ""}</p>
-        </aside>
+          <div className="usage-next-list">{next.length ? next.map(c => <button type="button" className="usage-next-item" key={c.key} title={c.ref.name} onClick={() => seek(c.start)} onContextMenu={e => openMenu(e, c)} onKeyDown={e => menuKey(e, c)}>
+            <span className="usage-next-in">{(c.start - t).toFixed(1)} 秒后</span><span>{c.ref.name}</span><span>A{c.occ.track}</span>
+          </button>) : <p className="usage-muted">没有新的音效</p>}</div>
+          <p className="usage-hint" title={`按时间线推定，看不出混音、音量变化和嵌套片段。${unknownCount ? `另有 ${unknownCount} 处引用缺少位置。` : ""}`}>按时间线推定，不含混音和音量变化{unknownCount ? ` · 另有 ${unknownCount} 处引用缺少位置` : ""}</p>
+        </div></aside>
       </div>
 
       <div className="usage-tracks">
@@ -196,7 +211,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
               return <button type="button" key={c.key} className="usage-clip" data-kind={c.ref.kind} data-muted={!!c.occ.disabled} data-confirmed={c.ref.used && !c.occ.disabled} data-active={active}
                 style={{ left: `${Math.min(100, c.start / duration * 100)}%`, width: `${Math.max(0, Math.min(duration, c.end) - c.start) / duration * 100}%` }}
                 aria-label={`${c.ref.name}，A${track}，${clock(c.start)} 至 ${clock(c.end)}${c.occ.disabled ? "，已禁用或静音" : !c.ref.used ? "，待确认" : ""}`}
-                onClick={() => seek(c.start)}><span>{c.ref.name}</span></button>;
+                onClick={() => seek(c.start)} onContextMenu={e => openMenu(e, c)} onKeyDown={e => menuKey(e, c)}><span>{c.ref.name}</span></button>;
             })}
           </div></div>)}
           <div className="usage-playhead" aria-hidden="true" style={{ left: `calc(56px + (100% - 56px) * ${Math.min(1, Math.max(0, t / duration))})` }} />
@@ -204,6 +219,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
         <div className="usage-legend"><span><i />音效 · 已确认</span><span><i className="music" />音乐</span><span><i className="soft" />待确认 / 已禁用或静音</span>{(timeline.warnings ?? []).slice(0, 1).map(w => <span key={w} className="usage-warning">{w}</span>)}</div>
       </div>
     </>}
+    {menu && <UsageMenu target={menu} request={request} close={closeMenu} />}
     {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)}
       linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pendings={pickerPendings} putPending={putPending} begin={begin} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
   </section>;
