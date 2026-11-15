@@ -135,6 +135,17 @@ try{
   await more.click();await expect(menu).toBeVisible();await app.locator('.prompt-preview pre').click();await expect(menu).toHaveCount(0);
   await more.click();await menu.getByRole('menuitem',{name:'历史版本'}).click();await expect(page.getByRole('dialog',{name:'模板历史版本'})).toBeVisible();await expect(menu).toHaveCount(0);await page.getByRole('button',{name:'关闭面板'}).click();await expect(more).toBeFocused();
   for(const width of [1024,760]){await page.setViewportSize({width,height:900});await more.click();const r=await menu.boundingBox();assert.ok(r&&r.x>=0&&r.x+r.width<=width,'menu fits at '+width);await page.keyboard.press('Escape');}
+  // 顶部复制按钮在默认横向位置完整可见：按每个会裁切的祖先和视口求交，并命中点测按钮右缘；主区不得横向溢出
+  const fullyVisible=loc=>loc.evaluate(el=>{const main=document.querySelector('.prompt-main');el.scrollIntoView({block:'center',inline:'nearest'});const r=el.getBoundingClientRect(),problems=[];
+   if(main.scrollLeft!==0)problems.push('main scrolled '+main.scrollLeft);if(main.scrollWidth>main.clientWidth+1)problems.push('main overflow '+main.scrollWidth+'>'+main.clientWidth);
+   if(r.left<0||r.right>innerWidth||r.top<0||r.bottom>innerHeight)problems.push('viewport');
+   for(let p=el.parentElement;p;p=p.parentElement){const c=getComputedStyle(p);if(/auto|scroll|hidden|clip/.test(c.overflowX+' '+c.overflowY)){const q=p.getBoundingClientRect();if(r.left<q.left-.5||r.right>q.right+.5||r.top<q.top-.5||r.bottom>q.bottom+.5)problems.push('clipped by '+p.className)}}
+   for(const x of [r.left+3,r.right-3]){const hit=document.elementFromPoint(x,r.top+r.height/2);if(!hit||!el.contains(hit))problems.push('hit '+x)}return problems;});
+  await clearToasts();
+  for(const width of [1440,1024,760]){await page.setViewportSize({width,height:900});await expect(fillTab).toHaveAttribute('aria-selected','true');await page.locator('.prompt-main').evaluate(m=>{m.scrollTop=0;m.scrollLeft=0});
+   assert.deepEqual(await fullyVisible(topCopy),[],'header copy fully visible at '+width);assert.deepEqual(await fullyVisible(bottomCopy),[],'bottom copy fully visible at '+width);await expect(topCopy).toBeEnabled();
+   await page.locator('.prompt-main').evaluate(m=>{m.scrollTop=0});await page.screenshot({path:path.join(evidence,'prompt-copy-'+width+'.png')});}
+  await page.evaluate(()=>{window.__copied=[]});await topCopy.click();assert.equal((await page.evaluate(()=>window.__copied)).length,1);
   await page.setViewportSize({width:1440,height:900});await page.screenshot({path:path.join(evidence,'prompt-tab-fill.png')});
  });
  await context.close();passed=true;

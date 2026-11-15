@@ -20,3 +20,7 @@
 .prompt-tabs{display:flex;gap:4px;margin:2px 0 18px;border-bottom:1px solid var(--line)}.prompt-workspace .prompt-tabs button{gap:7px;padding:9px 16px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font-size:13px;border-radius:0}.prompt-workspace .prompt-tabs button:hover{color:var(--c-24292c)}.prompt-workspace .prompt-tabs button[aria-selected=true]{color:var(--c-24292c);font-weight:600;border-bottom-color:var(--green)}
 .prompt-tab-badge{font-size:11px;font-weight:500;line-height:1;padding:3px 7px;border-radius:9px;background:var(--c-fdf3e2);color:var(--c-b17c53)}
 .prompt-workspace [role=tabpanel][hidden],.prompt-codex-panel[hidden]{display:none!important}.prompt-codex-panel[role=tabpanel] .codex-chat{margin-top:0}
+/* 按主区实际宽度（不是窗口宽度）收缩：侧栏、模板栏展开时 1024 宽也不横向溢出，顶部复制按钮完整可见 */
+.prompt-main{container:prompt-main/inline-size}.prompt-preview header{flex-wrap:wrap;row-gap:8px}.prompt-preview-tools{flex-wrap:wrap;margin-left:auto}
+@container prompt-main (max-width:700px){.prompt-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.prompt-form header,.prompt-preview header{padding:14px 15px}}
+@container prompt-main (max-width:520px){.prompt-grid{grid-template-columns:minmax(0,1fr)}.prompt-preview{position:static}}
