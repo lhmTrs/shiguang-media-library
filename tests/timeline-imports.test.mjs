@@ -68,7 +68,8 @@ test("overview includes all timeline references independent of project list filt
 });
 test("legacy renders remain identity-checked read-only records and timeline removal releases them",async t=>{
   const {projects,project,preview,apply}=setup(t),timeline=apply(preview());
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"shiguang-render-test-"));
+  // The old save() persisted fs.realpath(input.path), including an aliased TMPDIR.
+  const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),"shiguang-render-test-")));
   const file=path.join(dir,"legacy.mp4");await fs.writeFile(file,"synthetic legacy placeholder");
   const media=new VideoMedia();projects.lib.storyboardVideos={catalog:{media}};t.after(()=>media.close());
   assert.equal(await projects.renders.get(project.id,timeline.timelineId),null);
@@ -79,6 +80,29 @@ test("legacy renders remain identity-checked read-only records and timeline remo
   const opened=await projects.renders.open(project.id,timeline.timelineId);assert.equal((await opened.handle.readFile()).toString(),"synthetic legacy placeholder");await media.release(opened.handle);
   await fs.rename(file,file+'-old');await fs.writeFile(file,'replacement');await assert.rejects(projects.renders.open(project.id,timeline.timelineId),{code:'RENDER_LEGACY_REVIEW_REQUIRED'});
   projects.imports.undo(project.id,timeline.batchId);assert.equal(projects.lib.db.prepare('SELECT COUNT(*) n FROM project_renders').get().n,0);assert.equal(await fs.readFile(file,'utf8'),'replacement');
+});
+
+test("legacy canonical targets survive input-alias retarget but reject saved leaf and parent symlink replacement",async t=>{
+  const {db,projects,project,preview,apply}=setup(t),timeline=apply(preview());
+  const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),"shiguang-legacy-alias-"))),first=path.join(dir,"first"),second=path.join(dir,"second"),alias=path.join(dir,"selected-alias");
+  await fs.mkdir(first);await fs.mkdir(second);await fs.writeFile(path.join(first,"legacy.mp4"),"synthetic original");await fs.writeFile(path.join(second,"legacy.mp4"),"synthetic retarget");await fs.symlink(first,alias,"dir");
+  // Reproduce old save's persisted target, not the user's unresolved selection.
+  const selected=path.join(alias,"legacy.mp4"),file=await fs.realpath(selected),st=await fs.stat(file);
+  assert.notEqual(file,selected);
+  const payload=JSON.stringify({path:file,offset:0,dev:String(st.dev),ino:String(st.ino),size:st.size,mtime:st.mtimeMs,updatedAt:Date.now()});
+  db.prepare('INSERT INTO project_renders(id,project_id,payload,revision) VALUES(?,?,?,?)').run(timeline.timelineId,project.id,payload,1);
+  const media=new VideoMedia();projects.lib.storyboardVideos={catalog:{media}};
+  t.after(async()=>{await media.close();assert.equal(media.handles.size,0);assert.equal(media.children.size,0);assert.equal(media.exits.size,0);assert.equal(media.responses.size,0);});
+  const read=async()=>{const opened=await projects.renders.open(project.id,timeline.timelineId);try{assert.equal(opened.path,file);assert.equal((await opened.handle.readFile()).toString(),"synthetic original");}finally{await media.release(opened.handle);}};
+  await read();await fs.unlink(alias);await fs.symlink(second,alias,"dir");await read();
+  assert.equal(db.prepare('SELECT payload FROM project_renders WHERE id=?').get(timeline.timelineId).payload,payload);
+  await fs.rename(file,file+"-original");await fs.symlink(file+"-original",file,"file");
+  await assert.rejects(projects.renders.open(project.id,timeline.timelineId),{code:'RENDER_LEGACY_REVIEW_REQUIRED'});assert.equal(media.handles.size,0);
+  await fs.unlink(file);await fs.rename(file+"-original",file);
+  // Even the original inode behind a newly introduced parent symlink is refused.
+  await fs.rename(first,first+"-original");await fs.symlink(first+"-original",first,"dir");assert.equal(String((await fs.stat(file)).ino),String(st.ino));
+  await assert.rejects(projects.renders.open(project.id,timeline.timelineId),{code:'RENDER_SOURCE_REVIEW_REQUIRED'});assert.equal(media.handles.size,0);
+  await fs.unlink(first);await fs.rename(first+"-original",first);await read();
 });
 
 test("preview is read-only; confirmation idempotent, multi-timeline union and scoped removals",t=>{
