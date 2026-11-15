@@ -85,12 +85,22 @@ try {
     await expect(work().getByText('当前目录还没有视频')).toHaveCount(0);
     await shot('f2-covers');
   });
-  await check('F3 封面加载失败：只隐藏那一张，数量和 +N 不变，不把文件夹当空', async () => {
-    patch = { A: { videoCount: 5, covers: covers(3, true) } };
+  await check('F3 封面加载失败：失败那张原位显示占位，槽位、数量和 +N 都不变；全部失败也不退回普通图标', async () => {
+    patch = { A: { videoCount: 5, covers: covers(3, true) }, B: { videoCount: 4, covers: [0, 1, 2].map(i => ({ videoId: `x${i}`, thumbnailUrl: '/api/media/broken/thumb' })) } };
     await page.reload(); await work().getByRole('navigation', { name: /视频文件夹/ }).getByRole('button', { name: '项目根目录', exact: true }).click();
+    // 单张失败：3 个槽位 = 2 张图 + 1 个占位，+2、5 个视频
+    await expect(folderCard('A').locator('.pv-folder-cover')).toHaveCount(3);
     await expect(folderCard('A').locator('img.pv-folder-cover')).toHaveCount(2);
+    await expect(folderCard('A').locator('.pv-folder-cover-missing')).toHaveCount(1);
+    await expect(folderCard('A').locator('.pv-folder-cover').first()).toHaveClass(/pv-folder-cover-missing/);
     await expect(folderCard('A').locator('.pv-folder-more')).toHaveText('+2');
     await expect(folderCard('A')).toContainText('5 个视频');
+    // 全部失败：3 个占位、+1、4 个视频，不变成普通文件夹图标
+    await expect(folderCard('B').locator('.pv-folder-cover-missing')).toHaveCount(3);
+    await expect(folderCard('B').locator('.pv-folder-more')).toHaveText('+1');
+    await expect(folderCard('B')).toContainText('4 个视频');
+    await expect(folderCard('B').locator('.pv-folder-visual > svg.lucide-folder')).toHaveCount(0);
+    await shot('f3-broken');
   });
   await check('F4 进入有视频的文件夹后搜索无结果：仍提示「没有符合筛选条件的视频」', async () => {
     patch = 'legacy'; await page.reload();

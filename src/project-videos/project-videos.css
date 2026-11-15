@@ -390,6 +390,7 @@
 .pv-folder-covers .pv-folder-cover[data-n="3"][data-i="1"] { z-index: 2; transform: translate(-50%, -50%); }
 .pv-folder-covers .pv-folder-cover[data-n="3"][data-i="2"] { z-index: 3; transform: translate(-28%, -60%); }
 .pv-folder-visual .pv-folder-more { z-index: 4; }
+.pv-folder-covers .pv-folder-cover-missing { display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--soft); }
 .pv-folder-more { position: absolute; left: 12px; bottom: 10px; padding: 1px 8px; border-radius: 10px; background: rgba(36, 41, 44, .78); color: #fff; font-size: 12px; font-weight: 600; }
 .pv-folder-card-hint { color: var(--muted); font-size: 11px; line-height: 1.6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pv-folder-card:hover .pv-folder-enter, .pv-folder-card:focus-visible .pv-folder-enter { color: var(--green); }
