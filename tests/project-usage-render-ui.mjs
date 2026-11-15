@@ -17,6 +17,10 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'usage-render-'));
 const videoFile = path.join(temp, 'render.mp4');
 execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25:duration=60', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoFile]);
 const videoBytes = await fs.readFile(videoFile);
+// 竖屏成片（9:16）：验证播放框按视频比例变窄变高
+const portraitFile = path.join(temp, 'portrait.mp4');
+execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=180x320:rate=25:duration=60', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', portraitFile]);
+const portraitBytes = await fs.readFile(portraitFile);
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r)); const origin = 'http://127.0.0.1:' + port;
 let logs = '', browser, page, cookie, token, passed = false; const errors = [], checks = [];
 const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal'), CODEX_HOME: path.join(temp, 'no-codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -40,16 +44,19 @@ const ownReceipt = (body, {rid, tid}) => !body || !body.action ? body : { ...bod
 const OTHER_TID = '20000000-0000-4000-8000-000000000099', OTHER_RID = '30000000-0000-4000-8000-000000000098';
 const foreign = body => ({ ...body, requestId: OTHER_RID, timelineId: OTHER_TID, statusUrl: `/api/projects/${PID}/timelines/${OTHER_TID}/render/requests/${OTHER_RID}` });
 const TID2 = '20000000-0000-4000-8000-000000000002';
+// 加一段没对上素材库的引用（assetId null）：右键时「在访达中显示」应置灰
+const noAssetOverview = () => { const body = caseBody('overview-ready'); body.timelines[0].references.push({ assetId: null, key: 'loose', name: '未对上素材库.wav', kind: 'sfx', used: false, retained: false, occurrences: [{ occurrenceId: 'loose-1', track: 2, start: 30, end: 31, disabled: false }] }); return body; };
 const twoOverview = () => { const body = caseBody('overview-ready'); body.timelines.push({ ...structuredClone(body.timelines[0]), id: TID2, name: '合成第二条时间线' }); return body; };
 async function installMocks() {
   const ctx = page.context();
   const at = (u, re) => re.test(new URL(u).pathname);
-  await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timeline-overview$/), r => r.fulfill({ json: fake.overview === 'overview-early' ? earlyOverview() : fake.overview === 'overview-two' ? twoOverview() : caseBody(fake.overview) }));
+  await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timeline-overview$/), r => r.fulfill({ json: fake.overview === 'overview-early' ? earlyOverview() : fake.overview === 'overview-two' ? twoOverview() : fake.overview === 'overview-noasset' ? noAssetOverview() : caseBody(fake.overview) }));
   await ctx.route(u => at(u, /\/render\/media$/), r => {
     // 真实后端 sendMedia 支持 Range；替身也按 Range 回 206，浏览器才能跳转
+    const bytes = fake.portrait ? portraitBytes : videoBytes;
     const m = /bytes=(\d+)-(\d*)/.exec(r.request().headers().range || '');
-    const start = m ? Number(m[1]) : 0, end = m && m[2] ? Math.min(Number(m[2]), videoBytes.length - 1) : videoBytes.length - 1;
-    return r.fulfill({ status: m ? 206 : 200, headers: { 'content-type': 'video/mp4', 'accept-ranges': 'bytes', 'content-length': String(end - start + 1), ...(m ? { 'content-range': `bytes ${start}-${end}/${videoBytes.length}` } : {}) }, body: videoBytes.subarray(start, end + 1) });
+    const start = m ? Number(m[1]) : 0, end = m && m[2] ? Math.min(Number(m[2]), bytes.length - 1) : bytes.length - 1;
+    return r.fulfill({ status: m ? 206 : 200, headers: { 'content-type': 'video/mp4', 'accept-ranges': 'bytes', 'content-length': String(end - start + 1), ...(m ? { 'content-range': `bytes ${start}-${end}/${bytes.length}` } : {}) }, body: bytes.subarray(start, end + 1) });
   });
   await ctx.route(u => at(u, /\/render\/sources$/), r => r.fulfill({ json: fake.sources === 'final-missing' ? { ...caseBody('render-sources'), items: caseBody('render-sources').items.filter(i => i.folder?.role !== 'final'), folders: caseBody('folders-not-created').folders, folderRoles: caseBody('folders-not-created').folderRoles } : caseBody(fake.sources) }));
   await ctx.route(u => at(u, /\/render\/requests\/[^/]+$/), r => {
@@ -98,6 +105,8 @@ try {
   await context.addInitScript(() => { try { localStorage.setItem('shiguang.refreshSeconds', '0'); } catch {} });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await installMocks();
+  await page.context().route(u => /^\/api\/assets\/[^/]+\/reveal$/.test(new URL(u).pathname), r => { fake.reveals = [...(fake.reveals ?? []), new URL(r.request().url()).pathname]; return r.fulfill({ json: { asset: { id: 'x' } } }); });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
 
   await check('成片可播放：状态写明成片位置；点轨道上一段 → 成片跳到该处（t = currentTime − offset），此刻清单列出它，排除已禁用、上次导入保留和位置未知', async () => {
     await openUsage();
@@ -367,9 +376,89 @@ try {
     await dlg.getByRole('button', { name: '取消' }).click();
     fake.link = 'link-completed';
   });
+  // —— 播放区布局：竖屏 / 横屏、右侧同高不跳、右键菜单（用户 2026-11-15 方案一）——
+  const frameBox = () => usage().locator('.usage-video-frame').evaluate(el => { const r = el.getBoundingClientRect(); return { orient: el.dataset.orient, w: Math.round(r.width), h: Math.round(r.height) }; });
+  const tracksTop = () => usage().locator('.usage-tracks').evaluate(el => Math.round(el.getBoundingClientRect().top + window.scrollY));
+  await check('L1 竖屏成片：画面按真实比例放大到高度上限 520（约 292×520），两边浅灰底；窄窗口仍按比例', async () => {
+    fake.render = 'render-ready'; fake.portrait = true; fake.renderPatch = { video: { codec: 'h264', width: 1080, height: 1920, durationMs: 60000, bytes: 1 } };
+    await page.reload(); await openUsage();
+    const video = usage().locator('video');
+    await expect.poll(() => video.evaluate(v => v.videoWidth)).toBe(180);
+    const box = await frameBox();
+    assert.equal(box.orient, 'portrait'); assert.equal(box.h, 520, JSON.stringify(box));
+    // 方案一：播放框占满播放区（两边浅灰底），画面在框内按真实比例显示——量实际画面而不是框
+    const shown = await usage().locator('video').evaluate(v => { const r = v.getBoundingClientRect(), k = v.videoWidth / v.videoHeight; const h = Math.min(r.height, r.width / k); return { w: Math.round(h * k), h: Math.round(h), k, bg: getComputedStyle(v.parentElement).backgroundColor }; });
+    assert.equal(shown.h, 520, JSON.stringify(shown)); assert.ok(Math.abs(shown.w / shown.h - 180 / 320) < 0.01, JSON.stringify(shown));
+    assert.notEqual(shown.bg, 'rgb(0, 0, 0)', '两边不是纯黑');
+    // 窄窗口：画面仍按比例，不超出可用宽度
+    await page.setViewportSize({ width: 760, height: 1000 });
+    const narrow = await usage().locator('video').evaluate(v => { const r = v.getBoundingClientRect(), k = v.videoWidth / v.videoHeight; const h = Math.min(r.height, r.width / k); return { fw: Math.round(r.width), w: Math.round(h * k), h: Math.round(h) }; });
+    assert.ok(narrow.w <= narrow.fw && Math.abs(narrow.w / narrow.h - 180 / 320) < 0.01, JSON.stringify(narrow));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await shot('layout-portrait');
+    fake.portrait = false; fake.renderPatch = null;
+  });
+  await check('L2 横屏成片：播放框横向占满播放区、高度不超过 520；右侧约 400 宽', async () => {
+    fake.render = 'render-ready'; await page.reload(); await openUsage();
+    await expect.poll(() => usage().locator('video').evaluate(v => v.videoWidth)).toBe(320);
+    const box = await frameBox();
+    // 1440 宽窗口里播放区约 700 宽：横屏框占满播放区宽度，高度 = 宽 × 9/16（不超过 520），没有左右空边
+    assert.equal(box.orient, 'landscape'); assert.ok(box.h <= 520 && Math.abs(box.h - box.w * 9 / 16) <= 2, JSON.stringify(box));
+    const aside = await nowPanel().evaluate(el => Math.round(el.getBoundingClientRect().width));
+    assert.ok(aside >= 360 && aside <= 400, 'aside ' + aside);
+    await shot('layout-landscape');
+  });
+  await check('L3 播放中右侧条目数变化，下面的轨道不上下移动；说明只占一行', async () => {
+    const before = await tracksTop();
+    await playAt(3 + 0.5);  // t=0.5：没有此刻、接下来也少
+    const a = await tracksTop();
+    await playAt(3 + 12);   // t=12：此刻 1 条 + 接下来若干
+    const b = await tracksTop();
+    assert.deepEqual([a, b], [before, before]);
+    const hint = await nowPanel().locator('.usage-hint').evaluate(el => [Math.round(el.getBoundingClientRect().height), getComputedStyle(el).whiteSpace]);
+    assert.equal(hint[1], 'nowrap'); assert.ok(hint[0] <= 22, 'hint height ' + hint[0]);
+  });
+  await check('L4 右键条目：复制文件名进剪贴板；在访达中显示调用原素材定位接口', async () => {
+    const item = nowPanel().locator('.usage-next-item').first();
+    const name = (await item.locator('span').nth(1).textContent()).trim();
+    await item.click({ button: 'right' });
+    let menu = page.getByRole('menu');
+    await expect(menu.getByRole('menuitem', { name: '复制文件名' })).toBeFocused();
+    await menu.getByRole('menuitem', { name: '复制文件名' }).click();
+    await expect(menu).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(name);
+    fake.reveals = [];
+    await usage().getByRole('button', { name: /合成脚步声\.wav，A1，00:16\.0/ }).click({ button: 'right' });
+    menu = page.getByRole('menu');
+    await menu.getByRole('menuitem', { name: '在访达中显示' }).click();
+    await expect.poll(() => fake.reveals.length).toBe(1);
+    assert.match(fake.reveals[0], /\/api\/assets\/10000000-0000-4000-8000-00000000001e\/reveal$/);
+    // 键盘：Shift+F10 打开，Esc 关闭并回到原条目
+    await usage().getByRole('button', { name: /合成脚步声\.wav，A1，00:16\.0/ }).focus();
+    await page.keyboard.press('Shift+F10');
+    await expect(page.getByRole('menu')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(usage().getByRole('button', { name: /合成脚步声\.wav，A1，00:16\.0/ })).toBeFocused();
+  });
+  await check('L5 没对上素材库的引用：右键时「在访达中显示」置灰并写原因', async () => {
+    fake.overview = 'overview-noasset'; fake.reveals = []; await page.reload(); await openUsage();
+    await usage().getByRole('button', { name: /未对上素材库\.wav/ }).click({ button: 'right' });
+    const menu = page.getByRole('menu');
+    await expect(menu.getByRole('menuitem', { name: '在访达中显示' })).toBeDisabled();
+    await expect(menu).toContainText('这条没对上素材库，不知道文件在哪');
+    await shot('context-menu-no-asset');
+    await page.keyboard.press('Escape');
+    assert.equal(fake.reveals.length, 0);
+    fake.overview = 'overview-ready';
+  });
   await check('还没导入时间线：显示两步说明，不伪造时间线', async () => {
     fake.overview = 'overview-empty'; await page.reload(); await openUsage();
     await expect(page.getByRole('region', { name: '开始' })).toContainText('两步就能边看成片边对照音效');
+    // 列表为空：不显示全选行和表头（两条框线），只留空状态
+    await expect(page.locator('.project-items-empty')).toBeVisible();
+    await expect(page.locator('.project-list-heading')).toHaveCount(0);
+    await expect(page.getByRole('checkbox', { name: '选择本页项目素材' })).toHaveCount(0);
     await shot('empty');
   });
   assert.deepEqual(errors, []);
