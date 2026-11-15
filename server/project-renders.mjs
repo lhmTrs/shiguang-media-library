@@ -73,7 +73,7 @@ export class ProjectRenders {
  constructor(projects){this.projects=projects;this.lib=projects.lib;}
  get db(){return this.lib.db;}
  get catalog(){const c=this.lib.storyboardVideos?.catalog;if(!c)fail('RENDER_INFO_UNAVAILABLE','项目视频管理尚未就绪',503);return c;}
- init(){if(!renderSchemaStatus(this.db).writable&&!renderColumns(this.db).length){this.lib.projectRenders=this;return this;}const mysql=this.db.kind==='mysql';this.db.exec(`CREATE TABLE IF NOT EXISTS project_renders (id ${mysql?'VARCHAR(36)':'TEXT'} PRIMARY KEY,project_id ${mysql?'VARCHAR(36)':'TEXT'} NOT NULL,payload ${mysql?'LONGTEXT':'TEXT'} NOT NULL,revision ${mysql?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1)${mysql?' ENGINE=InnoDB':''}`);this.lib.projectRenders=this;return this;}
+ init(){if(!renderSchemaStatus(this.db).writable){this.lib.projectRenders=this;return this;}const mysql=this.db.kind==='mysql';this.db.exec(`CREATE TABLE IF NOT EXISTS project_renders (id ${mysql?'VARCHAR(36)':'TEXT'} PRIMARY KEY,project_id ${mysql?'VARCHAR(36)':'TEXT'} NOT NULL,payload ${mysql?'LONGTEXT':'TEXT'} NOT NULL,revision ${mysql?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1)${mysql?' ENGINE=InnoDB':''}`);this.lib.projectRenders=this;return this;}
  validate(projectId,timelineId){this.projects.get(projectId);const t=this.db.prepare('SELECT * FROM project_timelines WHERE project_id=? AND id=?').get(projectId,timelineId);if(!t)fail('TIMELINE_NOT_FOUND','时间线不存在，请重新读取',404);return t;}
  row(projectId,timelineId){return this.db.prepare('SELECT * FROM project_renders WHERE project_id=? AND id=?').get(projectId,timelineId);}
  revision(row){const value=row?(row.revision??1):0;if(!integer(value))fail('RENDER_SCHEMA_UNSUPPORTED','成片修订号不是有效整数',503);return value;}

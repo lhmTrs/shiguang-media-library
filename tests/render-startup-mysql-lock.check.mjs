@@ -72,9 +72,9 @@ try{
   const db=database();await assert.rejects(db.withRenderSchemaUpgradeLock(async locked=>{await new Promise(r=>setTimeout(r,1050));locked.exec(alter);},{timeoutMs:1000,windowMs:1000}),{reason:'busy'});
   assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,0);await control.query("UPDATE project_renders SET payload='unlocked'");await close(db);
  });
- await check('owned connection loss marks cleanup unknown and prevents further DB use',async()=>{
+ await check('owned migration connection loss retains unknown outcome but business connection stays usable',async()=>{
   const db=database();await assert.rejects(db.withRenderSchemaUpgradeLock(async locked=>{await control.query('KILL CONNECTION '+locked.identity.connectionId);locked.exec(alter);}),e=>e.renderUpgradeCleanupUnknown===true&&e.reason==='unknown_outcome');
-  assert.throws(()=>db.prepare('SELECT 1').get(),{code:'RENDER_SCHEMA_UPGRADE_ACTIVE'});assert.equal((await control.query("SELECT * FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='project_renders'"))[0].length,3);await close(db);
+  assert.equal(db.prepare('SELECT @@autocommit a').get().a,1);assert.deepEqual(db.renderSchemaMigrationReceipt,{state:'closed',businessConnectionId:db.renderSchemaMigrationReceipt.businessConnectionId,migrationConnectionId:db.renderSchemaMigrationReceipt.migrationConnectionId,closeAck:true,workerExit:0});assert.notEqual(db.renderSchemaMigrationReceipt.businessConnectionId,db.renderSchemaMigrationReceipt.migrationConnectionId);assert.equal((await control.query("SELECT * FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='project_renders'"))[0].length,3);await close(db);
  });
  console.log('MYSQL_LOCK_CHECKS_PASSED '+env.inventory.checks.length);
 }finally{
