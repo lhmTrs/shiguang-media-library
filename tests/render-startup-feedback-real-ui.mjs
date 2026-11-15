@@ -46,7 +46,15 @@ async function serve(dataDir, base) {
     const r = await fetch(origin + '/api' + p, {method: method ?? (body ? 'POST' : 'GET'), headers: {cookie, origin, 'x-local-token': token, 'content-type': raw ? 'application/octet-stream' : 'application/json'}, ...(body ? {body: raw ? body : JSON.stringify(body)} : {})});
     return {status: r.status, body: await r.json()};
   };
-  const stop = async () => { child.kill('SIGTERM'); let t; const out = await Promise.race([exited, new Promise(r => t = setTimeout(() => r('timeout'), 15000))]); clearTimeout(t); if (out === 'timeout') { child.kill('SIGKILL'); await exited; throw Error('server did not stop'); } return out; };
+  // 只正常关闭（SIGTERM）；15 秒内没退出就如实报 UNKNOWN 并保留现场交给人核对，不强杀
+  let stopped = null;
+  const stop = async () => {
+    if (stopped) return stopped;
+    child.kill('SIGTERM'); let t;
+    const out = await Promise.race([exited, new Promise(r => t = setTimeout(() => r('timeout'), 15000))]); clearTimeout(t);
+    if (out === 'timeout') throw Error(`UNKNOWN: 测试服务 pid ${child.pid} 在 15 秒内没有正常退出，已保留现场，未强制结束；数据目录 ${dataDir}`);
+    return stopped = out;
+  };
   return {origin, api, stop, logs: () => logs};
 }
 async function importVideo(srv, projectId, name) {
@@ -130,7 +138,8 @@ try {
     assert.deepEqual(await srv.stop(), {code: 0, signal: null}); servers.pop();
   });
 } finally {
-  for (const s of servers) { try { await s.stop(); } catch {} }
+  let unknown = null;
+  for (const s of servers) { try { await s.stop(); } catch (e) { unknown = e; console.error(e.message); } }
   await browser?.close();
-  await fs.rm(work, {recursive: true, force: true});
+  if (!unknown) await fs.rm(work, {recursive: true, force: true}); // 有服务没正常退出时保留临时目录供核对
 }
