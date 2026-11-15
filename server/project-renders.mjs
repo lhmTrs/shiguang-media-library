@@ -164,10 +164,12 @@ export class ProjectRenders {
    });}finally{if(held)await c.media.release(held.handle);}
   });}catch(e){
    // Only the original, durably failed schema receipt is a 200 terminal result.
-   // No status-code/accepted:false exception for network, storage or other 5xx.
+   // The current DB/token must stay frozen during this call. The persisted
+   // receipt may predate this process: its old runtime token is not a new
+   // execution permit. No exception for network, storage or other 5xx.
    if(['RENDER_SCHEMA_MIGRATION_REQUIRED','RENDER_SCHEMA_UNSUPPORTED'].includes(e.code)&&this.db===admittedDb&&c.databaseToken()===token){
     let stored;try{stored=j.row(id,input.requestId,tid);}catch{throw e;}
-    if(stored.status==='failed'&&stored.action===action&&stored.databaseToken===token&&stored.args===digest({projectId:id,timelineId:tid,action,input})&&stored.error?.code===e.code)return j.dto(stored);
+    if(stored.status==='failed'&&stored.action===action&&stored.args===digest({projectId:id,timelineId:tid,action,input})&&stored.error?.code===e.code)return j.dto(stored);
    }
    throw e;
   }

@@ -12,7 +12,7 @@ test('schema2 read-only summary and original durable schema failure returned as 
  assert.equal(await (await fetch(url)).json(),null);
  const input={requestId:uid(),expectedRevision:0};const send=body=>fetch(url,{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  const response=await send(input),failed=await response.json();assert.equal(response.status,200);assert.equal(failed.status,'failed');assert.equal(failed.error.code,'RENDER_SCHEMA_MIGRATION_REQUIRED');assert.equal(failed.error.details.renderSchemaUpgrade.state,'required');
- assert.deepEqual(await (await send(input)).json(),failed);assert.deepEqual(await (await fetch(url+'/requests/'+input.requestId)).json(),failed);
+ assert.deepEqual(await (await send(input)).json(),failed);f.catalog.databaseTokens=new WeakMap();const afterRuntimeRebind=await send(input);assert.equal(afterRuntimeRebind.status,200);assert.deepEqual(await afterRuntimeRebind.json(),failed);assert.deepEqual(await (await fetch(url+'/requests/'+input.requestId)).json(),failed);
  assert.equal((await send({...input,expectedRevision:1})).status,409);
  const stored=JSON.parse(f.lib.db.prepare('SELECT data_json FROM project_video_operations WHERE id=?').get(input.requestId).data_json);assert.equal(stored.status,'failed');assert.equal(stored.action,'render-unlink');
 });
