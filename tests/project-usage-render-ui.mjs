@@ -338,13 +338,22 @@ try {
   // —— 播放区布局：竖屏 / 横屏、右侧同高不跳、右键菜单（用户 2026-11-15 方案一）——
   const frameBox = () => usage().locator('.usage-video-frame').evaluate(el => { const r = el.getBoundingClientRect(); return { orient: el.dataset.orient, w: Math.round(r.width), h: Math.round(r.height) }; });
   const tracksTop = () => usage().locator('.usage-tracks').evaluate(el => Math.round(el.getBoundingClientRect().top + window.scrollY));
-  await check('L1 竖屏成片：播放框按视频比例变成窄而高（高度上限 520），不再是横屏框里一窄条', async () => {
+  await check('L1 竖屏成片：画面按真实比例放大到高度上限 520（约 292×520），两边浅灰底；窄窗口仍按比例', async () => {
     fake.render = 'render-ready'; fake.portrait = true; fake.renderPatch = { video: { codec: 'h264', width: 1080, height: 1920, durationMs: 60000, bytes: 1 } };
     await page.reload(); await openUsage();
     const video = usage().locator('video');
     await expect.poll(() => video.evaluate(v => v.videoWidth)).toBe(180);
     const box = await frameBox();
     assert.equal(box.orient, 'portrait'); assert.equal(box.h, 520, JSON.stringify(box));
+    // 方案一：播放框占满播放区（两边浅灰底），画面在框内按真实比例显示——量实际画面而不是框
+    const shown = await usage().locator('video').evaluate(v => { const r = v.getBoundingClientRect(), k = v.videoWidth / v.videoHeight; const h = Math.min(r.height, r.width / k); return { w: Math.round(h * k), h: Math.round(h), k, bg: getComputedStyle(v.parentElement).backgroundColor }; });
+    assert.equal(shown.h, 520, JSON.stringify(shown)); assert.ok(Math.abs(shown.w / shown.h - 180 / 320) < 0.01, JSON.stringify(shown));
+    assert.notEqual(shown.bg, 'rgb(0, 0, 0)', '两边不是纯黑');
+    // 窄窗口：画面仍按比例，不超出可用宽度
+    await page.setViewportSize({ width: 760, height: 1000 });
+    const narrow = await usage().locator('video').evaluate(v => { const r = v.getBoundingClientRect(), k = v.videoWidth / v.videoHeight; const h = Math.min(r.height, r.width / k); return { fw: Math.round(r.width), w: Math.round(h * k), h: Math.round(h) }; });
+    assert.ok(narrow.w <= narrow.fw && Math.abs(narrow.w / narrow.h - 180 / 320) < 0.01, JSON.stringify(narrow));
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await shot('layout-portrait');
     fake.portrait = false; fake.renderPatch = null;
   });
