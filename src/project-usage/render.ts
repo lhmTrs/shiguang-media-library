@@ -66,6 +66,26 @@ export async function settle<R>(request: ProjectRequest, first: Receipt<R>, aliv
   return receipt;
 }
 
+/** 原请求的回执地址（与后端 action-journal 一致）；没收到答复时只能按它核对。 */
+export const renderStatusUrl = (projectId: string, timelineId: string, requestId: string) => `${base(projectId, timelineId)}/requests/${requestId}`;
+export const operationStatusUrl = (projectId: string, requestId: string) => `/project-videos/projects/${projectId}/operations/${requestId}`;
+
+/**
+ * 写请求抛错时区分两种情况：明确的业务拒绝（有 4xx 状态和错误码，服务器说了没做）可以改了再提交；
+ * 传输丢失 / 5xx / 后端自己说「结果未核清」则不知道是否已执行——返回一张 unknown 回执，只能按原编号核对，不能开新写入。
+ */
+export function unsettledReceipt(error: RequestError, requestId: string, statusUrl: string, action: Receipt["action"], projectId: string, timelineId: string | null): Receipt | null {
+  const status = error.status ?? 0;
+  const known = error.details?.statusUrl;
+  // 4xx 且不是「未核清」：服务器明确拒绝（含已登记的 accepted 拒绝），没有执行
+  const unsettled = !status || status >= 500 || /UNSETTLED$/.test(error.code ?? "");
+  if (!unsettled) return null;
+  return {
+    schemaVersion: 1, requestId: error.requestId || requestId, projectId, timelineId, action, status: "unknown", statusUrl: known || statusUrl, result: null,
+    error: { code: error.code || "OPERATION_UNSETTLED", message: status ? error.message : "没收到服务器的答复，不知道刚才的操作是否已执行" },
+  };
+}
+
 /** 已登记的语义拒绝（accepted=true）仍是失败；只给原因，不当作成功。 */
 export function rejectionMessage(error: RequestError) {
   return error.message || "操作失败";

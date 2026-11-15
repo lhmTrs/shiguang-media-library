@@ -32,10 +32,12 @@ const caseBody = id => remap(fixture.cases.find(c => c.id === id).response.body)
 const caseStatus = id => fixture.cases.find(c => c.id === id).response.status;
 // 替身状态：每个场景改这里
 const fake = { render: 'render-ready', sources: 'render-sources', overview: 'overview-ready', link: 'link-completed', receipts: [], posts: [], deletes: [], ensures: [] };
+// 在冻结 fixture 上加一段 1–2 秒的音效：offset 3 时，成片 1 秒处 t = −2，这段会落进「接下来 10 秒」窗口
+const earlyOverview = () => { const body = caseBody('overview-ready'); body.timelines[0].references.push({ assetId: null, key: 'early', name: '片头早到.wav', kind: 'sfx', used: true, retained: false, occurrences: [{ occurrenceId: 'early-1', track: 1, start: 1, end: 2, disabled: false }] }); return body; };
 async function installMocks() {
   const ctx = page.context();
   const at = (u, re) => re.test(new URL(u).pathname);
-  await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timeline-overview$/), r => r.fulfill({ json: fake.overview === 'overview-empty' ? caseBody('overview-empty') : caseBody(fake.overview) }));
+  await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timeline-overview$/), r => r.fulfill({ json: fake.overview === 'overview-early' ? earlyOverview() : caseBody(fake.overview) }));
   await ctx.route(u => at(u, /\/render\/media$/), r => {
     // 真实后端 sendMedia 支持 Range；替身也按 Range 回 206，浏览器才能跳转
     const m = /bytes=(\d+)-(\d*)/.exec(r.request().headers().range || '');
@@ -43,17 +45,19 @@ async function installMocks() {
     return r.fulfill({ status: m ? 206 : 200, headers: { 'content-type': 'video/mp4', 'accept-ranges': 'bytes', 'content-length': String(end - start + 1), ...(m ? { 'content-range': `bytes ${start}-${end}/${videoBytes.length}` } : {}) }, body: videoBytes.subarray(start, end + 1) });
   });
   await ctx.route(u => at(u, /\/render\/sources$/), r => r.fulfill({ json: fake.sources === 'final-missing' ? { ...caseBody('render-sources'), items: caseBody('render-sources').items.filter(i => i.folder?.role !== 'final'), folders: caseBody('folders-not-created').folders, folderRoles: caseBody('folders-not-created').folderRoles } : caseBody(fake.sources) }));
-  await ctx.route(u => at(u, /\/render\/requests\/[^/]+$/), r => { const next = fake.receipts.shift() ?? 'link-terminal-unknown'; fake.receiptReads = (fake.receiptReads ?? 0) + 1; return r.fulfill({ status: caseStatus(next), json: caseBody(next) }); });
+  await ctx.route(u => at(u, /\/render\/requests\/[^/]+$/), r => { fake.receiptUrls = [...(fake.receiptUrls ?? []), new URL(r.request().url()).pathname]; const next = fake.receipts.shift() ?? 'link-terminal-unknown'; fake.receiptReads = (fake.receiptReads ?? 0) + 1; return r.fulfill({ status: caseStatus(next), json: caseBody(next) }); });
   await ctx.route(u => at(u, /\/folders\/final\/ensure$/), r => { fake.ensures.push(r.request().postDataJSON()); return r.fulfill({ status: 200, json: caseBody('ensure-adopted') }); });
   await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timelines\/[^/]+\/render$/), r => {
     const m = r.request().method();
-    if (m === 'GET') return r.fulfill({ json: caseBody(fake.render) });
-    if (m === 'POST') { fake.posts.push(r.request().postDataJSON()); return r.fulfill({ status: caseStatus(fake.link), json: caseBody(fake.link) }); }
+    if (m === 'GET') { fake.gets = (fake.gets ?? 0) + 1; return r.fulfill({ json: caseBody(fake.render) }); }
+    if (m === 'POST') { fake.posts.push(r.request().postDataJSON()); if (fake.link === 'abort') return r.abort('connectionreset'); return r.fulfill({ status: caseStatus(fake.link), json: caseBody(fake.link) }); }
     if (m === 'DELETE') { fake.deletes.push(r.request().postDataJSON()); return r.fulfill({ status: 200, json: caseBody('unlink-completed') }); }
     return r.fallback();
   });
 }
 const usage = () => page.getByRole('region', { name: '成片与时间线' });
+/** 直接设播放器时间并派发 timeupdate（替身视频不一定在播） */
+const playAt = sec => usage().locator('video').evaluate((v, s) => new Promise(done => { v.addEventListener('seeked', () => { v.dispatchEvent(new Event('timeupdate')); done(); }, { once: true }); v.currentTime = s; }), sec);
 const nowPanel = () => page.getByRole('complementary', { name: '此刻时间线上的音效' });
 async function openUsage() {
   await page.goto(origin + '/#/all'); await expect(page.locator('.ppb').first()).toHaveAttribute('data-project', /./);
@@ -157,6 +161,79 @@ try {
     assert.equal(fake.ensures.length, 1); assert.equal(fake.ensures[0].expectedRolesRevision, 3);
     fake.sources = 'render-sources';
     await dlg.getByRole('button', { name: '取消' }).click();
+  });
+  // —— 组合验收退回的 C1–C4 反例（Codex 2026-11-15）——
+  await check('C1 成片与时间线对不上（timeline_changed）时：轨道不自动高亮、画面不叠音效名、不列此刻/接下来', async () => {
+    fake.render = 'render-timeline-changed'; await page.reload(); await openUsage();
+    await expect(nowPanel()).toContainText('暂不自动对照');
+    await expect.poll(() => usage().locator('video').evaluate(v => v.readyState)).toBeGreaterThan(0);
+    await playAt(13); // t = 13 − 3 = 10，落在脚步声 10–14 里
+    await expect(page.locator('.usage-clock')).toContainText('00:10.0');
+    await expect(usage().locator('.usage-clip[data-active="true"]')).toHaveCount(0);
+    await expect(usage().locator('.usage-overlay')).toHaveCount(0);
+    await expect(nowPanel().locator('.usage-now-item')).toHaveCount(0);
+    await expect(nowPanel().locator('.usage-next-item')).toHaveCount(0);
+  });
+  await check('C3 成片还在片头（t < 0）：不列此刻/接下来，提示时间线还没开始', async () => {
+    fake.render = 'render-ready'; fake.overview = 'overview-early'; await page.reload(); await openUsage();
+    await expect.poll(() => usage().locator('video').evaluate(v => v.readyState)).toBeGreaterThan(0);
+    await playAt(1); // t = 1 − 3 = −2；第一声 1–2 不能算「3 秒后」
+    await expect(page.locator('.usage-clock')).toContainText('-00:02.0');
+    await expect(nowPanel().locator('.usage-next-item')).toHaveCount(0);
+    await expect(nowPanel().locator('.usage-now-item')).toHaveCount(0);
+    await expect(nowPanel()).toContainText('成片还在片头');
+    await playAt(13); // 回到时间线内仍正常跟随
+    await expect(nowPanel().locator('.usage-now-item')).toContainText('合成脚步声.wav');
+    fake.overview = 'overview-ready';
+  });
+  await check('C2 关联请求没收到答复（连接被重置）：进入「核对原请求」，按原编号查回执；关掉再打开也不能换编号重发', async () => {
+    fake.render = 'render-unlinked'; fake.link = 'abort'; fake.posts.length = 0; fake.receiptUrls = []; fake.receipts = []; await page.reload(); await openUsage();
+    await usage().getByRole('button', { name: '从项目视频里选择成片…' }).click();
+    let dlg = page.getByRole('dialog', { name: '选择这一集的成片' });
+    await dlg.getByRole('radio', { name: '选择成片：合成S01E01_成片_001.mp4' }).check();
+    await dlg.getByRole('button', { name: '用这个作为成片' }).click();
+    await expect(dlg.getByRole('button', { name: '核对原请求' })).toBeVisible();
+    await expect(dlg.getByRole('button', { name: '用这个作为成片' })).toBeDisabled();
+    assert.equal(fake.posts.length, 1);
+    const requestId = fake.posts[0].requestId;
+    await dlg.getByRole('button', { name: '取消' }).click();
+    await expect(usage().getByRole('button', { name: '核对原请求' })).toBeVisible(); // 关掉窗口后外面仍能核对
+    await usage().getByRole('button', { name: '从项目视频里选择成片…' }).click();
+    dlg = page.getByRole('dialog', { name: '选择这一集的成片' });
+    await dlg.getByRole('radio', { name: '选择成片：合成S01E01_成片_001.mp4' }).check();
+    await expect(dlg.getByRole('button', { name: '用这个作为成片' })).toBeDisabled();
+    fake.receipts = ['link-terminal-unknown'];
+    await dlg.getByRole('button', { name: '核对原请求' }).click();
+    await expect(dlg.getByRole('button', { name: '核对原请求' })).toBeVisible(); // unknown 仍待核对
+    await expect(dlg.getByRole('button', { name: '用这个作为成片' })).toBeDisabled();
+    fake.receipts = ['link-completed']; fake.render = 'render-ready';
+    await dlg.getByRole('button', { name: '核对原请求' }).click();
+    await expect(dlg).toHaveCount(0);
+    assert.equal(fake.posts.length, 1);
+    assert.ok(fake.receiptUrls.length >= 2 && fake.receiptUrls.every(u => u.endsWith('/render/requests/' + requestId)), requestId + ' ' + JSON.stringify(fake.receiptUrls));
+    await expect(usage().getByRole('button', { name: '核对原请求' })).toHaveCount(0);
+    fake.link = 'link-completed';
+  });
+  await check('C4 浏览器实际播放失败（MediaError 4）：重读 GET 后仍保留原因，同一来源不能再确认；点「重试播放」才重新核验', async () => {
+    fake.render = 'render-ready'; await page.reload(); await openUsage();
+    const video = usage().locator('video');
+    await expect.poll(() => video.evaluate(v => v.readyState)).toBeGreaterThan(0);
+    const before = fake.gets ?? 0;
+    await video.evaluate(v => { Object.defineProperty(v, 'error', { value: { code: 4, message: 'synthetic decode failure' }, configurable: true }); v.dispatchEvent(new Event('error')); });
+    await expect.poll(() => fake.gets ?? 0).toBeGreaterThan(before); // 轻量 GET 已重读
+    await page.waitForTimeout(300);
+    await expect(usage().locator('.usage-render-status')).toContainText('当前浏览器无法播放这个成片');
+    await expect(usage().locator('.usage-player-empty')).toContainText('当前浏览器无法播放这个成片');
+    await expect(usage().locator('video')).toHaveCount(0);
+    await usage().getByRole('button', { name: '从项目视频里选择成片…' }).click();
+    const dlg = page.getByRole('dialog', { name: '选择这一集的成片' });
+    await expect(dlg.getByRole('radio', { name: '选择成片：合成S01E01_成片_001.mp4' })).toBeDisabled();
+    await expect(dlg).toContainText('当前浏览器无法播放这个成片');
+    await dlg.getByRole('button', { name: '取消' }).click();
+    await shot('media-error');
+    await usage().getByRole('button', { name: '重试播放' }).click();
+    await expect(usage().locator('.usage-render-status')).toContainText('成片可播放');
+    await expect(usage().locator('video')).toHaveCount(1);
   });
   await check('还没导入时间线：显示两步说明，不伪造时间线', async () => {
     fake.overview = 'overview-empty'; await page.reload(); await openUsage();

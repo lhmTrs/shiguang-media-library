@@ -1,12 +1,13 @@
 // 素材使用页上半部分：成片播放器 + 跟随播放的轨道 + 此刻时间线上的音效（合同 PROJECT-USAGE-RENDER v1 第 7、8 节）。
 // 同步规则：t = video.currentTime − offset（秒）；此刻 start ≤ t < end；接下来 t < start ≤ t + 10；
-// 排除已禁用/静音、上次导入保留和位置未知的引用；成片与时间线未确认匹配时不做自动对照。
+// 排除已禁用/静音、上次导入保留和位置未知的引用；成片与时间线未确认匹配时不做自动对照（不高亮、不浮层、不列此刻/接下来）；
+// t < 0（成片片头）或超出时间线时也不列，不钳成首尾段。浏览器实际播放失败按「来源+修订」记住，轻量 GET 不会把它清掉。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Film, Pause, Play, RefreshCw, Unlink } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { useFeedbackToast } from "../global-feedback";
-import { clock, newRequestId, reasonOf, renderApi, renderStatus, settle, type RenderV2, type RequestError } from "./render";
-import { RenderPicker } from "./RenderPicker";
+import { clock, newRequestId, reasonOf, renderApi, renderStatus, renderStatusUrl, settle, unsettledReceipt, type RenderV2, type RequestError } from "./render";
+import { RenderPicker, type BlockedSource, type Pending } from "./RenderPicker";
 import "./usage.css";
 
 export type Occurrence = { occurrenceId?: string; clipId?: string; clipName?: string; track: number; start: number | null; end: number | null; disabled?: boolean };
@@ -21,7 +22,8 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const [loading, setLoading] = useState(true), [error, setError] = useState(""), [reload, setReload] = useState(0);
   const [render, setRender] = useState<RenderV2 | null>(null), [renderError, setRenderError] = useState(""), [renderReload, setRenderReload] = useState(0);
   const [t, setT] = useState(0), [playing, setPlaying] = useState(false), [music, setMusic] = useState(true), [overlay, setOverlay] = useState(true), [zoom, setZoom] = useState(1);
-  const [picking, setPicking] = useState(false), [mediaError, setMediaError] = useState(""), [busy, setBusy] = useState("");
+  const [picking, setPicking] = useState(false), [mediaFailure, setMediaFailure] = useState<(BlockedSource & { key: string }) | null>(null), [busy, setBusy] = useState("");
+  const [pendingState, setPendingState] = useState<(Pending & { timelineId: string }) | null>(null);
   const video = useRef<HTMLVideoElement>(null), generation = useRef(0);
   useFeedbackToast(error || renderError, { source: "素材使用" });
 
@@ -35,13 +37,18 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
 
   useEffect(() => {
     if (!timelineId) { setRender(null); return; }
-    const g = ++generation.current; setRenderError(""); setMediaError("");
+    const g = ++generation.current; setRenderError("");
     renderApi.get(request, projectId, timelineId).then(r => { if (g === generation.current) setRender(r); })
       .catch(e => { if (g === generation.current) { setRender(null); setRenderError((e as Error).message); } });
   }, [projectId, timelineId, request, renderReload, revision]);
 
   const timeline = timelines.find(x => x.id === timelineId);
   const offset = render?.offset ?? 0;
+  const pending = pendingState && pendingState.timelineId === timelineId ? pendingState : null;
+  const setPending = (p: Pending | null) => setPendingState(p && timelineId ? { ...p, timelineId } : null);
+  // 同一来源、同一修订、同一地址才算同一次失败；换成片或来源换版后重新核验
+  const mediaKey = render?.link ? `${timelineId}|${render.sourceId}|${render.sourceRevision}|${render.playback.mediaUrl}` : "";
+  const mediaError = mediaFailure && mediaFailure.key === mediaKey ? mediaFailure.message : "";
   const playable = !!render?.link && !!render.playback.canPlay && !!render.playback.mediaUrl && !mediaError;
   const canSync = !!render?.sync.canSynchronize && playable;
   const clips = useMemo(() => {
@@ -60,8 +67,11 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
   const lastEnd = Math.max(1, ...clips.map(c => c.end));
   const duration = timeline?.duration && timeline.duration > 0 ? timeline.duration : lastEnd;
   const audible = clips.filter(c => !c.occ.disabled);
-  const now = audible.filter(c => c.start <= t && t < c.end);
-  const next = audible.filter(c => t < c.start && c.start <= t + AHEAD);
+  // 有成片在播但没确认对得上 → 不自动对照；没有成片时 t 只来自拖动/点轨道，是时间线自身的位置
+  const inTimeline = t >= 0 && t <= duration;
+  const follow = inTimeline && (!playable || canSync);
+  const now = follow ? audible.filter(c => c.start <= t && t < c.end) : [];
+  const next = follow ? audible.filter(c => t < c.start && c.start <= t + AHEAD) : [];
   const unknownCount = (timeline?.references ?? []).reduce((n, r) => n + (r.retained ? 0 : r.occurrences.filter(o => o.start == null || o.end == null).length), 0);
   const uses = useMemo(() => { const m = new Map<string, number>(); for (const c of clips) m.set(c.ref.key || c.ref.name, (m.get(c.ref.key || c.ref.name) ?? 0) + 1); return m; }, [clips]);
 
@@ -75,19 +85,36 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
     seek(target ? target.start : 0);
   };
   const toggle = () => { const v = video.current; if (!v) return; if (v.paused) { stopAudio(); void v.play().catch(() => {}); } else v.pause(); };
-  const status = renderStatus(render);
+  const status = mediaError ? { tone: "warn" as const, text: mediaError } : renderStatus(render);
 
   async function unlink() {
-    if (!render?.link || !timeline) return;
+    if (!render?.link || !timeline || pending) return;
     if (!window.confirm("解除这条时间线的成片关联？不会删除项目视频，也不影响其他用处。")) return;
+    const requestId = newRequestId(), label = "正在解除成片关联…";
     setBusy("正在解除…");
     try {
-      const first = await renderApi.unlink(request, projectId, timeline.id, { requestId: newRequestId(), expectedRevision: render.revision });
+      const first = await renderApi.unlink(request, projectId, timeline.id, { requestId, expectedRevision: render.revision });
       const receipt = await settle(request, first, () => true);
       if (receipt.status === "completed") setRenderReload(n => n + 1);
       else if (receipt.status === "failed") setRenderError(receipt.error?.message || "解除失败");
-      else setRenderError("解除结果尚未核清，请稍后刷新再看；不会自动重试。");
-    } catch (e) { setRenderError((e as RequestError).message); setRenderReload(n => n + 1); }
+      else setPending({ receipt, label });
+    } catch (e) {
+      const err = e as RequestError;
+      const unknown = unsettledReceipt(err, requestId, renderStatusUrl(projectId, timeline.id, requestId), "render-unlink", projectId, timeline.id);
+      if (unknown) setPending({ receipt: unknown, label });
+      else { setRenderError(err.message); setRenderReload(n => n + 1); }
+    }
+    finally { setBusy(""); }
+  }
+  async function recheck() {
+    if (!pending) return;
+    setBusy("正在核对原请求…");
+    try {
+      const receipt = await renderApi.receipt(request, pending.receipt.statusUrl);
+      if (receipt.status === "completed") { setPending(null); setRenderReload(n => n + 1); }
+      else if (receipt.status === "failed") { setPending(null); setRenderError(receipt.error?.message || "原请求没有成功"); setRenderReload(n => n + 1); }
+      else setPending({ ...pending, receipt: { ...receipt, requestId: pending.receipt.requestId, statusUrl: pending.receipt.statusUrl } }); // 始终按原编号核对
+    } catch (e) { setRenderError((e as RequestError).code === "OPERATION_NOT_FOUND" ? "还查不到原请求的回执；这不代表它没有执行，请稍后再核对。" : (e as Error).message); }
     finally { setBusy(""); }
   }
 
@@ -103,8 +130,9 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
         {timelines.length > 1 ? <select aria-label="时间线" value={timelineId} onChange={e => { setTimelineId(e.target.value); setT(0); setPlaying(false); }}>{timelines.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select> : <span className="usage-timeline-name" title={timeline.name}>时间线「{timeline.name}」</span>}
         <span className="usage-render-status" data-tone={status.tone}><Film size={13} aria-hidden="true" />{status.text}{render?.link && render.name ? <> · <span title={render.folder ? `${render.folder.relativePath}/${render.name}` : render.name}>{render.folder ? `${render.folder.name} / ` : ""}{render.name}</span></> : null}</span>
         <button type="button" className="plain" disabled={!!busy} onClick={() => setPicking(true)}>{render?.link ? "更换成片" : "选择成片"}</button>
-        {render?.link && <button type="button" className="icon-button" aria-label="解除成片关联" title="解除成片关联" disabled={!!busy} onClick={() => void unlink()}><Unlink size={15} /></button>}
+        {render?.link && <button type="button" className="icon-button" aria-label="解除成片关联" title="解除成片关联" disabled={!!busy || !!pending} onClick={() => void unlink()}><Unlink size={15} /></button>}
         {busy && <span role="status" className="usage-busy">{busy}</span>}
+        {pending && !picking && <span className="usage-pending" role="status"><span>{pending.label.replace("正在", "").replace("…", "")}的结果还没核清；不会自动重试。</span><button type="button" className="plain" disabled={!!busy} onClick={() => void recheck()}><RefreshCw size={14} />核对原请求</button></span>}
       </div>
 
       <div className="usage-stage">
@@ -114,13 +142,16 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
               onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
               onLoadedMetadata={e => { e.currentTarget.currentTime = Math.max(0, t + offset); }}
               onTimeUpdate={e => setT(e.currentTarget.currentTime - offset)}
-              onError={e => { const code = e.currentTarget.error?.code; setPlaying(false); setMediaError(code === 4 ? "当前浏览器无法播放这个成片" : "成片读取失败"); setRenderReload(n => n + 1); }} />
+              onError={e => { const code = e.currentTarget.error?.code; setPlaying(false); setMediaFailure({ key: mediaKey, sourceId: render!.sourceId ?? "", sourceRevision: render!.sourceRevision, message: code === 4 ? "当前浏览器无法播放这个成片" : "成片读取失败" }); setRenderReload(n => n + 1); }} />
             {overlay && canSync && now.length > 0 && <div className="usage-overlay" aria-hidden="true">{now.map(c => <span key={c.key}>{c.ref.name}</span>)}</div>}
           </div> : <div className="usage-player-empty" role="status">
             <strong>{!render?.link ? "还没关联成片" : mediaError || reasonOf(render.playback.reasonCode, status.text)}</strong>
             {render?.link === "legacy-path" && render.path && <code>{render.path}</code>}
-            <span>{!render?.link ? "从这一集的项目视频里选出成片，就能边看边对照。" : "成片只能从这一集的项目视频里选；须是浏览器能播放的视频（H.264 的 MP4）。"}</span>
-            <button type="button" className="primary" onClick={() => setPicking(true)}>从项目视频里选择成片…</button>
+            <span>{!render?.link ? "从这一集的项目视频里选出成片，就能边看边对照。" : mediaError ? "服务器允许播放，但这台浏览器打不开它（多半是编码不支持）。换一个 H.264 的 MP4，或确认文件没问题后重试。" : "成片只能从这一集的项目视频里选；须是浏览器能播放的视频（H.264 的 MP4）。"}</span>
+            <span className="usage-player-actions">
+              <button type="button" className="primary" onClick={() => setPicking(true)}>从项目视频里选择成片…</button>
+              {mediaError && <button type="button" className="plain" onClick={() => { setMediaFailure(null); setRenderReload(n => n + 1); }}><RefreshCw size={14} />重试播放</button>}
+            </span>
           </div>}
           <div className="usage-transport">
             <button type="button" className="usage-play" aria-label={playing ? "暂停成片" : "播放成片"} disabled={!playable} onClick={toggle}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
@@ -134,6 +165,8 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
 
         <aside className="usage-now" aria-label="此刻时间线上的音效">
           <div className="usage-now-head"><h3>此刻时间线上的音效</h3><span>{clock(t)}</span></div>
+          {canSync && t < 0 && <p className="usage-note" role="note">成片还在片头，时间线还没开始。</p>}
+          {canSync && t > duration && <p className="usage-note" role="note">已过时间线结尾。</p>}
           {render?.link && playable && !render.sync.canSynchronize && <p className="usage-note" role="note">{render.sync.state === "timeline_changed" ? "时间线重新导入过，成片和新时间线还没确认是否对得上，暂不自动对照。" : "成片和时间线还没确认对得上，暂不自动对照。"}可以点下方轨道查看每段位置。</p>}
           {now.length ? now.map(c => <div className="usage-now-item" key={c.key}>
             <strong title={c.ref.name}>{c.ref.name}</strong>
@@ -153,7 +186,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
         {clips.length ? <div className="usage-tracks-scroll" tabIndex={0} aria-label="音效轨道与使用区间"><div className="usage-tracks-grid" style={{ width: `${zoom * 100}%` }}>
           {tracks.map(track => <div className="usage-lane" key={track}><span>A{track}</span><div>
             {clips.filter(c => c.occ.track === track).map(c => {
-              const active = !c.occ.disabled && c.start <= t && t < c.end;
+              const active = follow && !c.occ.disabled && c.start <= t && t < c.end;
               return <button type="button" key={c.key} className="usage-clip" data-kind={c.ref.kind} data-muted={!!c.occ.disabled} data-confirmed={c.ref.used && !c.occ.disabled} data-active={active}
                 style={{ left: `${Math.min(100, c.start / duration * 100)}%`, width: `${Math.max(0, Math.min(duration, c.end) - c.start) / duration * 100}%` }}
                 aria-label={`${c.ref.name}，A${track}，${clock(c.start)} 至 ${clock(c.end)}${c.occ.disabled ? "，已禁用或静音" : !c.ref.used ? "，待确认" : ""}`}
@@ -165,6 +198,7 @@ export function RenderWorkbench({ projectId, projectName, revision, request, sto
         <div className="usage-legend"><span><i />音效 · 已确认</span><span><i className="music" />音乐</span><span><i className="soft" />待确认 / 已禁用或静音</span>{(timeline.warnings ?? []).slice(0, 1).map(w => <span key={w} className="usage-warning">{w}</span>)}</div>
       </div>
     </>}
-    {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)} linked={() => { setPicking(false); setMediaError(""); setRenderReload(n => n + 1); }} />}
+    {picking && timeline && <RenderPicker projectId={projectId} projectName={projectName} timelineId={timeline.id} render={render} request={request} close={() => setPicking(false)}
+      linked={() => { setPicking(false); setMediaFailure(null); setRenderReload(n => n + 1); }} pending={pending} setPending={setPending} blocked={mediaFailure && mediaFailure.key === mediaKey ? mediaFailure : null} />}
   </section>;
 }
