@@ -20,11 +20,14 @@ function sameIdentity(a,b){return a.database===b.database&&a.serverUuid===b.serv
 // Never START TRANSACTION here: it would release LOCK TABLES. Never reconnect.
 export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000}={}) {
  if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>5000||typeof callback!=='function')throw lockError('unsupported_schema');
- const identity=()=>connection.get('SELECT DATABASE() AS `database`, @@server_uuid AS serverUuid, CONNECTION_ID() AS connectionId');
+ const identity=()=>connection.get('SELECT DATABASE() AS `database`, @@server_uuid AS serverUuid, CONNECTION_ID() AS connectionId, VERSION() AS serverVersion');
  const original=connection.get('SELECT @@session.autocommit AS autocommit, @@session.lock_wait_timeout AS lockWaitTimeout');
  if(original.autocommit!==1)throw lockError('busy');
  const frozen=Object.freeze(identity());
  if(typeof frozen.database!=='string'||!frozen.database||typeof frozen.serverUuid!=='string'||!Number.isSafeInteger(frozen.connectionId))throw lockError('unsupported_schema');
+ // This exact ADD-column lock window has only been qualified on Oracle MySQL
+ // 8.2.0. Do not infer identical ALTER lock retention on another server version.
+ if(!/^8\.2\.0(?:$|[-+])/.test(frozen.serverVersion))throw lockError('unsupported_schema');
  const name='render-revision:'+createHash('sha256').update(frozen.serverUuid+'\0'+frozen.database).digest('hex').slice(0,48);
  let named=false,tables=false,sessionChanged=false,bodyError,result;
  const assertIdentity=()=>{
