@@ -158,7 +158,13 @@ export interface ProjectVideoWorkspaceProps {
 }
 
 export type FolderView = 'all' | 'root' | 'reject' | string;
-export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | 'final' | null; locked?: boolean};
+/** 文件夹封面（合同 PV-FOLDER-COVERS）：该文件夹子树里最近导入的托管视频，最多 3 个。 */
+export type FolderCover = {videoId: string; thumbnailUrl: string};
+export type Folder = {id: string; parentId: string; name: string; path: string; available: boolean; role?: 'reject' | 'final' | null; locked?: boolean;
+  /** 该文件夹及子文件夹里未移除的视频数。缺失 = 旧后端，未知（不是 0）。 */
+  videoCount?: number;
+  /** 最多 3 张封面；缺失或空数组都只表示「没有可用封面」。 */
+  covers?: FolderCover[]};
 export type ConflictChoice = 'rename' | 'overwrite';
 export type FolderOperation = {
   kind: 'move-video' | 'move-videos' | 'rename-folder' | 'move-folder' | 'delete-folder';
