@@ -1,3 +1,4 @@
+import {withRenderMysqlLock} from './render-startup-mysql-lock.mjs';
 import {
   Worker,
   MessageChannel,
@@ -39,13 +40,17 @@ export class MysqlDatabase {
     }
     return packet.value;
   }
-  request(sql, values = [], mode = "all") {
+  request(sql, values = [], mode = "all", renderToken = null) {
+    if (mode !== "close" && (this.renderSchemaPoisoned || this.renderSchemaToken && renderToken !== this.renderSchemaToken)) throw Object.assign(Error("成片资料正在升级或需要核对，数据库请求未执行"), {code: "RENDER_SCHEMA_UPGRADE_ACTIVE", status: 503});
     if (this.closed) throw Error("MySQL 连接不可用，请重新启动素材库");
     Atomics.store(this.gate, 0, 0);
     this.port.postMessage({ sql, values, mode });
-    return this.read();
+    const result = this.read();
+    if (/^\s*(START\s+TRANSACTION|BEGIN)\b/i.test(sql)) this.renderTransactionActive = true;
+    if (/^\s*(COMMIT|ROLLBACK)\b/i.test(sql)) this.renderTransactionActive = false;
+    return result;
   }
-  prepare(sql) {
+  prepare(sql, renderToken = null) {
     sql = sql
       .replace(/name COLLATE NOCASE/g, "name COLLATE utf8mb4_0900_ai_ci")
       .replace(/\browid\b/g, "operation_seq");
@@ -65,7 +70,7 @@ export class MysqlDatabase {
         });
         args = values;
       }
-      return this.request(query, args, mode);
+      return this.request(query, args, mode, renderToken);
     };
     return {
       all: (...args) => call("all", args),
@@ -73,8 +78,8 @@ export class MysqlDatabase {
       run: (...args) => call("run", args),
     };
   }
-  exec(sql) {
-    this.request(sql, [], "exec");
+  exec(sql, renderToken = null) {
+    this.request(sql, [], "exec", renderToken);
     return this;
   }
   transaction(fn) {
@@ -92,6 +97,22 @@ export class MysqlDatabase {
         throw e;
       }
     };
+  }
+  async withRenderSchemaUpgradeLock(callback, options) {
+    if (this.renderSchemaToken || this.renderSchemaPoisoned || this.renderTransactionActive) throw Object.assign(Error("成片资料升级窗口不可用"), {code: "RENDER_SCHEMA_UPGRADE_LOCK_FAILED", status: 503, reason: "busy", state: "failed", details: {renderSchemaUpgrade: {state: "failed", reason: "busy"}}});
+    const token = this.renderSchemaToken = Symbol("render-schema-upgrade");
+    try {
+      return await withRenderMysqlLock({
+        get: (sql, args = []) => this.request(sql, args, "get", token),
+        all: (sql, args = []) => this.request(sql, args, "all", token),
+        exec: sql => this.request(sql, [], "exec", token),
+      }, callback, options);
+    } catch (error) {
+      if (error.renderUpgradeCleanupUnknown) this.renderSchemaPoisoned = true;
+      throw error;
+    } finally {
+      this.renderSchemaToken = null;
+    }
   }
   close() {
     if (this.closed) return;
