@@ -17,6 +17,33 @@ try{
  await pass('qualified current and new empty table need no backup or ALTER',async()=>{const lib=await setup('ready',{revision:true});assert.equal((await run(lib)).writable,true);await assert.rejects(fs.access(path.join(lib.dataDir,'backups')),e=>e.code==='ENOENT');await control.query('DROP TABLE project_renders');assert.equal((await run(lib)).writable,true);await assert.rejects(fs.access(path.join(lib.dataDir,'backups')),e=>e.code==='ENOENT');});
  await pass('backup parent refuses before real MySQL ALTER',async()=>{const lib=await setup('backupfail');await fs.writeFile(path.join(lib.dataDir,'backups'),'not a directory');const state=await run(lib);assert.equal(state.writable,false);assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,0);});
  await pass('post-DDL lost observation keeps real column and persistent needs-review across new connection',async()=>{const lib=await setup('postddl');const original=db.withRenderSchemaUpgradeLock.bind(db);db.withRenderSchemaUpgradeLock=(fn,opts)=>original(async locked=>fn({...locked,exec(sql){locked.exec(sql);throw Object.assign(Error('synthetic lost post-DDL observation'),{upgradeReason:'unknown_outcome'});}}),opts);const state=await run(lib);assert.equal(state.details.renderSchemaUpgrade.state,'needs_review');assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,1);await close();db=new MysqlDatabase(env.config);lib.db=db;const next=await run(lib);assert.equal(next.details.renderSchemaUpgrade.state,'needs_review');assert.equal(renderSchemaStatus(db).writable,false);assert.equal((await control.query('SELECT payload FROM project_renders'))[0][0].payload,payload);});
+ await pass('same database different dataDir cannot clear post-DDL pending fence',async()=>{
+  const lib=await setup('crossdir-pending');const original=db.withRenderSchemaUpgradeLock.bind(db);
+  db.withRenderSchemaUpgradeLock=(fn,opts)=>original(async locked=>fn({...locked,exec(sql){locked.exec(sql);throw Object.assign(Error('lost observation'),{upgradeReason:'unknown_outcome'});}}),opts);
+  const first=await run(lib);assert.equal(first.details.renderSchemaUpgrade.state,'needs_review');await close();
+  db=new MysqlDatabase(env.config);const other=path.join(env.root,'crossdir-other');await fs.mkdir(other,{mode:0o700});const second=await run({db,dataDir:other});
+  assert.equal(second.writable,false);assert.equal(second.details.renderSchemaUpgrade.state,'needs_review');assert.equal(second.details.renderSchemaUpgrade.reason,'unknown_outcome');
+  console.log('CROSS_DIRECTORY_STATES '+JSON.stringify({first,second}));
+ });
+ await pass('successful marked domain restarts only with matching private directory and receipt',async()=>{
+  const lib=await setup('domain-success');assert.equal((await run(lib)).writable,true);await close();db=new MysqlDatabase(env.config);lib.db=db;
+  assert.equal((await run(lib)).writable,true);const files=await fs.readdir(path.join(lib.dataDir,'backups/render-schema-startup'));assert.equal(files.filter(f=>f.endsWith('.backup.json')).length,1);
+  const other=path.join(env.root,'domain-success-other');await fs.mkdir(other,{mode:0o700});assert.equal((await run({db,dataDir:other})).details.renderSchemaUpgrade.state,'needs_review');
+  await close();db=new MysqlDatabase(env.config);lib.db=db;const dir=path.join(lib.dataDir,'backups/render-schema-startup');await fs.rename(dir,dir+'-original');await fs.mkdir(dir,{mode:0o700});for(const file of files)await fs.copyFile(path.join(dir+'-original',file),path.join(dir,file));
+  assert.equal((await run(lib)).details.renderSchemaUpgrade.state,'needs_review');
+ });
+ await pass('marked column without its ready receipt stays needs-review',async()=>{
+  const lib=await setup('missingreceipt');assert.equal((await run(lib)).writable,true);await close();db=new MysqlDatabase(env.config);lib.db=db;
+  const dir=path.join(lib.dataDir,'backups/render-schema-startup');const state=(await fs.readdir(dir)).find(f=>f.endsWith('.json')&&!f.endsWith('.backup.json'));await fs.rename(path.join(dir,state),path.join(dir,state+'.retained'));
+  const result=await run(lib);assert.equal(result.details.renderSchemaUpgrade.state,'needs_review');assert.equal(result.details.renderSchemaUpgrade.reason,'unknown_outcome');
+ });
+ await pass('marked domain with damaged ready receipt or missing backup remains needs-review',async()=>{
+  const lib=await setup('damagedreceipt');assert.equal((await run(lib)).writable,true);await close();db=new MysqlDatabase(env.config);lib.db=db;
+  const dir=path.join(lib.dataDir,'backups/render-schema-startup'),files=await fs.readdir(dir),file=files.find(f=>f.endsWith('.json')&&!f.endsWith('.backup.json')),receipt=await fs.readFile(path.join(dir,file));
+  await fs.writeFile(path.join(dir,file),'invalid JSON');assert.equal((await run(lib)).details.renderSchemaUpgrade.state,'needs_review');
+  await fs.writeFile(path.join(dir,file),receipt);await close();db=new MysqlDatabase(env.config);lib.db=db;
+  const backup=files.find(f=>f.endsWith('.backup.json'));await fs.rename(path.join(dir,backup),path.join(dir,backup+'.retained'));assert.equal((await run(lib)).details.renderSchemaUpgrade.state,'needs_review');
+ });
  await pass('unknown existing revision is refused without changing payload',async()=>{const lib=await setup('wrongtype');await control.query('ALTER TABLE project_renders ADD COLUMN revision TEXT');const state=await run(lib);assert.equal(state.details.renderSchemaUpgrade.reason,'unsupported_schema');assert.equal((await control.query('SELECT payload FROM project_renders'))[0][0].payload,payload);});
  await pass('permission failure on actual lock prevents ALTER',async()=>{
   const lib=await setup('permission');await control.query("CREATE USER 'startup_reader'@'localhost' IDENTIFIED BY ''");await control.query("GRANT SELECT,ALTER ON render_upgrade_test.* TO 'startup_reader'@'localhost'");await close();db=new MysqlDatabase({...env.config,user:'startup_reader'});lib.db=db;
@@ -25,7 +52,7 @@ try{
  await pass('actual connection interruption after ALTER keeps pending state and original rows',async()=>{
   const lib=await setup('connectionloss'),killer=new MysqlDatabase(env.config),original=db.withRenderSchemaUpgradeLock.bind(db);
   db.withRenderSchemaUpgradeLock=(fn,opts)=>original(async locked=>fn({...locked,exec(sql){locked.exec(sql);killer.exec('KILL CONNECTION '+locked.identity.connectionId);}}),opts);
-  try{const state=await run(lib);assert.equal(state.details.renderSchemaUpgrade.state,'needs_review');assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,1);assert.equal((await control.query('SELECT payload FROM project_renders'))[0][0].payload,payload);}
+  try{const state=await run(lib);assert.equal(state.details.renderSchemaUpgrade.state,'needs_review');assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,1);assert.equal((await control.query('SELECT payload FROM project_renders'))[0][0].payload,payload);assert.equal(db.prepare('SELECT @@autocommit a').get().a,1);assert.equal(db.renderSchemaMigrationReceipt.state,'closed');assert.equal(db.renderSchemaMigrationReceipt.closeAck,true);assert.equal(db.renderSchemaMigrationReceipt.workerExit,0);assert.notEqual(db.renderSchemaMigrationReceipt.businessConnectionId,db.renderSchemaMigrationReceipt.migrationConnectionId);console.log('MIGRATION_CLOSE_RECEIPT '+JSON.stringify(db.renderSchemaMigrationReceipt));}
   finally{const exit=once(killer.worker,'exit');killer.close();await bounded(exit,5000,'killer worker exit missing');}
   await close();db=new MysqlDatabase(env.config);lib.db=db;const next=await run(lib);assert.equal(next.details.renderSchemaUpgrade.state,'needs_review');
  });

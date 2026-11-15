@@ -4,6 +4,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import mysql from 'mysql2/promise';
+import net from 'node:net';
 
 export async function bounded(promise, ms, label) {
  let timer;
@@ -12,9 +13,11 @@ export async function bounded(promise, ms, label) {
 }
 
 // An owned socket-only server. Never discovers an existing server or reads its defaults.
-export async function ownedRenderMysql() {
+export async function ownedRenderMysql({tcp=false}={}) {
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'render-startup-mysql-')));
  await fs.chmod(root,0o700);
+ let port;
+ if(tcp){const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));port=listener.address().port;await new Promise(r=>listener.close(r));}
  const data=path.join(root,'data');await fs.mkdir(data,{mode:0o700});
  const binary=process.env.RENDER_TEST_MYSQLD||'/usr/local/mysql/bin/mysqld';
  let logs='',server,control,exited,initializer,initializerExit;let overflow=false;
@@ -26,15 +29,15 @@ export async function ownedRenderMysql() {
   initializer=spawn(binary,['--no-defaults','--initialize-insecure','--datadir='+data],{stdio:['ignore','pipe','pipe']});capture(initializer);initializerExit=once(initializer,'exit');
   const [code]=await bounded(initializerExit,30000,'owned MySQL initialization timed out');
   if(code!==0)throw Error('owned MySQL initialization failed');
-  server=spawn(binary,['--no-defaults','--datadir='+data,'--skip-networking','--mysqlx=OFF','--socket='+config.socketPath,'--pid-file='+path.join(root,'mysql.pid')],{stdio:['ignore','pipe','pipe']});capture(server);inventory.serverPid=server.pid;exited=once(server,'exit');
+  server=spawn(binary,['--no-defaults','--datadir='+data,...(tcp?['--port='+port,'--bind-address=127.0.0.1']:['--skip-networking']),'--mysqlx=OFF','--socket='+config.socketPath,'--pid-file='+path.join(root,'mysql.pid')],{stdio:['ignore','pipe','pipe']});capture(server);inventory.serverPid=server.pid;exited=once(server,'exit');
   for(let i=0;i<100;i++){
    if(server.exitCode!==null)throw Error('owned MySQL exited before ready');
    try{control=await mysql.createConnection(config);break;}catch{await new Promise(r=>setTimeout(r,100));}
   }
   if(!control)throw Error('owned MySQL did not become ready');
-  const [[row]]=await control.query('SELECT VERSION() version,@@server_uuid uuid,@@datadir dataDir,@@pid_file pidFile,@@socket socket');inventory.version=row.version;inventory.identity=row;if(await fs.realpath(row.dataDir)!==await fs.realpath(data)||row.socket!==config.socketPath||Number((await fs.readFile(row.pidFile,'utf8')).trim())!==server.pid||overflow)throw Error('owned MySQL identity/log boundary failed');
+  const [[row]]=await control.query('SELECT VERSION() version,@@server_uuid uuid,@@datadir dataDir,@@pid_file pidFile,@@socket socket,@@port port,@@bind_address bindAddress');inventory.version=row.version;inventory.identity=row;if(await fs.realpath(row.dataDir)!==await fs.realpath(data)||row.socket!==config.socketPath||tcp&&(Number(row.port)!==port||row.bindAddress!=='127.0.0.1')||Number((await fs.readFile(row.pidFile,'utf8')).trim())!==server.pid||overflow)throw Error('owned MySQL identity/log boundary failed');
   await control.query('CREATE DATABASE render_upgrade_test CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');
-  return {root,inventory,config:{...config,database:'render_upgrade_test'},async connect(){return mysql.createConnection({...config,database:'render_upgrade_test'});},async close(){
+  return {root,inventory,tcpConfig:tcp?{host:'127.0.0.1',port,user:'root',password:'',database:'render_app_test'}:null,config:{...config,database:'render_upgrade_test'},async connect(){return mysql.createConnection({...config,database:'render_upgrade_test'});},async close(){
    inventory.shutdown='REQUESTED';
    try{await control.query('SHUTDOWN');}catch(e){if(!['PROTOCOL_CONNECTION_LOST','ECONNRESET'].includes(e.code))throw e;}
    const [exitCode,signal]=await bounded(exited,15000,'owned MySQL shutdown unconfirmed');

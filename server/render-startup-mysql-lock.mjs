@@ -41,7 +41,7 @@ export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000,
   if(Date.now()>windowEnd)throw lockError(altered?'unknown_outcome':'busy',altered?'needs_review':'failed');
   const normalized=String(sql).trim();
   if(write){
-   if(altered||!/^ALTER\s+TABLE\s+`?project_renders`?\s+ADD\s+COLUMN\s+`?revision`?\s+BIGINT\s+NOT\s+NULL\s+DEFAULT\s+1\s*;?$/i.test(normalized))throw lockError('unsupported_schema');
+   if(altered||!/^ALTER\s+TABLE\s+`?project_renders`?\s+ADD\s+COLUMN\s+`?revision`?\s+BIGINT\s+NOT\s+NULL\s+DEFAULT\s+1(?:\s+COMMENT\s+'render-schema-startup-v2:[0-9a-f]{64}')?\s*;?$/i.test(normalized))throw lockError('unsupported_schema');
    altered=true;
   }else if(!/^(SELECT\s|SHOW\s+CREATE\s+TABLE\s+`?project_renders`?\s*;?$)/i.test(normalized)||/;\s*\S|\b(GET_LOCK|RELEASE_LOCK|RELEASE_ALL_LOCKS|SLEEP|INTO|FOR\s+UPDATE)\b/i.test(normalized))throw lockError('unsupported_schema');
   assertIdentity();

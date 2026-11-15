@@ -3,13 +3,13 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-const states=new WeakMap(),MAX_ROWS=100000,MAX_BYTES=64*1024*1024;
+const domains=new WeakMap(),states=new WeakMap(),MAX_ROWS=100000,MAX_BYTES=64*1024*1024;
 const digest=s=>createHash('sha256').update(s).digest('hex');
 const error=(reason)=>Object.assign(Error('Render schema upgrade unavailable'),{upgradeReason:reason});
 const summary=(state,reason)=>({writable:false,details:{renderSchemaUpgrade:{state,reason}}});
 const ready=()=>({writable:true,details:null});
 export function inspectRenderSchema(db){
- const rows=db.kind==='mysql'?db.prepare("SELECT COLUMN_NAME name,DATA_TYPE type,CHARACTER_MAXIMUM_LENGTH maxLength,IS_NULLABLE nullable,COLUMN_DEFAULT defaultValue,COLUMN_KEY columnKey FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_renders' ORDER BY ORDINAL_POSITION").all():db.prepare('PRAGMA table_info(project_renders)').all();
+ const rows=db.kind==='mysql'?db.prepare("SELECT COLUMN_NAME name,DATA_TYPE type,CHARACTER_MAXIMUM_LENGTH maxLength,IS_NULLABLE nullable,COLUMN_DEFAULT defaultValue,COLUMN_KEY columnKey,COLUMN_COMMENT columnComment FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_renders' ORDER BY ORDINAL_POSITION").all():db.prepare('PRAGMA table_info(project_renders)').all();
  if(!rows.length)return {kind:'absent',columns:rows};
  const names=rows.map(r=>r.name).sort().join(',');
  if(!['id,payload,project_id','id,payload,project_id,revision'].includes(names))throw error('unsupported_schema');
@@ -22,12 +22,14 @@ export function inspectRenderSchema(db){
    if(!notNull||def!=='1'||!(mysql?r.type==='bigint':r.type.toUpperCase()==='INTEGER'))throw error('unsupported_schema');
   }
  }
- return {kind:names.endsWith(',revision')?'ready':'legacy',columns:rows};
+ const comment=db.kind==='mysql'?(rows.find(r=>r.name==='revision')?.columnComment||''):'';
+ if(comment&&!/^render-schema-startup-v2:[0-9a-f]{64}$/.test(comment))throw error('unknown_outcome');
+ return {kind:names.endsWith(',revision')?'ready':'legacy',columns:rows,domain:comment||null};
 }
 export function renderSchemaStatus(db){
  const prior=states.get(db);
  if(prior&&!prior.writable)return prior;
- try{const shape=inspectRenderSchema(db);return ['ready','absent'].includes(shape.kind)?ready():summary('required','unknown_outcome');}
+ try{const shape=inspectRenderSchema(db);if(shape.domain&&domains.get(db)!==shape.domain)return summary('needs_review','unknown_outcome');return ['ready','absent'].includes(shape.kind)?ready():summary('required','unknown_outcome');}
  catch{return summary('failed','unsupported_schema');}
 }
 function currentSQLite(db,identity){
@@ -77,6 +79,21 @@ async function writeState(dir,key,state){
 async function readState(dir,key){
  if(!dir)return null;try{const v=JSON.parse((await readPrivate(path.join(dir,key+'.json'))).toString());if(v.format!=='render-schema-startup-v1'||v.key!==key||!['prepared','ready'].includes(v.state))throw error('backup_failed');return v;}catch(e){if(e.code==='ENOENT')return null;throw e;}
 }
+// This is a durable domain binding, not authentication between processes of
+// the same OS user. No raw path, payload or credential enters the column comment.
+async function mysqlDomain(dir,identity){
+ if(!dir)throw error('unknown_outcome');
+ const st=await fs.lstat(dir);
+ if(!st.isDirectory()||st.isSymbolicLink()||await fs.realpath(dir)!==dir||st.mode&0o077)throw error('unknown_outcome');
+ return 'render-schema-startup-v2:'+digest(JSON.stringify({identity,dev:String(st.dev),ino:String(st.ino),birthtimeMs:st.birthtimeMs}));
+}
+async function verifyDomain(shape,dir,identity,state){
+ if(!shape.domain)return;
+ if(shape.domain!==await mysqlDomain(dir,identity)||!state||state.domain!==shape.domain||JSON.stringify(state.identity)!==JSON.stringify(identity))throw error('unknown_outcome');
+ if(!/^[0-9TZ-]+-[0-9a-f-]{36}\.backup\.json$/.test(state.backup||''))throw error('unknown_outcome');
+ const backup=JSON.parse((await readPrivate(path.join(dir,state.backup))).toString());
+ if(backup.format!=='shiguang-render-schema-startup'||backup.version!==1||JSON.stringify(backup.identity)!==JSON.stringify(identity)||!Array.isArray(backup.rows)||backup.rowCount!==state.rowCount||backup.rows.length!==state.rowCount||backup.rowsSha256!==state.rowsSha256||digest(JSON.stringify(backup.rows))!==state.rowsSha256)throw error('unknown_outcome');
+}
 function rowsFor(db,validatePayload){
  const count=db.prepare('SELECT COUNT(*) n FROM project_renders').get().n;if(!Number.isSafeInteger(Number(count))||Number(count)>MAX_ROWS)throw error('backup_failed');
  const rows=db.prepare('SELECT id,project_id,payload FROM project_renders ORDER BY id LIMIT 100001').all();
@@ -86,28 +103,30 @@ function rowsFor(db,validatePayload){
 }
 function reasonFor(e){return e.upgradeReason||e.details?.renderSchemaUpgrade?.reason||(['SQLITE_BUSY','SQLITE_LOCKED','ER_LOCK_WAIT_TIMEOUT','ER_LOCK_DEADLOCK'].includes(e.code)?'busy':['EACCES','EPERM','ER_TABLEACCESS_DENIED_ERROR','ER_DBACCESS_DENIED_ERROR'].includes(e.code)?'permission_denied':'backup_failed');}
 export async function upgradeRenderSchemaAtStartup(lib,{dataDir=lib.dataDir,validatePayload}={}){
- const db=lib.db,deadline=Date.now()+15000;let ddlStarted=false,identity,dir,key,prepared;
+ const db=lib.db,deadline=Date.now()+15000;let ddlStarted=false,marked=false,identity,dir,key,prepared;
  const assertDb=()=>{if(Date.now()>deadline)throw error(ddlStarted?'unknown_outcome':'busy');if(lib.db!==db)throw error('unknown_outcome');};
  try{
-  assertDb();const initial=inspectRenderSchema(db);
+  assertDb();const initial=inspectRenderSchema(db);marked=Boolean(initial.domain);
   // Empty/new tables remain the responsibility of ordinary init.
   identity=await identityFor(db);assertDb();key=digest(JSON.stringify(identity));dir=await directory(dataDir,false);
   const prior=await readState(dir,key);
-  if(prior?.state!=='prepared'&&['ready','absent'].includes(initial.kind)){const value=ready();states.set(db,value);return value;}
+  await verifyDomain(initial,dir,identity,prior);
+  if(prior?.state!=='prepared'&&['ready','absent'].includes(initial.kind)){const value=ready();states.set(db,value);if(initial.domain)domains.set(db,initial.domain);return value;}
   // POSIX modes are not Windows ACLs: retain the old schema until a private
   // backup can be guaranteed there. New/qualified tables need no such write.
   if(process.platform==='win32')throw error('permission_denied');
   if(typeof validatePayload!=='function')throw error('verification_failed');
   const run=async locked=>{
    if(db.kind!=='mysql'&&locked!==db||locked.kind!==db.kind&&db.kind==='mysql')throw error('unknown_outcome');assertDb();await checkIdentity(locked,identity);
-   const shape=inspectRenderSchema(locked);let existing=await readState(await directory(dataDir,false),key);
+   const shape=inspectRenderSchema(locked);marked=Boolean(shape.domain);let existing=await readState(await directory(dataDir,false),key);
    // A predecessor may be completing its durable success marker just after
    // releasing the DB lock. Observe only; never overwrite its pending fence.
    if(shape.kind==='ready'&&existing?.state==='prepared'){
     const end=Date.now()+500;while(existing?.state==='prepared'&&Date.now()<end){await new Promise(r=>setTimeout(r,10));existing=await readState(await directory(dataDir,false),key);}
    }
+   await verifyDomain(shape,await directory(dataDir,false),identity,existing);
    if(existing?.state==='prepared')throw error('unknown_outcome');
-   if(shape.kind==='ready')return;
+   if(shape.kind==='ready'){if(shape.domain)domains.set(db,shape.domain);return;}
    if(shape.kind!=='legacy')throw error('unsupported_schema');
    const before=rowsFor(locked,validatePayload);dir=await directory(dataDir,true);await checkIdentity(locked,identity);assertDb();
    const schemaObjects=db.kind==='mysql'?locked.prepare('SHOW CREATE TABLE project_renders').all():locked.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='project_renders' ORDER BY type,name").all();
@@ -117,10 +136,12 @@ export async function upgradeRenderSchemaAtStartup(lib,{dataDir=lib.dataDir,vali
    await exclusiveFile(path.join(dir,backupName),backupBytes);
    const verified=JSON.parse((await readPrivate(path.join(dir,backupName))).toString());if(verified.rowCount!==before.rows.length||digest(JSON.stringify(verified.rows))!==backup.rowsSha256)throw error('backup_failed');
    assertDb();await checkIdentity(locked,identity);if(rowsFor(locked,validatePayload).bytes!==before.bytes||inspectRenderSchema(locked).kind!=='legacy')throw error('verification_failed');
-   prepared={format:'render-schema-startup-v1',key,state:'prepared',identity,backup:backupName,rowCount:before.rows.length,rowsSha256:backup.rowsSha256};
+   const domain=db.kind==='mysql'?await mysqlDomain(dir,identity):null;
+   prepared={format:'render-schema-startup-v1',key,state:'prepared',identity,backup:backupName,rowCount:before.rows.length,rowsSha256:backup.rowsSha256,...(domain?{domain}:{})};
    await writeState(dir,key,prepared);assertDb();await checkIdentity(locked,identity);
-   ddlStarted=true;locked.exec(`ALTER TABLE project_renders ADD COLUMN revision ${db.kind==='mysql'?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1`);
-   assertDb();await checkIdentity(locked,identity);if(inspectRenderSchema(locked).kind!=='ready')throw error('verification_failed');
+   if(domain&&domain!==await mysqlDomain(await directory(dataDir,false),identity))throw error('unknown_outcome');
+   ddlStarted=true;locked.exec(`ALTER TABLE project_renders ADD COLUMN revision ${db.kind==='mysql'?'BIGINT':'INTEGER'} NOT NULL DEFAULT 1${domain?" COMMENT '"+domain+"'":''}`);
+   assertDb();await checkIdentity(locked,identity);const upgraded=inspectRenderSchema(locked);if(upgraded.kind!=='ready'||domain&&upgraded.domain!==domain)throw error('verification_failed');
    const after=locked.prepare('SELECT id,project_id,payload,revision FROM project_renders ORDER BY id LIMIT 100001').all();
    if(JSON.stringify(after.map(({revision,...row})=>row))!==before.bytes||after.some(row=>Number(row.revision)!==1))throw error('verification_failed');
   };
@@ -134,10 +155,10 @@ export async function upgradeRenderSchemaAtStartup(lib,{dataDir=lib.dataDir,vali
    finally{db.pragma('busy_timeout = '+Number(oldTimeout));}
   }
   assertDb();await checkIdentity(db,identity);
-  if(prepared)await writeState(dir,key,{...prepared,state:'ready'});
+  if(prepared){if(prepared.domain&&prepared.domain!==await mysqlDomain(await directory(dataDir,false),identity))throw error('unknown_outcome');await writeState(dir,key,{...prepared,state:'ready'});if(prepared.domain)domains.set(db,prepared.domain);}
   const value=ready();states.set(db,value);return value;
  }catch(e){
-  const value=summary(ddlStarted||e.renderUpgradeCleanupUnknown||e.details?.renderSchemaUpgrade?.state==='needs_review'||e.upgradeReason==='unknown_outcome'?'needs_review':'failed',ddlStarted?(e.upgradeReason==='verification_failed'?'verification_failed':'unknown_outcome'):reasonFor(e));
+  const value=summary(ddlStarted||marked||e.renderUpgradeCleanupUnknown||e.details?.renderSchemaUpgrade?.state==='needs_review'||e.upgradeReason==='unknown_outcome'?'needs_review':'failed',ddlStarted||marked?(e.upgradeReason==='verification_failed'?'verification_failed':'unknown_outcome'):reasonFor(e));
   states.set(db,value);return value;
  }
 }
