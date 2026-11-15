@@ -1,3 +1,4 @@
+import {summarizeVideoFolders} from './folder-summaries.mjs';
 import {ProjectVideoFinalFolder} from './final-folder.mjs';
 import {ProjectVideoMediaInfo} from './media-info.mjs';
 import {ProjectVideoVerification} from './verification.mjs';
@@ -49,7 +50,7 @@ export class ProjectVideos{
  managedKey(sourceId){const h=digest('project-managed-video-v1:'+sourceId).slice(0,32);return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
  managedProof(source,data){return digest({kind:'project-managed-video-v1',source:this.videos.proof(source),directory:this.directory,sha256:data.sha256,mediaAssetId:data.mediaAssetId,...(data.contentFingerprint?{contentFingerprint:data.contentFingerprint}:{})});}
  matchingAsset(source,data){if(!data.mediaAssetId)return null;const asset=this.db.prepare('SELECT * FROM assets WHERE id=?').get(data.mediaAssetId);if(!asset||asset.trashed||asset.kind!=='video'||asset.path!==source.path||String(asset.dev)!==source.identity.dev||String(asset.ino)!==source.identity.ino||asset.size!==source.identity.size||asset.sha256!==data.sha256)return null;const root=this.lib.roots().find(r=>r.id===asset.root_id&&within(r.path,source.path));return root?asset:null;}
- isManaged(id,source){const {data}=this.metadata(id,source);if(!data.managed||data.removedAt||!this.videos.authorized(source)||!this.folders.rootForSource(id,source.path)||!this.matchingAsset(source,data))return false;return this.db.prepare('SELECT proof_hash FROM storyboard_video_approvals WHERE id=? AND project_id=?').get(this.managedKey(source.id),id)?.proof_hash===this.managedProof(source,data);}
+ isManaged(id,source,metadata=this.metadata(id,source)){const {data}=metadata;if(!data.managed||data.removedAt||!this.videos.authorized(source)||!this.folders.rootForSource(id,source.path)||!this.matchingAsset(source,data))return false;return this.db.prepare('SELECT proof_hash FROM storyboard_video_approvals WHERE id=? AND project_id=?').get(this.managedKey(source.id),id)?.proof_hash===this.managedProof(source,data);}
  approveManaged(source){const data=this.metadata(source.project_id,source).data,key=this.managedKey(source.id),proof=this.managedProof(source,data),now=Date.now();const old=this.db.prepare('SELECT id FROM storyboard_video_approvals WHERE id=?').get(key);if(old)this.db.prepare('UPDATE storyboard_video_approvals SET proof_hash=?,updated_at=? WHERE id=?').run(proof,now,key);else this.db.prepare('INSERT INTO storyboard_video_approvals VALUES(?,?,?,?,?)').run(key,source.project_id,proof,now,now);}
  verifiedSource(id,sourceId){return this.verification.verify(id,sourceId);}
  assertBindable(id,sourceId){this.project(id);const source=this.videos.source(id,sourceId),m=this.metadata(id,source);if(!this.isManaged(id,source)||!source.supported)fail('PROJECT_VIDEO_REQUIRED','请先在当前项目的“生成视频”中导入或升级可播放视频，再绑定镜号',409);return source;}
@@ -59,7 +60,7 @@ export class ProjectVideos{
  adoption(id){const head=this.videos.storyboards.head(id);if(!head)return{stamp:digest({id,head:null}),shots:new Map(),current:null};const state=this.videos.baseState(id),takes=new Map(state.takes.map(t=>[t.takeId,t])),shots=new Map();for(const [shotId,takeId]of Object.entries(state.plan.adopted)){const shot=state.shots.find(s=>s.id===shotId);if(!shot)continue;for(const segment of takes.get(takeId)?.segments??[]){const list=shots.get(segment.sourceId)||[];if(!list.some(s=>s.id===shotId))list.push({id:shotId,number:shot.number});shots.set(segment.sourceId,list);}}return{stamp:digest({projectId:id,documentId:state.documentId,initializedAt:state.initializedAt,revision:state.plan.revision,adopted:state.plan.adopted,timingHash:state.timingHash}),shots,current:state};}
  async dto(id,source,adoption=this.adoption(id),verify=true){const status=verify?await this.videos.status(source):{status:'unchecked',errorCode:null};source=this.videos.source(id,source.id);const {data,row}=this.metadata(id,source),folderId=this.folders.folderId(id,source.path),managed=this.isManaged(id,source);return{id:source.id,projectId:id,name:data.title,fileName:source.name,notes:data.notes,promptId:data.promptId,revision:row?.revision||0,durationMs:source.durationMs,codec:source.codec,supported:source.supported,...status,verification:this.verification.view(source),folderId,inRejectArea:this.folders.inRejectArea(id,folderId),managed,mediaUrl:`/api/project-videos/projects/${id}/videos/${source.id}/media`,thumbnailUrl:managed?`/api/media/${data.mediaAssetId}/thumb`:null,adoptedShots:adoption.shots.get(source.id)||[],path:source.path,bytes:source.identity.size};}
  async list(id,options={}){
-  const p=this.project(id),adoption=this.adoption(id),videos=[],folderRows=this.folders.rows(id),projectRoot=await this.folders.rootPath(id),folderId=options.folderId??'all';
+  const p=this.project(id),adoption=this.adoption(id),videos=[],summaryEntries=[],folderRows=this.folders.rows(id),projectRoot=await this.folders.rootPath(id),folderId=options.folderId??'all';
   const folderRoles=await this.finalFolder.roles(id);
   // A broken role stays visible under its original ID. Never adopt a same-name
   // directory, or silently recreate a missing role during a read.
@@ -67,10 +68,14 @@ export class ProjectVideos{
   if(!['all','root','reject'].includes(folderId))await this.folders.resolve(id,folderId);
   let legacyCount=0;
   for(const source of this.videos.sources(id).reverse()){
-   if(this.metadata(id,source).data.removedAt)continue;
-   const ownFolder=this.folders.folderId(id,source.path,folderRows),rejected=this.folders.inRejectArea(id,ownFolder,folderRows);
+   const metadata=this.metadata(id,source);if(metadata.data.removedAt)continue;
+   const ownFolder=this.folders.folderId(id,source.path,folderRows),rejected=this.folders.inSubtree(ownFolder,folderRoles.rejectFolderId,folderRows);
+   summaryEntries.push({source,data:metadata.data,metadata,folderId:ownFolder,rejected});
+  }
+  const summaries=summarizeVideoFolders(folderRows,summaryEntries,folderRoles.rejectFolderId,entry=>this.isManaged(id,entry.source,entry.metadata));
+  for(const {source,metadata,folderId:ownFolder,rejected} of summaryEntries){
    if(folderId==='reject'?!rejected:folderId==='all'?rejected&&options.includeRejected!==true:ownFolder!==folderId){
-    if(!this.isManaged(id,source))legacyCount++;
+    if(!this.isManaged(id,source,metadata))legacyCount++;
     continue;
    }
    const roleUnavailable=rejected&&folderRoles.needsReview,video=await this.dto(id,source,adoption,!roleUnavailable&&(options.folderId===undefined||folderId!=='all'));
@@ -79,7 +84,7 @@ export class ProjectVideos{
    videos.push(video);
   }
   const legacyUpgrade={count:legacyCount,completed:legacyCount===0};
-  const folders=folderRows.map(r=>this.folders.dto(r,projectRoot,folderRoles)),breadcrumbs=[],seen=new Set();let current=folderId;
+  const folders=folderRows.map(r=>({...this.folders.dto(r,projectRoot,folderRoles),...summaries.get(r.id)})),breadcrumbs=[],seen=new Set();let current=folderId;
   while(current&&!['all','root','reject'].includes(current)){if(seen.has(current))fail('FOLDER_CONFLICT','文件夹层级循环',409);seen.add(current);const item=folders.find(f=>f.id===current);if(!item)break;breadcrumbs.unshift(item);current=item.parentId;}
   return{project:{id:p.id,name:p.name},videos,prompts:this.prompts(id),adoptionStamp:adoption.stamp,folders,folderRoles,currentFolderId:folderId,breadcrumbs,folderRevision:folderRows.reduce((n,r)=>n+r.revision,0),legacyUpgrade,canTrash:!!this.lib.trashBin||this.trashInjected,capabilities:await this.desktop.capabilities()};
  }
