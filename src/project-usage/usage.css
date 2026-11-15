@@ -109,3 +109,23 @@
 
 /* 单条素材的「回看」窗口：成片只读说明（更换请到素材使用页上方） */
 .timeline-render-note { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 0; padding-top: 13px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* 紧凑素材列表：一条素材尽量压在两行内。整集的位置看上方轨道，这里不再重复画每条的小位置条和时间线名 */
+.project-items .project-item { align-items: center; gap: 4px 10px; padding: 7px 0; }
+.project-items .project-item > input { margin-top: 0; }
+.project-items .project-media-preview { width: 36px; height: 36px; }
+.project-items .project-item-info { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; }
+.project-items .project-item-info .asset-name-button { font-weight: 600; max-width: 100%; }
+.project-items .project-item-info > small { margin: 0; }
+.project-items .timeline-usage.compact { margin-top: 0; flex: 0 1 auto; min-width: 0; }
+.project-items .timeline-usage.compact .timeline-usage-heading > strong { display: none; }
+.project-items .timeline-usage.compact .timeline-usage-position { display: inline-flex; margin: 0 0 0 8px; }
+.project-items .timeline-usage.compact .timeline-usage-heading { display: inline-flex; }
+.project-items .timeline-usage.compact .timeline-position-bar,
+.project-items .timeline-usage.compact > .timeline-bar-scale { display: none; }
+.project-items .project-file-details { display: inline-block; font-size: 12px; }
+.project-items .project-file-details > summary { font-size: 12px; }
+.project-items .project-item-actions { align-self: center; }
+.project-items .project-item-info > .project-note { display: inline-block; margin: 0; font-size: 12px; }
+.project-items .project-item-info > .project-note-editor { flex: 1 1 100%; }
+.project-items .project-file-details[open] { flex: 1 1 100%; }
