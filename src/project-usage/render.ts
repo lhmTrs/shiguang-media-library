@@ -14,6 +14,14 @@ export type RenderV2 = {
   playback: { supported: boolean | null; canPlay: boolean; reasonCode: string | null; mediaUrl: string | null };
   sync: { state: "aligned" | "not_linked" | "timeline_changed" | "source_changed" | "duration_mismatch" | "legacy_unverified"; canSynchronize: boolean };
   video: { codec: string | null; width: number | null; height: number | null; durationMs: number | null; bytes: number | null } | null;
+  /** RENDER-STARTUP-REVISION：成片关联/解除现在能不能写。缺失 = 旧后端或尚未判定，按原行为处理，不当 false。 */
+  writable?: boolean;
+  details?: { renderSchemaUpgrade?: SchemaUpgrade } | null;
+};
+/** 成片表启动升级的安全摘要（无 SQL、路径、凭据）。needs_review 是状态，不是原因。 */
+export type SchemaUpgrade = {
+  state: "required" | "failed" | "needs_review";
+  reason?: "backup_failed" | "unsupported_schema" | "busy" | "permission_denied" | "verification_failed" | "unknown_outcome" | null;
 };
 export type FolderRoles = { revision: number; rejectFolderId: string | null; rejectVideoCount: number; needsReview: boolean; finalFolderId: string | null; finalState: "not_created" | "ready" | "needs_review"; finalErrorCode: string | null };
 export type SourceItem = {
@@ -143,6 +151,27 @@ export function renderStatus(r: RenderV2 | null): { tone: "ok" | "warn" | "none"
   if (!r.sync.canSynchronize) return { tone: "warn", text: r.sync.state === "timeline_changed" ? "时间线已重新导入，需要重新确认成片" : "成片与时间线需要重新确认" };
   return { tone: "ok", text: "成片可播放" };
 }
+
+const SCHEMA_CODES = new Set(["RENDER_SCHEMA_MIGRATION_REQUIRED", "RENDER_SCHEMA_UNSUPPORTED"]);
+const REVIEW = "成片表需要维护者核对，暂时无法关联或解除成片。请联系维护者；反复重启拾光不能解决。";
+/** 成片表还没升级 / 升级没成功时给用户看的话：按原因说清下一步，不显示技术原文。 */
+export function schemaUpgradeText(u?: SchemaUpgrade | null): string {
+  if (u?.state === "needs_review") return REVIEW;
+  switch (u?.reason) {
+    case "backup_failed": return "资料库备份未完成，暂时无法关联或解除成片。请检查磁盘空间和写入权限后重启拾光。";
+    case "busy": return "另一个拾光正在升级资料库，暂时无法关联或解除成片。请稍后重启拾光。";
+    case "permission_denied": return "数据库权限不足，无法升级成片表，暂时无法关联或解除成片。请联系维护者。";
+    case "unsupported_schema": case "verification_failed": case "unknown_outcome": return REVIEW;
+  }
+  return "成片表还没升级，暂时无法关联或解除成片。请重启拾光；仍不行请联系维护者。";
+}
+/** 写入失败的回执或错误体是不是「成片表结构不可写」；是的话返回给用户看的话。 */
+export function schemaErrorText(error: { code?: string; details?: Record<string, unknown> } | null | undefined): string | null {
+  if (!error?.code || !SCHEMA_CODES.has(error.code)) return null;
+  return schemaUpgradeText((error.details as { renderSchemaUpgrade?: SchemaUpgrade } | undefined)?.renderSchemaUpgrade);
+}
+/** 读接口说现在不可写时的原因；writable 缺失（旧后端）返回 null，按原行为。 */
+export const notWritableText = (r: RenderV2 | null) => r && r.writable === false ? schemaUpgradeText(r.details?.renderSchemaUpgrade) : null;
 
 const reasonText: Record<string, string> = {
   RENDER_SOURCE_MISSING: "成片视频文件已移动或丢失",

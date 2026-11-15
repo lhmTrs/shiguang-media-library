@@ -65,11 +65,13 @@ async function installMocks() {
   await ctx.route(u => at(u, /\/folders\/final\/ensure$/), r => { const b = r.request().postDataJSON(); fake.ensures.push(b); return r.fulfill({ status: 200, json: ownReceipt(caseBody('ensure-adopted'), { rid: b.requestId }) }); });
   await ctx.route(u => at(u, /^\/api\/projects\/[^/]+\/timelines\/[^/]+\/render$/), r => {
     const m = r.request().method();
-    if (m === 'GET') { fake.gets = (fake.gets ?? 0) + 1; return r.fulfill({ json: caseBody(fake.render) }); }
+    if (m === 'GET') { fake.gets = (fake.gets ?? 0) + 1; return r.fulfill({ json: { ...caseBody(fake.render), ...(fake.renderPatch ?? {}) } }); }
     const tid = /timelines\/([^/]+)\/render$/.exec(new URL(r.request().url()).pathname)[1];
     if (m === 'POST') {
       const b = r.request().postDataJSON(); fake.posts.push({ ...b, tid });
       if (fake.link === 'abort') return r.abort('connectionreset');
+      if (fake.link === 'schema-failed') return r.fulfill({ status: 200, json: ownReceipt({ ...caseBody('link-terminal-failed'), error: { code: 'RENDER_SCHEMA_MIGRATION_REQUIRED', message: '旧库需先显式备份并迁移成片修订列', details: { renderSchemaUpgrade: { state: 'failed', reason: 'backup_failed' } } } }, { rid: b.requestId, tid }) });
+      if (fake.link === 'schema-503') return r.fulfill({ status: 503, json: { error: '旧库需先显式备份并迁移成片修订列', code: 'RENDER_SCHEMA_MIGRATION_REQUIRED', details: { renderSchemaUpgrade: { state: 'required', reason: null } } } });
       if (fake.link === 'unsettled-foreign') return r.fulfill({ status: 503, json: { error: '合成：结果未核清', code: 'OPERATION_UNSETTLED', requestId: OTHER_RID, details: { statusUrl: `/api/projects/${PID}/timelines/${OTHER_TID}/render/requests/${OTHER_RID}` } } });
       return r.fulfill({ status: caseStatus(fake.link), json: ownReceipt(caseBody(fake.link), { rid: b.requestId, tid }) });
     }
@@ -325,6 +327,45 @@ try {
     assert.equal(fake.posts.length, 2);
     await dlg.getByRole('button', { name: '取消' }).click();
     fake.overview = 'overview-ready'; fake.link = 'link-completed';
+  });
+  // —— RENDER-STARTUP-REVISION：成片表启动升级没就绪时的前端反馈 ——
+  await check('S1 读接口 writable=false（needs_review）：说明原因；只禁关联和解除，播放、准备成片文件夹照常', async () => {
+    fake.render = 'render-ready'; fake.renderPatch = { writable: false, details: { renderSchemaUpgrade: { state: 'needs_review', reason: 'unknown_outcome' } } }; fake.sources = 'final-missing'; fake.posts.length = 0;
+    await page.reload(); await openUsage();
+    await expect(usage().getByRole('note').filter({ hasText: '需要维护者核对' })).toBeVisible();
+    await expect(usage().getByRole('note').filter({ hasText: '需要维护者核对' })).not.toContainText('重启拾光。');
+    await expect(usage().getByRole('button', { name: '解除成片关联' })).toBeDisabled();
+    await expect(usage().locator('video')).toHaveCount(1);
+    await usage().getByRole('button', { name: '更换成片' }).click();
+    const dlg = page.getByRole('dialog', { name: '选择这一集的成片' });
+    await expect(dlg.getByRole('note')).toContainText('需要维护者核对');
+    await expect(dlg.getByRole('button', { name: '准备「成片」文件夹' })).toBeEnabled();
+    await dlg.getByRole('button', { name: '取消' }).click();
+    fake.sources = 'render-sources';
+    await usage().getByRole('button', { name: '更换成片' }).click();
+    await dlg.getByRole('radio', { name: '选择成片：合成S01E01_成片_001.mp4' }).check();
+    await expect(dlg.getByRole('button', { name: '用这个作为成片' })).toBeDisabled();
+    assert.equal(fake.posts.length, 0);
+    await shot('schema-not-writable');
+    await dlg.getByRole('button', { name: '取消' }).click();
+    fake.renderPatch = null; fake.sources = 'render-sources';
+  });
+  await check('S2 写入直接返回 failed 回执（备份失败）：一步显示人话原因，不进「核对原请求」，不显示技术原文', async () => {
+    fake.render = 'render-unlinked'; fake.link = 'schema-failed'; fake.posts.length = 0; await page.reload(); await openUsage();
+    const dlg = await openPickerAndConfirm();
+    await expect(dlg.getByRole('alert')).toContainText('资料库备份未完成');
+    await expect(dlg.getByRole('alert')).not.toContainText('迁移成片修订列');
+    await expect(dlg.getByRole('button', { name: '核对原请求' })).toHaveCount(0);
+    assert.equal(fake.posts.length, 1);
+    await dlg.getByRole('button', { name: '取消' }).click();
+  });
+  await check('S3 同样的结构错误若以 503 直接返回：仍按结果不明进「核对原请求」，前端不加例外', async () => {
+    fake.render = 'render-unlinked'; fake.link = 'schema-503'; fake.posts.length = 0; await page.reload(); await openUsage();
+    const dlg = await openPickerAndConfirm();
+    await expect(dlg.getByRole('button', { name: '核对原请求' })).toBeVisible();
+    await expect(dlg.getByRole('button', { name: '用这个作为成片' })).toBeDisabled();
+    await dlg.getByRole('button', { name: '取消' }).click();
+    fake.link = 'link-completed';
   });
   await check('还没导入时间线：显示两步说明，不伪造时间线', async () => {
     fake.overview = 'overview-empty'; await page.reload(); await openUsage();
