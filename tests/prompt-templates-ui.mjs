@@ -184,6 +184,30 @@ await check('Round 2: list-style sidebar, compact header with 模板库 menu, fi
    await lib.click();const r=await libMenu.boundingBox();assert.ok(r&&r.x>=0&&r.x+r.width<=width,'library menu fits at '+width);await page.keyboard.press('Escape');await page.screenshot({path:path.join(evidence,'prompt-r2-'+width+'.png')});}
   await page.setViewportSize({width:1440,height:900});
  });
+await check('Global feedback moves to the top-left while a modal is open, so it never covers the dialog close button',async()=>{
+  await page.setViewportSize({width:1440,height:900});await clearToasts();await app.getByLabel('主题',{exact:true}).fill('提示位置验收');
+  const region=page.locator('[data-global-feedback="true"]').last(),card=page.locator('.global-feedback-card').filter({hasText:'生成记录已保存'});
+  await button('保存记录').click();await expect(card).toBeVisible();await card.hover();/* 悬停暂停自动消失（成功提示只停 4 秒），后面用键盘打开弹窗，避免鼠标移走 */
+  let r=await region.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'no modal: feedback stays top-right '+JSON.stringify(r));
+  await page.screenshot({path:path.join(evidence,'feedback-no-modal.png')});
+  await button('编辑模板').focus();await page.keyboard.press('Enter');const dialog=page.getByRole('dialog',{name:'编辑提示词模板'}),close=dialog.getByRole('button',{name:'关闭面板'});await expect(dialog).toBeVisible();await expect(dialog.locator('.global-feedback-card').filter({hasText:'生成记录已保存'})).toBeVisible();/* 提示随弹窗进入顶层（不被遮罩盖住）后再量位置 */
+  r=await card.boundingBox();const c=await close.boundingBox();assert.ok(r&&r.x<=40,'modal open: feedback moved top-left '+JSON.stringify(r));
+  assert.ok(r.x+r.width<c.x||r.y>c.y+c.height||r.y+r.height<c.y,'feedback does not overlap the close button');
+  const hit=await close.evaluate(el=>{const b=el.getBoundingClientRect(),h=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!h&&el.contains(h)});assert.ok(hit,'close button is the top element at its centre');
+  await page.waitForTimeout(400);/* 进入弹窗时淡入动画会重播，等它结束再截图 */await page.screenshot({path:path.join(evidence,'feedback-modal-left.png')});
+  const clear=async(box,closeBtn,label)=>{const r0=await box.boundingBox(),c0=await closeBtn.boundingBox();assert.ok(r0&&c0,label+': boxes');assert.ok(r0.x+r0.width<c0.x||r0.y>c0.y+c0.height||r0.y+r0.height<c0.y,label+': feedback does not overlap the close button '+JSON.stringify({r0,c0}));assert.ok(await closeBtn.evaluate(el=>{const b=el.getBoundingClientRect(),h=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!h&&el.contains(h)}),label+': close button is the top element');};
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(250);await expect(dialog.locator('.global-feedback-card').first()).toBeVisible();await clear(dialog.locator('.global-feedback-card').first(),close,'native dialog at 390');await page.screenshot({path:path.join(evidence,'feedback-modal-390.png')});await page.setViewportSize({width:1440,height:900});
+  await close.click({timeout:2000});await expect(dialog).toHaveCount(0);
+  if(await card.count()){r=await region.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'after closing the modal feedback returns top-right');}
+  // aria-modal 弹窗（界面设置，不是原生 dialog）：提示留在 body，同样挪到左上角；关闭后回到右上角
+  await clearToasts();await page.evaluate(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{window.__copied.push(t)}}})});
+  const copied=page.locator('.global-feedback-card').filter({hasText:'已复制'});await app.locator('.prompt-preview header').getByRole('button',{name:'复制完整提示词',exact:true}).click();await expect(copied).toBeVisible();await copied.hover();
+  await app.getByRole('button',{name:'提示词界面设置'}).focus();await page.keyboard.press('Enter');const settings=page.getByRole('dialog',{name:'界面设置'}),closeSettings=settings.getByRole('button',{name:'关闭界面设置'});await expect(settings).toBeVisible();await expect(copied).toBeVisible();
+  r=await copied.boundingBox();assert.ok(r&&r.x<=40,'aria-modal open: feedback moved top-left '+JSON.stringify(r));await clear(copied,closeSettings,'aria-modal at 1440');await page.waitForTimeout(250);await page.screenshot({path:path.join(evidence,'feedback-aria-modal-left.png')});
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(250);await clear(copied,closeSettings,'aria-modal at 390');await page.screenshot({path:path.join(evidence,'feedback-aria-modal-390.png')});await page.setViewportSize({width:1440,height:900});
+  await closeSettings.click({timeout:2000});await expect(settings).toHaveCount(0);if(await copied.count()){r=await copied.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'after closing aria-modal feedback returns top-right '+JSON.stringify(r));}
+  await page.setViewportSize({width:1440,height:900});
+ });
  await context.close();passed=true;
 }catch(e){await page?.screenshot({path:path.join(evidence,'ui-failure.png')}).catch(()=>{});await fs.writeFile(path.join(evidence,'ui-failure.txt'),e.stack);throw e;}
 finally{
