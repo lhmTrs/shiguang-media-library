@@ -18,7 +18,7 @@ const isAudio=kind=>kind==='music'||kind==='sfx';
 export function preferenceTarget(value) {
   if(!value||!kinds.has(value.kind)||!['library','project'].includes(value.scope))return null;
   if(value.scope==='project')return ['photo','video'].includes(value.kind)&&uuid(value.projectId)
-    ? {kind:value.kind,scope:'project',projectId:value.projectId,...(value.kind==='video'?{folderId:uuid(value.folderId)?value.folderId:'root'}:{})}:null;
+    ? {kind:value.kind,scope:'project',projectId:value.projectId,...(value.kind==='video'?(value.folderRole==='final'&&value.folderId===undefined&&!value.newFolder?{folderRole:'final'}:{folderId:uuid(value.folderId)?value.folderId:'root'}):{})}:null;
   const directory=value.directory??'';
   if(typeof directory!=='string'||directory.length>500||directory.split('/').length>2||(directory&&directory.split('/').some(p=>!p||p==='.'||p==='..'))||/[\\\x00-\x1f]/.test(directory)||directory.startsWith('/'))return null;
   return {kind:value.kind,scope:'library',directory};
@@ -26,7 +26,7 @@ export function preferenceTarget(value) {
 function recordTarget(r,t) {
   if(t.scope==='project') {
     r.lastProjectId[t.kind]=t.projectId;
-    if(t.kind==='video') {
+    if(t.kind==='video'&&!t.folderRole) {
       // Keep bounded recent per-project history; remove/reinsert to update order.
       delete r.lastVideoFolderByProject[t.projectId];
       r.lastVideoFolderByProject[t.projectId]=t.folderId;
@@ -81,7 +81,7 @@ export class IntakePreferences {
     for(const [id,folder] of Object.entries(r.lastVideoFolderByProject))
       if(!ids.has(id))delete r.lastVideoFolderByProject[id];else r.lastVideoFolderByProject[id]=safeFolder(id,folder);
     const targets=Object.fromEntries(Object.entries(this.values).filter(([,t])=>t.scope==='library'||ids.has(t.projectId)).map(([kind,t])=>
-      [kind,t.scope==='project'&&kind==='video'?{...t,folderId:safeFolder(t.projectId,t.folderId)}:{...t}]));
+      [kind,t.scope==='project'&&kind==='video'&&!t.folderRole?{...t,folderId:safeFolder(t.projectId,t.folderId)}:{...t}]));
     return {targets,routingPreferences:r,...(this.warning?{warning:this.warning}:{})};
   }
   update(change) {

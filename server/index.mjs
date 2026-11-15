@@ -1,3 +1,4 @@
+import {projectRenderRouter} from './project-renders.mjs';
 import express from "express";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -75,7 +76,7 @@ import { createConcierge } from "./concierge/index.mjs";
 
 const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const chooseFolder = createFolderPicker();
-const chooseRenderFile = createFilePicker();
+
 const dataDir = dataDirectory(project);
 const audioRuntimeConfigPath =
   process.env.SHIGUANG_AUDIO_RUNTIME_CONFIG || path.join(project, "config/audio-analysis-runtime.json");
@@ -457,7 +458,7 @@ app.use("/api", (req, res, next) => {
   const token = cookie && sessions.get(cookie);
   if (!token)
     return res.status(401).json({ error: "本机会话失效，请刷新页面" });
-  if (req.method !== "GET" && req.headers["x-local-token"] !== token)
+  if (!["GET","HEAD"].includes(req.method) && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
   res.locals.localSessionId = cookie;
   // A different tab can establish a valid cookie while this page still belongs to its old library.
@@ -840,19 +841,7 @@ app.post("/api/projects/timeline-import/preview", (req,res) => res.json(projects
 app.post("/api/projects/timeline-import/confirm", (req,res) => res.json(projects.imports.apply(null,req.body,req.headers.cookie)));
 app.get("/api/projects/:id/timelines", (req,res) => res.json(projects.imports.list(req.params.id)));
 app.get("/api/projects/:id/timeline-overview", (req,res) => res.json(projects.imports.overview(req.params.id)));
-app.get("/api/projects/:id/timelines/:timelineId/render", (req,res) => res.json(projects.renders.get(req.params.id,req.params.timelineId)));
-app.post("/api/projects/:id/timelines/:timelineId/render", asyncRoute(async (req,res) => res.json(await projects.renders.save(req.params.id,req.params.timelineId,req.body))));
-app.delete("/api/projects/:id/timelines/:timelineId/render", (req,res) => res.json(projects.renders.remove(req.params.id,req.params.timelineId)));
-app.post("/api/projects/:id/timelines/:timelineId/render/choose", asyncRoute(async (req,res) => {
-  projects.renders.validate(req.params.id,req.params.timelineId);
-  const selected = await chooseRenderFile();
-  if (selected.cancelled) return res.json({ cancelled: true });
-  res.json(await projects.renders.save(req.params.id,req.params.timelineId,{path:selected.path,offset:req.body.offset}));
-}));
-app.get("/api/projects/:id/timelines/:timelineId/render/media", asyncRoute(async (req,res) => {
-  const {handle,path:file} = await projects.renders.open(req.params.id,req.params.timelineId);
-  return sendMedia(req,res,file,handle);
-}));
+app.use("/api/projects/:projectId/timelines/:timelineId/render",projectRenderRouter(projects.renders,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
 app.post("/api/projects/:id/timeline-import/preview", (req,res) => res.json(projects.imports.preview(req.params.id,req.body,req.headers.cookie)));
 app.post("/api/projects/:id/timeline-import/confirm", (req,res) => res.json(projects.imports.apply(req.params.id,req.body,req.headers.cookie)));
 app.post("/api/projects/:id/timeline-import/:batchId/undo", (req,res) => res.json(projects.imports.undo(req.params.id,req.params.batchId)));
@@ -1073,6 +1062,7 @@ app.post(
     for (const [key, value] of confirmations)
       if (Date.now() - value.createdAt > 600000) confirmations.delete(key);
     const items = await lib.plan(req.body);
+    const blocked=items.find(i=>i.code==='RENDER_IN_USE'||i.code==='LOCAL_INSTANCE_CHANGED');if(blocked)return res.status(409).json({code:blocked.code,message:blocked.error,error:blocked.error,details:blocked.details||{},items});
     const confirmation = crypto.randomBytes(24).toString("hex");
     confirmations.set(confirmation, {
       input: req.body,
@@ -1095,6 +1085,7 @@ app.post(
       throw Error("操作确认已失效，请重新检查目标路径");
     confirmations.delete(req.body.confirmation);
     const results = await lib.execute(record.input, record.items);
+    const blocked=results.find(i=>i.code==='RENDER_IN_USE'||i.code==='LOCAL_INSTANCE_CHANGED');if(blocked)return res.status(409).json({code:blocked.code,message:blocked.error,error:blocked.error,details:blocked.details||{},items:results});
     if (record.input.action === "trash") {
       try {
         const sync = await duplicateAudio.reconcileTrash(results.filter(r => r.ok).map(r => r.id));
@@ -1117,6 +1108,7 @@ app.post(
   "/api/operations/:id/undo",
   asyncRoute(async (req, res) => res.json(await lib.undo(req.params.id))),
 );
+app.use('/api/operations',(e,_req,res,next)=>{if(['RENDER_IN_USE','LOCAL_INSTANCE_CHANGED','RENDER_INFO_UNAVAILABLE'].includes(e.code)&&!res.headersSent)return res.status(e.status||409).json({code:e.code,message:e.message,error:e.message,details:e.details||{}});next(e);});
 app.get("/api/export", (req, res) => {
   const selected = String(req.query.ids || "")
     .split(",")
@@ -1271,12 +1263,14 @@ async function sendMedia(req, res, p, handle = null) {
     res.status(206);
     res.setHeader("Content-Range", `bytes ${start}-${end}/${s.size}`);
     res.setHeader("Content-Length", end - start + 1);
+    if (req.method === 'HEAD') { res.end(); return; }
     const stream = createReadStream(p, { start, end, ...(handle ? {fd:handle.fd,autoClose:false} : {}) });
     stream.on("error", () => res.destroy());
     res.on("close", () => stream.destroy());
     stream.pipe(res);
   } else {
     res.setHeader("Content-Length", s.size);
+    if (req.method === 'HEAD') { res.end(); return; }
     const stream = createReadStream(p, handle ? {fd:handle.fd,autoClose:false} : undefined);
     stream.on("error", () => res.destroy());
     res.on("close", () => stream.destroy());

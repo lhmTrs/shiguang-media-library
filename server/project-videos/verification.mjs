@@ -16,7 +16,7 @@ export class ProjectVideoVerification {
   get db() { return this.catalog.db; }
   authority(id,sourceId) {
     const c=this.catalog,source=c.videos.source(id,sourceId),meta=c.metadata(id,source);
-    return canonical({source,record:meta.row,approvals:[source.id,c.managedKey(source.id)].map(key=>this.db.prepare('SELECT * FROM storyboard_video_approvals WHERE id=? AND project_id=?').get(key,id)),asset:meta.data.mediaAssetId?this.db.prepare('SELECT * FROM assets WHERE id=?').get(meta.data.mediaAssetId):null,roots:c.lib.roots()});
+    return canonical({databaseToken:c.databaseToken(),source,record:meta.row,approvals:[source.id,c.managedKey(source.id)].map(key=>this.db.prepare('SELECT * FROM storyboard_video_approvals WHERE id=? AND project_id=?').get(key,id)),asset:meta.data.mediaAssetId?this.db.prepare('SELECT * FROM assets WHERE id=?').get(meta.data.mediaAssetId):null,roots:c.lib.roots()});
   }
   assertAuthority(s) {
     this.catalog.project(s.projectId);

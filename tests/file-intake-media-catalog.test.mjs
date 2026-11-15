@@ -580,6 +580,7 @@ test('routing options do not create roots, and scene/prop intake binds ordered f
   const f=await fixture(t);
   f.catalog.project=id=>f.projects.get(id);
   f.catalog.folders={rows:()=>[]};
+  f.catalog.finalFolder={roles:async()=>({revision:0,rejectFolderId:null,finalFolderId:null,finalState:'not_created',finalErrorCode:null})};
   const intake=await new FileIntake({dataDir:f.dataDir,catalog:f.catalog,projects:f.projects,generic:f.managed}).init();
   t.after(()=>intake.close());
   const scene=await f.assets.create({project_id:f.project.id,kind:'scene',name:'场景甲'});
