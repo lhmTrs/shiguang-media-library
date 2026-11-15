@@ -50,7 +50,7 @@ RENDER_IN_USE 保护移入废片、移除、覆盖与接受不同内容，包括
 
 唯一自动DDL是 `project_renders.revision INTEGER/BIGINT NOT NULL DEFAULT 1`。仅 `server/index.mjs` 的初次服务启动、HTTP接纳写请求之前调用升级模块；普通 `Projects.init`、GET以及运行中切库不自动迁移。新空库照常建表，已有合格列零备份/零DDL；未知列、类型、约束或未核清的旧升级记录降级，不盲改结构。旧payload、ID、行数及关联不转换、不清理，时间线自己的opaque revision仍为VARCHAR(36)。
 
-备份位于数据目录专用 `backups/render-schema-startup/`，目录0700、文件0600。Windows尚未实现相应ACL保证，旧表启动升级保守降级为permission_denied，不写备份或ALTER；新库和已有合格列不受影响。独占文件包含结构、原始行和payload、行数/digest及数据库身份摘要，不含凭据；完整写入、读回校验并fsync文件/目录后才ALTER。限制100000行/64MiB，超过或IO失败先拒，不截断备份或操作原媒体。SQLite使用BEGIN IMMEDIATE有界写锁，在事务内快照、备份、ALTER、核对后提交。MySQL使用原冻结连接GET_LOCK协调加project_renders WRITE表锁，覆盖本次唯一ADD列，禁止START TRANSACTION/USE等破坏窗口操作；真实8.2.0专项验证了ALTER前后均挡非协作写，因此旧表自动升级目前只接纳已验证的8.2.0；其它版本在ALTER之前降级unsupported_schema，不外推其它DDL或版本。已有合格列/新库不经过该锁窗口。
+备份位于数据目录专用 `backups/render-schema-startup/`，目录0700、文件0600。Windows尚未实现相应ACL保证，旧表启动升级保守降级为permission_denied，不写备份或ALTER；新库和已有合格列不受影响。独占文件包含结构、原始行和payload、行数/digest及数据库身份摘要，不含凭据；完整写入、读回校验并fsync文件/目录后才ALTER。限制100000行/64MiB，超过或IO失败先拒，不截断备份或操作原媒体。SQLite使用BEGIN IMMEDIATE有界写锁，在事务内快照、备份、ALTER、核对后提交。MySQL使用原冻结连接GET_LOCK协调加project_renders WRITE表锁，覆盖本次唯一ADD列，禁止START TRANSACTION/USE等破坏窗口操作。锁获取等待有界，单次逻辑升级窗口15秒；异步IO返回后复核期限，过期不再ALTER，不以观察超时伪造IO已释放；真实8.2.0专项验证了ALTER前后均挡非协作写，因此旧表自动升级目前只接纳已验证的8.2.0；其它版本在ALTER之前降级unsupported_schema，不外推其它DDL或版本。已有合格列/新库不经过该锁窗口。
 
 升级前持久prepared栅栏，只有DDL、原行核对、提交/锁释放和持久完成均确认后才ready。MySQL DDL隐式提交，事后失败/断连保现场与needs_review，不宣称回滚；下次不能因为列已存在吞掉prepared。SQLite即使已回滚也保留真实失败/未知证据。前置失败不执行ALTER，安全摘要按backup_failed/unsupported_schema/busy/permission_denied/verification_failed/unknown_outcome六reason提供，needs_review是state，不是reason。
 

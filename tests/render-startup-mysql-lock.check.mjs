@@ -68,6 +68,10 @@ try{
   });
   const [result]=await bounded(peer.result,5000,'peer lock unconfirmed');assert.deepEqual(result,{ok:true,altered:false});await bounded(peerDone,5000,'peer exit unconfirmed');await close(db);
  });
+ await check('expired callback window cannot issue a late ALTER and still releases its original locks',async()=>{
+  const db=database();await assert.rejects(db.withRenderSchemaUpgradeLock(async locked=>{await new Promise(r=>setTimeout(r,1050));locked.exec(alter);},{timeoutMs:1000,windowMs:1000}),{reason:'busy'});
+  assert.equal((await control.query("SHOW COLUMNS FROM project_renders LIKE 'revision'"))[0].length,0);await control.query("UPDATE project_renders SET payload='unlocked'");await close(db);
+ });
  await check('owned connection loss marks cleanup unknown and prevents further DB use',async()=>{
   const db=database();await assert.rejects(db.withRenderSchemaUpgradeLock(async locked=>{await control.query('KILL CONNECTION '+locked.identity.connectionId);locked.exec(alter);}),e=>e.renderUpgradeCleanupUnknown===true&&e.reason==='unknown_outcome');
   assert.throws(()=>db.prepare('SELECT 1').get(),{code:'RENDER_SCHEMA_UPGRADE_ACTIVE'});assert.equal((await control.query("SELECT * FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='project_renders'"))[0].length,3);await close(db);

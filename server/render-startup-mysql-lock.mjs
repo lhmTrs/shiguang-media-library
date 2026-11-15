@@ -18,8 +18,8 @@ function sameIdentity(a,b){return a.database===b.database&&a.serverUuid===b.serv
 // GET_LOCK serializes upgrading instances. The explicit WRITE table lock also
 // excludes older/non-cooperating writers through this one ADD COLUMN operation.
 // Never START TRANSACTION here: it would release LOCK TABLES. Never reconnect.
-export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000}={}) {
- if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>5000||typeof callback!=='function')throw lockError('unsupported_schema');
+export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000,windowMs=15000}={}) {
+ if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>5000||!Number.isInteger(windowMs)||windowMs<1000||windowMs>30000||typeof callback!=='function')throw lockError('unsupported_schema');
  const identity=()=>connection.get('SELECT DATABASE() AS `database`, @@server_uuid AS serverUuid, CONNECTION_ID() AS connectionId, VERSION() AS serverVersion');
  const original=connection.get('SELECT @@session.autocommit AS autocommit, @@session.lock_wait_timeout AS lockWaitTimeout');
  if(original.autocommit!==1)throw lockError('busy');
@@ -35,9 +35,10 @@ export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000}
   const owner=connection.get('SELECT IS_USED_LOCK(?) AS owner',[name]);
   if(Number(owner.owner)!==frozen.connectionId)throw lockError('unknown_outcome','needs_review');
  };
- let altered=false;
+ let altered=false,windowEnd=Infinity;
  const checkSql=(sql,write)=>{
   // A capability limited to startup inspection and this precise schema change.
+  if(Date.now()>windowEnd)throw lockError(altered?'unknown_outcome':'busy',altered?'needs_review':'failed');
   const normalized=String(sql).trim();
   if(write){
    if(altered||!/^ALTER\s+TABLE\s+`?project_renders`?\s+ADD\s+COLUMN\s+`?revision`?\s+BIGINT\s+NOT\s+NULL\s+DEFAULT\s+1\s*;?$/i.test(normalized))throw lockError('unsupported_schema');
@@ -60,7 +61,7 @@ export async function withRenderMysqlLock(connection, callback, {timeoutMs=3000}
   connection.exec('SET SESSION lock_wait_timeout='+Math.ceil(timeoutMs/1000));
   connection.exec('SET autocommit=0');
   connection.exec('LOCK TABLES project_renders WRITE');tables=true;
-  assertIdentity();
+  assertIdentity();windowEnd=Date.now()+windowMs;
   result=await callback(scoped);
   assertIdentity();
  }catch(error){bodyError=error.code==='RENDER_SCHEMA_UPGRADE_LOCK_FAILED'?error:(tables?error:classify(error));}

@@ -86,8 +86,8 @@ function rowsFor(db,validatePayload){
 }
 function reasonFor(e){return e.upgradeReason||e.details?.renderSchemaUpgrade?.reason||(['SQLITE_BUSY','SQLITE_LOCKED','ER_LOCK_WAIT_TIMEOUT','ER_LOCK_DEADLOCK'].includes(e.code)?'busy':['EACCES','EPERM','ER_TABLEACCESS_DENIED_ERROR','ER_DBACCESS_DENIED_ERROR'].includes(e.code)?'permission_denied':'backup_failed');}
 export async function upgradeRenderSchemaAtStartup(lib,{dataDir=lib.dataDir,validatePayload}={}){
- const db=lib.db;let ddlStarted=false,identity,dir,key,prepared;
- const assertDb=()=>{if(lib.db!==db)throw error('unknown_outcome');};
+ const db=lib.db,deadline=Date.now()+15000;let ddlStarted=false,identity,dir,key,prepared;
+ const assertDb=()=>{if(Date.now()>deadline)throw error(ddlStarted?'unknown_outcome':'busy');if(lib.db!==db)throw error('unknown_outcome');};
  try{
   assertDb();const initial=inspectRenderSchema(db);
   // Empty/new tables remain the responsibility of ordinary init.
