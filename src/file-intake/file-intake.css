@@ -263,6 +263,7 @@
 .fi-root.fi-simple .fi-chip-on{border:1.5px solid var(--fi-accent);background:var(--fi-soft);color:var(--fi-accent);font-weight:600}
 .fi-root.fi-simple .fi-chip-on:hover{background:var(--fi-soft)}
 .fi-simple .fi-chip-parent{color:var(--fi-muted);font-weight:400}
+.fi-simple .fi-chip-note{color:var(--fi-muted);font-weight:400;font-size:11px;margin-left:4px}
 .fi-root.fi-simple .fi-chip-new{border-style:dashed;color:var(--fi-accent);font-weight:600}
 .fi-root.fi-simple .fi-chip-edit{flex-direction:row;padding:0 8px 0 12px;margin:0;cursor:text}
 .fi-root.fi-simple .fi-chip-edit input{min-width:3ch;max-width:220px;border:0;outline:0;background:transparent;font:inherit;font-weight:600;color:var(--fi-accent);padding:0}

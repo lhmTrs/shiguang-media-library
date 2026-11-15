@@ -38,11 +38,11 @@ function readAttempt(id: string): ConfirmInput | null {
 }
 const proposalKey = (d: DestinationDraft) => [d.projectId, d.characterName, d.lookName].join('\u0000');
 // Where a previewed standard name was computed for; a stale preview is never shown under a new destination.
-const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderId, d.newFolder?.name, d.assetId, d.characterName, d.lookName].join('|');
+const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderRole ? 'role:' + d.folderRole : d.folderId, d.newFolder?.name, d.assetId, d.characterName, d.lookName].join('|');
 const isCharacter = (d: DestinationDraft | null): d is DestinationDraft => !!d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind;
 const groupKey = (d: DestinationDraft | null, pending: boolean) => pending || !d ? 'decide'
   : d.scope === 'library' ? 'library:' + d.kind + ':' + (d.directory || '')
-  : d.kind === 'video' ? 'video:' + d.projectId + ':' + (d.folderId || 'root') + (d.newFolder ? '+' + d.newFolder.name : '')
+  : d.kind === 'video' ? 'video:' + d.projectId + ':' + (d.folderRole ? 'role:' + d.folderRole : (d.folderId || 'root') + (d.newFolder ? '+' + d.newFolder.name : ''))
   : d.assetKind ? 'asset:' + d.projectId : 'character:' + d.projectId;
 
 /** Tell the native shell which appearance the page settled on, so its title area matches. */
@@ -214,6 +214,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // A person/look picked here (decision buttons, 放进项目…) is an explicit choice: a later rename keeps it.
   const pinned = (d: DestinationDraft | null) => d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind ? {...d, characterNameManual: true, lookNameManual: true} : d;
   const setDestination = (ids: string[], destination: DestinationDraft | null) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => [id, {...old[id], destination: pinned(destination), manual: true}]))}));
+  // 视频去处（芯片、改文件夹…）只改去处：每个文件自己的手动名留在自己身上，不把某一条的名字广播给同组别的文件
+  const setPlace = (ids: string[], destination: DestinationDraft) => setDrafts(old => ({...old, ...Object.fromEntries(ids.map(id => {
+    const own = (old[id]?.destination ?? rows.find(r => r.file.id === id)?.destination)?.fileName, {fileName: _shared, ...place} = destination;
+    return [id, {...old[id], destination: pinned(own ? {...place, fileName: own} : place), manual: true}];
+  }))}));
   const rename = (id: string, fileName: string) => setDrafts(old => ({...old, [id]: {...old[id], destination: old[id]?.destination ?? null, manual: !!old[id]?.manual, fileName}}));
   const remove = (id: string) => {setSelected(old => old.filter(x => x !== id)); setChecked(old => old.filter(x => x !== id));};
   const pending = rows.filter(r => !r.ready).length;
@@ -297,7 +302,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const folderPath = (pid?: string, fid?: string) => !fid || fid === 'root' ? '' : options?.projects.find(p => p.id === pid)?.videoFolders.find(f => f.id === fid)?.relativePath || '项目文件夹';
   const folderName = (pid?: string, fid?: string, created?: {name: string}) => created ? [folderPath(pid, fid), created.name].filter(Boolean).join('/') + '（收纳时新建）' : folderPath(pid, fid) || '项目根目录';
   const destLabel = (d: DestinationDraft) => d.scope === 'library' ? libraryTitle(d.kind, d.directory || '')
-    : d.kind === 'video' ? projectTitle(d.projectId) + ' › ' + folderName(d.projectId, d.folderId, d.newFolder)
+    : d.kind === 'video' ? projectTitle(d.projectId) + ' › ' + (d.folderRole === 'final' ? '成片（收纳时自动建好）' : folderName(d.projectId, d.folderId, d.newFolder))
     : d.assetKind ? projectName(d.projectId) + ' › ' + (options?.projects.find(p => p.id === d.projectId)?.assets.find(a => a.id === d.assetId)?.name || (d.assetKind === 'scene' ? '场景' : '道具'))
     : projectName(d.projectId) + ' › ' + d.characterName + ' › ' + d.lookName;
   const groups: Group[] = [];
@@ -306,7 +311,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     if (!g) {
       const d = r.destination;
       g = key === 'decide' ? {key, title: '需要你决定', detail: '', tone: 'decide', rows: [], photos: false}
-        : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + folderName(d!.projectId, d!.folderId, d!.newFolder), detail: r.reason, tone: 'video', rows: [], photos: false}
+        : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + (d!.folderRole === 'final' ? '成片（收纳时自动建好）' : folderName(d!.projectId, d!.folderId, d!.newFolder)), detail: r.reason, tone: 'video', rows: [], photos: false}
         : key.startsWith('character:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 人物照片', detail: '', tone: 'project', rows: [], photos: true}
         : key.startsWith('asset:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 场景和道具', detail: '', tone: 'project', rows: [], photos: true}
         : {key, title: libraryTitle(d!.kind, d!.directory || ''), detail: d!.kind === 'photo' && !d!.directory ? '名字认不出，将进入摄影照片' : '', tone: d!.kind === 'music' || d!.kind === 'sfx' ? 'audio' : 'library', rows: [], photos: d!.kind === 'photo'};
@@ -397,7 +402,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       {g.photos && g.key.startsWith('library:') && options && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'cat:' + g.key ? '' : 'cat:' + g.key)}>改分类…</button>
         {popover === 'cat:' + g.key && <CategoryPopover categories={options.photoCategories} count={targets.length} onClose={() => setPopover('')} onApply={dir => {setDestination(targets, {kind: 'photo', scope: 'library', directory: dir}); setChecked([]); setPopover('');}}/>}</span>}
       {g.tone === 'video' && options && first && <span className="fi-anchor"><button className="fi-link" data-popover-trigger disabled={locked} onClick={() => setPopover(p => p === 'folder:' + g.key ? '' : 'folder:' + g.key)}>改文件夹…</button>
-        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId, newFolder) => {setDestination(ids, {kind: 'video', scope: 'project', projectId, folderId, ...(newFolder ? {newFolder: {name: newFolder}} : {})}); setPopover('');}}/>}</span>}
+        {popover === 'folder:' + g.key && <FolderPopover options={options} projectId={first.projectId || ''} folderId={first.folderId || 'root'} folderRole={first.folderRole} count={ids.length} onClose={() => setPopover('')} onApply={(projectId, folderId, newFolder, folderRole) => {setPlace(ids, folderRole ? {kind: 'video', scope: 'project', projectId, folderRole} : {kind: 'video', scope: 'project', projectId, folderId, ...(newFolder ? {newFolder: {name: newFolder}} : {})}); setPopover('');}}/>}</span>}
     </>;
     return <section key={g.key} className={'fi-group fi-group-' + g.tone} aria-label={g.title}>
       <GroupHeader group={g} open={opened} toggle={() => setOpen(o => ({...o, [g.key]: !opened}))}
@@ -439,7 +444,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     : parked.length ? parked.length + parkedUnit + '名字认不出，先放进待确认' : pending ? '正在核对人物和造型…' : '全部已分好', totalSize].filter(Boolean).join(' · ');
   // A new project starts in the folder last used there (if it still exists), as the routing does.
   const withRemembered = (d: DestinationDraft, before?: DestinationDraft | null) => {
-    if (d.newFolder || d.projectId === before?.projectId) return d;
+    if (d.newFolder || d.folderRole || d.projectId === before?.projectId) return d;
     const last = prefs?.lastVideoFolderByProject?.[d.projectId || ''];
     return last && options?.projects.find(p => p.id === d.projectId)?.videoFolders.some(f => f.id === last) ? {...d, folderId: last} : d;
   };
@@ -455,7 +460,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       <small>{fileMeta(r)} · 来自「{folderLabel(r.file.path)}」</small></div>
     <div className="fi-form">
       <VideoDestination project={projectOf(r)!} projects={options!.projects} recent={recentProjects} destination={r.destination!} locked={locked}
-        remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setDestination([r.file.id], withRemembered(d, r.destination))}/>
+        remembered={prefs?.lastVideoFolderByProject?.[r.destination!.projectId || '']} onChange={d => setPlace([r.file.id], withRemembered(d, r.destination))}/>
       <span className="fi-form-label fi-form-label-top">名字</span>
       <div className="fi-form-name">{renameBox}{nameLine(r)}
         {singleNameError && <small className="fi-error" role="alert">没能按规则起名：{singleNameError.message}{singleNameError.code === 'INTAKE_NAME_MANUAL_REQUIRED' || singleNameError.code === 'INTAKE_NAME_NUMBER_LIMIT' ? '。请点「更多设置…」手动起名。' : ''}</small>}
@@ -474,7 +479,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
       const first = g.rows[0], d = first.destination, p = projectOf(first);
       return <section key={g.key} className="fi-vblock" aria-label={'去处 ' + (d ? destLabel(d) : '未定')}>
         {p && d ? <div className="fi-form"><VideoDestination project={p} projects={options!.projects} recent={recentProjects} destination={d} locked={locked} count={g.rows.length}
-          remembered={prefs?.lastVideoFolderByProject?.[p.id]} onChange={nd => setDestination(g.rows.map(r => r.file.id), withRemembered(nd, d))}/></div>
+          remembered={prefs?.lastVideoFolderByProject?.[p.id]} onChange={nd => setPlace(g.rows.map(r => r.file.id), withRemembered(nd, d))}/></div>
           : <div className="fi-vblock-head"><strong>{d ? destLabel(d) : '请选择去处'}</strong><small className="fi-muted">{g.rows.length} 个 · 点每行的 ⋯ 改去处</small></div>}
         <ul className="fi-vrows">{g.rows.map(r => <li key={r.file.id} className={'fi-vrow' + (flash === r.file.id ? ' fi-flash' : '')}>
           <span className="fi-vrow-from" title={r.file.name}>{r.file.name}</span><span className="fi-vrow-arrow" aria-hidden="true">→</span>{nameLine(r)}{moreButton(r)}

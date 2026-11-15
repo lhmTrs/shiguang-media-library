@@ -9,6 +9,7 @@ const repo = fileURLToPath(new URL('..', import.meta.url));
 export const CI_FILES = Object.freeze([
   'font-scale.test.mjs',
   'global-feedback.test.mjs',
+  'project-usage-pending.test.mjs',
   'read-cache.test.mjs',
   'search-aliases.test.mjs',
   'storyboard-model.test.mjs',

@@ -24,14 +24,14 @@ const code=expected=>e=>e.code===expected;
 test('unconfigured reads create nothing; subtree count is metadata only and every copy counts',async t=>{
   const f=await fixture(t),id=f.project.id,root=await f.catalog.folders.rootPath(id);
   const empty=await f.catalog.list(id,{folderId:'reject'});
-  assert.deepEqual(empty.folderRoles,{revision:0,rejectFolderId:null,rejectVideoCount:0,needsReview:false});assert.deepEqual(empty.videos,[]);
+  assert.deepEqual(empty.folderRoles,{revision:0,rejectFolderId:null,rejectVideoCount:0,needsReview:false,finalFolderId:null,finalState:'not_created',finalErrorCode:null});assert.deepEqual(empty.videos,[]);
   await assert.rejects(fs.access(root));
   const a=await folder(f,'废片'),b=await folder(f,'子层',a.id),ordinary=await folder(f,'其他');
   const first=await imported(f,'copy1.mp4',a.id),second=await imported(f,'copy2.mp4',b.id),third=await imported(f,'normal.mp4',ordinary.id);
   await setRole(f,a.id);
   const lstat=fs.lstat,hash=f.catalog.hash,probe=f.entry.media.probe;
   fs.lstat=()=>{throw Error('roleState must not use FS');};f.catalog.hash=()=>{throw Error('no hash');};f.entry.media.probe=()=>{throw Error('no probe');};
-  try{assert.deepEqual(f.catalog.folders.roleState(id),{revision:1,rejectFolderId:a.id,rejectVideoCount:2,needsReview:false});assert.equal(f.catalog.folders.inRejectArea(id,b.id),true);assert.equal(f.catalog.folders.inRejectArea(id,ordinary.id),false);}finally{fs.lstat=lstat;f.catalog.hash=hash;f.entry.media.probe=probe;}
+  try{assert.deepEqual(f.catalog.folders.roleState(id),{revision:1,rejectFolderId:a.id,rejectVideoCount:2,needsReview:false,finalFolderId:null,finalState:'not_created',finalErrorCode:null});assert.equal(f.catalog.folders.inRejectArea(id,b.id),true);assert.equal(f.catalog.folders.inRejectArea(id,ordinary.id),false);}finally{fs.lstat=lstat;f.catalog.hash=hash;f.entry.media.probe=probe;}
   const all=await f.catalog.list(id,{folderId:'all'});assert.deepEqual(all.videos.map(s=>s.id),[third.id]);
   assert.equal(all.folders.length,3);assert.equal(all.folders.find(s=>s.id===a.id).role,'reject');assert.equal(all.folders.find(s=>s.id===b.id).parentId,a.id);
   const included=await f.catalog.list(id,{folderId:'all',includeRejected:true});assert.equal(included.videos.length,3);assert.equal(included.videos.find(s=>s.id===second.id).inRejectArea,true);
@@ -83,7 +83,7 @@ test('settings row revision is the CAS authority, including old rows and upgrade
   assert.equal(f.catalog.folders.roleState(id).revision,7);assert.equal((await execute(f,old)).errorCode,'FOLDER_ROLES_CONFLICT');
   await assert.rejects(preview(f,a.id,{expectedRolesRevision:0}),code('FOLDER_ROLES_CONFLICT'));
   const selected=await setRole(f,a.id);assert.equal(selected.folderRoles.revision,8);
-  const stale=await preview(f,null);f.entry.store.tx(()=>f.catalog.folders.completeUpgrade(id));assert.deepEqual(f.catalog.folders.settings(id),{upgradeCompleted:true,rejectFolderId:a.id});assert.equal(f.catalog.folders.roleState(id).revision,9);assert.equal((await execute(f,stale)).errorCode,'FOLDER_ROLES_CONFLICT');
+  const stale=await preview(f,null);f.entry.store.tx(()=>f.catalog.folders.completeUpgrade(id));assert.deepEqual(f.catalog.folders.settings(id),{upgradeCompleted:true,rejectFolderId:a.id,finalFolderId:null});assert.equal(f.catalog.folders.roleState(id).revision,9);assert.equal((await execute(f,stale)).errorCode,'FOLDER_ROLES_CONFLICT');
   assert.throws(()=>f.catalog.folders.writeSettings(id,{upgradeCompleted:true,rejectFolderId:null},8),code('FOLDER_ROLES_CONFLICT'));
 });
 

@@ -284,6 +284,93 @@ try {
     assert.equal(target(fx.confirmBodies[0], 'v1').destination.projectId, P1);
   });
 
+  await check('C6 mixed batch: video group set to logical 成片 submits folderRole final, never folderId root; switching back drops the role', async () => {
+    // 组合验收 PR107 C6：选「成片（收纳时自动建好）」后确认请求原样带 folderRole，与 folderId/newFolder 互斥
+    await fresh();
+    await group('项目「穿越计」 › 外景').getByRole('button', {name: '改文件夹…', exact: true}).click();
+    let pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
+    await pop.getByRole('combobox', {name: '视频文件夹', exact: true}).selectOption('__final__');
+    await pop.getByRole('button', {name: '放进去', exact: true}).click();
+    await expect(page.locator('section.fi-group-video').filter({hasText: '穿越计视频16.mp4'})).toHaveAttribute('aria-label', '项目「穿越计」 › 成片（收纳时自动建好）');
+    await settle(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, folderRole: 'final'});
+    for (const pv of fx.previewBodies) for (const t of pv.targets.filter(x => x.fileId === 'v1')) assert.equal(t.destination.folderId, undefined, 'name preview carries the same intent');
+
+    await fresh();
+    await group('项目「穿越计」 › 外景').getByRole('button', {name: '改文件夹…', exact: true}).click();
+    pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
+    await pop.getByRole('combobox', {name: '视频文件夹', exact: true}).selectOption('__final__');
+    await pop.getByRole('button', {name: '放进去', exact: true}).click();
+    await page.locator('section.fi-group-video').filter({hasText: '穿越计视频16.mp4'}).getByRole('button', {name: '改文件夹…', exact: true}).click();
+    pop = page.getByRole('dialog', {name: '改视频去处', exact: true});
+    await pop.getByRole('combobox', {name: '视频文件夹', exact: true}).selectOption('f-out');
+    await pop.getByRole('button', {name: '放进去', exact: true}).click();
+    await settle(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-out'});
+  });
+
+  await check('C5 single video: logical 成片 chip when the episode has none; submits folderRole final; picking a real folder drops it; existing final shows no duplicate', async () => {
+    // 组合验收 PR107 C5：单视频表单也要能选还没建的「成片」，不用先建目录
+    const one = f => {f.handoff.files = [{id: 'v1', name: '穿越计视频16.mp4', mediaKind: 'video', bytes: 4096, path: '/synthetic/Downloads/穿越计视频16.mp4'}];};
+    await fresh(one);
+    const chips = page.getByRole('group', {name: '文件夹', exact: true});
+    const final = chips.getByRole('button', {name: '成片（收纳时自动建好）', exact: true});
+    await final.click(); await expect(final).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('navigation', {name: '去处路径', exact: true})).toContainText('收纳时自动建好');
+    await page.screenshot({path: path.join(evidence, 'c5-single-final.png')});
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, folderRole: 'final'});
+
+    await fresh(one);
+    await page.getByRole('group', {name: '文件夹', exact: true}).getByRole('button', {name: '成片（收纳时自动建好）', exact: true}).click();
+    await page.getByRole('group', {name: '文件夹', exact: true}).getByRole('button', {name: '外景', exact: true}).click();
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-out'});
+
+    await fresh(f => {one(f); f.options.projects[0].videoFolders.push({id: 'f-final', name: '成片', relativePath: '成片', role: 'final'});});
+    const g = page.getByRole('group', {name: '文件夹', exact: true});
+    await expect(g.getByRole('button', {name: '成片（收纳时自动建好）', exact: true})).toHaveCount(0);
+    await g.getByRole('button', {name: '成片（保留文件夹）', exact: true}).click();
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, folderId: 'f-final'});
+  });
+
+  await check('C6R3 settings panel: logical 成片 in one project, then switching project drops the role and lands at the new project root', async () => {
+    // 组合验收 PR107 C6-R3：更多设置里换项目不能把上一个项目的「成片」角色带过去
+    await fresh(f => {
+      f.handoff.files = [{id: 'v1', name: '穿越计视频16.mp4', mediaKind: 'video', bytes: 4096, path: '/synthetic/Downloads/穿越计视频16.mp4'}];
+      f.options.projects[1].videoFolders.push({id: 'p2-final', name: '成片', relativePath: '成片', role: 'final'}); f.folders[P2].push({id: 'p2-final', name: '成片', relativePath: '成片', role: 'final'});
+    });
+    await page.getByRole('button', {name: '单独设置 穿越计视频16.mp4', exact: true}).click();
+    const editor = page.getByRole('dialog', {name: '收纳设置 穿越计视频16.mp4', exact: true});
+    await editor.getByLabel('目标分类 v1', {exact: true}).selectOption('__final__');
+    await editor.getByLabel('目标项目 v1', {exact: true}).selectOption(P2);
+    await expect(editor.getByLabel('目标分类 v1', {exact: true})).toHaveValue('root');
+    await editor.getByRole('button', {name: '完成', exact: true}).click();
+    await confirmButton().click(); await expect(accepted()).toBeVisible();
+    assert.deepEqual(target(fx.confirmBodies[0], 'v1').destination, {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'});
+  });
+
+  await check('C6R4 two videos, only the first renamed by hand: choosing logical 成片 (or a folder) for the group keeps each file its own name', async () => {
+    // 组合验收 PR107 C6-R4：组级改去处只改去处，不把首条的手动名广播给第二条
+    const two = f => {f.handoff.files = [['v1', '穿越计视频16.mp4'], ['v2', '穿越计视频17.mp4']].map(([id, name]) => ({id, name, mediaKind: 'video', bytes: 4096, path: '/synthetic/Downloads/' + name}));};
+    for (const pickChip of ['成片（收纳时自动建好）', '外景']) {
+      await fresh(two);
+      await page.getByRole('button', {name: '单独设置 穿越计视频16.mp4', exact: true}).click();
+      const editor = page.getByRole('dialog', {name: '收纳设置 穿越计视频16.mp4', exact: true});
+      await editor.getByLabel('副本名称 v1', {exact: true}).fill('单独命名第一份.mp4');
+      await editor.getByRole('button', {name: '完成', exact: true}).click();
+      const chips = page.getByRole('group', {name: '文件夹', exact: true});
+      if (pickChip === '外景') await chips.getByRole('button', {name: '成片（收纳时自动建好）', exact: true}).click(); // 先成片再改回实体文件夹
+      await chips.getByRole('button', {name: pickChip, exact: true}).click();
+      await confirmButton().click(); await expect(accepted()).toBeVisible();
+      const b = fx.confirmBodies[0], place = pickChip === '外景' ? {folderId: 'f-out'} : {folderRole: 'final'};
+      assert.deepEqual(target(b, 'v1').destination, {kind: 'video', scope: 'project', projectId: P1, ...place, fileName: '单独命名第一份.mp4'}, pickChip);
+      assert.deepEqual(target(b, 'v2').destination, {kind: 'video', scope: 'project', projectId: P1, ...place}, pickChip);
+      assert.equal(target(b, 'v2').nameMode, 'standard'); assert.equal(target(b, 'v1').nameMode, undefined);
+    }
+  });
+
   await check('post-release fixes: one-file layout, honest header, new look asked, page-drawn project picker', async () => {
     const files = names => names.map(([id, name, mediaKind]) => ({id, name, mediaKind, bytes: 4096, path: '/synthetic/Downloads/' + name}));
     // One photo: no project bar, one 改去处 button that opens the panel, header without a repeated size.

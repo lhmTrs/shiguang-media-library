@@ -61,6 +61,6 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   route('post','/batches/:id/items/:item/resolve',async(req,res)=>res.json(await withActivity(()=>store.resolve(req.params.id,req.params.item,req.body))));
   route('post','/batches/:id/items/:item/retry',async(req,res)=>res.json(await withActivity(()=>store.retry(req.params.id,req.params.item))));
   router.use((e,_req,res,_next)=>{if(res.destroyed||res.writableEnded)return;if(res.headersSent){res.destroy();return;}res.status(e.status||500).json({code:e.code||'INTAKE_FAILED',
-    error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{}),...(e.resolvedFolders?{resolvedFolders:e.resolvedFolders}:{})});});
+    message:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',details:e.details||{},error:e.status?e.message:'文件任务未完成，原文件和回执保留，请核对后继续',...(e.accepted===false?{accepted:false,requestId:e.requestId}:{}),...(e.resolvedFolders?{resolvedFolders:e.resolvedFolders}:{})});});
   return router;
 }

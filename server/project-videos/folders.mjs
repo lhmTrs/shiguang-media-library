@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {canonical,idOK} from '../project-assets/model.mjs';
-import {fail} from '../storyboard-video/model.mjs';
+import {usageFail as fail} from './action-journal.mjs';
 import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {within} from '../fs-identity.mjs';
 
@@ -18,7 +18,8 @@ export function validateFolderData(table,data) {
   if(!data||typeof data!=='object'||Array.isArray(data))fail('VIDEO_BACKUP_INVALID','项目视频目录资料无效');
   const keys=Object.keys(data).sort().join(',');
   if(table==='project_video_settings') {
-    if(!['upgradeCompleted','rejectFolderId,upgradeCompleted'].includes(keys)||typeof data.upgradeCompleted!=='boolean'||Object.hasOwn(data,'rejectFolderId')&&data.rejectFolderId!==null&&!idOK(data.rejectFolderId))fail('VIDEO_BACKUP_INVALID','项目视频设置无效');
+    if(!['upgradeCompleted','rejectFolderId,upgradeCompleted','finalFolderId,upgradeCompleted','finalFolderId,rejectFolderId,upgradeCompleted'].includes(keys)||typeof data.upgradeCompleted!=='boolean'||Object.hasOwn(data,'rejectFolderId')&&data.rejectFolderId!==null&&!idOK(data.rejectFolderId))fail('VIDEO_BACKUP_INVALID','项目视频设置无效');
+    if(Object.hasOwn(data,'finalFolderId')&&data.finalFolderId!==null&&!idOK(data.finalFolderId)||data.finalFolderId&&data.finalFolderId===data.rejectFolderId)fail('VIDEO_BACKUP_INVALID','成片角色无效');
   } else if(table==='project_video_folders') {
     if(keys!=='identity,name,parentId,relativePath,removedAt'||folderName(data.name)!==data.name||!['root',null].includes(data.parentId)&&!idOK(data.parentId)||data.parentId===null||!relative(data.relativePath)||!Number.isSafeInteger(data.removedAt)||data.removedAt<0||!data.identity||Object.keys(data.identity).sort().join(',')!=='dev,ino'||typeof data.identity.dev!=='string'||typeof data.identity.ino!=='string')fail('VIDEO_BACKUP_INVALID','文件夹结构无效');
   } else fail('VIDEO_BACKUP_INVALID','未知视频目录资料');
@@ -29,10 +30,12 @@ export class ProjectVideoFolders {
   constructor(catalog) {this.catalog=catalog;}
   get db(){return this.catalog.db;}
   settingsRow(id) {const row=this.db.prepare('SELECT * FROM project_video_settings WHERE id=?').get(id);if(row&&(row.project_id!==id||!Number.isSafeInteger(row.revision)||row.revision<1))fail('FOLDER_ROLES_CONFLICT','项目视频设置身份无效',409);return row;}
-  settingsData(row) {return{rejectFolderId:null,...(row?validateFolderData('project_video_settings',JSON.parse(row.data_json)):{upgradeCompleted:false})};}
+  settingsData(row) {return{finalFolderId:null,rejectFolderId:null,...(row?validateFolderData('project_video_settings',JSON.parse(row.data_json)):{upgradeCompleted:false})};}
   settings(id) {return this.settingsData(this.settingsRow(id));}
   writeSettings(id,data,expectedRevision) {
     this.catalog.project(id,true);validateFolderData('project_video_settings',data);
+    const rows=this.rows(id);for(const key of ['finalFolderId','rejectFolderId'])if(data[key]&&!rows.some(r=>r.id===data[key]))fail('FOLDER_ROLES_CONFLICT','保留角色必须指向同项目可用目录',409);
+    if(data.finalFolderId){const f=rows.find(r=>r.id===data.finalFolderId);if(f.parentId!=='root'||f.name!=='成片'||f.relativePath!=='成片'||this.inSubtree(data.rejectFolderId,f.id,rows)||this.inSubtree(f.id,data.rejectFolderId,rows))fail('FOLDER_RESERVED','成片与废片目录不能覆盖彼此',409,{folderId:f.id,role:'final'});}
     const row=this.settingsRow(id),now=Date.now();if((row?.revision||0)!==expectedRevision)fail('FOLDER_ROLES_CONFLICT','收纳角色或升级设置已变化，请重新预览',409);
     if(row){const result=this.db.prepare('UPDATE project_video_settings SET data_json=?,revision=?,updated_at=? WHERE id=? AND project_id=? AND revision=?').run(canonical(data),expectedRevision+1,now,id,id,expectedRevision);if(result.changes!==1)fail('FOLDER_ROLES_CONFLICT','项目视频设置已变化',409);}
     else {try{this.db.prepare('INSERT INTO project_video_settings VALUES(?,?,?,?,?,?)').run(id,id,canonical(data),1,now,now);}catch(e){if(['SQLITE_CONSTRAINT_PRIMARYKEY','SQLITE_CONSTRAINT_UNIQUE','ER_DUP_ENTRY'].includes(e.code))fail('FOLDER_ROLES_CONFLICT','项目视频设置已由另一操作创建，请重新预览',409);throw e;}}
@@ -49,9 +52,11 @@ export class ProjectVideoFolders {
     this.catalog.project(id);const setting=this.settingsRow(id),revision=setting?.revision||0,rejectFolderId=this.settingsData(setting).rejectFolderId,rows=this.rows(id),byId=new Map(rows.map(r=>[r.id,r]));
     let current=rejectFolderId,needsReview=false;const seen=new Set();while(current&&current!=='root'){if(seen.has(current)||!byId.has(current)){needsReview=true;break;}seen.add(current);current=byId.get(current).parentId;}
     const rejectVideoCount=rejectFolderId?this.catalog.videos.sources(id).filter(s=>!this.catalog.metadata(id,s).data.removedAt&&this.inSubtree(this.folderId(id,s.path,rows),rejectFolderId,rows)).length:0;
-    return{revision,rejectFolderId,rejectVideoCount,needsReview,...(needsReview?{errorCode:'REJECT_FOLDER_MISSING'}:{})};
+    const finalFolderId=this.settingsData(setting).finalFolderId,finalRow=byId.get(finalFolderId);return{revision,rejectFolderId,rejectVideoCount,needsReview,finalFolderId,finalState:finalFolderId?(finalRow?'ready':'needs_review'):'not_created',finalErrorCode:finalFolderId&&!finalRow?'FINAL_FOLDER_NEEDS_REVIEW':null,...(needsReview?{errorCode:'REJECT_FOLDER_MISSING'}:{})};
   }
+  assertMutable(id,folderId){const rows=this.rows(id),finalId=this.settings(id).finalFolderId;if(finalId&&this.inSubtree(finalId,folderId,rows))fail('FOLDER_RESERVED','成片文件夹是保留文件夹，不能改名、移动或删除',409,{folderId:finalId,role:'final'});}
   clearRemovedRole(id,deletedFolderIds) {
+    for(const folderId of deletedFolderIds)this.assertMutable(id,folderId);
     const state=this.roleState(id),deleted=new Set(deletedFolderIds),byId=new Map(this.rows(id).map(r=>[r.id,r]));let current=state.rejectFolderId;const seen=new Set();
     while(current&&current!=='root'&&!seen.has(current)){if(deleted.has(current)){this.writeSettings(id,{...this.settings(id),rejectFolderId:null},state.revision);return this.roleState(id);}seen.add(current);current=byId.get(current)?.parentId;}
     return state;
@@ -71,7 +76,7 @@ export class ProjectVideoFolders {
     return parts.length>=2&&!parts.includes('..')&&parts[0].endsWith('--'+id.toLowerCase())?path.join(this.catalog.directory,parts[0]):null;
   }
   folderId(id,file,rows=this.rows(id)) {const root=this.rootForSource(id,file);if(!root)return null;const rel=path.relative(root,path.dirname(file)).split(path.sep).join('/');return !rel?'root':rows.find(r=>r.relativePath===rel)?.id??null;}
-  dto(row,root,roles=row.project_id?this.roleState(row.project_id):{rejectFolderId:null}) {return{id:row.id,parentId:row.parentId,name:row.name,path:path.join(root,...row.relativePath.split('/')),relativePath:row.relativePath,available:true,role:row.id===roles.rejectFolderId?'reject':null};}
+  dto(row,root,roles=row.project_id?this.roleState(row.project_id):{rejectFolderId:null}) {return{id:row.id,parentId:row.parentId,name:row.name,path:path.join(root,...row.relativePath.split('/')),relativePath:row.relativePath,available:true,role:row.id===roles.finalFolderId?'final':row.id===roles.rejectFolderId?'reject':null,locked:row.id===roles.finalFolderId};}
   async resolve(id,folderId='root',{write=false,create=false}={}) {
     this.catalog.project(id,write);if(folderId==='all')folderId='root';
     const base=create?await this.catalog.prepareRoot(id):null,root=base?.target??await this.rootPath(id);
@@ -158,6 +163,7 @@ export class ProjectVideoFolders {
         if(exact&&!sameFolder(exact.identity,identity))continue; // Never grant an old ID to a replaced directory.
         if(matches.length>1)continue;
         const known=exact||matches[0];
+        if(known&&this.inSubtree(known.id,this.settings(id).finalFolderId,rows))continue; // A Finder move must not rewrite a reserved role's identity/path.
         if(known&&known.relativePath!==rel){const old=known.relativePath;this.catalog.videos.tx(()=>{for(const r of rows.filter(r=>r.relativePath===old||r.relativePath.startsWith(old+'/')))this.write(id,r.id,this.data(r,{relativePath:rel+r.relativePath.slice(old.length),...(r.id===known.id?{name:entry.name,parentId:folderId}:{} )}));});}
         else if(!known)this.catalog.videos.tx(()=>this.write(id,randomUUID(),{name:entry.name,parentId:folderId,relativePath:rel,identity,removedAt:0}));
       }

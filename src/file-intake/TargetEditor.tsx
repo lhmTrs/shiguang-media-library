@@ -53,7 +53,8 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
     const timer=setTimeout(()=>{void api<{destination:Proposal;message:string}>(INTAKE_API+'/image-proposal?projectId='+encoded(project)+'&name='+encoded(name)+'&lookName='+encoded(look),undefined,undefined,{signal:c.signal}).then(result=>{if(!current)return;const p=result.destination;proposalRef.current=proposalKey;setProposal(p);const v=valueRef.current;if(v)onChange({...v,imageProposal:p},false);}).catch(e=>{if(current&&!c.signal.aborted)setError(errorMessage(e));}).finally(()=>{if(current)setChecking(false);});},250);
     return()=>{current=false;clearTimeout(timer);c.abort();};
   },[api,kind,proposalKey,refresh,locked]);
-  const selected=value?.scope==='project'?value.folderId||'root':value?.directory||'';
+  const selected=value?.scope==='project'?(value.folderRole?FINAL_ROLE:value.folderId||'root'):value?.directory||'';
+  const finalMissing=value?.scope==='project'&&value.kind==='video'&&!folders.some(f=>f.role==='final');
   const ready=!locked&&!!value&&!reading&&!checking&&!creating&&!error&&(scope==='project'?!!project&&(kind==='photo'?proposalRef.current===proposalKey&&!!proposal:folders.some(f=>f.id===selected)):folders.some(f=>f.id===selected));
   useEffect(()=>{onReady(ready);return()=>onReady(false);},[ready]);
   async function createFolder(){if(locked||!value||!newFolder.trim()||creating)return;const version=location.current.version;setCreating(true);setError('');try{const r=await api<{relativePath:string}>(INTAKE_API+'/categories/'+value.kind,{directory:value.directory||'',name:newFolder});if(!mounted.current)return;const current=valueRef.current;if(!lockedRef.current&&current&&location.current.version===version)onChange({...current,directory:r.relativePath});setNewFolder('');setRefresh(n=>n+1);}catch(e){if(mounted.current&&!lockedRef.current&&location.current.version===version)setError(errorMessage(e));}finally{if(mounted.current)setCreating(false);}}
@@ -69,7 +70,7 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
         {assetProjects&&<button type="button" disabled={locked||!value.assetKind&&!!project&&!assetsIn(project).length} title={project&&!assetsIn(project).length?'这个项目还没有场景或道具':undefined} aria-pressed={!!value.assetKind} onClick={()=>!value.assetKind&&pickAsset(project||assetProjects.find(p=>assetsIn(p.id).length)?.id||'')}>场景/道具</button>}
         <button type="button" disabled={locked} aria-pressed={value.scope==='library'} onClick={()=>value.scope!=='library'&&patch({scope:'library',imageProposal:undefined})}>{kindLabel.photo}</button>
       </span></div>}
-      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>value.assetKind?pickAsset(e.target.value):patch({projectId:e.target.value,folderId:'root',newFolder:undefined,imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+      {value.scope==='project'&&<label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>value.assetKind?pickAsset(e.target.value):patch({projectId:e.target.value,folderId:'root',newFolder:undefined,folderRole:undefined,imageProposal:undefined})}><option value="">请选择项目</option>{locked&&project&&!projects.some(p=>p.id===project)&&<option value={project}>原提交项目：{project}</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
       {value.scope==='project'&&value.kind==='photo'&&value.assetKind?<div className="fi-field"><span>放进</span>
         {assetsIn(project).length?<span className="fi-pop-list" role="radiogroup" aria-label={'场景或道具 '+file.id}>{assetsIn(project).map(a=><button key={a.id} type="button" role="radio" disabled={locked} aria-checked={value.assetId===a.id} onClick={()=>onChange({...value,assetKind:a.kind as 'scene'|'prop',assetId:a.id,assetRevision:a.revision,imageProposal:undefined})}>{a.kind==='scene'?'场景':'道具'} · {a.name}</button>)}</span>
           :<small className="fi-error" role="status">这个项目还没有场景或道具。请换一个项目，或把去处改成人物、摄影照片。</small>}
@@ -79,8 +80,8 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
         {checking?<p role="status">正在核对人物和造型…</p>:shownProposal&&(locked||proposalRef.current===proposalKey)?<p className="fi-muted">{shownProposal.newCharacter?'将新建人物：':'添加到现有人物：'}{shownProposal.characterName} · {shownProposal.newLook?'将新建造型：':'现有造型：'}{shownProposal.lookName}</p>:<p className="fi-muted">{locked?'原提交目标保留，请核对原请求结果。':'请填写人物和造型。缺少信息时也可改为收纳到摄影照片。'}</p>}
         <p className="fi-muted fi-keep-note">确认收纳后正式保存关联；已有代表图保持不变。</p>
       </>:<>
-        <label><span>{value.scope==='project'?'文件夹':'分类'}</span><select aria-label={'目标分类 '+file.id} value={selected} disabled={locked||reading} onChange={e=>patch(value.scope==='project'?{folderId:e.target.value,newFolder:undefined}:{directory:e.target.value})}>{locked?<option value={selected}>{selected&&selected!=='root'?selected:value.scope==='project'?'项目根目录':'待确认'} · 原提交目标</option>:reading?<option>正在读取…</option>:folders.map(f=><option key={f.id} value={f.id}>{f.relativePath||f.name}</option>)}</select></label>
-        {value.scope==='project'&&value.kind==='video'&&!locked&&<NewVideoFolder value={value} folders={folders} onChange={onChange}/>}
+        <label><span>{value.scope==='project'?'文件夹':'分类'}</span><select aria-label={'目标分类 '+file.id} value={selected} disabled={locked||reading} onChange={e=>patch(value.scope==='project'?(e.target.value===FINAL_ROLE?{folderRole:'final',folderId:undefined,newFolder:undefined}:{folderId:e.target.value,newFolder:undefined,folderRole:undefined}):{directory:e.target.value})}>{locked?<option value={selected}>{selected===FINAL_ROLE?'成片（收纳时自动建好）':selected&&selected!=='root'?selected:value.scope==='project'?'项目根目录':'待确认'} · 原提交目标</option>:reading?<option>正在读取…</option>:<>{folders.map(f=><option key={f.id} value={f.id}>{f.relativePath||f.name}{f.role==='final'?'（保留文件夹）':''}</option>)}{(finalMissing||selected===FINAL_ROLE)&&<option value={FINAL_ROLE}>成片（收纳时自动建好）</option>}</>}</select></label>
+        {value.scope==='project'&&value.kind==='video'&&!locked&&!value.folderRole&&<NewVideoFolder value={value} folders={folders} onChange={onChange}/>}
         {value.scope==='project'&&value.kind==='video'&&locked&&value.newFolder&&<p className="fi-muted">原提交：在这里新建「{value.newFolder.name}」</p>}
         {value.scope==='library'&&<details><summary>新建分类文件夹</summary><div className="fi-actions"><input className="fi-button" aria-label={'新分类名称 '+file.id} value={newFolder} disabled={locked||creating} onChange={e=>setNewFolder(e.target.value)}/><button disabled={locked||creating||!newFolder.trim()} onClick={()=>void createFolder()}>{creating?'正在创建…':'创建分类'}</button></div><small>在当前分类下创建真实文件夹，最多两级；根目录表示待确认。</small></details>}
       </>}
@@ -90,8 +91,13 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
   </section>;
 }
 
+/** 下拉里「成片」逻辑目标的取值（不是真实文件夹 id）。 */
+const FINAL_ROLE='__final__';
+
 export function submittedDestination(v:DestinationDraft):IntakeDestination {
   if(v.scope==='library')return {kind:v.kind,scope:'library',directory:v.directory||'',...(v.fileName?{fileName:v.fileName}:{})};
+  // 「成片」逻辑目标原样提交（与 folderId/newFolder 互斥），由后台在确认时建好或接管；不能退化成根目录
+  if(v.kind==='video'&&v.folderRole)return {kind:'video',scope:'project',projectId:v.projectId,folderRole:v.folderRole,...(v.fileName?{fileName:v.fileName}:{})};
   if(v.kind==='video')return {kind:'video',scope:'project',projectId:v.projectId,folderId:v.folderId||'root',...(v.newFolder?{newFolder:{name:v.newFolder.name}}:{}),...(v.fileName?{fileName:v.fileName}:{})};
   // An unfinished scene/prop choice stays a scene/prop target (the server rejects it); it never falls through to a person.
   if(v.assetKind)return {kind:'photo',scope:'project',projectId:v.projectId,assetKind:v.assetKind,assetId:v.assetId,assetRevision:v.assetRevision,...(v.fileName?{fileName:v.fileName}:{})};

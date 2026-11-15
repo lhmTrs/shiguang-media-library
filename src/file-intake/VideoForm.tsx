@@ -39,20 +39,23 @@ export function VideoDestination({project, projects, recent, destination, rememb
   onChange: (destination: DestinationDraft) => void;
 }) {
   const folders = sorted(project.videoFolders || []);
-  const folderId = destination.folderId || 'root', pending = destination.newFolder?.name;
+  const role = destination.folderRole, folderId = role ? '' : destination.folderId || 'root', pending = destination.newFolder?.name;
+  // 还没有「成片」文件夹时给一个逻辑目标：确认收纳时由后台建好或接管同名文件夹，打开窗口不建
+  const finalMissing = !(project.videoFolders || []).some(f => f.role === 'final');
   const current = folders.find(f => f.id === folderId);
   const letter = nextFolderLetter(project.videoFolders || []);
-  const to = (patch: Partial<DestinationDraft>) => onChange({...destination, newFolder: undefined, ...patch});
+  const to = (patch: Partial<DestinationDraft>) => onChange({...destination, newFolder: undefined, folderRole: undefined, ...patch});
   const pick = (id: string) => to({folderId: id});
   const parts = current ? (current.relativePath || current.name).split('/') : [];
   // A path segment goes back to that level; the last one is where the file lands.
   const segments: {text: string; go?: () => void; note?: string}[] = [
-    ...placeSegments(project).map((text, i, all) => ({text, go: i === all.length - 1 && (current || pending) ? () => pick('root') : undefined})),
+    ...placeSegments(project).map((text, i, all) => ({text, go: i === all.length - 1 && (current || pending || role) ? () => pick('root') : undefined})),
     ...parts.map((text, i) => {
       const id = i < parts.length - 1 ? folders.find(f => (f.relativePath || f.name) === parts.slice(0, i + 1).join('/'))?.id : undefined;
       return {text, go: id ? () => pick(id) : undefined};
     }),
     ...(pending ? [{text: pending, note: '收纳时新建'}] : []),
+    ...(role ? [{text: '成片', note: '收纳时自动建好'}] : []),
   ];
   const switchProject = (id: string) => {
     if (id === destination.projectId) return;
@@ -76,12 +79,16 @@ export function VideoDestination({project, projects, recent, destination, rememb
       <div className="fi-chips" role="group" aria-label="文件夹">
         {folders.map(f => {
           const on = !pending && f.id === folderId, path = f.relativePath || f.name, slash = path.lastIndexOf('/');
-          return <button key={f.id} type="button" className={'fi-chip' + (on ? ' fi-chip-on' : '')} aria-pressed={on} aria-label={path} disabled={locked}
+          return <button key={f.id} type="button" className={'fi-chip' + (on ? ' fi-chip-on' : '')} aria-pressed={on} aria-label={path + (f.role === 'final' ? '（保留文件夹）' : '')} disabled={locked}
             title={on ? '再点一次放回「' + placeSegments(project)[placeSegments(project).length - 1] + '」本身' : path + (f.id === remembered ? '（上次用的）' : '')}
             onClick={() => on ? pick('root') : pick(f.id)}>
             {on && <Check size={13} aria-hidden="true"/>}<span>{slash > 0 && <span className="fi-chip-parent">{path.slice(0, slash + 1)}</span>}{path.slice(slash + 1)}</span>
           </button>;
         })}
+        {(finalMissing || role) && <button type="button" className={'fi-chip' + (role ? ' fi-chip-on' : '')} aria-pressed={!!role} aria-label="成片（收纳时自动建好）" disabled={locked}
+          title={role ? '再点一次放回「' + placeSegments(project)[placeSegments(project).length - 1] + '」本身' : '这一集还没有「成片」文件夹，点收纳时自动建好；已有同名文件夹会直接接管，内容不动'}
+          onClick={() => role ? pick('root') : onChange({kind: 'video', scope: 'project', projectId: destination.projectId, folderRole: 'final'})}>
+          {role && <Check size={13} aria-hidden="true"/>}<span>成片</span><small className="fi-chip-note">收纳时建</small></button>}
         {pending !== undefined ? <PendingFolder name={pending} folders={project.videoFolders || []} locked={locked}
           onRename={name => onChange({...destination, folderId: 'root', newFolder: {name}})}
           onExisting={id => pick(id)} onDrop={() => pick('root')}/>
