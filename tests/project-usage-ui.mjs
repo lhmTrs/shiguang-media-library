@@ -44,6 +44,7 @@ try {
   await check('从目录的集卡进入甲的素材使用：候选 2 条、照片筛选计数 2、标题区有导入 / 添加 / 分享给 Agent', async () => {
     await openProject('甲项目');
     await expect(rows()).toHaveCount(2); await expect(ledger().getByRole('tab', { name: /^候选素材 2/ })).toBeVisible();
+    await expect(ledger().locator('.project-list-heading')).toBeVisible(); await expect(ledger().getByRole('checkbox', { name: '选择本页项目素材' })).toBeVisible(); // 有素材时表头和全选照常
     await expect(ledger().getByRole('button', { name: '筛选项目照片' })).toContainText('2');
     for (const name of ['导入达芬奇时间线', '添加素材']) await expect(ledger().getByRole('button', { name, exact: true })).toBeVisible();
     await expect(ledger().getByRole('button', { name: /分享给 Agent/ })).toBeVisible();

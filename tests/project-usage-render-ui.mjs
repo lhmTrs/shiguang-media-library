@@ -329,6 +329,10 @@ try {
   await check('还没导入时间线：显示两步说明，不伪造时间线', async () => {
     fake.overview = 'overview-empty'; await page.reload(); await openUsage();
     await expect(page.getByRole('region', { name: '开始' })).toContainText('两步就能边看成片边对照音效');
+    // 列表为空：不显示全选行和表头（两条框线），只留空状态
+    await expect(page.locator('.project-items-empty')).toBeVisible();
+    await expect(page.locator('.project-list-heading')).toHaveCount(0);
+    await expect(page.getByRole('checkbox', { name: '选择本页项目素材' })).toHaveCount(0);
     await shot('empty');
   });
   assert.deepEqual(errors, []);
