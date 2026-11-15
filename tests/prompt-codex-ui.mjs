@@ -61,12 +61,12 @@ try{
  });
  browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
  const context=await browser.newContext({viewport:{width:1680,height:1100},acceptDownloads:true});await serveCandidate(context,external);await context.addInitScript(()=>localStorage.setItem('shiguang.refreshSeconds','0'));page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(origin);await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'提示词模板',exact:true}).click();
- const app=page.getByRole('region',{name:'提示词模板工作台'}),chat=page.getByRole('region',{name:'Codex 图文对话'}),button=name=>chat.getByRole('button',{name,exact:true});let conversationId;
+ const app=page.getByRole('region',{name:'提示词模板工作台'}),chat=page.getByRole('region',{name:'Codex 图文对话'}),button=name=>chat.getByRole('button',{name,exact:true}),codexTab=(p=page)=>p.getByRole('tab',{name:/用 Codex 生成/}).click(),fillTab=(p=page)=>p.getByRole('tab',{name:'填写与复制',exact:true}).click();let conversationId;await codexTab();
  const current=()=>api('/prompt-codex/conversations/'+conversationId);
  await check('Explicit connection reads model catalog and only supported reasoning levels; no generation on connect',async()=>{
   // 没有可用项目时不能生成：项目列表真的为空（顶栏统一后不能再把项目清空），恢复后在层级栏选项目甲
-  await context.route(emptyProjects,r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(chat.locator('.codex-generate-button')).toBeDisabled();await expect(chat.locator('.codex-generate-action')).toContainText('请先在顶部选择项目');
-  await context.unroute(emptyProjects);await page.reload();await selectProjectInBar(page, projectA.id);
+  await context.route(emptyProjects,r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await codexTab();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(chat.locator('.codex-generate-button')).toBeDisabled();await expect(chat.locator('.codex-generate-action')).toContainText('请先在顶部选择项目');
+  await context.unroute(emptyProjects);await page.reload();await codexTab();await selectProjectInBar(page, projectA.id);
   await expect(chat.getByLabel('Codex 输出偏好')).toHaveValue('mixed');assert.deepEqual(await chat.getByLabel('Codex 输出偏好').locator('option').evaluateAll(options=>options.map(o=>({value:o.value,text:o.textContent}))),[{value:'mixed',text:'图文'},{value:'image',text:'只生成图片'}]);
   await reconnect(chat).click();await expect(chat.locator('.codex-connection')).toHaveText('已连接');await expect(chat.getByLabel('Codex 对话模型')).toHaveValue('synthetic-a');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('high');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),4);
   await chat.getByLabel('Codex 对话模型').selectOption('synthetic-b');await expect(chat.getByLabel('Codex 推理强度')).toHaveValue('medium');assert.equal(await chat.getByLabel('Codex 推理强度').locator('option').count(),2);
@@ -101,10 +101,10 @@ try{
   await chat.getByLabel('Codex 对话模型').selectOption('synthetic-b');await chat.getByLabel('Codex 输出偏好').selectOption('image');await chat.getByLabel('Codex 追问内容').fill('再精炼一点');await button('发送追问').click();await expect(chat.getByTestId('codex-turn-2').locator('.codex-status')).toHaveText('已完成');let turns=(await current()).turns;assert.equal(turns[1].actual.model,'synthetic-b');assert.equal(turns[1].actual.effort,'medium');assert.equal(turns[0].actual.effort,'max');assert.equal(turns[1].request.output,'image');assert.deepEqual(turns[1].blocks.map(b=>b.type),['image','image']);
   await button('重新生成').click();await expect(chat.getByTestId('codex-turn-3').locator('.codex-status')).toHaveText('已完成');turns=(await current()).turns;assert.equal(turns.length,3);assert.equal(turns[2].request.retry_of,turns[1].id);
   assert.equal(turns[2].request.output,'image');assert.deepEqual(turns[2].blocks.map(b=>b.type),['image','image']);const starts=(await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse).filter(c=>c.method==='turn/start');for(const call of starts.slice(-2))assert.match(call.input[0].text,/输出偏好：本次只生成并返回图片。/);
-  await page.reload();await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'提示词模板',exact:true}).click();await expect(chat.locator('.codex-turn')).toHaveCount(3);await expect(chat.locator('.codex-image img')).toHaveCount(6);await expect(chat.getByLabel('Codex 输出偏好')).toHaveValue('mixed');
+  await page.reload();await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'提示词模板',exact:true}).click();await codexTab();await expect(chat.locator('.codex-turn')).toHaveCount(3);await expect(chat.locator('.codex-image img')).toHaveCount(6);await expect(chat.getByLabel('Codex 输出偏好')).toHaveValue('mixed');
  });
  await check('Stop preserves partial output, soft delete hides the conversation and restore preserves all rows',async()=>{
-  await button('Codex 新对话').click();await expect(chat.getByLabel('Codex 追问内容')).toHaveCount(0);await app.getByLabel('主题',{exact:true}).fill('慢速停止测试');await chat.locator('.codex-generate-button').click();await expect(chat.getByTestId('codex-turn-1')).toContainText('合成回答');await button('停止生成').click();await expect(chat.locator('.codex-status')).toHaveText('已停止');const rows=await api('/prompt-codex/conversations?template_id='+template.id),slow=rows.find(r=>r.id!==conversationId);assert.ok(slow);const stopped=await api('/prompt-codex/conversations/'+slow.id);assert.ok(stopped.turns[0].blocks[0].text);
+  await button('Codex 新对话').click();await expect(chat.getByLabel('Codex 追问内容')).toHaveCount(0);await fillTab();await app.getByLabel('主题',{exact:true}).fill('慢速停止测试');await codexTab();await chat.locator('.codex-generate-button').click();await expect(chat.getByTestId('codex-turn-1')).toContainText('合成回答');await fillTab();const runningTab=page.getByRole('tab',{name:/用 Codex 生成/});await expect(runningTab.locator('.prompt-tab-badge')).toHaveText('生成中');await page.screenshot({path:path.join(evidence,'prompt-tab-running-badge.png')});await codexTab();await button('停止生成').click();await expect(chat.locator('.codex-status')).toHaveText('已停止');await expect(runningTab.locator('.prompt-tab-badge')).toHaveCount(0);const rows=await api('/prompt-codex/conversations?template_id='+template.id),slow=rows.find(r=>r.id!==conversationId);assert.ok(slow);const stopped=await api('/prompt-codex/conversations/'+slow.id);assert.ok(stopped.turns[0].blocks[0].text);
   await button('删除对话').click();await button('已删除对话').click();await expect(button('恢复对话')).toBeVisible();assert.equal((await api('/prompt-codex/conversations/'+slow.id)).turns.length,1);await button('恢复对话').click();await button('正常对话').click();
  });
  await check('Reconnect creates no generation, stored conversation can continue with recovered context',async()=>{
@@ -143,7 +143,7 @@ try{
    const writes=[];
    context2.on('request',r=>{const pathname=new URL(r.url()).pathname;if(r.method()==='POST'&&pathname.startsWith('/api/prompt-codex/'))writes.push(pathname)});
    await context2.route(connectRoute,async route=>{await connectGate;await route.continue()});
-   await freshPage.goto(origin+'/#/prompt-templates');
+   await freshPage.goto(origin+'/#/prompt-templates');await codexTab(freshPage);
    const workspace=freshPage.getByRole('region',{name:'提示词模板工作台'}),panel=freshPage.getByRole('region',{name:'Codex 图文对话'});
    const connection=panel.locator('.codex-connection'),generate=panel.locator('.codex-generate-button');
    const preview=workspace.getByLabel('完整提示词内容');
@@ -169,14 +169,14 @@ try{
    const latest=await api('/prompt-codex/conversations/'+id);
    assert.equal(latest.context.prompt,text);assert.equal(latest.turns.length,1);
    assert.equal(latest.turns[0].request.text,'');assert.equal(latest.turns[0].request.output,'mixed');
-   await freshPage.reload();await expect(panel.locator('.codex-turn')).toHaveCount(1);await expect(connection).toHaveText('已连接');
+   await freshPage.reload();await codexTab(freshPage);await expect(panel.locator('.codex-turn')).toHaveCount(1);await expect(connection).toHaveText('已连接');
    assert.deepEqual(writes,[connectPath,'/api/prompt-codex/conversations','/api/prompt-codex/conversations/'+id+'/turns']);
    assert.equal(await generationCount(),before+1);
    await freshPage.screenshot({path:path.join(evidence,'direct-template-completed.png')});
   }finally{releaseConnect();await context2.close();}
  });
  await check('Image-only first generation sends the appended preference, renders returned image blocks and fits desktop/mobile',async()=>{
-  await page.goto(origin+'/#/prompt-templates');await page.reload();await button('Codex 新对话').click();await app.getByLabel('主题',{exact:true}).fill('仅图片首次生成合成场景');await chat.getByLabel('Codex 输出偏好').selectOption('image');await chat.locator('.codex-generate-button').click();await expect(chat.locator('.codex-status')).toHaveText('已完成');
+  await page.goto(origin+'/#/prompt-templates');await page.reload();await codexTab();await button('Codex 新对话').click();await fillTab();await app.getByLabel('主题',{exact:true}).fill('仅图片首次生成合成场景');await codexTab();await chat.getByLabel('Codex 输出偏好').selectOption('image');await chat.locator('.codex-generate-button').click();await fillTab();const doneTab=page.getByRole('tab',{name:/用 Codex 生成/});await expect(page.locator('.codex-chat')).toBeHidden();await expect.poll(async()=>(await api('/prompt-codex/conversations?template_id='+template.id)).length).toBeGreaterThan(0);await expect(doneTab.locator('.prompt-tab-badge')).toHaveCount(0,{timeout:15000});await expect(app.getByLabel('主题',{exact:true})).toHaveValue('仅图片首次生成合成场景');await codexTab();await expect(chat.locator('.codex-status')).toHaveText('已完成');
   const id=await chat.locator('.codex-history-list>button.selected').getAttribute('data-conversation-id'),result=await api('/prompt-codex/conversations/'+id);assert.equal(result.turns[0].request.output,'image');assert.deepEqual(result.turns[0].blocks.map(b=>b.type),['image','image']);await expect(chat.locator('.codex-image img')).toHaveCount(2);
   const last=(await fs.readFile(trace,'utf8')).trim().split('\n').map(JSON.parse).filter(c=>c.method==='turn/start').at(-1);assert.ok(last.input[0].text.startsWith(result.context.prompt));assert.match(last.input[0].text,/输出偏好：本次只生成并返回图片。/);assert.ok(last.input[0].text.endsWith('不要伪造图片或图片链接。'));
   for(const width of [1440,390]){await page.setViewportSize({width,height:1000});await chat.scrollIntoViewIfNeeded();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(evidence,'image-only-width-'+width+'.png')});}
