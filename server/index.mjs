@@ -1,3 +1,5 @@
+import {UpdreamProgress} from './updream-progress/store.mjs';
+import {updreamProgressRouter} from './updream-progress/router.mjs';
 import {upgradeRenderSchemaAtStartup} from './render-schema-startup.mjs';
 import {projectRenderRouter,validateRenderPayload} from './project-renders.mjs';
 import express from "express";
@@ -502,6 +504,11 @@ app.use("/api", (req, res, next) => {
 // Storyboard shares the existing Host/origin, cookie and write-token gates.
 app.use("/api/storyboard-generation", storyboardGeneration.router);
 app.use("/api/storyboard-video", storyboardVideo.router);
+const updreamProgress = new UpdreamProgress({dataDir,queueDir:process.env.MEDIA_UPDREAM_QUEUE_DIR,libraryId:mysqlStorage.sourceId,
+  projectName:id=>{try{return projects.get(id).name;}catch{return null;}},
+  resolveVideo:(projectId,videoId)=>{try{return projectVideos.isManaged(projectId,projectVideos.videos.source(projectId,videoId));}catch{return false;}}
+});
+app.use('/api/updream-progress',updreamProgressRouter(updreamProgress,{withActivity:fn=>uploadHost.track(fn)}));
 app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,rememberTarget:target=>intakePreferences.remember([target]),withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/storyboard", storyboard.router);
