@@ -11,7 +11,7 @@ const tc = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:$
 type Row = {shot: Any; scene: Any; sceneIndex: number; number: string; start_ms: number; end_ms: number};
 
 type DiffChange = {field: string; before: unknown; after: unknown; deleted: boolean};
-const FIELD: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜'};
+const FIELD: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜', $number: '全片镜号'};
 const text = (v: unknown) => v === null || v === undefined || v === '' ? '（空）' : typeof v === 'string' ? v : JSON.stringify(v);
 /** banner/diff 用于「查看旧版本」：只读，diff 来自「这一版 → 当前版本」，删除线是当前版，绿色是这一版。 */
 export function ReadingMode({project, title, onClose, onJump, exitLabel = '退出阅读', banner, diff}: {project: Any; title: string; onClose: () => void; onJump?: (shotId: string) => void; exitLabel?: string; banner?: React.ReactNode; diff?: Map<string, DiffChange[]>}) {

@@ -3,7 +3,7 @@ import type { StoryboardTransport } from './transport';
 
 export type ReasonCategory = 'shot_feel' | 'miscommunication' | 'prompt_wrong';
 export const CATEGORY_LABEL: Record<ReasonCategory, string> = {shot_feel: '追求镜头感', miscommunication: '沟通失误', prompt_wrong: '提示词不对'};
-export const AUTHOR_LABEL: Record<string, string> = {user: '你', agent: 'Codex', import: '导入', generation: 'Codex 生成', restore: '恢复'};
+export const AUTHOR_LABEL: Record<string, string> = {user: '你', agent: 'Codex', import: '导入', generation: 'Codex 生成', restore: '恢复', baseline: '启用前版本'};
 export type VersionMeta = {version: number; created_at: number | string; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; reason_missing?: boolean; summary_only: boolean; changed_shot_count: number; restored_from: number | null; full_available: boolean; baseline?: boolean; byte_size?: number};
 export type VersionList = {document_id: string; current_revision: number; total: number; storage: {bytes: number; record_bytes: number; kept_full: number; limit: number; physical_bytes: null}; items: VersionMeta[]};
 export type Change = {target_kind: 'shot' | 'scene' | 'document'; target_id: string; shot_id: string | null; shot_number_at_time: number | null; field: string; before: unknown; after: unknown; deleted: boolean};

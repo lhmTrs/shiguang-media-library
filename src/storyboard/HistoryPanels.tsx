@@ -4,7 +4,7 @@ import { AlertTriangle, Check, Crosshair, Eye, RotateCcw } from 'lucide-react';
 import { ReadingMode } from './ReadingMode';
 import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, kb, show, when, type Change, type HistoryApi, type PendingList, type ReasonCategory, type VersionList, type VersionMeta } from './history';
 
-const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删'};
+const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号'};
 const fieldName = (f: string) => FIELD_LABEL[f] ?? f;
 const value = (field: string, v: unknown) => field === 'duration_ms' && typeof v === 'number' ? `${(v / 1000).toString()} 秒` : show(v);
 const Problem = ({error}: {error: unknown}) => <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>{error instanceof HistoryError && error.code === MIGRATION_REQUIRED ? '改动记录还没有启用：这个素材库需要先做一次数据库迁移（由维护人员执行），分镜照常可以编辑和保存。' : (error as Error).message}</p>;
@@ -12,7 +12,8 @@ const Reason = ({author, category, text}: {author: string; category: ReasonCateg
   <span className="sb-history-tag is-who">{AUTHOR_LABEL[author] ?? author}</span>
   {category && <span className="sb-history-tag is-why">{CATEGORY_LABEL[category]}</span>}
   {author === 'user' && <span className="sb-history-tag is-why">用户手动保存</span>}
-  {text && author !== 'user' && <q className="sb-history-quote">{text}</q>}
+  {text && (author === 'agent' || author === 'generation') && <q className="sb-history-quote">{text}</q>}
+  {text && !['user', 'agent', 'generation'].includes(author) && <span className="sb-history-muted">{text}</span>}
 </>;
 
 /** 把一组「字段改前改后」显示成一行行。后端可能给整体 before/after 对象（按字段）或单值。 */
