@@ -39,8 +39,8 @@ try {
   const example = JSON.parse(await fs.readFile(path.join(root, 'server/storyboard/example.json'), 'utf8'));
   await api('/storyboard/projects/' + main.id + '/initialize', { request_id: randomUUID(), source: example, expected_revision: null, filename: '示例.json', timing: 'duration' });
   await api('/storyboard/projects/' + small.id + '/initialize', { request_id: randomUUID(), source: syntheticSource(), expected_revision: null, filename: '合成.json', timing: 'duration' });
-  // 首次导入会把所有镜头记为待看（后端规则）；这里模拟用户已看过导入结果，后面只看 agent 的修改。
-  for (const id of [main.id, small.id]) { const pend = await api('/storyboard/projects/' + id + '/pending'); await api('/storyboard/projects/' + id + '/pending/clear', { through_version: pend.current_revision, all: true }); }
+  // 用户决定「只标 Codex 改的」：导入不产生待看。
+  for (const id of [main.id, small.id]) assert.equal((await api('/storyboard/projects/' + id + '/pending')).pending_count, 0, '导入不应产生待看');
 
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -88,6 +88,7 @@ try {
     await expect(page.getByRole('region', { name: '项目生成视频' })).toBeVisible();
     assert.equal(puts.length, 1); assert.deepEqual(puts[0].change, { author: 'user' }); assert.ok(puts[0].request_id);
     const v = await api('/storyboard/projects/' + main.id + '/versions?limit=1'); assert.equal(v.items[0].author_kind, 'user'); assert.equal(v.items[0].reason_text, '用户手动保存');
+    assert.equal((await api('/storyboard/projects/' + main.id + '/pending')).pending_count, 0, '手动保存不应产生待看');
   });
 
   await check('S4 agent 保存后：待看数量、镜号「待看」、卡片写原话和分类；改分类；「看过了」只清这一镜', async () => {
@@ -104,6 +105,7 @@ try {
     await page.getByRole('article').filter({ hasText: '镜 02' }).getByRole('button', { name: '看过了' }).click();
     await expect(page.getByRole('article').filter({ hasText: '镜 02' })).toHaveCount(0);
     await expect(page.getByRole('article').filter({ hasText: '镜 05' })).toHaveCount(1);
+    await expect(page.getByRole('article').filter({ hasText: '分镜整体设置' })).toHaveCount(0);
     const pend = await api('/storyboard/projects/' + main.id + '/pending'); assert.equal(pend.pending_count, 1);
   });
 
@@ -121,6 +123,7 @@ try {
     await expect(dlg).toHaveCount(0);
     const after = await api('/storyboard/projects/' + main.id + '/versions?limit=100');
     assert.equal(after.items[0].author_kind, 'restore'); assert.equal(after.items[0].restored_from, target.version); assert.equal(after.total, before.total + 1);
+    assert.equal((await api('/storyboard/projects/' + main.id + '/pending')).pending_count, 1, '恢复不应新增待看，也不清掉已有的 Codex 待看');
     await expect(cell('02', '画面与人物动作')).toHaveValue(/翻开笔记本/);
   });
 
