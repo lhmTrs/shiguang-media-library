@@ -208,6 +208,43 @@ try {
     page.removeAllListeners('dialog'); await page.unroute(u => new URL(u).pathname === '/api/prompt-codex/tasks').catch(() => {});
   });
 
+  await check('S14 竞态：任务 B 的「保存」还在进行时又点任务 C 并选「留着」；B 的保存完成后不切到 B 项目', async () => {
+    const third = await api('/projects', { name: '合成 · 竞态C' }), now = Date.now();
+    const gens = [small, third].map((p, i) => ({ taskId: randomUUID(), type: 'storyboard', projectId: p.id, status: 'completed', phase: 'completed', model: 'synthetic', effort: 'low', errorCode: '', errors: [], receipt: null, expectedRevision: 1, generation: 1, deadlineAt: now + 60000, resourceState: 'settled', createdAt: now + i, updatedAt: now, project: { id: p.id, name: '合成竞态任务' + (i ? 'C' : 'B'), available: true }, terminalRevision: 'completed::' + now }));
+    const tasks = gens.map(g => ({ ...g, storyboardStatus: 'completed', conversationId: null, templateId: null, title: g.project.name, templateName: '导演分镜 JSON', templateDeleted: false, conversationDeleted: false, sequence: 1, preview: '', images: [], imageCount: 0, summaryUnavailable: false, attention: { required: false, reasons: [] } }));
+    await page.unroute(u => new URL(u).pathname === '/api/prompt-codex/tasks').catch(() => {});
+    await page.route(u => new URL(u).pathname === '/api/prompt-codex/tasks', async route => { const actual = await route.fetch(), data = await actual.json(); await route.fulfill({ json: { ...data, observedAt: Date.now(), items: tasks, activeCount: 0, nextCursor: null } }); });
+    let secondRead = 0; for (const [i, g] of gens.entries()) await page.route(u => new URL(u).pathname === '/api/storyboard-generation/tasks/' + g.taskId, route => { if (i === 1) secondRead++; return route.fulfill({ json: g }); });
+    let started = false, release = () => {}; const gate = new Promise(r => release = r);
+    const hold = async route => { if (route.request().method() !== 'PUT') return route.continue(); started = true; await gate; return route.continue(); };
+    await page.route(u => new URL(u).pathname === '/api/storyboard/projects/' + main.id, hold);
+    await open(main.id); const before = await api('/storyboard/projects/' + main.id);
+    await cell('02', '画面与人物动作').fill('合成：竞态里没保存'); await cell('03', '景别与角度').click();
+    await page.locator('.codex-tasks-entry').first().click(); await page.locator('#concierge-tasks-tab').click();
+    const drawer = page.getByRole('complementary', { name: 'Codex 全局任务' }); await drawer.getByRole('button', { name: '已结束', exact: true }).click();
+    const card = n => drawer.locator('.codex-task-main').filter({ hasText: '合成竞态任务' + n });
+    await card('B').click(); await page.getByTestId('leave-save').click(); await expect.poll(() => started).toBe(true);
+    await card('C').click(); await expect.poll(() => secondRead).toBeGreaterThan(0); await page.getByTestId('leave-stay').click();
+    release(); await expect.poll(async () => (await api('/storyboard/projects/' + main.id)).revision).toBe(before.revision + 1);
+    await page.waitForTimeout(300); await expect(page.locator('.ppb')).toHaveAttribute('data-project', main.id);
+    await page.unroute(u => new URL(u).pathname === '/api/storyboard/projects/' + main.id, hold);
+    await page.unroute(u => new URL(u).pathname === '/api/prompt-codex/tasks').catch(() => {});
+  });
+
+  await check('S15 竞态：顶栏切到 B 选「保存」还在进行时又切 C 并选「留着」；保存完成后仍停在原项目', async () => {
+    const third = (await api('/projects')).find?.(p => p.name === '合成 · 竞态C') ?? (await api('/projects', { name: '合成 · 竞态C2' }));
+    let started = false, release = () => {}; const gate = new Promise(r => release = r);
+    const hold = async route => { if (route.request().method() !== 'PUT') return route.continue(); started = true; await gate; return route.continue(); };
+    await page.route(u => new URL(u).pathname === '/api/storyboard/projects/' + main.id, hold);
+    await open(main.id); const before = await api('/storyboard/projects/' + main.id);
+    await cell('02', '画面与人物动作').fill('合成：顶栏竞态'); await cell('03', '景别与角度').click();
+    await selectProjectInBar(page, small.id); await page.getByTestId('leave-save').click(); await expect.poll(() => started).toBe(true);
+    await selectProjectInBar(page, third.id); await page.getByTestId('leave-stay').click();
+    release(); await expect.poll(async () => (await api('/storyboard/projects/' + main.id)).revision).toBe(before.revision + 1);
+    await page.waitForTimeout(300); await expect(page.locator('.ppb')).toHaveAttribute('data-project', main.id);
+    await page.unroute(u => new URL(u).pathname === '/api/storyboard/projects/' + main.id, hold);
+  });
+
   await check('S9 窄屏 390 与六个主题：阅读模式和改动记录正常显示、无横向溢出（截图留证）', async () => {
     await open(main.id);
     await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole('button', { name: '阅读模式' }).click();

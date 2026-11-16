@@ -659,7 +659,7 @@ function App() {
   const registerProjectSwitchGuard = useCallback((guard: (() => boolean) | null) => {
     assetProjectSwitchGuard.current = guard;
   }, []);
-  const openStoryboardTaskProject = useRef<(id: string, then?: () => void) => boolean>(() => false);
+  const openStoryboardTaskProject = useRef<(id: string, then?: () => void, isCurrent?: () => boolean) => boolean>(() => false);
   const codexTasks=useCodexTasks(api,setNotice),promptWorkspace=useRef<PromptWorkspaceHandle>(null);
   const openUploadTasks=()=>{cancelCodexNavigation();setWorkspaceInitialTab('audio');setUploadTasksOpen(true);};
   const closeUploadTasks=()=>{cancelCodexNavigation();setUploadTasksOpen(false);};
@@ -671,7 +671,7 @@ function App() {
       await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
       // 分镜有未保存修改时先问「保存 / 放弃 / 留着」，确认并切好项目后再打开任务；期间又点了别的任务就不再执行。
       const go=()=>{if(!isCurrent())return;setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);};
-      if (!openStoryboardTaskProject.current(detail.projectId, go)) return;
+      if (!openStoryboardTaskProject.current(detail.projectId, go, isCurrent)) return;
       go();return;
     }
     if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
@@ -807,6 +807,8 @@ function App() {
     projectReadVersion.current++;
     setProjectRevision(n => n + 1);
   }
+  /** 每次发起需要异步确认的项目切换都领一个编号；确认（含保存）结束时编号已不是最新，说明期间又发起了别的切换或任务，旧的续接一律不执行。 */
+  const projectSwitchTicket = useRef(0);
   /** retry：分镜有未保存修改时先问「保存 / 放弃 / 留着」（异步），选保存成功或放弃后再执行 retry；留着就不切换。 */
   function projectChangeAllowed(id: string, retry?: () => void, storyboardChecked = false) {
     if (!projectLibrary.current) return false;
@@ -816,7 +818,7 @@ function App() {
       return false;
     }
     if (storyboardDirty && !storyboardChecked) {
-      if (retry && hasStoryboardLeaveGuard()) { void confirmStoryboardLeave("切换项目").then(ok => { if (ok) retry(); }); return false; }
+      if (retry && hasStoryboardLeaveGuard()) { const ticket = ++projectSwitchTicket.current; void confirmStoryboardLeave("切换项目").then(ok => { if (ok && ticket === projectSwitchTicket.current) retry(); }); return false; }
       if (!confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？")) return false;
     }
     return assetProjectSwitchGuard.current?.() ?? true;
@@ -840,8 +842,9 @@ function App() {
   }
   // Async task navigation may outlive the render in which it started.
   // Read current guards before opening a task, including retained history.
-  openStoryboardTaskProject.current = (id, then) => {
-    if (!projectChangeAllowed(id, then && (() => { if (projectChangeAllowed(id, undefined, true)) { activateProject(id); then(); } }))) return false;
+  openStoryboardTaskProject.current = (id, then, isCurrent) => {
+    // 续接执行前先核「这次任务导航是否还是最新」，再做切项目等副作用；过期就什么都不做
+    if (!projectChangeAllowed(id, then && (() => { if (isCurrent && !isCurrent()) return; if (projectChangeAllowed(id, undefined, true)) { if (isCurrent && !isCurrent()) return; activateProject(id); then(); } }))) return false;
     activateProject(id);
     return true;
   };
