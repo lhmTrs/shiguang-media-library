@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 
 export function download(name: string, text: string, type = 'application/json') {
@@ -20,7 +20,12 @@ export function Field({ label, value, onCommit, multiline = false, rows = 3, inl
       if (!multiline && e.key === 'Enter') e.currentTarget.blur();
     },
   };
-  return <label className={'sb-field' + (inline ? ' sb-inline' : '')}>{!inline && <span>{label}</span>}{multiline ? <textarea {...props} rows={rows}/> : <input {...props} type={type}/>}</label>;
+  // 表格里的多行格子：平时只显示整数行（超出时末行渐隐，不切半行）；聚焦时撑开到全文，失焦恢复。
+  const area = useRef<HTMLTextAreaElement>(null);
+  const fit = (open: boolean) => { const el = area.current; if (!el || !inline) return; if (open) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 360) + 'px'; } else { el.style.height = ''; el.dataset.overflow = String(el.scrollHeight > el.clientHeight + 1); } };
+  useLayoutEffect(() => { if (document.activeElement === area.current) fit(true); else fit(false); });
+  const areaProps = inline ? { ...props, ref: area, onFocus: () => fit(true), onInput: () => fit(true), onBlur: () => { props.onBlur(); fit(false); } } : props;
+  return <label className={'sb-field' + (inline ? ' sb-inline' : '')}>{!inline && <span>{label}</span>}{multiline ? <textarea {...areaProps} rows={rows}/> : <input {...props} type={type}/>}</label>;
 }
 export function Modal({ title, children, onClose, wide = false,disabled=false }: { disabled?:boolean;title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   const panel = useRef<HTMLElement>(null), close = useRef(onClose); close.current = onClose;
