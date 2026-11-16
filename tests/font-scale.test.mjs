@@ -37,11 +37,12 @@ test('防回退只放行折叠侧栏隐藏标题这一条 font-size:0，其他 0
 const MAX_IMPORTANT = 132;
 const MAX_Z_VALUES = 35;
 const walkSrc = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walkSrc(path.join(dir, e.name)) : [path.join(dir, e.name)]);
+// CSS 里 !important 不分大小写，! 和 important 之间也允许空白，所以按 /!\s*important\b/i 计数。
 export function cssDebt(files, read = f => fs.readFileSync(f, 'utf8')) {
   const perFile = {}; const zValues = new Set(); let important = 0;
   for (const f of files) {
     const text = read(f);
-    if (f.endsWith('.css')) { const n = (text.match(/!important/g) || []).length; if (n) perFile[f] = n; important += n; }
+    if (f.endsWith('.css')) { const n = (text.match(/!\s*important\b/gi) || []).length; if (n) perFile[f] = n; important += n; }
     if (/\.(css|tsx?)$/.test(f)) for (const m of text.matchAll(/z-?index\s*:\s*['"]?(-?\d+)/gi)) zValues.add(Number(m[1]));
   }
   return { important, perFile, zValues: [...zValues].sort((a, b) => a - b) };
@@ -60,4 +61,9 @@ test('防增统计：!important 只数 CSS，层级值按数值去重，行内 z
   const files = { 'a.css': '.a{color:red!important;z-index:5}.b{z-index: 5}.c{margin:0 !important}', 'b.tsx': "<div style={{zIndex: 7}}/>", 'c.ts': "const s='!important'" };
   const r = cssDebt(Object.keys(files), f => files[f]);
   assert.equal(r.important, 2); assert.deepEqual(r.zValues, [5, 7]); assert.deepEqual(r.perFile, { 'a.css': 2 });
+});
+
+test('防增统计：!IMPORTANT 等大小写写法和 ! important 也计数', () => {
+  const files = { 'probe.css': '.p{margin:0 !IMPORTANT}.q{color:red !Important}.r{padding:0 ! important}' };
+  assert.equal(cssDebt(['probe.css'], f => files[f]).important, 3);
 });

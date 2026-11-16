@@ -19,7 +19,8 @@
 @keyframes global-feedback-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-24px); } }
 @media (max-width: 560px) { .global-feedback-region { top: max(12px, env(safe-area-inset-top)); right: 12px; width: calc(100vw - 24px); gap: 8px; } .global-feedback-card { padding: 12px 10px 12px 12px; } }
 @media (prefers-reduced-motion: reduce) { .global-feedback-card, .global-feedback-card.is-leaving { animation: none; } .global-feedback-card.is-leaving { opacity: 0; } }
-/* 弹窗开着时（原生 dialog 或 aria-modal 弹窗），提示挪到左上角，避开弹窗右上角的「关闭」按钮；仍显示在弹窗之上，层级不变。 */
-body:has(dialog[open], [aria-modal="true"]) .global-feedback-region { right: auto; left: max(20px, env(safe-area-inset-left)); }
-/* 窄窗口里提示本来铺满整行；弹窗开着时右侧让出 76px，给弹窗的「关闭」按钮。 */
-@media (max-width: 560px) { body:has(dialog[open], [aria-modal="true"]) .global-feedback-region { left: 12px; width: calc(100vw - 88px); } }
+/* 弹窗开着时（原生 dialog 或 aria-modal 弹窗），提示挪到左上角，避开弹窗右上角的「关闭」按钮；仍显示在弹窗之上，层级不变。
+   隐藏着的 aria-modal 残留（自身或祖先带 hidden、行内 display: none）不算「开着」。用类名隐藏的残留 CSS 认不出，这是边界。
+   宽度最多占视口左半边：居中或靠右的弹窗，关闭按钮都在右半边，不会被挡（窄窗口和居中小弹窗也一样）。 */
+body:has(dialog[open], [aria-modal="true"]:not([hidden], [hidden] *, [style*="display: none"], [style*="display: none"] *, [style*="display:none"], [style*="display:none"] *)) .global-feedback-region { right: auto; left: max(20px, env(safe-area-inset-left)); width: min(400px, calc(50vw - 32px)); }
+@media (max-width: 560px) { body:has(dialog[open], [aria-modal="true"]:not([hidden], [hidden] *, [style*="display: none"], [style*="display: none"] *, [style*="display:none"], [style*="display:none"] *)) .global-feedback-region { left: 12px; } }
