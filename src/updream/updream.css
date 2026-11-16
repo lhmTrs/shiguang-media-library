@@ -5,7 +5,7 @@
 .ud-entry-short{display:none;font-weight:700}
 .ud-stale-icon{display:inline-flex;color:var(--muted)}
 .ud-chip-att{border-radius:12px;padding:1px 6px;background:var(--c-fbefea);color:var(--c-b94f49);font-weight:600;font-size:11px}
-.ud-drawer{z-index:91}
+.ud-drawer{z-index:90}
 .ud-drawer .codex-task-alert{align-items:flex-start}
 .ud-drawer .codex-task-alert>span{min-width:0}
 .ud-card{margin-top:10px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--c-fff)}
@@ -23,8 +23,8 @@
 .ud-target>span{overflow-wrap:anywhere}
 .ud-unverified{font-style:normal;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--c-24292c);background:var(--soft)}
 .ud-steps{list-style:none;margin:4px 0 2px;padding:0;display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
-.ud-step{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:var(--muted);position:relative;text-align:center;min-width:0}
-.ud-step i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-style:normal;font-size:10px;font-weight:700;background:var(--c-fff);z-index:1;box-sizing:border-box}
+.ud-step{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);position:relative;text-align:center;min-width:0}
+.ud-step i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700;background:var(--c-fff);z-index:1;box-sizing:border-box}
 .ud-step:not(:last-child)::after{content:"";position:absolute;top:7px;left:calc(50% + 10px);right:calc(-50% + 10px);height:2px;background:var(--line);border-radius:2px}
 .ud-step.is-done i{background:var(--green);border-color:var(--green);color:var(--c-fff)}
 .ud-step.is-done:not(:last-child)::after{background:var(--green)}
@@ -54,7 +54,7 @@
  .ud-entry{padding:7px;gap:4px}
  .ud-entry-label{display:none}
  .ud-entry-short{display:inline}
- .ud-chip-att{font-size:0;padding:0;width:8px;height:8px;border-radius:50%;background:var(--c-b94f49)}
+ .ud-chip-att{padding:0;width:8px;height:8px;border-radius:50%;background:var(--c-b94f49);color:transparent;overflow:hidden;white-space:nowrap;text-indent:100%}
  .ud-entry .ud-chip-new{display:none}
  .ud-step span{display:none}
  .ud-step[aria-current] span{display:block;position:absolute;top:19px;white-space:nowrap}
