@@ -33,11 +33,12 @@ ${example({ projectName: project.name, projectId, instanceId, origin })}
 
 - 读取：\`GET ${storyboard}\`，返回 \`project\`、\`revision\` 与 \`asset_stamp\`。已保存分镜格式见 \`GET /api/storyboard/schema\`。按永久镜头 ID 定位，镜号用于展示。未初始化时返回 404。
 - 修改已有分镜：从读取返回的完整 \`project\` 生成候选，只改用户指定的部分，保留 ID 和关联。\`PUT ${storyboard}\`。
+- 最近改动：按需读取 \`GET ${storyboard}/changes?limit=20\`，只读，返回改了什么、谁改、原始原因；不自动补基线或清待看。agent保存必须提供change.author=agent、reason_text用户原话以及shot_feel/miscommunication/prompt_wrong之一，409后重读再改，不重发旧版本。
 - 初始化：读取 \`GET /api/storyboard/initialization-schema\`。先用 \`POST ${storyboard}/preview\` 提交 \`source\` 预览，核对素材复用、新建和警告。确认后才用 \`POST ${storyboard}/initialize\` 写入。已有分镜只有在用户明确要求覆盖时才重新初始化。
 
 已有分镜保存请求示例（用本次读取的数据替换占位值）：
 
-${example({ project: '<基于读取结果修改后的完整 project 对象>', expected_revision: 3 })}
+${example({ project: '<基于读取结果修改后的完整 project 对象>', expected_revision: 3, request_id: '<新UUID>', change: {author:'agent',reason_text:'<逐字用户原话，不得转述>',reason_category:'shot_feel'} })}
 
 初始化请求字段为 \`source\`（完整初始化对象）、\`expected_revision\`（预览返回值，空项目为 null）和新生成的 UUID \`request_id\`。结果未知时，使用原请求 ID 查询 \`GET ${storyboard}/requests/<request_id>\`，保留原请求，避免重复初始化。
 

@@ -63,7 +63,7 @@ test('归档0/时间戳唯一、同名多归档、活动冲突恢复、旧schema
 });
 test('完整备份跨新SQLite恢复，重算摘要的悬空关系被拒绝且无部分资产',async()=>{
  const f=await creativeFixture(),g=await creativeFixture();try{const db=new StoryboardDatabase(f.lib,f.store).init(),target=new StoryboardDatabase(g.lib,g.store).init();const r=init(db,f);const backup=db.backup();g.projects.remove(g.a.id);g.projects.remove(g.b.id);await target.restore(backup);assert.equal(target.read(f.a.id).revision,r.revision);assert.deepEqual(target.backup().tables,backup.tables); for(const a of backup.creative.tables.creative_assets) assert.deepEqual(g.store.get(a.id),f.store.get(a.id));
- const damaged=structuredClone(backup);damaged.tables.storyboard_asset_links[0].asset_id=randomUUID();damaged.checksum=digest({tables:damaged.tables,creative:damaged.creative});const before=target.backup().checksum;await assert.rejects(target.restore(damaged),/关系/);assert.equal(target.backup().checksum,before);
+ const damaged=structuredClone(backup);damaged.tables.storyboard_asset_links[0].asset_id=randomUUID();damaged.checksum=digest({tables:damaged.tables,creative:damaged.creative,change_history:damaged.change_history});const before=target.backup().checksum;await assert.rejects(target.restore(damaged),/关系/);assert.equal(target.backup().checksum,before);
  }finally{await f.close();await g.close();}
 });
 test('中文清单与局部编号不猜测、原文保留、重复与清单遗漏在写入前拒绝',async()=>{

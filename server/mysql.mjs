@@ -1,3 +1,4 @@
+import {HISTORY_TABLES,historyColumnType,historyConstraints} from './storyboard/history-schema.mjs';
 import { ATTRIBUTE_TABLES, attributeColumnType } from './project-attributes/schema.mjs';
 import { SERIES_TABLES, seriesMysqlColumnType, seriesConstraints } from './project-series/schema.mjs';
 import {VIDEO_TABLES,videoColumnType} from './storyboard-video/schema.mjs';
@@ -88,6 +89,7 @@ export function mysqlColumnType(table, col) {
   if(Object.hasOwn(SCRIPT_TABLES,table))return scriptColumnType(table,col);
   if (Object.hasOwn(ATTRIBUTE_TABLES, table)) return attributeColumnType(table, col);
   if(Object.hasOwn(GENERATION_TABLES,table))return generationColumnType(table,col);
+  if (Object.hasOwn(HISTORY_TABLES,table)) return historyColumnType(table,col);
   if (Object.hasOwn(STORYBOARD_TABLES,table)) return storyboardColumnType(table,col);
   if (Object.hasOwn(CREATIVE_TABLES,table)) return creativeColumnType(table,col) + (table === 'creative_schema' && col.name === 'id' ? ' PRIMARY KEY' : '');
   if (Object.hasOwn(CODEX_TABLES,table)) return codexColumnType(table,col);
@@ -310,6 +312,7 @@ export class MysqlStorage {
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
       }
       for(const table of Object.keys(CREATIVE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(HISTORY_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(STORYBOARD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(GENERATION_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(CODEX_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
@@ -370,13 +373,14 @@ export class MysqlStorage {
           if (Object.hasOwn(SERIES_TABLES, t)) return `\`${col.name}\` ${type}${col.notnull ? " NOT NULL" : " NULL"}`;
           if(Object.hasOwn(SCRIPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(CREATIVE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${t==='creative_assets'&&col.name==='archived_at'?" DEFAULT 0":""}`;
-          if(Object.hasOwn(STORYBOARD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(STORYBOARD_TABLES,t)||Object.hasOwn(HISTORY_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(UPLOAD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${col.dflt_value!==null?" DEFAULT "+col.dflt_value:""}`;
           return `\`${col.name}\` ${type}${/PRIMARY KEY/.test(type) ? " NOT NULL" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
         if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
         if(Object.hasOwn(PROMPT_TABLES,t))defs.push(...promptConstraints(t));
         if(Object.hasOwn(CREATIVE_TABLES,t))defs.push(...creativeConstraints(t));
+        if(Object.hasOwn(HISTORY_TABLES,t))defs.push(...historyConstraints(t));
         if(Object.hasOwn(STORYBOARD_TABLES,t))defs.push(...storyboardConstraints(t));
         if(t === 'media_projects' && snapshot[t].columns.some(c=>c.name==='system_key')) defs.push('UNIQUE(system_key)', 'UNIQUE(name)');
         if(Object.hasOwn(GENERATION_TABLES,t))defs.push(...generationConstraints(t));

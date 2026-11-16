@@ -73,7 +73,7 @@ test('assets: project/public read scope, metadata-only updates, exact shots rout
 test('single-shot update preserves document, other shots and asset stamp; conflicts never overwrite',async t=>{
  const f=await fixture(t),scope=f.a.id,source=syntheticSource();source.scenes[0].shots.push({...structuredClone(source.scenes[0].shots[0]),id:'second-shot',dialogue:[]});const initial=f.board.initialize(scope,{source,request_id:randomUUID(),expected_revision:null}),shot=initial.project.scenes[0].shots[0];
  const read=await f.run(scope,'storyboards.shot',{shot_id:shot.id});assert.equal(read.asset_stamp,initial.asset_stamp);
- const args={shot_id:shot.id,expected_revision:initial.revision,asset_stamp:initial.asset_stamp,patch:{action:'精确单镜新动作'}};
+ const args={shot_id:shot.id,expected_revision:initial.revision,asset_stamp:initial.asset_stamp,reason_text:'把这一镜改成精确单镜新动作',reason_category:'shot_feel',patch:{action:'精确单镜新动作'}};
  const saved=await f.run(scope,'storyboards.updateShot',args,{allowWrites:true});assert.equal(saved.project.scenes[0].shots[0].action,'精确单镜新动作');assert.deepEqual(saved.project.scenes[0].shots[1],initial.project.scenes[0].shots[1]);assert.deepEqual(saved.project.asset_manifest,initial.project.asset_manifest);assert.equal(f.calls.find(c=>c.method==='PUT').body.asset_stamp,initial.asset_stamp);
  await assert.rejects(f.run(scope,'storyboards.updateShot',args,{allowWrites:true}),e=>e.status===409);const a=f.store.get(saved.project.asset_manifest.character[0].id);await f.store.save(a.id,{...a,base_info:'changed'},a.revision);
  await assert.rejects(f.run(scope,'storyboards.updateShot',{...args,expected_revision:saved.revision},{allowWrites:true}),/资产资料/);assert.equal(f.board.read(scope).project.scenes[0].shots[0].action,'精确单镜新动作');
