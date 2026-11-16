@@ -1,7 +1,7 @@
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import { shortVideoName } from './display-name.mjs';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, Ellipsis, Film, Folder as FolderIcon, History, FolderInput, FolderOpen, FolderPlus, Layers, Play, RefreshCw, Search, Upload, X } from 'lucide-react';
 import type {
   AdoptedShot, ImportRequest, ProjectVideo, ProjectVideoCollection, ProjectVideoWorkspaceProps,
   PromptInput, Receipt, ReferencePrompt, UpdateVideoRequest, UpgradePreview,
@@ -13,6 +13,8 @@ import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
+import {openUpdreamTasks} from '../updream/api';
+import '../updream/updream.css';
 import {actionPending, capability, revealDispatched, skippedText, useDesktopAction} from './desktop-actions';
 import {ContentChangeBanner, ContentChangeDialog, useContentChange} from './ContentChange';
 import {MAX_REJECT, RejectBanner, RejectDialog, rejectNeedsCheck, rejectSubtree, useRejectTask} from './RejectArea';
@@ -127,6 +129,7 @@ export function ProjectVideoWorkspace(props: ProjectVideoWorkspaceProps) {
   return <section className="pv-workspace" hidden={!props.active} aria-label="项目生成视频">
     <header className="pv-header">
       <div className="pv-title"><Film size={20}/><h1>生成视频</h1><span>项目视频库</span></div>
+      <button type="button" className="pv-updream-history" onClick={() => openUpdreamTasks('history')}><History size={14} aria-hidden="true"/>Updream 任务记录</button>
     </header>
     {importOwner && importOwner !== currentId && <div className="pv-notice" role="status">“{props.projects.find(p => p.id === importOwner)?.name || '原项目'}”有一笔导入待结束，浏览与切换不受影响。<button type="button" onClick={() => props.onProject(importOwner)}>返回原导入任务</button></div>}
     {!currentId && <div className="pv-empty"><Film size={38}/><h2>先选择一个项目</h2><p>在页面顶部的“当前项目”中选择。导入的视频固定归属于该项目。</p></div>}
