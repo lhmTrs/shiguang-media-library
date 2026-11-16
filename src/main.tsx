@@ -659,7 +659,7 @@ function App() {
   const registerProjectSwitchGuard = useCallback((guard: (() => boolean) | null) => {
     assetProjectSwitchGuard.current = guard;
   }, []);
-  const openStoryboardTaskProject = useRef<(id: string) => boolean>(() => false);
+  const openStoryboardTaskProject = useRef<(id: string, then?: () => void) => boolean>(() => false);
   const codexTasks=useCodexTasks(api,setNotice),promptWorkspace=useRef<PromptWorkspaceHandle>(null);
   const openUploadTasks=()=>{cancelCodexNavigation();setWorkspaceInitialTab('audio');setUploadTasksOpen(true);};
   const closeUploadTasks=()=>{cancelCodexNavigation();setUploadTasksOpen(false);};
@@ -669,8 +669,10 @@ function App() {
       const [detail,session]=await Promise.all([api<GenerationTask>('/storyboard-generation/tasks/'+encodeURIComponent(task.taskId)),api<{instanceId:string}>('/session')]);if(!isCurrent())return;
       if(detail.taskId!==task.taskId||detail.projectId!==task.projectId)throw Error('分镜任务目标不符，未跳转');
       await promptWorkspace.current?.prepareLeave(isCurrent);if(!isCurrent())return;
-      if (!openStoryboardTaskProject.current(detail.projectId)) return;
-      setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);return;
+      // 分镜有未保存修改时先问「保存 / 放弃 / 留着」，确认并切好项目后再打开任务；期间又点了别的任务就不再执行。
+      const go=()=>{if(!isCurrent())return;setGenerationFocus({projectId:detail.projectId,taskId:detail.taskId,request,libraryId:session.instanceId});setLoginOpen(false);setWorkspaceOpen(false);setUploadTasksOpen(false);navigate('storyboard',false,true);codexTasks.setOpen(false);};
+      if (!openStoryboardTaskProject.current(detail.projectId, go)) return;
+      go();return;
     }
     if(!task.templateId||!task.conversationId)throw Error('普通Codex任务的对话身份缺失，未跳转');
     if(!promptWorkspace.current)throw Error('工作台暂未就绪，请重试');
@@ -838,8 +840,8 @@ function App() {
   }
   // Async task navigation may outlive the render in which it started.
   // Read current guards before opening a task, including retained history.
-  openStoryboardTaskProject.current = id => {
-    if (!projectChangeAllowed(id)) return false;
+  openStoryboardTaskProject.current = (id, then) => {
+    if (!projectChangeAllowed(id, then && (() => { if (projectChangeAllowed(id, undefined, true)) { activateProject(id); then(); } }))) return false;
     activateProject(id);
     return true;
   };

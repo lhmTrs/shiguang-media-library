@@ -116,7 +116,7 @@ export function StoryboardEditor({generationRequest,generationFocus,onGeneration
             return;
         }
         if (!response.ok)
-            throw Error(result.message + (result.errors ? '\n' + result.errors.map((e: Any) => e.path + '：' + e.message).join('\n') : ''));
+            throw Error((result.message || result.error || '保存失败') + (result.errors ? '\n' + result.errors.map((e: Any) => e.path + '：' + e.message).join('\n') : ''));
         hash.current = result.hash; dbRevision.current=result.revision; assetStamp.current=result.asset_stamp; if(typeof result.pending_count==='number')setPendingCount(result.pending_count);
         cache.set(storageKey('last-project'), p.project_id);
         savedRef.current = serialized;

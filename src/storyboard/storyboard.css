@@ -337,8 +337,8 @@
 .sb-view-tabs b { margin-left: 5px; padding: 0 6px; border-radius: 10px; background: color-mix(in srgb, var(--c-8a6a3a, #b58a2a) 22%, var(--sb-paper)); color: var(--sb-text); font-size: 11px; }
 .sb-pending-chip { display: inline-block; margin-top: 4px; padding: 1px 6px; border-radius: 10px; font-size: 11px; background: color-mix(in srgb, var(--sb-accent) 12%, var(--sb-paper)); color: var(--sb-accent); white-space: nowrap; }
 
-/* 保存确认（大改、离开）要压在视频预览浮层（46）之上 */
-.sb-overlay.is-top { z-index: 50; }
+/* 保存确认（大改、离开）要压在视频预览浮层（46）和 Codex 任务/管家面板（90）之上 */
+.sb-overlay.is-top { z-index: 110; }
 .sb-history-compare { flex: none; max-height: 34vh; overflow: auto; padding: 10px 24px; border-bottom: 1px solid var(--sb-line); background: var(--sb-paper); font-size: 13px; }
 .sb-history-compare h4 { margin: 10px 0 4px; font-size: 13px; }
 .sb-history-compare del { color: var(--c-b94f49); background: var(--c-fbefea); text-decoration: line-through; padding: 0 3px; border-radius: 3px; }

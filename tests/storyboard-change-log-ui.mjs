@@ -190,6 +190,24 @@ try {
     await shot('s12-compare'); await page.keyboard.press('Escape');
   });
 
+  await check('S13 从 Codex 任务打开另一项目的分镜任务：也问「保存 / 放弃 / 留着」；留着不跳，保存后切到任务项目', async () => {
+    const id = randomUUID(), now = Date.now();
+    const generation = { taskId: id, type: 'storyboard', projectId: small.id, status: 'completed', phase: 'completed', model: 'synthetic', effort: 'low', errorCode: '', errors: [], receipt: null, expectedRevision: 1, generation: 1, deadlineAt: now + 60000, resourceState: 'settled', createdAt: now, updatedAt: now, project: { id: small.id, name: '合成跨项目分镜任务', available: true }, terminalRevision: 'completed::' + now };
+    const task = { ...generation, storyboardStatus: 'completed', conversationId: null, templateId: null, title: '合成跨项目分镜任务', templateName: '导演分镜 JSON', templateDeleted: false, conversationDeleted: false, sequence: 1, preview: '', images: [], imageCount: 0, summaryUnavailable: false, attention: { required: false, reasons: [] } };
+    await page.route(u => new URL(u).pathname === '/api/prompt-codex/tasks', async route => { const actual = await route.fetch(), data = await actual.json(); await route.fulfill({ json: { ...data, observedAt: Date.now(), items: [task], activeCount: 0, nextCursor: null } }); });
+    await page.route(u => new URL(u).pathname === '/api/storyboard-generation/tasks/' + id, route => route.fulfill({ json: generation }));
+    let native = null; page.on('dialog', d => { native = d.message(); void d.dismiss(); });
+    await open(main.id); await cell('02', '画面与人物动作').fill('合成：跳任务前没保存'); await cell('03', '景别与角度').click();
+    const openTask = async () => { await page.locator('.codex-tasks-entry').first().click(); await page.locator('#concierge-tasks-tab').click(); const tasks = page.getByRole('complementary', { name: 'Codex 全局任务' }); await tasks.getByRole('button', { name: '已结束', exact: true }).click(); await tasks.locator('.codex-task-main').filter({ hasText: '合成跨项目分镜任务' }).click(); };
+    await openTask(); await expect(page.getByTestId('leave-stay')).toBeVisible(); assert.equal(native, null, '不应出现系统确认框');
+    await page.getByTestId('leave-stay').click(); await expect(page.locator('.ppb')).toHaveAttribute('data-project', main.id);
+    await page.keyboard.press('Escape');
+    await openTask(); await page.getByTestId('leave-save').click();   // 能点到说明确认框没被管家面板挡住
+    await expect(page.locator('.ppb')).toHaveAttribute('data-project', small.id);
+    assert.equal(shotOf((await api('/storyboard/projects/' + main.id)).project, 2).action, '合成：跳任务前没保存');
+    page.removeAllListeners('dialog'); await page.unroute(u => new URL(u).pathname === '/api/prompt-codex/tasks').catch(() => {});
+  });
+
   await check('S9 窄屏 390 与六个主题：阅读模式和改动记录正常显示、无横向溢出（截图留证）', async () => {
     await open(main.id);
     await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole('button', { name: '阅读模式' }).click();
