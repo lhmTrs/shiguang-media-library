@@ -4,7 +4,7 @@ import { AlertTriangle, Check, Crosshair, Eye, RotateCcw } from 'lucide-react';
 import { ReadingMode } from './ReadingMode';
 import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, kb, show, when, type Change, type HistoryApi, type PendingList, type ReasonCategory, type VersionList, type VersionMeta } from './history';
 
-const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号'};
+const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
 const fieldName = (f: string) => FIELD_LABEL[f] ?? f;
 const value = (field: string, v: unknown) => field === 'duration_ms' && typeof v === 'number' ? `${(v / 1000).toString()} 秒` : show(v);
 const Problem = ({error}: {error: unknown}) => <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>{error instanceof HistoryError && error.code === MIGRATION_REQUIRED ? '改动记录还没有启用：这个素材库需要先做一次数据库迁移（由维护人员执行），分镜照常可以编辑和保存。' : (error as Error).message}</p>;
@@ -43,7 +43,7 @@ export function PendingPanel({api, refreshKey, onLocate, onCount}: {api: History
         {item.shot_id && !item.deleted && <button type="button" onClick={() => onLocate(item.shot_id!)}><Crosshair size={13}/>定位到镜头</button>}
         {item.shot_id && <button type="button" className="sb-primary" disabled={busy} onClick={() => void clear({shot_ids: [item.shot_id!]})}><Check size={13}/>看过了</button>}
       </div>
-      {item.summary_only ? <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p> : <Fields fields={item.fields} before={item.before} after={item.after}/>}
+      {item.summary_only ? <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p> : item.target_kind === 'shot' ? <Fields fields={item.fields} before={item.before} after={item.after}/> : <p className="sb-history-muted">改了：{item.fields.map(fieldName).join('、')}（详细内容在「改动记录」里查看那一版）</p>}
     </article>; })}
   </div>;
 }
@@ -55,11 +55,11 @@ export function LogPanel({api, refreshKey, onOpen}: {api: HistoryApi; refreshKey
   return <div className="sb-history" aria-label="改动记录">
     <div className="sb-history-head"><div><h3>改动记录</h3>{data && <p>本集历史占用 {kb(data.storage.bytes + data.storage.record_bytes)} · 保留最近 {data.storage.limit} 份完整版（现有 {data.storage.kept_full} 份）· 改动记录永久保留</p>}</div></div>
     {error ? <Problem error={error}/> : null}
-    {data && <table className="sb-history-table"><thead><tr><th>版本</th><th>时间</th><th>谁改的 · 原因</th><th>改了</th><th/></tr></thead><tbody>
+    {data && <table className="sb-history-table"><colgroup><col style={{width:64}}/><col style={{width:100}}/><col/><col style={{width:120}}/><col style={{width:96}}/></colgroup><thead><tr><th>版本</th><th>时间</th><th>谁改的 · 原因</th><th>改了</th><th/></tr></thead><tbody>
       {data.items.map(m => <tr key={m.version}>
         <td><b>V{m.version}</b>{m.baseline && <small className="sb-history-muted"> 起点</small>}</td>
         <td className="sb-history-muted">{when(m.created_at)}</td>
-        <td><div className="sb-history-row"><Reason author={m.author_kind} category={m.reason_category} text={m.reason_text}/>{m.restored_from != null && <span className="sb-history-muted">恢复到 V{m.restored_from}</span>}{m.reason_missing && <span className="sb-history-muted">（没有记录指令）</span>}</div></td>
+        <td><div className="sb-history-row"><Reason author={m.author_kind} category={m.reason_category} text={m.reason_text}/>{m.restored_from != null && <span className="sb-history-muted">恢复到 V{m.restored_from}</span>}{m.reason_missing && m.author_kind === 'generation' && <span className="sb-history-muted">（没有记录指令）</span>}</div></td>
         <td>{m.summary_only ? <span className="sb-history-tag is-big">大改 · 只记摘要</span> : m.changed_shot_count ? `${m.changed_shot_count} 镜` : '—'}</td>
         <td>{m.full_available ? <button type="button" onClick={() => onOpen(m)}><Eye size={13}/>查看</button> : <span className="sb-history-muted" title="超过保留份数，完整版已清理；改动记录还在">完整版已清理</span>}</td>
       </tr>)}
