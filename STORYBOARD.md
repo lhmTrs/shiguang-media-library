@@ -167,7 +167,7 @@
 
 保存正文、完整版本、字段改动和待看在同一事务内提交，失败整体回滚。每文档的revision/版本号单调递增；恢复旧版是另存新版本，保留后续历史，不回退修订号或删除视频记录。无内容变化不增版本。已有文档首次真实写入前，在同事务补一份当前revision基线（原作者未知，author_kind=baseline）；GET只读，不补基线。
 
-新空素材库建表；已有storyboard_documents表的素材库无论是否已有分镜，缺history三表时不在普通启动DDL；需另获迁移授权。只读当前分镜可用，历史/写入返回STORYBOARD_HISTORY_MIGRATION_REQUIRED(503)。显式工具scripts/storyboard-history-schema.mjs --print sqlite|mysql仅输出SQL；--apply-sqlite要求明确现存库绝对路径，不创建新数据库。正式MySQL迁移须单独备份/批准后由受控运维执行，不能用测试或安装新版冒授权。本批未执行正式迁移。
+新空素材库建表；已有storyboard_documents表的素材库无论是否已有分镜，缺history三表时不在普通启动DDL；需另获迁移授权。只读当前分镜可用，历史/写入返回STORYBOARD_HISTORY_MIGRATION_REQUIRED(503)。显式工具scripts/storyboard-history-schema.mjs --print sqlite|mysql仅输出SQL；--apply-sqlite要求明确现存库的无符号链接绝对路径，不创建新数据库；先在私有目录独占创建完整SQLite备份、quick_check及fsync，再以单事务建新表，备份失败不DDL。正式MySQL迁移须单独备份/批准后由受控运维执行，不能用测试或安装新版冒授权。本批未执行正式迁移。
 
 页面保存缺change时兼容旧客户端user，固定“用户手动保存”；agent必须提交change.author=agent、逐字用户原话reason_text及shot_feel/miscommunication/prompt_wrong之一。服务端记录调用方提供的原文，不能认证其来自真人。初始化为import；Codex生成落库为generation并保留原任务指令，没有指令明确reason_missing；版本恢复为restore。
 

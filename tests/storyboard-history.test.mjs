@@ -90,3 +90,9 @@ test('existing empty storyboard table and partial/unknown history schema never r
  const empty=new StoryboardDatabase(f.lib,f.store).init();assert.equal(empty.history.ready(),false);assert.throws(()=>empty.history.require(),{code:'STORYBOARD_HISTORY_MIGRATION_REQUIRED'});assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'storyboard_%'").get().n,4);
  installHistory(f.db);f.db.exec('ALTER TABLE storyboard_pending ADD COLUMN unknown_future_field TEXT');const unknown=new StoryboardDatabase(f.lib,f.store).init();assert.throws(()=>unknown.history.require(),{code:'STORYBOARD_HISTORY_SCHEMA_UNSUPPORTED'});assert.throws(()=>installHistory(f.db),{code:'STORYBOARD_HISTORY_SCHEMA_UNSUPPORTED'});
 });
+
+test('explicit SQLite migration creates a checked private backup before transactional DDL',async t=>{
+ const {execFile}=await import('node:child_process'),{promisify}=await import('node:util'),fs=await import('node:fs/promises'),path=await import('node:path');
+ const f=await creativeFixture({onDisk:true});t.after(f.close);const b=new StoryboardDatabase(f.lib,f.store).init();init(b,f);for(const table of Object.keys(HISTORY_TABLES).reverse())f.db.exec('DROP TABLE '+table);
+ const file=path.join(f.dir,'synthetic.sqlite');const {stdout}=await promisify(execFile)(process.execPath,['scripts/storyboard-history-schema.mjs','--apply-sqlite',file]);const result=JSON.parse(stdout);assert.equal(result.tables,3);const backup=new Database(result.backup,{readonly:true});try{assert.equal(backup.pragma('quick_check',{simple:true}),'ok');assert.equal(backup.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='storyboard_versions'").get().n,0);assert.equal(backup.prepare('SELECT COUNT(*) n FROM storyboard_documents').get().n,1);}finally{backup.close();}assert.equal((await fs.stat(result.backup)).mode&0o777,0o600);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM storyboard_versions').get().n,0);
+});
