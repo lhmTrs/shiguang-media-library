@@ -80,7 +80,7 @@ try{
    statusReads++;return route.fulfill({status:503,json:{error:'合成本机 Codex 不可用'}});
   });
   await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');
-  /* 读不到连接状态后，生成按钮灰掉并在上方写明原因 */await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action > p')).toHaveText('读不到 Codex 连接状态，请点上方「检查连接状态」。');
+  /* 读不到连接状态后，生成按钮灰掉并在上方写明原因 */await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action > p')).toHaveText('读不到 Codex 连接状态，请点「检查连接状态」。');
   await expect(connection()).toHaveText('连接失败');assert.equal(statusReads,1);assert.deepEqual(writes,[]);
   // 顶栏统一后不能再把项目清空：让项目列表真的为空（宿主没有当前项目），再看发送保护
   await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await codexTab();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
@@ -99,7 +99,7 @@ try{
    if(new URL(r.url()).pathname==='/api/prompt-codex/connect')connects++;
   });
   await expect(send()).toBeDisabled();
-  await input.press('Control+Enter');await expect(inline).toContainText('Codex 尚未连接，请点上方「重新连接」。');/* 追问与生成按钮用同一套连接原因文案 */
+  await input.press('Control+Enter');await expect(inline).toContainText('Codex 尚未连接，请点「重新连接」。');/* 追问与生成按钮用同一套连接原因文案 */
   await expect(input).toHaveValue(followup);assert.equal(submits,0);assert.equal(connects,0);
   await context.route(connectRoute,route=>route.fulfill({status:503,json:{error:'合成重连失败，请检查本机服务'}}));
   await inline.getByRole('button',{name:'重新连接',exact:true}).click();await expect(inline).toContainText('合成重连失败');
