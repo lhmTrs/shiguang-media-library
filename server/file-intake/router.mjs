@@ -48,9 +48,8 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
   const desktopSession=(req,res)=>['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)?res.locals.localSessionId:undefined;
   route('post','/handoffs/:id/confirm',async(req,res)=>res.json(await withActivity(()=>store.confirm(req.params.id,req.body,{sessionId:desktopSession(req,res)}))));
     route('get','/media-imports/:requestId/candidates/:candidateId/media',async(req,res)=>{
-    const opened=await store.generic.openCandidate(req.params.requestId,req.params.candidateId);let done=false;
-    const release=()=>{if(done)return;done=true;store.catalog.media.responses.delete(res);void store.catalog.media.release(opened.handle).catch(()=>{});};
-    store.catalog.media.responses.add(res);res.once('close',release);res.once('finish',release);
+    const opened=await store.generic.openCandidate(req.params.requestId,req.params.candidateId);
+    const release=store.catalog.media.attach(res,opened.handle);if(!release)return;
     try{await sendMedia(req,res,opened.path,opened.handle);}catch(e){release();throw e;}
   });
   route('get','/batches',(_req,res)=>res.json(store.list()));

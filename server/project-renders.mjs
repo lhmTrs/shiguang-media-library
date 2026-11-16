@@ -44,9 +44,8 @@ export function projectRenderRouter(store,{sendMedia,withActivity=fn=>fn()}={}){
  router.delete('/',wrap(async(req,res)=>send(res,await store.remove(...ids(req),req.body))));
  router.post('/choose',wrap(()=>fail('RENDER_LEGACY_SELECTION_DISABLED','请先将视频导入项目，再选择成片',410)));
  const media=wrap(async(req,res)=>{
-  const c=store.catalog,opened=await store.open(...ids(req),{renderRevision:req.query.renderRevision});let released=false;
-  const release=()=>{if(released)return;released=true;c.media.responses.delete(res);void c.media.release(opened.handle).catch(()=>{});};
-  c.media.responses.add(res);res.once('close',release);res.once('finish',release);
+  const c=store.catalog,opened=await store.open(...ids(req),{renderRevision:req.query.renderRevision});
+  const release=c.media.attach(res,opened.handle);if(!release)return;
   try{await sendMedia(req,res,opened.path,opened.handle);}catch(e){release();throw e;}
  });
  router.get('/media',media);router.head('/media',media);

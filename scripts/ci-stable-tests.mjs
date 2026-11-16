@@ -15,6 +15,7 @@ export const CI_FILES = Object.freeze([
   'storyboard-model.test.mjs',
   'tag-facet-cache.test.mjs',
   'tag-usage.test.mjs',
+  'video-media-abort-release.test.mjs',
 ]);
 export const CI_TIMEOUT_MS = 120_000;
 
