@@ -13,6 +13,9 @@ export type ApiTask = {
   target: {projectId: string | null; projectName: string | null; folderLabel: string | null; folderId: string | null; identity: ApiIdentity | string};
   delivery: null | {verification: string; projectId: string; folderId: string; videoId: string; canView: boolean};
   notification: {state: string}; recordUrl?: string;
+  /** 兼容只读字段：只来自原持久证据的最后完成阶段；本机记录两分钟没变化（不是平台失败）。 */
+  lastCompletedPhase?: ApiPhase | string | null;
+  stale?: null | {since?: number | null; reason?: string | null};
 };
 export type ApiList = {
   schemaVersion: number; readAt: number;
@@ -39,6 +42,8 @@ export type UpdreamTask = {
   delivery: {projectId: string; folderId: string; videoId: string; canView: boolean} | null;
   notification: string;
   unread: boolean;
+  lastCompleted: UpdreamStage | null;
+  stale: {since: number | null; reason: string | null} | null;
 };
 export type UpdreamSummary = {active: number; unread: number; attention: number; showEntry: boolean};
 export type UpdreamTaskList = {

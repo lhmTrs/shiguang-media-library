@@ -97,6 +97,7 @@ function copyText(t: UpdreamTask) {
     `目标：${targetText(t)}${identity ? `（${identity}）` : ''}`,
     `当前状态：${stateLabel(t, false)}`,
   ];
+  if (t.lastCompleted) lines.push(`最后已完成步骤：${STAGE_LABEL[t.lastCompleted]}`);
   if (t.attention) lines.push(`需要留意：${[t.attention.code, t.attention.message].filter(Boolean).join(' · ')}`);
   lines.push(`上游最近成功更新：${fullTime(t.upstreamUpdatedAt) || '未知'}`);
   if (t.localRecordUpdatedAt) lines.push(`本机记录更新：${fullTime(t.localRecordUpdatedAt)}`);
@@ -146,6 +147,8 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
       {t.status === 'review' && <p className="ud-detail">状态待核对：记录不完整或无法确认，没有当成失败或完成。</p>}
       {t.status === 'cancelled' && <p className="ud-detail">任务已取消（不是在拾光里取消的）。</p>}
       {t.attention && <p className="ud-attention">{t.attention.message || '需要留意，原因没有记录。'}{t.attention.code && <code> {t.attention.code}</code>}</p>}
+      {t.lastCompleted && t.status !== 'done' && <p className="ud-meta">最后已完成：{STAGE_LABEL[t.lastCompleted]}</p>}
+      {t.stale && t.active && <p className="ud-meta ud-stale-line"><CircleAlert size={12} aria-hidden="true"/>本机记录{t.stale.since ? `自 ${ago(t.stale.since, now)}起` : '已有一段时间'}没有变化（不代表平台失败）</p>}
       <p className="ud-meta"><History size={12} aria-hidden="true"/>{t.upstreamUpdatedAt ? `上游最近成功更新 ${ago(t.upstreamUpdatedAt, now)}（${clock(t.upstreamUpdatedAt)}）` : '上游最近成功更新时间未知'}{t.localRecordUpdatedAt ? ` · 本机记录更新于 ${ago(t.localRecordUpdatedAt, now)}` : ''}</p>
       {notify && <p className={'ud-notify' + (t.notification === 'failed' ? ' is-bad' : '')}>通知：{notify}</p>}
     </div>

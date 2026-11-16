@@ -28,6 +28,8 @@ export function toTask(t: ApiTask): UpdreamTask {
     delivery: t.delivery && str(t.delivery.projectId) && str(t.delivery.videoId) ? {projectId: t.delivery.projectId, folderId: t.delivery.folderId, videoId: t.delivery.videoId, canView: t.delivery.canView === true} : null,
     notification: str(t.notification?.state) ?? 'unknown',
     unread: !!t.unread,
+    lastCompleted: t.lastCompletedPhase && PHASE[t.lastCompletedPhase] && PHASE[t.lastCompletedPhase][0] !== 'unknown' ? PHASE[t.lastCompletedPhase][0] : null,
+    stale: t.stale ? {since: num(t.stale.since), reason: str(t.stale.reason)} : null,
   };
 }
 export function toList(d: ApiList): UpdreamTaskList {
