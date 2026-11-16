@@ -1,3 +1,6 @@
+import {StoryboardHistory,changeAuthor} from './history.mjs';
+import {tablePresent} from './history-schema.mjs';
+import {creativeReferenceSlots} from './asset-references.mjs';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -17,16 +20,18 @@ export class StoryboardDatabase {
   get db() { return this.lib.db; }
   tx(fn) { return this.assets.tx(fn); }
   init() {
+    const freshHistory=!tablePresent(this.db,'storyboard_documents');
     for (const sql of storyboardSchema(this.db.kind==='mysql')) this.db.exec(sql);
     if (this.db.kind!=='mysql') this.db.exec('CREATE INDEX IF NOT EXISTS storyboard_link_asset ON storyboard_asset_links(asset_id,document_id)');
     const state=this.db.prepare('SELECT * FROM storyboard_schema WHERE id=?').get('storyboard');
     if (state && state.version!==1) throw fault('分镜数据库版本不受支持',503);
     if (!state) { const now=Date.now(); this.db.prepare('INSERT INTO storyboard_schema VALUES(?,?,?,?)').run('storyboard',1,now,now); }
     this.assets.storyboards=this;
+    this.history=new StoryboardHistory(this).init(freshHistory);
     return this;
   }
   project(id,lock=false) { const p=this.assets.project(id,lock); if(p.project_kind!=='normal') throw fault('分镜只能绑定普通项目，公共人物库不能创建分镜'); return p; }
-  head(projectId) { return this.db.prepare('SELECT * FROM storyboard_documents WHERE project_id=?').get(projectId); }
+  head(projectId,lock=false) { return this.db.prepare('SELECT * FROM storyboard_documents WHERE project_id=?'+(lock&&this.db.kind==='mysql'?' FOR UPDATE':'')).get(projectId); }
   expected(row,revision) { if (row ? revision!==row.revision : revision!==null) throw fault('分镜已经更新或已被重新初始化，请载入最新内容；当前草稿未覆盖数据库',409,{current_revision:row?.revision??null}); }
   linked(row) { return this.db.prepare('SELECT a.* FROM creative_assets a JOIN storyboard_asset_links l ON l.asset_id=a.id WHERE l.document_id=? ORDER BY a.kind,a.id').all(row.id); }
   seriesId(projectId) { return this.lib.projectSeries?.membership(projectId).series_id ?? null; }
@@ -93,7 +98,7 @@ export class StoryboardDatabase {
       shot_character_looks: shotCharacterLooks(p, resolver, characters),
     };
     p.revision=row.revision;
-    return {project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})};
+    return this.history.attach({project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})});
   }
   read(projectId) {
     const load = () => this.readInTransaction(projectId);
@@ -158,19 +163,21 @@ export class StoryboardDatabase {
   }
   preview(projectId,input) { this.project(projectId); const parsed=parseInitialization(input.source,{filename:input.filename,timing:input.timing}); return this.plan(projectId,parsed); }
   initialize(projectId,input) {
-    return this.tx(()=>{
+    const result=this.tx(()=>{
       this.assets.lockDirectory();
       return this.initializeInTransaction(projectId,input);
     });
+    return this.history.afterCommit(result);
   }
-  initializeInTransaction(projectId,input) {
+  initializeInTransaction(projectId,input,context={}) {
+    this.history.require();
     if(!idOK(input.request_id)) throw fault('初始化请求编号无效');
     const sourceHash=digest(input.source), requestHash=digest({projectId,sourceHash,expected_revision:input.expected_revision,filename:input.filename??'',timing:input.timing??'duration'});
     const parsed=parseInitialization(input.source,{filename:input.filename,timing:input.timing});
     this.project(projectId,true);this.generationLocks?.assertWritable(projectId);
     const done=this.db.prepare('SELECT * FROM storyboard_import_requests WHERE id=?').get(input.request_id);
     if(done) { if(done.request_hash!==requestHash || done.project_id!==projectId) throw fault('初始化请求编号已用于其他内容',409); return {...this.readInTransaction(projectId),receipt:JSON.parse(done.result_json),repeated:true}; }
-    const old=this.head(projectId); this.expected(old,input.expected_revision);
+    const old=this.head(projectId,true); this.expected(old,input.expected_revision);
     const plan=this.plan(projectId,parsed), map=new Map(), now=Math.max(Date.now(),(old?.updated_at??0)+1), documentId=old?.id??randomUUID();
     for (const [index, e] of parsed.manifest.entries()) {
       let a=plan.assets[index].id ? { id: plan.assets[index].id } : null;
@@ -191,6 +198,7 @@ export class StoryboardDatabase {
     else this.db.prepare('INSERT INTO storyboard_documents(title,document_json,revision,initialized_at,source_filename,source_hash,updated_at,id,project_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(...values,documentId,projectId,now);
     this.db.prepare('DELETE FROM storyboard_asset_links WHERE document_id=?').run(documentId);
     for(const assetId of map.values()) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),documentId,assetId,now,now);
+    this.history.add(old,this.head(projectId),changeAuthor(null,context.author_kind==='generation'?'generation':'import',context.reason_text??input.reason_text??''),{requestId:input.request_id,requestHash});
     const receipt={request_id:input.request_id,document_id:documentId,project_id:projectId,revision:p.revision,initialized_at:now,summary:parsed.summary,created:plan.assets.filter(a=>a.action==='create').length,reused:plan.assets.filter(a=>a.action==='reuse').length,unlinked:plan.unlinked};
     this.db.prepare('INSERT INTO storyboard_import_requests VALUES(?,?,?,?,?,?,?,?,?)').run(input.request_id,projectId,documentId,requestHash,sourceHash,input.expected_revision,canonical(receipt),now,now);
     return {...this.readInTransaction(projectId),receipt,repeated:false};
@@ -205,9 +213,15 @@ export class StoryboardDatabase {
     });
   }
   save(projectId,input) {
-    return this.tx(()=>{
+    const author=changeAuthor(input.change);
+    const result=this.tx(()=>this.saveInTransaction(projectId,input,author));
+    return this.history.afterCommit(result);
+  }
+  saveInTransaction(projectId,input,author,{restoreVersion=null}={}) {
+      const requestHash=digest(restoreVersion===null?{kind:'save',input}:{kind:'restore',input:{expected_revision:input.expected_revision,request_id:input.request_id??null,restore_version:restoreVersion}});
       this.assets.lockDirectory();
-      this.project(projectId,true);this.generationLocks?.assertWritable(projectId); const old=this.head(projectId); if(!old) throw fault('请先用完整 JSON 初始化分镜',404);
+      this.project(projectId,true);this.history.require();this.generationLocks?.assertWritable(projectId); const old=this.head(projectId,true); if(!old) throw fault('请先用完整 JSON 初始化分镜',404);
+      const repeated=this.history.replay(projectId,input,requestHash);if(repeated)return repeated;
       this.expected(old,input.expected_revision);
       const p=M.normalizeProject(input.project), previous=JSON.parse(old.document_json);
       if(p.project_id!==old.id) throw fault('分镜编号不匹配');
@@ -218,8 +232,8 @@ export class StoryboardDatabase {
       for (const kind of kinds) if (!Array.isArray(p.asset_manifest?.[kind])) throw fault('清单缺少' + kind);
       const ids = kinds.flatMap(kind => p.asset_manifest[kind].map(entry => entry.id));
       if (new Set(ids).size !== ids.length) throw fault('清单资产重复');
-      const { assetResolution } = this.validateWriteReferences(p, projectId, previous);
-      if([...current].some(id=>!ids.includes(id))) throw fault('日常保存不能移除或替换清单关联，请通过完整 JSON 重新初始化',409);
+      let assetResolution;try{({assetResolution}=this.validateWriteReferences(p,projectId,restoreVersion===null?previous:null));}catch(error){if(restoreVersion!==null)throw fault('恢复核验期间资产关系变化，未恢复',409,{code:'RESTORE_ASSETS_INVALID',invalid_assets:[{type:'reference',id:null}]});throw error;}
+      if(restoreVersion===null&&[...current].some(id=>!ids.includes(id))) throw fault('日常保存不能移除或替换清单关联，请通过完整 JSON 重新初始化',409);
       const charIds=p.asset_manifest.character.map(e=>e.id);
       if(canonical([...p.characters.map(c=>c.id)].sort())!==canonical([...charIds].sort())) throw fault('分镜人物必须与完整人物清单一致');
       const errors=M.validateProject(p); if(errors.length) throw fault('分镜校验失败',400,{errors});
@@ -230,8 +244,13 @@ export class StoryboardDatabase {
       p.import_source=previous.import_source;
       p.legacy_media_project_id=previous.legacy_media_project_id;
       p.revision=old.revision;
-      const currentView = this.hydrate(old);
-      if(canonical(p)===canonical(currentView.project)) return currentView;
+      const currentView = restoreVersion===null?this.hydrate(old):{project:previous,asset_stamp:null};
+      if(input.asset_stamp!==undefined&&input.asset_stamp!==currentView.asset_stamp)throw fault('资产资料已更新，请重读分镜',409,{code:'PROJECT_ASSETS_CHANGED'});
+      if(restoreVersion===null&&canonical(p)===canonical(currentView.project)) return {...currentView,unchanged:true};
+      // GET overlays these fields from asset masters. If the submitted value is
+      // still that exact display value, retain its original stored representation.
+      // Explicit author changes remain in p and in the permanent snapshot/diff.
+      if(restoreVersion===null)this.preserveUneditedAssetDisplayStorage(p,previous,currentView.project);
       const isAlias = id => assetResolution.get(id)?.canonical_asset_id !== id;
       const oldCharacters = byId(previous.characters), oldEntries = byId(previous.asset_manifest.character);
       for (const entry of p.asset_manifest.character) if (isAlias(entry.id)) entry.name = oldEntries.get(entry.id).name;
@@ -243,17 +262,54 @@ export class StoryboardDatabase {
           else delete character[field];
         }
       }
+      if(restoreVersion===null&&canonical(p)===canonical(previous))return {...currentView,unchanged:true};
       p.revision=old.revision+1; const now=Math.max(Date.now(),old.updated_at+1);
-      this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,updated_at=? WHERE id=?').run(p.title,canonical(p),p.revision,now,old.id);
-      for(const id of ids) if(!current.has(id)) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),old.id,id,now,now);
-      return this.readInTransaction(projectId);
+      const updated=this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(p.title,canonical(p),p.revision,now,old.id,old.revision);
+      if(updated.changes!==1)throw fault('分镜已由其它保存更新，请重读',409,{current_revision:this.head(projectId,true)?.revision??null});
+      if(restoreVersion!==null)this.db.prepare('DELETE FROM storyboard_asset_links WHERE document_id=?').run(old.id);
+      for(const id of ids) if(restoreVersion!==null||!current.has(id)) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),old.id,id,now,now);
+      this.history.add(old,this.head(projectId),author,{restoredFrom:restoreVersion,requestId:input.request_id??null,requestHash:input.request_id?requestHash:null});
+      return {...this.readInTransaction(projectId),saved_version:p.revision,repeated:false,unchanged:false};
+  }
+  preserveUneditedAssetDisplayStorage(project,previous,display) {
+    for(const kind of ['character','scene','prop']){
+      const oldEntries=byId(previous.asset_manifest[kind]),viewEntries=byId(display.asset_manifest[kind]);
+      for(const entry of project.asset_manifest[kind]){
+        const old=oldEntries.get(entry.id),view=viewEntries.get(entry.id);
+        if(old&&view&&entry.name===view.name)entry.name=old.name;
+      }
+    }
+    const stored=byId(previous.characters),visible=byId(display.characters);
+    for(const character of project.characters){
+      const old=stored.get(character.id),view=visible.get(character.id);if(!old||!view)continue;
+      for(const field of ['name','age','role','description','appearance','asset_revision']){
+        if(canonical(character[field]??null)!==canonical(view[field]??null)||Object.hasOwn(character,field)!==Object.hasOwn(view,field))continue;
+        if(Object.hasOwn(old,field))character[field]=structuredClone(old[field]);else delete character[field];
+      }
+    }
+  }
+  restoreVersion(projectId,version,input) {
+    const result=this.tx(()=>{
+      this.assets.lockDirectory();this.project(projectId,true);this.generationLocks?.assertWritable(projectId);
+      const head=this.head(projectId,true);if(!head)throw fault('请先初始化分镜',404);
+      const hash=digest({kind:'restore',input:{expected_revision:input.expected_revision,request_id:input.request_id??null,restore_version:version}});this.history.require();const repeated=this.history.replay(projectId,input,hash);if(repeated)return repeated;
+      const row=this.history.row(head.id,version),project=this.history.full(row),resolver=this.referenceResolver(projectId),invalid=[];
+      for(const {type,id,row:referenceRow}of creativeReferenceSlots(project)){
+        if(referenceRow&&type==='character'&&project.scenes.some(s=>s.id===id)||type==='legacy-image'&&project.assets.some(a=>a.id===id))continue;
+        const resolved=type==='look'?resolver.look(id):['image','legacy-image'].includes(type)?resolver.image(id):resolver.asset(id);
+        if(!resolved)invalid.push({type,id});
+      }
+      if(invalid.length)throw fault('历史版本的资产或引用失效，未恢复',409,{code:'RESTORE_ASSETS_INVALID',invalid_assets:[...new Map(invalid.map(r=>[r.type+':'+r.id,r])).values()]});
+      try{this.validateWriteReferences(project,projectId);}catch(error){throw fault('历史版本的资产关系无效，未恢复',409,{code:'RESTORE_ASSETS_INVALID',invalid_assets:[{type:'reference',id:null}]});}
+      return this.saveInTransaction(projectId,{...input,project},changeAuthor(null,'restore','恢复版本 '+version),{restoreVersion:version});
     });
+    return this.history.afterCommit(result);
   }
   backup() { return this.tx(()=>this.backupInTransaction()); }
   // Shares its caller's transaction, including the creative/script/video snapshots.
-  backupInTransaction() {const tables=Object.fromEntries(Object.keys(STORYBOARD_TABLES).map(t=>[t,this.db.prepare(`SELECT * FROM ${t} ORDER BY id`).all()])), creative=this.assets.backupInTransaction(), data={tables,creative,...(this.videos?{video_preview:this.videos.snapshot()}:{})}; return {format:'shiguang-storyboard-backup',schema_version:1,...data,checksum:digest(data)};}
+  backupInTransaction() {const tables=Object.fromEntries(Object.keys(STORYBOARD_TABLES).map(t=>[t,this.db.prepare(`SELECT * FROM ${t} ORDER BY id`).all()])), creative=this.assets.backupInTransaction(), data={tables,creative,...(this.history.ready()?{change_history:this.history.snapshot()}:{}),...(this.videos?{video_preview:this.videos.snapshot()}:{})}; return {format:'shiguang-storyboard-backup',schema_version:1,...data,checksum:digest(data)};}
   validateBackup(input) {
-    if(!input || input.format!=='shiguang-storyboard-backup' || input.schema_version!==1 || digest({tables:input.tables,creative:input.creative,...(Object.hasOwn(input,'video_preview')?{video_preview:input.video_preview}:{})})!==input.checksum || canonical(Object.keys(input.tables??{}).sort())!==canonical(Object.keys(STORYBOARD_TABLES).sort())) throw fault('分镜备份格式或摘要无效');
+    if(!input || input.format!=='shiguang-storyboard-backup' || input.schema_version!==1 || digest({tables:input.tables,creative:input.creative,...(Object.hasOwn(input,'change_history')?{change_history:input.change_history}:{}),...(Object.hasOwn(input,'video_preview')?{video_preview:input.video_preview}:{})})!==input.checksum || canonical(Object.keys(input.tables??{}).sort())!==canonical(Object.keys(STORYBOARD_TABLES).sort())) throw fault('分镜备份格式或摘要无效');
     const creative = this.assets.validateBackup(input.creative), projects = byId(creative.projects);
     const creativeTables = creative.tables;
     const referenceRows = {
@@ -297,13 +353,16 @@ export class StoryboardDatabase {
     for(const [id,ids] of manifests) for(const asset of ids) if(!pairs.has(id+'/'+asset))throw fault('备份缺少清单保护关系');
     for(const r of tables.storyboard_import_requests){const d=docs.get(r.document_id);let result;try{result=JSON.parse(r.result_json);}catch{throw fault('备份回执无效');}if(!d||d.project_id!==r.project_id||!(/^[a-f0-9]{64}$/).test(r.request_hash)||!(/^[a-f0-9]{64}$/).test(r.source_hash)||result.request_id!==r.id||result.revision>d.revision)throw fault('备份初始化回执关联无效');}
     if(Object.hasOwn(input,'video_preview')){if(!this.videos)throw fault('预览模块尚未就绪，未恢复备份');input.video_preview=this.videos.validateBackup(input.video_preview,input.tables.storyboard_documents,creative.projects);}
+    if(Object.hasOwn(input,'change_history'))this.history.validateSnapshot(input.change_history,input.tables.storyboard_documents);
     return {...input,creative};
   }
   async restore(input) {
+    this.history.require({fresh:true});
     input=this.validateBackup(input); const before=this.backup();
     const dir=path.join(this.lib.dataDir,'backups');await fs.mkdir(dir,{recursive:true});await fs.writeFile(path.join(dir,`storyboard-before-restore-${Date.now()}-${randomUUID()}.json`),JSON.stringify(before),{flag:'wx',mode:0o600});
-    return this.tx(()=>{
+    const restored=this.tx(()=>{
       this.assets.lockRestoreScope();
+      this.history.require({fresh:true});
       if(this.backupInTransaction().checksum!==before.checksum)throw fault('备份期间数据库已变化，请重新恢复',409);
       // Restore only into an empty target or identical records. Never overwrite
       // current storyboards or remove protection through a backup endpoint.
@@ -313,9 +372,13 @@ export class StoryboardDatabase {
         if(old){if(table==='storyboard_schema'&&old.version===row.version)this.db.prepare('UPDATE storyboard_schema SET created_at=?,updated_at=? WHERE id=?').run(row.created_at,row.updated_at,row.id);else if(canonical(old)!==canonical(row))throw fault('目标分镜已有不同内容，未覆盖',409);}
         else this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(()=>'?')})`).run(...keys.map(k=>row[k]));
       }
+      if(Object.hasOwn(input,'change_history'))this.history.restoreRows(input.change_history);
+      else for(const d of input.tables.storyboard_documents)if(!this.history.row(d.id,d.revision))this.history.add(null,d,changeAuthor(null,'restore','旧备份恢复（原作者未知）'));
       if(Object.hasOwn(input,'video_preview'))this.videos.restoreRows(input.video_preview);
-      for(const d of input.tables.storyboard_documents)this.read(d.project_id);
+      for(const d of input.tables.storyboard_documents)this.readInTransaction(d.project_id);
       return {restored:true,documents:input.tables.storyboard_documents.length};
     });
+    const cleanups=input.tables.storyboard_documents.map(d=>this.history.afterCommit({document_id:d.id}).history_cleanup);
+    return {...restored,history_cleanup:cleanups.includes('failed')?'failed':'complete'};
   }
 }

@@ -3,7 +3,7 @@ import { X, RotateCcw, Check } from "lucide-react";
 import { THEME_LIST, type ThemeId } from "./theme-list";
 import { REFRESH_INTERVALS } from "./refresh-preferences";
 import type { BrowserMemory } from "./browser-preferences";
-import type { StoryboardAppearance } from "./storyboard/preferences";
+import { STORYBOARD_COLUMNS, normalizeColumns, type StoryboardAppearance } from "./storyboard/preferences";
 
 /**
  * 界面设置：界面风格（主题）+ 导航栏目显隐。
@@ -85,6 +85,7 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
           <div className="settings-section-head"><h3>分镜工作台</h3><small>与素材库共享配色，调整即时生效</small></div>
           <label className="field">分镜表密度<select aria-label="分镜表密度" value={storyboardAppearance.density} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, density: e.target.value as StoryboardAppearance['density'] })}><option value="comfortable">舒适 · 展示更多内容</option><option value="compact">紧凑 · 同屏更多镜头</option></select></label>
           <div className="navigation-options"><label><input type="checkbox" checked={storyboardAppearance.showScenes} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, showScenes: e.target.checked })}/><span>显示分镜场景目录</span></label><label><input type="checkbox" checked={storyboardAppearance.showDetails} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, showDetails: e.target.checked })}/><span>显示镜头详情面板</span></label></div>
+          <fieldset className="navigation-options storyboard-columns" style={{ border: 0, margin: 0, minInlineSize: 0 }}><legend style={{ gridColumn: "1 / -1", padding: 0, fontWeight: 600 }}>编辑表格显示的列（镜号始终显示）</legend>{STORYBOARD_COLUMNS.map(c => <label key={c.key}><input type="checkbox" checked={storyboardAppearance.columns.includes(c.key)} onChange={e => setStoryboardAppearance({ ...storyboardAppearance, columns: normalizeColumns(e.target.checked ? [...storyboardAppearance.columns, c.key] : storyboardAppearance.columns.filter(k => k !== c.key)) })}/><span>{c.label}</span></label>)}</fieldset>
         </section>}
         <section className="settings-section">
           <div className="settings-section-head">

@@ -6,8 +6,8 @@
 
 1. 在「项目」创建普通项目，再在分镜页面上方选择所属项目。公共人物库不承载分镜。
 2. 选择完整中文 JSON 或标准 `.storyboard.json`，检查预览中的场数、镜数、时长，以及人物、场景、道具的新增 / 复用情况。
-3. 确认「初始化项目分镜」。已有分镜时按钮明确为「初始化并覆盖当前分镜」；它替换所有场次、镜头、对白和清单关联，不保留分镜历史版本。
-4. 表格编辑景别、动作、运镜、声音、时长和衔接；点击镜号，在详情编辑长文本、对白和结构化人物 / 场景 / 道具关联。失焦提交，约 900 毫秒自动保存，可手动保存。
+3. 确认「初始化项目分镜」。已有分镜时按钮明确为「初始化并覆盖当前分镜」；它替换所有场次、镜头、对白和清单关联，启用改动记录后，每次初始化另存完整历史版本和改动，当前正文仍只有一份。
+4. 表格编辑景别、动作、运镜、声音、时长和衔接；点击镜号，在详情编辑长文本、对白和结构化人物 / 场景 / 道具关联。编辑只形成未保存草稿；点击保存才写库。agent修改直接另存新版本，前端以AI已保存结果优先处理未保存冲突。
 5. 镜头支持新增、复制、删除、拖动排序、跨场移动和本页撤销 / 重做。永久 ID 不随排序变化；镜号、起止时间和总时长自动计算。初始化成功后清空撤销栈。
 6. 选择连续镜头后生成整合提示词，可复制或导出 TXT / JSON，不写分镜历史批次，也不调用付费生成。
 
@@ -161,3 +161,36 @@
 保留已确认创建的目录，不擅自删除。预览或执行响应丢失后只查询原请求。
 角色修订使用设置行版本（缺省 0），升级旧视频保留角色，旧备份缺角色按未设置兼容。
 备份并不携带原媒体，恢复仍须核对实际目录身份。
+
+
+## 分镜改动记录 v1
+
+保存正文、完整版本、字段改动和待看在同一事务内提交，失败整体回滚。每文档的revision/版本号单调递增；恢复旧版是另存新版本，保留后续历史，不回退修订号或删除视频记录。无内容变化不增版本。已有文档首次真实写入前，在同事务补一份当前revision基线（原作者未知，author_kind=baseline）；GET只读，不补基线。
+
+新空素材库建表；已有storyboard_documents表的素材库无论是否已有分镜，缺history三表时不在普通启动DDL；需另获迁移授权。只读当前分镜可用，历史/写入返回STORYBOARD_HISTORY_MIGRATION_REQUIRED(503)。显式工具scripts/storyboard-history-schema.mjs --print sqlite|mysql仅输出SQL；--apply-sqlite要求明确现存库的无符号链接绝对路径，不创建新数据库；先在私有目录独占创建完整SQLite备份、quick_check及fsync，再以单事务建新表，备份失败不DDL。正式MySQL迁移须单独备份/批准后由受控运维执行，不能用测试或安装新版冒授权。本批未执行正式迁移。
+
+页面保存缺change时兼容旧客户端user，固定“用户手动保存”；agent必须提交change.author=agent、逐字用户原话reason_text及shot_feel/miscommunication/prompt_wrong之一。服务端记录调用方提供的原文，不能认证其来自真人。初始化为import；Codex生成落库为generation并保留原任务指令，没有指令明确reason_missing；版本恢复为restore。
+
+新客户端建议每次保存带request_id(UUID)。有变化的保存同ID同输入只回原saved_version，附当前文档与version，repeated=true；同ID不同输入409。无ID旧客户端响应丢失后重读，不能把409当作未提交后换ID重发。可选asset_stamp在目录/项目锁内复核。完整备份新增change_history项（含版本、永久改动、待看/已读）；旧备份无此项仍按原只恢复空库/相同记录规则接收，不覆盖有不同当前数据的库。
+
+字段差异按永久镜头ID、场景ID对齐。技术id/revision不作为业务变化；新增/删除整实体用$entity，移动/镜号重排用$scene_id/$order/$number。文档、场景变化有独立实体，不冒充某镜。共享纯函数server/storyboard/shared/change-diff.mjs供前后端使用。改变单元数/两版单元并集数>0.5，或改变单元两侧UTF8(JSON)字节/全部单元两侧字节>0.5，判大改（严格大于）；无值按null。大改只永久存摘要，具体内容见当版完整版；pending仍精确标受影响实体。
+
+每集保留最近50份完整版（含当前与基线）；超限只在提交后、针对本集裁剪document_json，版本元数据/改动/待看永久留存。清理失败响应仍确认保存成功，history_cleanup=failed，暂保超额快照；下次本集保存再尝试，GET不清理。storage.bytes是保留快照UTF8逻辑字节，record_bytes是永久改动JSON字节，physical_bytes=null，不伪称数据库文件实际页占用，也不声称总空间被50份封顶。本批无片子版本引用功能；未来引用保护由后续批次接入。
+
+接口前缀/api/storyboard/projects/:id：GET versions（offset/limit）、versions/:v、versions/:v/diff?against=current|数字、changes?limit=20、pending；POST pending/clear、versions/:v/restore；PATCH versions/:v/category。沿用原会话/Origin/写token与生成锁。已裁剪完整版读/比/恢复410 VERSION_PRUNED，永久记录仍可查。恢复在目录/项目锁同事务核验当前资产/造型/图片，失效409 RESTORE_ASSETS_INVALID列invalid_assets，不默删关联。
+
+清待看必须提交实际看过的through_version及shot_ids或all:true，只清不晚于该版的事件，后续并发修改保留。返回cleared_events/skipped_shot_ids和当前pending_count/pending_document_count；前者仅镜头实体数，后者为文档/场景实体数。分类修改仅agent事件，需expected_reason_category做CAS，不改正文/原话；待看与历史联查新分类。清待看不意味着已解决，不改内容/改动记录。agent按需GET changes查询，不自动把历史喂入模型。
+
+隔离测试：node --test tests/storyboard-history*.test.mjs及受影响回归；node tests/storyboard-history-mysql.mjs只创建自有临时datadir/随机回环端口MySQL，不读系统配置/凭据，保留证据并正常关闭。MySQL版本按实际证据报告，不把SQLite或mock冒原生MySQL通过。合并、正式DDL与4317上线另批。
+
+
+### v1.1：仅标记 Codex 修改的待看
+
+按用户决定“只标 Codex 改的”，只有author_kind为agent或generation的保存新增pending。user/import/restore/baseline仍照常同事务保存完整版和永久changes，不新增待看，也不会清除已有Codex待看。计数、GET pending和清除接口只处理agent/generation事件；through_version的已看版本保护保持。旧候选存在的其它作者pending保留原行但不再投影，不做数据清理。import保持初始化/导入路径归类，不猜实际操作者，不扩大成新的来源鉴别协议。
+
+
+### PR120 后端修正：恢复保护与展示字段
+
+任何整库备份恢复（包括没有change_history的旧格式）在校验、备份和写入前强制重新核对history表，在事务锁内再核对一次；缺表/未知结构503，绝不跳过journal后返回恢复成功。旧格式兼容仍保留，但必须先完成显式授权迁移。
+
+GET会从资产主档补人物与清单的展示字段。日常保存逐稳定ID核对提交值与本轮锁内读取的展示值：未被作者编辑的展示字段保留原存储表示（包括原本不存在的可选字段），不把自动补齐/主档改名归因给修改动作的作者；明确改过的人物业务字段照常存正文、完整快照、changes和Codex待看。历史快照/记录不追溯改写，主档显示与资产授权语义不变。

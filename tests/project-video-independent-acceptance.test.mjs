@@ -303,7 +303,7 @@ mediaTest('D2 shorter current content keeps original source ID and only unbinds 
   const invalid = video.storyboard_video_takes.find(row => row.id === adopted[state.shots[1].id]);
   const data = JSON.parse(invalid.data_json); data.segments.find(x => x.sourceId === s.id).outMs = 3600000; invalid.data_json = canonical(data);
   invalid.created_at = Date.now() + 1000; invalid.updated_at = invalid.created_at;
-  backup.checksum = digest({tables: backup.tables, creative: backup.creative, video_preview: video});
+  backup.checksum = digest({tables: backup.tables, creative: backup.creative, video_preview: video, change_history: backup.change_history});
   let rejected = false; try { f.storyboards.validateBackup(backup); } catch { rejected = true; }
   await note('D2-backup-overbroad-history', {accepted, originalHistoricalValidated: true, forgedOneHourTakeCreatedAfterAcceptanceRejected: rejected,
     currentSourceDurationMs: f.v.source(f.a.id, s.id).durationMs});

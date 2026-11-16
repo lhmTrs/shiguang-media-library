@@ -33,6 +33,15 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
     router.post('/projects/:id/initialize', route(async (req,res) => res.json(store.initialize(req.params.id,req.body))));
     router.get('/projects/:id/requests/:request', route(async (req,res) => res.json(store.request(req.params.id,req.params.request))));
     router.get('/projects', route(async (_req,res) => res.json(store.list())));
+    const historyRead=fn=>route((req,res)=>res.json(store.history.read(()=>fn(req))));
+    router.get('/projects/:id/versions',historyRead(req=>store.history.versions(req.params.id,{offset:req.query.offset===undefined?0:Number(req.query.offset),limit:req.query.limit===undefined?20:Number(req.query.limit)})));
+    router.get('/projects/:id/versions/:v/diff',historyRead(req=>store.history.diff(req.params.id,Number(req.params.v),req.query.against??'current')));
+    router.get('/projects/:id/versions/:v',historyRead(req=>store.history.version(req.params.id,Number(req.params.v))));
+    router.get('/projects/:id/changes',historyRead(req=>store.history.changes(req.params.id,req.query.limit===undefined?20:Number(req.query.limit))));
+    router.get('/projects/:id/pending',historyRead(req=>store.history.pending(req.params.id)));
+    router.post('/projects/:id/pending/clear',route((req,res)=>res.json(store.history.clear(req.params.id,req.body))));
+    router.patch('/projects/:id/versions/:v/category',route((req,res)=>res.json(store.history.category(req.params.id,Number(req.params.v),req.body))));
+    router.post('/projects/:id/versions/:v/restore',route((req,res)=>res.json(store.restoreVersion(req.params.id,Number(req.params.v),req.body))));
     router.get('/projects/:id', route(async (req,res) => res.json(store.read(req.params.id))));
     router.put('/projects/:id', route(async (req,res) => res.json(store.save(req.params.id,req.body))));
   } else {
@@ -56,7 +65,8 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
     const status = error.status ?? (error.code === 'ENOENT' ? 404 : 500);
     res.status(status).json({
       message: error.message,
-      ...(error.code === 'ASSET_MERGED' && { code: error.code }),
+      ...(error.code && { code: error.code }),
+      ...(error.invalid_assets && {invalid_assets:error.invalid_assets}),
       ...error.details, errors: error.errors, current_revision: error.current_revision,
     });
   });
