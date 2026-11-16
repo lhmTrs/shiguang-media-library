@@ -1,0 +1,72 @@
+/* UPDREAM-PROGRESS-V1：入口沿用 .codex-tasks-entry 的尺寸和边框，面板沿用 .codex-task-drawer；这里只补 Updream 自己的部分。 */
+.ud-entry{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--c-24292c);padding:8px 10px;font-size:12px;flex-shrink:0;min-height:36px}
+.ud-entry[aria-expanded=true]{border-color:var(--green);background:var(--soft)}
+.ud-entry:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.ud-entry-short{display:none;font-weight:700}
+.ud-stale-icon{display:inline-flex;color:var(--muted)}
+.ud-chip-att{border-radius:12px;padding:1px 6px;background:var(--c-fbefea);color:var(--c-b94f49);font-weight:600;font-size:11px}
+.ud-drawer{z-index:90}
+.ud-drawer .codex-task-alert{align-items:flex-start}
+.ud-drawer .codex-task-alert>span{min-width:0}
+.ud-card{margin-top:10px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--c-fff)}
+.ud-card.is-error{border-color:var(--c-b94f49)}
+.ud-card.is-stale .ud-card-main>:not(.ud-meta){opacity:.8}
+.ud-card-main{padding:12px 14px;display:flex;flex-direction:column;gap:6px;line-height:1.6;min-width:0}
+.ud-card-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;min-width:0}
+.ud-card-head strong{font-size:13px;display:flex;align-items:flex-start;gap:6px;min-width:0}
+.ud-name{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ud-new{width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;margin-top:7px}
+.ud-state{flex-shrink:0;color:var(--green);display:inline-flex;align-items:center;gap:4px;font-size:12px}
+.is-error .ud-state{color:var(--c-b94f49);font-weight:600}
+.is-stale .ud-state,.is-unknown .ud-state{color:var(--muted)}
+.ud-target{display:flex;align-items:center;flex-wrap:wrap;gap:5px;color:var(--muted);font-size:11px;min-width:0}
+.ud-target>span{overflow-wrap:anywhere}
+.ud-unverified{font-style:normal;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--c-24292c);background:var(--soft)}
+.ud-steps{list-style:none;margin:4px 0 2px;padding:0;display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+.ud-step{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);position:relative;text-align:center;min-width:0}
+.ud-step i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700;background:var(--c-fff);z-index:1;box-sizing:border-box}
+.ud-step:not(:last-child)::after{content:"";position:absolute;top:7px;left:calc(50% + 10px);right:calc(-50% + 10px);height:2px;background:var(--line);border-radius:2px}
+.ud-step.is-done i{background:var(--green);border-color:var(--green);color:var(--c-fff)}
+.ud-step.is-done:not(:last-child)::after{background:var(--green)}
+.ud-step.is-current i{border-color:var(--green);box-shadow:0 0 0 3px var(--soft)}
+.ud-step.is-current i::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green)}
+.ud-step.is-current span,.ud-step.is-error span,.ud-step.is-unknown span{color:var(--c-24292c);font-weight:600}
+.ud-step.is-error i{border-color:var(--c-b94f49);color:var(--c-b94f49);background:var(--c-fbefea)}
+.ud-step.is-unknown i{border-style:dashed;border-color:var(--muted);color:var(--muted)}
+.is-stale .ud-step.is-current i{border-color:var(--muted);box-shadow:none}
+.is-stale .ud-step.is-current i::before{background:var(--muted)}
+.ud-detail{margin:0;font-size:12px;overflow-wrap:anywhere}
+
+.ud-detail code{font-size:11px;color:var(--muted)}
+.ud-result ul{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+.ud-drawer .ud-link{border:0;background:transparent;padding:2px 0;color:var(--green);display:inline-flex;align-items:center;gap:4px;font-size:12px;text-align:left;overflow-wrap:anywhere}
+.ud-drawer .ud-link:hover{text-decoration:underline;background:transparent}
+.ud-more{font-size:11px;color:var(--muted)}
+.ud-meta{margin:0;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.ud-stale-line{color:var(--c-24292c)}
+.ud-notify{margin:0;font-size:11px;color:var(--muted)}
+.ud-notify.is-bad{color:var(--c-ad4d44)}
+.ud-card>footer{display:flex;flex-wrap:wrap;gap:8px;padding:9px 14px;border-top:1px solid var(--line);background:var(--soft)}
+.ud-card>footer button,.ud-drawer-foot button{display:inline-flex;gap:5px;align-items:center;font-size:11px}
+.ud-load-more{width:100%;margin-top:10px}
+.ud-drawer-foot{border-top:1px solid var(--line);padding:10px 16px;display:flex;justify-content:flex-end}
+@media(max-width:620px){
+ .ud-entry{padding:7px;gap:4px}
+ .ud-entry-label{display:none}
+ .ud-entry-short{display:inline}
+ .ud-chip-att{padding:0;width:8px;height:8px;border-radius:50%;background:var(--c-b94f49);color:transparent;overflow:hidden;white-space:nowrap;text-indent:100%}
+ .ud-entry .ud-chip-new{display:none}
+ .ud-step span{display:none}
+ .ud-step[aria-current] span{display:block;position:absolute;top:19px;white-space:nowrap}
+ .ud-steps:has([aria-current]){margin-bottom:16px}
+ .ud-drawer{width:100vw}
+}
+/* 生成视频页标题栏右侧的轻量历史入口 */
+.pv-header .pv-updream-history{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--muted);padding:5px 9px;font-size:12px}
+.pv-header .pv-updream-history:hover{color:var(--c-24292c);background:var(--soft)}
+.pv-header .pv-updream-history:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+/* 接口合同 v1 补充：需要留意的说明、已取消、没有可确认阶段的进度条 */
+.ud-attention{margin:0;font-size:12px;color:var(--c-b94f49);overflow-wrap:anywhere}
+.ud-attention code{font-size:11px;color:var(--muted)}
+.is-cancelled .ud-state{color:var(--muted)}
+.ud-steps.is-unplaced{opacity:.55}

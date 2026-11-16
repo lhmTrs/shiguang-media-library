@@ -1,3 +1,4 @@
+import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
 import { Users } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -2014,6 +2015,11 @@ function App() {
               disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
               onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
           </div>
+          <UpdreamTaskEntry request={api} onView={async(projectId:string,videoId?:string)=>{
+            if(!projectId||!selectKnownProject(projectId))return;
+            if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));
+            navigate('projectVideos');
+          }}/>
           <CodexTaskEntry controller={codexTasks}/>
           <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
             if(projectId){if(!selectKnownProject(projectId))return;if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
