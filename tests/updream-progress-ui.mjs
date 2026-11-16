@@ -24,21 +24,22 @@ async function api(p, body, method) {
 async function check(name, fn) { await fn(); console.log('PASS ' + name); }
 const shot = async name => { const dir = process.env.CREATIVE_TEST_EVIDENCE; if (!dir) return; await fs.mkdir(dir, { recursive: true }); await page.screenshot({ path: path.join(dir, name + '.png') }); };
 
-// ---- 合成任务 ----
+// ---- 合成任务（按后端合同 schemaVersion 1 的字段） ----
 const NOW = Date.now();
-const base = { createdAt: NOW - 3600e3, notification: { state: 'none' }, unread: false, error: null, result: null, stale: null, alsoInFileTasks: null };
-const target = (folder, state = 'verified') => ({ projectId: 'p-demo', projectName: '示例项目', folderId: 'f-' + folder, folderLabel: '第3集 / ' + folder, state });
+const base = { createdAt: NOW - 3600e3, upstreamUpdatedAt: null, localRecordUpdatedAt: NOW - 30e3, progress: null, attention: null, delivery: null, notification: { state: 'none' }, unread: false, recordUrl: '/api/updream-progress/tasks/x' };
+const target = (folder, identity = 'current') => ({ projectId: 'p-demo', projectName: '示例项目', folderId: 'f-' + folder, folderLabel: '第3集 / ' + folder, identity });
 const T = {
-  gen: { ...base, taskId: 'ud-1042', version: 'v1', name: '雨夜巷口 · C段 第2版', target: target('C段'), stage: 'generate', stageState: 'running', lastCompletedStage: null, upstreamUpdatedAt: NOW - 20e3 },
-  verify: { ...base, taskId: 'ud-1041', version: 'v3', name: '雨夜巷口 · B段 第3版 · 这是一段特别长的任务名称用来检查换行和截断是否正常显示不撑破面板', target: target('B段', 'unverified'), stage: 'verify', stageState: 'running', lastCompletedStage: 'download', upstreamUpdatedAt: NOW - 5e3 },
-  failed: { ...base, taskId: 'ud-1038', version: 'v2', name: '晨光天台 · D段 第2版', target: target('D段'), stage: 'download', stageState: 'failed', lastCompletedStage: 'generate', upstreamUpdatedAt: NOW - 840e3, error: { code: 'DOWNLOAD_EXPIRED', message: '平台下载链接已过期，已停在这一步，没有自动重试。' }, notification: { state: 'sent', at: NOW - 830e3 }, unread: true },
-  done: { ...base, taskId: 'ud-1039', version: 'v5', name: '晨光天台 · A段 第1版', target: target('A段'), stage: 'imported', stageState: 'done', lastCompletedStage: 'imported', upstreamUpdatedAt: NOW - 360e3, result: { videos: [{ projectId: 'p-demo', videoId: 'vid-1', name: '晨光天台_A_001.mp4' }, { projectId: 'p-demo', videoId: 'vid-2', name: '晨光天台_A_002.mp4' }] }, notification: { state: 'failed', at: NOW - 350e3 }, unread: true },
-  old: { ...base, taskId: 'ud-1035', version: 'v4', name: '雨夜巷口 · A段 第1版', target: target('A段'), stage: 'imported', stageState: 'done', lastCompletedStage: 'imported', upstreamUpdatedAt: NOW - 7200e3, result: { videos: [{ projectId: 'p-demo', videoId: 'vid-0', name: '雨夜巷口_A_001.mp4' }] }, notification: { state: 'sent' } },
-  unknown: { ...base, taskId: 'ud-1030', version: 'v1', name: '记录不完整的任务', target: { state: 'unknown' }, stage: 'unknown', stageState: 'unknown', lastCompletedStage: 'download', upstreamUpdatedAt: null },
+  gen: { ...base, id: 'ud-1042', eventVersion: 'a'.repeat(64), name: '雨夜巷口 · C段 第2版', target: target('C段'), phase: 'generating', active: true, progress: { percent: 42 } },
+  verify: { ...base, id: 'ud-1041', eventVersion: 'b'.repeat(64), name: '雨夜巷口 · B段 第3版 · 这是一段特别长的任务名称用来检查换行和截断是否正常显示不撑破面板', target: target('B段', 'unconfirmed'), phase: 'validating', active: true, upstreamUpdatedAt: NOW - 5e3 },
+  failed: { ...base, id: 'ud-1038', eventVersion: 'c'.repeat(64), name: '晨光天台 · D段 第2版', target: target('D段'), phase: 'failed', active: false, attention: { code: 'DOWNLOAD_EXPIRED', message: '平台下载链接已过期，已停在这一步，没有自动重试。' }, notification: { state: 'sent' }, unread: true },
+  done: { ...base, id: 'ud-1039', eventVersion: 'd'.repeat(64), name: '晨光天台 · A段 第1版', target: target('A段'), phase: 'imported', active: false, delivery: { verification: 'executor_recorded', projectId: 'p-demo', folderId: 'f-A段', videoId: 'vid-1', canView: true }, notification: { state: 'failed' }, unread: true },
+  old: { ...base, id: 'ud-1035', eventVersion: 'e'.repeat(64), name: '雨夜巷口 · A段 第1版', target: target('A段', 'other_library'), phase: 'imported', active: false, delivery: { verification: 'executor_recorded', projectId: 'p-other', folderId: 'f', videoId: 'vid-0', canView: false }, notification: { state: 'sent' } },
+  unknown: { ...base, id: 'ud-1030', eventVersion: 'f'.repeat(64), name: '记录不完整的任务', target: { projectId: null, projectName: null, folderId: null, folderLabel: null, identity: 'unconfirmed' }, phase: 'needs_review', active: false, localRecordUpdatedAt: null },
+  weird: { ...base, id: 'ud-1029', eventVersion: '1'.repeat(64), name: '未知阶段', target: target('E段'), phase: 'teleporting', active: false },
 };
-const counts = tasks => ({ active: tasks.filter(t => t.stage !== 'imported' && t.stage !== 'unknown' && !['failed', 'unknown'].includes(t.stageState)).length, attention: tasks.filter(t => t.stageState === 'failed').length, unread: tasks.filter(t => t.unread).length });
-let tasks = [], source = { state: 'ok' }, fail = false, delays = [], reads = [], gets = [], foreign = [];
-const listBody = () => ({ observedAt: Date.now(), source, counts: counts(tasks), tasks, nextCursor: null });
+const summary = tasks => { const activeCount = tasks.filter(t => t.active).length, unreadCount = tasks.filter(t => t.unread).length; return { activeCount, unreadCount, attentionCount: tasks.filter(t => t.attention || ['failed', 'needs_review'].includes(t.phase)).length, showEntry: activeCount > 0 || unreadCount > 0 || queue.state === 'degraded' || queue.state === 'unavailable' }; };
+let tasks = [], queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 }, fail = false, delays = [], reads = [], gets = [], foreign = [];
+const listBody = scope => { const list = scope === 'history' ? tasks.filter(t => !t.active) : tasks; return { schemaVersion: 1, readAt: Date.now(), queue, preferences: { state: 'ready' }, summary: summary(tasks), total: list.length, offset: 0, limit: 50, tasks: list }; };
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -51,16 +52,16 @@ try {
   await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { const u = new URL(r.url()); if (u.origin !== origin && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) foreign.push(r.url()); });
-  await context.route(u => new URL(u).pathname === '/api/updream/tasks', async route => {
+  await context.route(u => new URL(u).pathname === '/api/updream-progress', async route => {
     gets.push(Date.now());
-    const delay = delays.shift() ?? 0; const body = listBody(); if (delay) await new Promise(r => setTimeout(r, delay));
+    const delay = delays.shift() ?? 0; const body = listBody(new URL(route.request().url()).searchParams.get('scope')); if (delay) await new Promise(r => setTimeout(r, delay));
     if (fail) return route.fulfill({ status: 503, json: { error: '本机服务暂时不可用', code: 'UNAVAILABLE' } });
     return route.fulfill({ json: body });
   });
-  await context.route(u => new URL(u).pathname === '/api/updream/tasks/read', async route => {
-    const { items } = route.request().postDataJSON(); reads.push(...items);
-    for (const i of items) { const t = tasks.find(x => x.taskId === i.taskId && x.version === i.version); if (t) t.unread = false; }
-    return route.fulfill({ json: { counts: counts(tasks) } });
+  await context.route(u => new URL(u).pathname === '/api/updream-progress/read', async route => {
+    const { items } = route.request().postDataJSON(); reads.push(...items); const marked = [], skipped = [];
+    for (const i of items) { const t = tasks.find(x => x.id === i.id && x.eventVersion === i.version); if (t) { t.unread = false; marked.push(i.id); } else skipped.push(i.id); }
+    return route.fulfill({ json: { schemaVersion: 1, readAt: Date.now(), marked, skipped } });
   });
   const entry = () => page.locator('.ud-entry');
   const drawer = () => page.getByRole('complementary', { name: 'Updream 视频任务' });
@@ -68,55 +69,58 @@ try {
   const load = async () => { await page.goto(origin + '/?r=' + Date.now() + '#/project-videos'); await expect(page.getByRole('region', { name: '项目生成视频' })).toBeVisible(); };
 
   await check('U1 没有登记任务：顶栏不出现入口；生成视频页「Updream 任务记录」仍能打开记录面板', async () => {
-    tasks = []; await load();
+    tasks = []; queue = { state: 'absent', reason: null, truncated: false, invalidCount: 0 }; await load();
     await page.waitForTimeout(400); await expect(entry()).toHaveCount(0);
     await page.getByRole('button', { name: 'Updream 任务记录' }).click();
-    await expect(drawer()).toBeVisible(); await expect(drawer()).toContainText('Updream 任务记录'); await expect(drawer()).toContainText('本机还没有登记过 Updream 任务');
+    await expect(drawer()).toBeVisible(); await expect(drawer()).toContainText('Updream 任务记录'); await expect(drawer()).toContainText('本机还没有 Updream 任务记录');
     await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Updream 任务记录' })).toBeFocused();
+    queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 };
   });
 
-  await check('U2 进行中 + 异常未读 + 新结果：入口文字和标记；默认停在进行中；六步进度；长名称不撑破；目标未核准', async () => {
+  await check('U2 进行中 + 待处理未读 + 新结果：入口文字和标记；默认停在进行中；六步进度与百分比；长名称不撑破；目标未核准', async () => {
     tasks = [structuredClone(T.gen), structuredClone(T.verify), structuredClone(T.failed), structuredClone(T.done), structuredClone(T.old)]; await load();
-    await expect(entry()).toContainText('Updream · 进行中 2'); await expect(entry()).toContainText('1 异常'); await expect(entry()).toContainText('1 新');
+    await expect(entry()).toContainText('Updream · 进行中 2'); await expect(entry()).toContainText('1 待处理'); await expect(entry()).toContainText('1 新');
     await entry().click(); await expect(drawer()).toBeVisible();
     await expect(drawer().getByRole('button', { name: '进行中 2' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(card('C段 第2版').locator('.ud-step[aria-current]')).toContainText('生成');
-    await expect(card('B段 第3版').locator('.ud-step.is-done')).toHaveCount(2);
+    await expect(card('C段 第2版').locator('.ud-step[aria-current]')).toContainText('生成'); await expect(card('C段 第2版')).toContainText('生成中 · 42%');
+    await expect(card('C段 第2版')).toContainText('上游最近成功更新时间未知');
+    await expect(card('B段 第3版').locator('.ud-step.is-done')).toHaveCount(2); await expect(card('B段 第3版')).toContainText('没有可靠的百分比');
     await expect(card('B段 第3版')).toContainText('目标未核准');
     const box = await card('B段 第3版').boundingBox(), dbox = await drawer().boundingBox(); assert.ok(box.x + box.width <= dbox.x + dbox.width + 1, '长名称撑破面板');
     await expect(drawer().getByRole('button', { name: /暂停|继续|取消|重试|知道了|重新生成|删除/ })).toHaveCount(0);
     await shot('u2-active-1440');
   });
 
-  await check('U3 已读：只有真正显示出来的卡片按 taskId+version 记已读；没显示的不清；记完入口标记消失', async () => {
+  await check('U3 已读：只有真正显示出来的卡片按 id+eventVersion 记已读；没显示的不清；只能查看可查看的视频', async () => {
     reads = [];
     await page.waitForTimeout(1500); assert.equal(reads.length, 0, '进行中这一栏没有未读，不该记已读');
     await drawer().getByRole('button', { name: /^已完成/ }).click();
-    await expect.poll(() => reads.map(r => r.taskId + '@' + r.version).join(','), { timeout: 4000 }).toBe('ud-1039@v5');
-    await expect(entry()).not.toContainText('新'); await expect(entry()).toContainText('1 异常');
-    assert.equal(tasks.find(t => t.taskId === 'ud-1038').unread, true, '没显示过的异常不应被清掉');
-    await card('A段 第1版').filter({ hasText: '晨光天台' }).getByRole('button', { name: '晨光天台_A_001.mp4' }).isVisible();
-    await expect(card('晨光天台 · A段')).toContainText('入库回读核对通过'); await expect(card('晨光天台 · A段')).toContainText('通知：发送失败（不影响视频结果）');
-    await drawer().getByRole('button', { name: /^异常/ }).click();
-    await expect.poll(() => reads.some(r => r.taskId === 'ud-1038' && r.version === 'v2'), { timeout: 4000 }).toBe(true);
-    await expect(card('D段 第2版')).toContainText('平台下载链接已过期'); await expect(card('D段 第2版')).toContainText('最后已完成：生成');
-    await expect(entry()).not.toContainText('异常');
+    await expect.poll(() => reads.map(r => r.id + '@' + r.version.slice(0, 4)).sort().join(','), { timeout: 4000 }).toBe('ud-1039@dddd');
+    await expect(entry()).not.toContainText('新'); await expect(entry()).toContainText('1 待处理');
+    assert.equal(tasks.find(t => t.id === 'ud-1038').unread, true, '没显示过的失败任务不应被清掉');
+    await expect(card('晨光天台 · A段')).toContainText('原执行方回读核对通过'); await expect(card('晨光天台 · A段')).toContainText('通知：发送失败（不影响视频结果）');
+    await expect(card('晨光天台 · A段').getByRole('button', { name: '查看视频' })).toBeVisible();
+    await expect(card('雨夜巷口 · A段').getByRole('button', { name: '查看视频' })).toHaveCount(0); await expect(card('雨夜巷口 · A段')).toContainText('不在当前素材库');
+    await drawer().getByRole('button', { name: /^待处理/ }).click();
+    await expect.poll(() => reads.some(r => r.id === 'ud-1038' && r.version === 'c'.repeat(64)), { timeout: 4000 }).toBe(true);
+    await expect(card('D段 第2版')).toContainText('平台下载链接已过期'); await expect(card('D段 第2版')).toContainText('失败');
+    await expect(entry()).not.toContainText('待处理');
   });
 
-  await check('U4 后台出现新版本（新异常）：再次提醒；异常记录不会因为读过而消失', async () => {
-    const f = tasks.find(t => t.taskId === 'ud-1038'); f.version = 'v3'; f.unread = true; f.error = { code: 'DOWNLOAD_EXPIRED', message: '第二次下载也失败了。' };
+  await check('U4 后台出现新版本（新异常）：再次提醒；失败记录不会因为读过而消失；旧版本的已读会被跳过', async () => {
+    const f = tasks.find(t => t.id === 'ud-1038'); f.eventVersion = '9'.repeat(64); f.unread = true; f.attention = { code: 'DOWNLOAD_EXPIRED', message: '第二次下载也失败了。' };
     await drawer().getByRole('button', { name: /^进行中/ }).click();
-    await expect(entry()).toContainText('1 异常', { timeout: 6000 });
-    await drawer().getByRole('button', { name: /^异常/ }).click(); await expect(card('D段 第2版')).toContainText('第二次下载也失败了');
-    await expect.poll(() => reads.some(r => r.taskId === 'ud-1038' && r.version === 'v3'), { timeout: 4000 }).toBe(true);
+    await expect(entry()).toContainText('1 待处理', { timeout: 6000 });
+    await drawer().getByRole('button', { name: /^待处理/ }).click(); await expect(card('D段 第2版')).toContainText('第二次下载也失败了');
+    await expect.poll(() => reads.some(r => r.id === 'ud-1038' && r.version === '9'.repeat(64)), { timeout: 4000 }).toBe(true);
   });
 
   await check('U5 复制任务信息：只含白名单字段，没有链接、提示词或凭据', async () => {
     await card('D段 第2版').getByRole('button', { name: '复制任务信息' }).click();
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    assert.match(text, /Updream 任务 ud-1038/); assert.match(text, /目标：示例项目 \/ 第3集 \/ D段/); assert.match(text, /最后已完成步骤：生成/); assert.match(text, /DOWNLOAD_EXPIRED/);
-    assert.doesNotMatch(text, /https?:|token|cookie|prompt|提示词/i);
+    assert.match(text, /Updream 任务 ud-1038/); assert.match(text, /目标：示例项目 \/ 第3集 \/ D段/); assert.match(text, /当前状态：失败/); assert.match(text, /DOWNLOAD_EXPIRED/);
+    assert.doesNotMatch(text, /https?:|token|cookie|prompt|提示词|recordUrl|\/api\//i);
   });
 
   await check('U6 读取中断：保留最后已知状态并标明；入口出现「进度待确认」；恢复后提示消失', async () => {
@@ -129,19 +133,22 @@ try {
 
   await check('U7 迟到响应：先发后到的旧结果不覆盖后发先到的新结果', async () => {
     await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0); await expect(entry()).toBeFocused();
-    tasks = [structuredClone(T.gen)]; delays = [2500];   // 下一次读取（旧）拖 2.5 秒，用的是此刻的 1 个任务
-    const slow = page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    tasks = [structuredClone(T.gen)]; delays = [2500];
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.waitForTimeout(200); tasks = [structuredClone(T.gen), structuredClone(T.verify)];
-    await entry().click();                                    // 展开触发一次新读取（快）
-    await expect(entry()).toContainText('进行中 2'); await slow; await page.waitForTimeout(2800);
+    await entry().click();
+    await expect(entry()).toContainText('进行中 2'); await page.waitForTimeout(2800);
     await expect(entry()).toContainText('进行中 2');
   });
 
-  await check('U8 待核对：阶段未知不算失败也不算完成，放在进行中并写明', async () => {
-    tasks = [structuredClone(T.unknown), structuredClone(T.gen)];
+  await check('U8 待核对：needs_review 和不认识的阶段都显示「待核对」，不当成失败或完成；目标缺失写明', async () => {
+    tasks = [structuredClone(T.unknown), structuredClone(T.weird), structuredClone(T.gen)];
+    await drawer().getByRole('button', { name: /^待处理/ }).click();
     await expect(card('记录不完整的任务')).toContainText('待核对', { timeout: 6000 });
     await expect(card('记录不完整的任务')).toContainText('没有当成失败或完成'); await expect(card('记录不完整的任务')).toContainText('目标未记录');
-    await expect(drawer().getByRole('button', { name: '异常 0' })).toBeVisible();
+    await expect(card('未知阶段').locator('.ud-state')).toHaveText('待核对');
+    await expect(drawer().getByRole('button', { name: /^已完成/ })).toBeVisible();
+    await drawer().getByRole('button', { name: /^进行中/ }).click();
   });
 
   await check('U9 读取频率：展开约 3 秒一次，收起 15 秒一次；页面没有请求本机以外的地址', async () => {
@@ -150,7 +157,14 @@ try {
     assert.deepEqual(foreign, []);
   });
 
-  await check('U10 窄屏 390：入口只剩图标和数字，面板全宽、贴在顶栏下方，没有横向溢出', async () => {
+  await check('U10 队列损坏/读不了：入口照样出现并说明，列表标明可能不全', async () => {
+    tasks = []; queue = { state: 'degraded', reason: 'INVALID_RECORDS', truncated: true, invalidCount: 3 }; await load();
+    await expect(entry()).toBeVisible(); await expect(entry().getByRole('img', { name: '进度待确认' })).toBeVisible();
+    await entry().click(); await expect(drawer()).toContainText('有 3 条读不了，已跳过'); await expect(drawer()).toContainText('只读了一部分');
+    await page.keyboard.press('Escape'); queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 };
+  });
+
+  await check('U11 窄屏 390：入口只剩图标和数字，面板全宽、贴在顶栏下方，没有横向溢出', async () => {
     tasks = [structuredClone(T.gen), structuredClone(T.verify), structuredClone(T.failed), structuredClone(T.done)];
     await page.setViewportSize({ width: 390, height: 844 }); await load();
     await expect(entry().locator('.ud-entry-short')).toHaveText('2'); await expect(entry().locator('.ud-entry-label')).toBeHidden();
@@ -158,17 +172,17 @@ try {
     const d = await drawer().boundingBox(), bar = await page.locator('.library-topbar').boundingBox();
     assert.ok(Math.abs(d.width - 390) < 2, '面板宽 ' + d.width); assert.ok(d.y >= bar.y + bar.height - 1, '面板挡住了顶栏');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '横向溢出');
-    await shot('u10-narrow-390');
+    await shot('u11-narrow-390');
     await page.keyboard.press('Escape'); await page.setViewportSize({ width: 1440, height: 900 });
   });
 
-  await check('U11 六个主题：入口和面板都能正常显示（截图留证）', async () => {
+  await check('U12 六个主题：入口和面板都能正常显示（截图留证）', async () => {
     for (const theme of ['forest', 'dark', 'midnight', 'sepia', 'graphite', 'ocean']) {
       await page.evaluate(t => localStorage.setItem('shiguang.theme', t), theme); await load();
-      await entry().click(); await expect(drawer()).toBeVisible(); await drawer().getByRole('button', { name: /^异常/ }).click();
-      const colors = await card('D段 第2版').locator('.ud-detail').evaluate(e => [getComputedStyle(e).color, getComputedStyle(e.closest('.ud-card')).backgroundColor]);
+      await entry().click(); await expect(drawer()).toBeVisible(); await drawer().getByRole('button', { name: /^待处理/ }).click();
+      const colors = await card('D段 第2版').locator('.ud-attention').evaluate(e => [getComputedStyle(e).color, getComputedStyle(e.closest('.ud-card')).backgroundColor]);
       assert.notEqual(colors[0], colors[1], theme + ' 文字与底色相同');
-      await shot('u11-theme-' + theme); await page.keyboard.press('Escape');
+      await shot('u12-theme-' + theme); await page.keyboard.press('Escape');
     }
     await page.evaluate(() => localStorage.setItem('shiguang.theme', 'forest'));
   });
