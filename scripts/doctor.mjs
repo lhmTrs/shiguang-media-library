@@ -1,3 +1,4 @@
+import {resolveVideoProbe,safeProbeDiagnostic,probeFailure} from '../server/storyboard-video/probe-tool.mjs';
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -6,7 +7,7 @@ import { promisify } from "node:util";
 import { dataDirectory } from "../server/runtime.mjs";
 const run = promisify(execFile), project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const results = [];
-const add = (name, ok, required, detail) => results.push({ name, ok, required, detail });
+const add = (name, ok, required, detail, diagnostic) => results.push({ name, ok, required, detail, ...(diagnostic?{diagnostic}:{}) });
 add("Node.js", process.versions.node.split(".")[0] === "22", true, process.version + "（分享版使用 Node.js 22.x）");
 try {
   const { default: Database } = await import("better-sqlite3");
@@ -16,8 +17,8 @@ try {
 try { await fs.access(path.join(project, "dist/index.html")); add("网页构建", true, true, "dist/index.html 存在"); }
 catch { add("网页构建", false, true, "请运行 npm run build"); }
 for (const [command, args, label] of [["ffmpeg", ["-version"], "FFmpeg（波形/视频缩略图/代理）"], ["ffprobe", ["-version"], "FFprobe（媒体参数）"], ["exiftool", ["-ver"], "ExifTool（拍摄日期）"]]) {
-  try { await run(command, args, { timeout: 6000, maxBuffer: 512000 }); add(label, true, false, "可用"); }
-  catch { add(label, false, false, "未找到或不可执行；对应媒体功能可能不可用，见 START_HERE.md"); }
+  try { const executable=command==='ffprobe'?(await resolveVideoProbe({command:process.env.MEDIA_STORYBOARD_FFPROBE??'ffprobe',explicit:process.env.MEDIA_STORYBOARD_FFPROBE!==undefined})).command:command;await run(executable, args, { timeout: 6000, maxBuffer: 512000 }); add(label, true, false, "可用"); }
+  catch(e) { const fault=command==='ffprobe'?(e.code==='PROBE_UNAVAILABLE'?e:probeFailure(e)):e;add(label, false, false, command==='ffprobe'?fault.message:"未找到或不可执行；对应媒体功能可能不可用，见 START_HERE.md",safeProbeDiagnostic(fault.diagnostic)); }
 }
 if (process.platform === "darwin") {
   try { await run("xcrun", ["--find", "swiftc"], { timeout: 6000 }); add("Mac 废纸篓组件", true, false, "Swift 编译工具可用"); }

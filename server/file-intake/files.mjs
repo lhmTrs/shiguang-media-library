@@ -182,13 +182,36 @@ export class Receipts {
   }
   async write(kind,id,value,{exclusive=false}={}) {
     const target=this.file(kind,id), temporary=target+'.'+randomUUID()+'.tmp';
-    const h=await fs.open(temporary,'wx',0o600);
-    try {await h.writeFile(JSON.stringify(value));await h.sync();} finally {await h.close();}
-    try {if(exclusive){await fs.link(temporary,target);await fs.unlink(temporary);} else await fs.rename(temporary,target);}
-    catch(e){await fs.unlink(temporary).catch(()=>{});throw e;}
-    const dir=await fs.open(path.dirname(target),'r');
-    try {await dir.sync();} finally {await dir.close();}
+    let published=false,stage='write';
+    try {
+      const h=await fs.open(temporary,'wx',0o600);
+      try {await h.writeFile(JSON.stringify(value));await h.sync();} finally {await h.close();}
+      stage='publish';
+      if(exclusive)await fs.link(temporary,target);else await fs.rename(temporary,target);
+      published=true;stage='verify-publication';
+      if(JSON.stringify(await this.read(kind,id))!==JSON.stringify(value))throw error('INTAKE_RECEIPT_INVALID','发布后的回执与本次请求不一致');
+      stage='directory-sync';
+      const dir=await fs.open(path.dirname(target),'r');
+      try {await dir.sync();} finally {await dir.close();}
+    } catch(cause) {
+      // Publication may have happened even if its observation failed. Never
+      // unlink the target, adopt it as accepted, or schedule work in that case.
+      let uncertain=published;
+      if(stage==='publish')try{await fs.lstat(target);uncertain=true;}catch(e){if(e.code!=='ENOENT')uncertain=true;}
+      if(uncertain){
+        const fault=error('INTAKE_RESULT_UNKNOWN','回执提交结果待核对，请保留同一请求编号；未自动继续任务',503);
+        Object.assign(fault,{receiptCommitState:'unknown',details:{requestId:id,receipt:{state:'unknown',stage}}});throw fault;
+      }
+      await fs.unlink(temporary).catch(()=>{});
+      cause.receiptCommitState='not_committed';throw cause;
+    }
+    // Durability is already confirmed. Cleanup is a separate best-effort step:
+    // failure retains only this owned temporary link, not an unaccepted task.
+    let cleanup='complete';
+    if(exclusive)try{await fs.unlink(temporary);}catch{cleanup='pending';}
+    return {committed:true,cleanup};
   }
+
   async list(kind,{tolerateInvalid=false}={}) {
     const names=await fs.readdir(path.join(this.base,kind)), result=[];
     for(const name of names) if (name.endsWith('.json') && uuid(name.slice(0,-5))) {
