@@ -640,3 +640,13 @@ test('retrying a standard project video rechecks directory numbers without chang
   await settled(f.intake);
   assert.equal(f.intake.batch(failed.id).items[0].resultFileName,'右键项目_002.mp4');
 });
+
+
+test('video probe unavailable preserves safe diagnostics in original import and file-task receipts',async t=>{
+ const f=await fixture(t);const diagnostic={stage:'spawn',reason:'resource_exhausted',causeCode:'EMFILE',errno:-24,syscall:'spawn'};
+ t.mock.method(f.entry.media,'probe',async()=>{throw Object.assign(Error('视频探测资源暂不可用'),{code:'PROBE_UNAVAILABLE',status:503,diagnostic:{...diagnostic,privatePath:'/must-not-export',credential:'must-not-export'}});});
+ const {batch}=await accept(f,[f.file]);await settled(f.intake);const result=f.intake.dto(f.intake.batch(batch.id)),item=result.items[0];
+ assert.equal(item.status,'failed');assert.equal(item.code,'PROBE_UNAVAILABLE');assert.deepEqual(item.diagnostic,diagnostic);assert.ok(!JSON.stringify(result).includes('must-not-export'));
+ const receipt=f.catalog.receiptDTO(f.catalog.receipt(f.project.id,f.intake.batch(batch.id).items[0].requestId));assert.equal(receipt.code,'PROBE_UNAVAILABLE');assert.deepEqual(receipt.diagnostic,diagnostic);
+ assert.equal(result.canAcknowledge,true);const acknowledged=await f.intake.acknowledge(batch.id,{acknowledged:true,resultKey:result.resultKey});assert.equal(acknowledged.acknowledged,true);assert.equal(acknowledged.items[0].status,'failed');assert.deepEqual(acknowledged.items[0].diagnostic,diagnostic);assert.ok(await fs.stat(f.file));
+});

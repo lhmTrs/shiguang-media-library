@@ -1,3 +1,4 @@
+import {safeProbeDiagnostic} from '../storyboard-video/probe-tool.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
@@ -22,7 +23,7 @@ function folderRequestId(batchId,projectId,parentId,name) {
   return [hash.slice(0,8),hash.slice(8,12),'5'+hash.slice(13,16),'8'+hash.slice(17,20),hash.slice(20,32)].join('-');
 }
 const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copiedBytes||0,status:i.status,
-  error:i.error,code:i.code,videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
+  error:i.error,code:i.code,...(safeProbeDiagnostic(i.diagnostic)?{diagnostic:safeProbeDiagnostic(i.diagnostic)}:{}),videoId:i.videoId,assetId:i.assetId,managedProjectId:i.managedProjectId,
   managedProjectName:i.managedProjectName,destination:i.destination,resolvedFolder:i.resolvedFolder,reveal:i.reveal,nameMode:i.nameMode,plannedFileName:i.plannedFileName,resultFileName:i.resultFileName,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
 
 export class FileIntake {
@@ -355,9 +356,13 @@ export class FileIntake {
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
     try {
-      await this.receipts.read('batches',input.requestId);
+      const saved=await this.receipts.read('batches',input.requestId);
       acceptanceStarted=true;
-      throw error('INTAKE_RESULT_UNKNOWN','原批次回执已存在，请核对原请求后继续');
+      if(saved.libraryId!==this.libraryId)throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');
+      if(saved.args!==args||saved.handoffId!==handoffId)throw error('INTAKE_ALREADY_ACCEPTED','请求编号已用于其他收纳参数，请核对原请求');
+      if(saved.version!==2||!Array.isArray(saved.items)||saved.items.length!==ids.length||saved.items.some((item,i)=>item.id!==ids[i]))throw error('INTAKE_RECEIPT_INVALID','原批次回执内容不完整，请保留核对');
+      const fault=error('INTAKE_RESULT_UNKNOWN','原批次回执已存在，请核对原请求后继续');
+      fault.details={requestId:input.requestId,receipt:{state:'unknown'}};throw fault;
     }catch(e){
       if(e.code!=='ENOENT'){acceptanceStarted=true;throw e;}
     }
@@ -430,6 +435,7 @@ export class FileIntake {
     });
     this.kick();return this.dto(b);
     }catch(e){
+      if(e.receiptCommitState==='not_committed')acceptanceStarted=false;
       if(!acceptanceStarted)Object.assign(e,{accepted:false,requestId:input?.requestId});
       if(resolvedFolders.length)e.resolvedFolders=resolvedFolders;
       throw e;
@@ -538,7 +544,7 @@ export class FileIntake {
             let processed;
             try {processed=await this.process(b,i);} catch(e) {
               if(e.code==='IMPORT_BUSY') {i.status='queued';i.error='等待当前视频导入结束';}
-              else if(i.status!=='unknown'&&i.status!=='source_retained') {i.status='failed';i.error=e.message;i.code=e.code;}
+              else if(i.status!=='unknown'&&i.status!=='source_retained') {i.status='failed';i.error=e.message;i.code=e.code;const diagnostic=safeProbeDiagnostic(e.diagnostic);if(diagnostic)i.diagnostic=diagnostic;else delete i.diagnostic;}
             }
             this.summarize(b);await this.save(b);
             return processed;
@@ -565,7 +571,7 @@ export class FileIntake {
     i.assetId=asset.id;i.status='managed';i.error='已在素材库中；可查看或使用原移动入口，标签与关联保留';return true;
   }
   applyReceipt(i,r) {
-    i.error=r.error||undefined;i.adoptionStamp=r.adoptionStamp;i.candidates=r.candidates;
+    i.error=r.error||undefined;if(r.code)i.code=r.code;const diagnostic=safeProbeDiagnostic(r.diagnostic);if(diagnostic)i.diagnostic=diagnostic;else delete i.diagnostic;i.adoptionStamp=r.adoptionStamp;i.candidates=r.candidates;
     if(r.status==='ready'){i.status='ready';i.resultFileName=r.fileName;i.videoId=r.videoId;i.assetId=r.assetId;i.creativeAssetId=r.creativeAssetId;i.lookId=r.lookId;i.bindingId=r.bindingId;i.copiedBytes=i.bytes;}
     else if(r.status==='duplicate')i.status='duplicate';
     else if(r.status==='failed'){i.status='failed';i.error=r.error;}

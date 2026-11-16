@@ -44,6 +44,13 @@ Mac 若提示没有执行权限，可在此目录运行 `chmod +x ./启动分享
 | macOS Command Line Tools | Mac 可选 | 无法编译废纸篓组件时，删除功能安全禁用 |
 | OpenAI API 额度 | 可选 | 不影响本地整理；ChatGPT Plus 不等于 API 额度 |
 
+视频收纳、分镜视频探测使用 `MEDIA_STORYBOARD_FFPROBE`。可明确设为 ffprobe 可执行文件的绝对路径；显式配置优先，配置失效时不会静默换另一个工具。未配置时先检查当前启动进程继承的 PATH，再检查程序目录 `tools/ffprobe`（Windows 为 `tools/ffprobe.exe`）和平台常见安装位置：Mac 的 `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`，Linux 的 `/usr/local/bin`、`/usr/bin`。不会扫描整个磁盘、安装依赖或修改全局 PATH。桌面双击、便携启动和交互终端可能继承不同环境，不保证读取 shell 配置。
+
+Mac/Linux 可在本次启动前使用 `MEDIA_STORYBOARD_FFPROBE="/绝对路径/ffprobe" npm run portable`；Windows PowerShell 先设置 `$env:MEDIA_STORYBOARD_FFPROBE='C:\工具目录\ffprobe.exe'` 再 `npm run portable`。只在用户正常停止旧实例后重新启动；不要为应用配置强杀旧服务。`npm run doctor` 复用相同定位规则并检查版本，缺工具、权限或资源问题显示不同原因；缺少视频工具只影响依赖它的视频操作，不阻止其他素材库功能启动。本轮未做真实 Windows 实机验证。
+
+文件任务回执在目录持久化确认后才调度。提交已确认但临时文件清理失败不再当成未接收；目录同步等结果未知仍需按原请求编号核对，不自动继续或重放。历史 failed 若符合页面的“已处理”条件可收起，保留原结果；unknown 仍不能标记已处理。不能仅凭相同文件摘要，把早期失败或待核回执改成成功，也不会自动清理旧回执或临时文件。
+
+
 已安装 Homebrew 的 Mac 可运行 `brew install ffmpeg exiftool`。Debian/Ubuntu 可运行 `sudo apt-get install ffmpeg libimage-exiftool-perl`。Windows 请从 [FFmpeg 官方下载入口](https://ffmpeg.org/download.html) 和 [ExifTool 官网](https://exiftool.org/) 安装并加入 PATH，再重新打开终端。不要执行陌生来源的一键安装脚本。
 
 如果 `npm ci` 报原生模块编译错误，先确认 Node 是 22，且没有复制其他电脑的 `node_modules`；再按错误安装本机编译工具（Mac Command Line Tools、Linux 的 Python3/make/g++、Windows 的 Python/Visual C++ 构建工具）。使用 `node scripts/setup.mjs --reinstall` 重装依赖。
