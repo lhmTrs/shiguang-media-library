@@ -23,7 +23,12 @@ function ago(v: number, now: number) {
 }
 type Tab = 'active' | 'attention' | 'done';
 type Mode = 'recent' | 'history';
-const NOTIFY: Record<string, string> = {sent: '已发送', failed: '发送失败（不影响视频结果）', pending: '待发送'};
+// 通知状态和视频结果互不影响；disabled / none 表示这项任务没有设通知，不显示。
+const NOTIFY: Record<string, string> = {
+  unprepared: '还没准备', prepared: '待发送', pending: '待发送', sending: '发送中', queued: '已排队', sent: '已发送', delivered: '已送达', answered: '已回复',
+  send_uncertain: '发送结果不确定', failed: '发送失败（不影响视频结果）',
+};
+const NO_NOTIFY = new Set(['disabled', 'none']);
 const IDENTITY: Record<string, [string, string] | undefined> = {
   unconfirmed: ['目标未核准', '首次交付前，素材库里的目标还没固定；这里只按登记时的信息显示'],
   other_library: ['不在当前素材库', '这项任务登记的目标属于另一个素材库，不能在这里打开'],
@@ -80,7 +85,10 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   return {recent, history, error, historyError, loadingMore, refresh, loadHistory, applyRead};
 }
 
-const targetText = (t: UpdreamTask) => [t.target.projectName ?? t.target.projectId, t.target.folderLabel].filter(Boolean).join(' / ') || '目标未记录';
+/** 没有项目名时不把整串编号铺出来：显示「项目 + 前 8 位」，完整编号放在悬停提示和复制内容里。 */
+const projectText = (t: UpdreamTask) => t.target.projectName ?? (t.target.projectId ? `项目 ${t.target.projectId.slice(0, 8)}` : null);
+const targetText = (t: UpdreamTask) => [projectText(t), t.target.folderLabel].filter(Boolean).join(' / ') || '目标未记录';
+const targetFull = (t: UpdreamTask) => [t.target.projectName ? `${t.target.projectName}（${t.target.projectId ?? '无编号'}）` : t.target.projectId, t.target.folderLabel].filter(Boolean).join(' / ') || '目标未记录';
 function stateLabel(t: UpdreamTask, stale: boolean) {
   if (t.status === 'done') return '已入库';
   if (t.status === 'failed') return '失败';
@@ -94,7 +102,7 @@ function copyText(t: UpdreamTask) {
   const lines = [
     `Updream 任务 ${t.taskId}`,
     `名称：${t.name}`,
-    `目标：${targetText(t)}${identity ? `（${identity}）` : ''}`,
+    `目标：${targetFull(t)}${identity ? `（${identity}）` : ''}`,
     `当前状态：${stateLabel(t, false)}`,
   ];
   if (t.lastCompleted) lines.push(`最后已完成步骤：${STAGE_LABEL[t.lastCompleted]}`);
@@ -131,7 +139,7 @@ function Steps({t}: {t: UpdreamTask}) {
 function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number; stale: boolean; onView: UpdreamView; observe: (el: HTMLElement | null) => void}) {
   const kind = t.status === 'running' ? (t.attention ? 'error' : 'active') : t.status === 'done' ? (t.attention ? 'error' : 'done') : t.status === 'failed' ? 'error' : t.status === 'cancelled' ? 'cancelled' : 'unknown';
   const identity = IDENTITY[t.target.identity];
-  const notify = t.notification === 'none' ? null : NOTIFY[t.notification] ?? '状态待核对';
+  const notify = NO_NOTIFY.has(t.notification) ? null : NOTIFY[t.notification] ?? '状态待核对';
   const canView = !!t.delivery?.canView && t.status === 'done';
   return <article ref={t.unread ? observe : undefined} data-task-id={t.taskId} data-version={t.version} className={`ud-card is-${kind}${t.unread ? ' is-unread' : ''}${stale && t.active ? ' is-stale' : ''}`}>
     <div className="ud-card-main">
@@ -139,7 +147,7 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
         <strong title={t.name}>{t.unread && <span className="ud-new" role="img" aria-label="未读"/>}<span className="ud-name">{t.name}</span></strong>
         <span className="ud-state">{(kind === 'error' || kind === 'unknown') && <CircleAlert size={13} aria-hidden="true"/>}{stateLabel(t, stale && t.active)}</span>
       </div>
-      <div className="ud-target"><FolderOpen size={13} aria-hidden="true"/><span>{targetText(t)}</span>{identity && <em className="ud-unverified" title={identity[1]}>{identity[0]}</em>}</div>
+      <div className="ud-target"><FolderOpen size={13} aria-hidden="true"/><span title={targetFull(t)}>{targetText(t)}</span>{identity && <em className="ud-unverified" title={identity[1]}>{identity[0]}</em>}</div>
       <Steps t={t}/>
       {t.status === 'running' && <p className="ud-detail">{STAGE_LABEL[t.stage]}中{t.progress !== null ? ` · ${Math.round(t.progress)}%` : '（没有可靠的百分比）'}</p>}
       {t.status === 'done' && <p className="ud-detail">已入库 · 原执行方回读核对通过</p>}
@@ -150,7 +158,7 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
       {t.lastCompleted && t.status !== 'done' && <p className="ud-meta">最后已完成：{STAGE_LABEL[t.lastCompleted]}</p>}
       {t.stale && t.active && <p className="ud-meta ud-stale-line"><CircleAlert size={12} aria-hidden="true"/>本机记录{t.stale.since ? `自 ${ago(t.stale.since, now)}起` : '已有一段时间'}没有变化（不代表平台失败）</p>}
       <p className="ud-meta"><History size={12} aria-hidden="true"/>{t.upstreamUpdatedAt ? `上游最近成功更新 ${ago(t.upstreamUpdatedAt, now)}（${clock(t.upstreamUpdatedAt)}）` : '上游最近成功更新时间未知'}{t.localRecordUpdatedAt ? ` · 本机记录更新于 ${ago(t.localRecordUpdatedAt, now)}` : ''}</p>
-      {notify && <p className={'ud-notify' + (t.notification === 'failed' ? ' is-bad' : '')}>通知：{notify}</p>}
+      {notify && <p className={'ud-notify' + (t.notification === 'failed' || t.notification === 'send_uncertain' ? ' is-bad' : '')}>通知：{notify}</p>}
     </div>
     <footer>
       <button type="button" onClick={() => void copy(t)}><Copy size={13} aria-hidden="true"/>复制任务信息</button>

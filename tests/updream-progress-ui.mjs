@@ -119,7 +119,7 @@ try {
   await check('U5 复制任务信息：只含白名单字段，没有链接、提示词或凭据', async () => {
     await card('D段 第2版').getByRole('button', { name: '复制任务信息' }).click();
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    assert.match(text, /Updream 任务 ud-1038/); assert.match(text, /目标：示例项目 \/ 第3集 \/ D段/); assert.match(text, /当前状态：失败/); assert.match(text, /DOWNLOAD_EXPIRED/);
+    assert.match(text, /Updream 任务 ud-1038/); assert.match(text, /目标：示例项目（p-demo） \/ 第3集 \/ D段/); assert.match(text, /当前状态：失败/); assert.match(text, /DOWNLOAD_EXPIRED/);
     assert.doesNotMatch(text, /https?:|token|cookie|prompt|提示词|recordUrl|\/api\//i);
   });
 
