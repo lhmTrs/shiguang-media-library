@@ -21,6 +21,7 @@ function ago(v: number, now: number) {
   const d = new Date(v), today = new Date(now);
   return d.toDateString() === today.toDateString() ? `今天 ${d.toLocaleTimeString('zh-CN', {hour12: false, hour: '2-digit', minute: '2-digit'})}` : d.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
 }
+const ackKey = (id: string, version: string) => id + '@' + version;
 type Tab = 'active' | 'attention' | 'done';
 type Mode = 'recent' | 'history';
 // 通知状态和视频结果互不影响；disabled / none 表示这项任务没有设通知，不显示。
@@ -38,15 +39,16 @@ const IDENTITY: Record<string, [string, string] | undefined> = {
 /** 读取本机状态。迟到的响应（比后来发出的请求晚回来）直接丢掉；读不到时保留最后已知状态。 */
 function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   const [recent, setRecent] = useState<(UpdreamTaskList & {complete: boolean}) | null>(null), [history, setHistory] = useState<UpdreamTaskList | null>(null);
-  // 已确认记为已读的版本（id → eventVersion）。比这次确认更早发出的读取晚到时，同一版本不再显示未读；新版本照常提醒。
-  const acked = useRef(new Map<string, string>());
-  const settle = useCallback(<L extends UpdreamTaskList>(list: L): L => {
+  // 已读保护：记下每个「id@eventVersion」被服务端确认已读时的发号。所有列表共用一个发号器；
+  // 任何读取请求只要发号早于这次确认，它带回来的同一版本一律按已读处理，不管另一个列表是否已经拿到了更新的结果。
+  // 确认之后发出的请求以服务端为准；新 eventVersion 的键不同，照常提醒。条目很少（只有看过的任务），不需要清理。
+  const issued = useRef(0), acked = useRef(new Map<string, number>());
+  const settle = useCallback(<L extends UpdreamTaskList>(list: L, at: number): L => {
     let cleared = 0;
     const tasks = list.tasks.map(t => {
-      const v = acked.current.get(t.taskId);
-      if (v === undefined) return t;
-      if (v !== t.version) { if (!t.unread) return t; acked.current.delete(t.taskId); return t; }
-      if (!t.unread) { acked.current.delete(t.taskId); return t; }
+      if (!t.unread) return t;
+      const ackAt = acked.current.get(ackKey(t.taskId, t.version));
+      if (ackAt === undefined || at > ackAt) return t;
       cleared++; return {...t, unread: false};
     });
     return cleared ? {...list, tasks, summary: {...list.summary, unread: Math.max(0, list.summary.unread - cleared)}} : list;
@@ -54,22 +56,22 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   const [error, setError] = useState(''), [historyError, setHistoryError] = useState(''), [loadingMore, setLoadingMore] = useState(false);
   const seq = useRef(0), applied = useRef(0), historySeq = useRef(0);
   const refresh = useCallback(async () => {
-    const id = ++seq.current;
+    const id = ++seq.current, at = ++issued.current;
     try {
       const data = await readAllUpdreamTasks(request);
       if (id < applied.current) return;
-      applied.current = id; setRecent(settle(data)); setError('');
+      applied.current = id; setRecent(settle(data, at)); setError('');
     } catch (e) {
       if (id < applied.current) return;
       applied.current = id; setError((e as Error).message || '读取失败');
     }
   }, [request, settle]);
   const loadHistory = useCallback(async (offset = 0) => {
-    const id = ++historySeq.current; if (offset) setLoadingMore(true);
+    const id = ++historySeq.current, at = ++issued.current; if (offset) setLoadingMore(true);
     try {
       const data = await readUpdreamTasks(request, 'history', offset);
       if (id !== historySeq.current) return;
-      const fresh = settle(data);
+      const fresh = settle(data, at);
       setHistory(old => offset && old ? {...fresh, offset: 0, tasks: [...old.tasks, ...fresh.tasks.filter(t => !old.tasks.some(o => o.taskId === t.taskId))]} : fresh); setHistoryError('');
     } catch (e) { if (id === historySeq.current) setHistoryError((e as Error).message || '读取失败'); }
     finally { if (id === historySeq.current) setLoadingMore(false); }
@@ -88,7 +90,8 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   }, [refresh, loadHistory, open, mode]);
   /** 服务端确认已记的才在本地清掉；版本对不上的（后台已有新版本）保持未读。 */
   const applyRead = useCallback((done: {taskId: string; version: string}[]) => {
-    for (const d of done) acked.current.set(d.taskId, d.version);
+    const at = ++issued.current;   // 确认到达时的发号：在此之前发出的读取都可能是确认前的旧状态
+    for (const d of done) acked.current.set(ackKey(d.taskId, d.version), at);
     const clear = (list: UpdreamTaskList | null) => {
       if (!list) return list;
       let cleared = 0;

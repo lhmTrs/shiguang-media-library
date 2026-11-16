@@ -54,7 +54,7 @@ try {
   page.on('request', r => { const u = new URL(r.url()); if (u.origin !== origin && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) foreign.push(r.url()); });
   await context.route(u => new URL(u).pathname === '/api/updream-progress', async route => {
     gets.push(Date.now());
-    const delay = delays.shift() ?? 0; const q = new URL(route.request().url()).searchParams; const body = structuredClone(listBody(q.get('scope'), +(q.get('offset') || 0), +(q.get('limit') || 50))); if (delay) await new Promise(r => setTimeout(r, delay));
+    const q = new URL(route.request().url()).searchParams; const delay = (Array.isArray(delays) ? delays.shift() : delays[q.get('scope')]?.shift()) ?? 0; const body = structuredClone(listBody(q.get('scope'), +(q.get('offset') || 0), +(q.get('limit') || 50))); if (delay) await new Promise(r => setTimeout(r, delay));
     if (fail) return route.fulfill({ status: 503, json: { error: '本机服务暂时不可用', code: 'UNAVAILABLE' } });
     return route.fulfill({ json: body });
   });
@@ -238,6 +238,25 @@ try {
     await page.keyboard.press('Escape');
     await expect(codex).toBeHidden(); await expect(drawer()).toBeVisible();
     await drawer().getByRole('button', { name: '关闭 Updream 视频任务' }).click(); await expect(drawer()).toHaveCount(0);
+  });
+
+  await check('U17 跨列表的已读竞态：确认前发出的「最近」读取晚到，即使「全部记录」已经拿到新结果，也不恢复未读和顶栏提示', async () => {
+    tasks = [structuredClone(T.gen), structuredClone(T.failed)]; reads = []; delays = []; await load();
+    await entry().click(); await expect(card('C段 第2版')).toBeVisible();
+    delays = { all: [2200] }; await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));   // 确认前发出的「最近」读取，晚到
+    await page.waitForTimeout(150);
+    await drawer().getByRole('button', { name: /^待处理/ }).click();
+    await expect.poll(() => reads.some(r => r.id === 'ud-1038'), { timeout: 4000 }).toBe(true);
+    delays = { all: [4500, 4500] };                                   // 之后新的「最近」读取都很慢，旧的先到
+    await drawer().getByRole('button', { name: '查看全部记录' }).click();
+    await expect(drawer()).toContainText('Updream 任务记录'); await expect(card('D段 第2版')).toBeVisible();
+    let chip = 0, dots = 0; const end = Date.now() + 3000;
+    while (Date.now() < end) { chip += await entry().locator('.ud-chip-att').count(); dots += await drawer().locator('.ud-new').count(); await page.waitForTimeout(40); }
+    assert.equal(chip, 0, '顶栏「待处理」提示被确认前的旧读取恢复了'); assert.equal(dots, 0, '未读点被恢复了');
+    assert.equal(reads.filter(r => r.id === 'ud-1038').length, 1, '同一版本被重复记已读');
+    delays = []; await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);   // 关掉面板，免得新版本一出现就被看到
+    const f = tasks.find(t => t.id === 'ud-1038'); f.eventVersion = '6'.repeat(64); f.unread = true;
+    await expect(entry()).toContainText('1 待处理', { timeout: 20000 });   // 新版本照常提醒
   });
 
   assert.deepEqual(errors, []);
