@@ -150,9 +150,9 @@ try{
    await expect(connection).toHaveText('连接失败');await expect(panel.getByLabel('Codex 输出偏好')).toHaveValue('mixed');
    await expect(preview).toContainText('新模板本轮完整内容');
    const text=await preview.textContent(),before=await generationCount();
-   await generate.click();
+   /* 连接失败时生成按钮灰掉并写原因，点不了；断开原因仍显示在按钮旁 */
+   await expect(generate).toBeDisabled();await expect(generate).toHaveAttribute('title','Codex 尚未连接，请点上方「重新连接」。');await generate.dispatchEvent('click');
    await expect(panel.locator('.codex-generation-feedback')).toContainText('Codex 连接已断开，请点击重新连接');
-   await expect(generate).toBeEnabled();
    assert.deepEqual(writes,[]);assert.equal(await generationCount(),before);await expect(preview).toHaveText(text);
 
    const connectPath='/api/prompt-codex/connect';

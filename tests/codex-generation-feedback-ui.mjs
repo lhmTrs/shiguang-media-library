@@ -22,13 +22,13 @@ async function open(){
  const context=await browser.newContext({viewport:{width:1440,height:1000}});contexts.push(context);
  await context.addInitScript(id=>{localStorage.setItem('shiguang.refreshSeconds','0');localStorage.setItem('shiguang.activeProject',id)},project.id);
  await serveCandidate(context,external);
- page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/prompt-templates');await codexTab();await expect(button()).toBeEnabled();
+ page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin+'/#/prompt-templates');await codexTab();
  if(baseline)await chat().locator('.codex-connect-button').click();
  else{
   await expect(connection()).toHaveText(/^\s*(尚未连接|已连接)\s*$/);
   if((await connection().textContent()).trim()==='尚未连接')await reconnect().click();
  }
- await expect(connection()).toHaveText('已连接');return context;
+ await expect(connection()).toHaveText('已连接');await expect(button()).toBeEnabled();/* 连接就绪后生成按钮才可点 */return context;
 }
 async function check(name,fn){await fn();checks.push(name);console.log('PASS '+name)}
 async function snapshot(name){await button().scrollIntoViewIfNeeded();await page.screenshot({path:path.join(evidence,name+'.png')})}
@@ -79,7 +79,8 @@ try{
   await context.route('**/api/prompt-codex/status',route=>{
    statusReads++;return route.fulfill({status:503,json:{error:'合成本机 Codex 不可用'}});
   });
-  await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');await expect(button()).toBeEnabled();
+  await button().click();await expect(feedback()).toContainText('合成本机 Codex 不可用');await expect(feedback()).toContainText('尚未发送生成请求');
+  /* 读不到连接状态后，生成按钮灰掉并在上方写明原因 */await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action > p')).toHaveText('读不到 Codex 连接状态，请点上方「检查连接状态」。');
   await expect(connection()).toHaveText('连接失败');assert.equal(statusReads,1);assert.deepEqual(writes,[]);
   // 顶栏统一后不能再把项目清空：让项目列表真的为空（宿主没有当前项目），再看发送保护
   await context.route(u=>['/api/projects','/api/project-series'].includes(new URL(u).pathname),r=>r.request().method()==='GET'?r.fulfill({json:[]}):r.continue());await page.reload();await codexTab();await expect(page.locator('.ppb')).not.toHaveAttribute('data-project',/./);await expect(button()).toBeDisabled();await expect(chat().locator('.codex-generate-action')).toContainText('请先在顶部选择项目');await context.close();
@@ -98,7 +99,7 @@ try{
    if(new URL(r.url()).pathname==='/api/prompt-codex/connect')connects++;
   });
   await expect(send()).toBeDisabled();
-  await input.press('Control+Enter');await expect(inline).toContainText('尚未连接，请点击“重新连接”');
+  await input.press('Control+Enter');await expect(inline).toContainText('Codex 尚未连接，请点上方「重新连接」。');/* 追问与生成按钮用同一套连接原因文案 */
   await expect(input).toHaveValue(followup);assert.equal(submits,0);assert.equal(connects,0);
   await context.route(connectRoute,route=>route.fulfill({status:503,json:{error:'合成重连失败，请检查本机服务'}}));
   await inline.getByRole('button',{name:'重新连接',exact:true}).click();await expect(inline).toContainText('合成重连失败');
