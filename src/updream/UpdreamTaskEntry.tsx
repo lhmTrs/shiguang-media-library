@@ -5,7 +5,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {Check, CircleAlert, Clapperboard, Copy, FolderOpen, History, X} from 'lucide-react';
 import {notifyFeedback} from '../global-feedback';
-import {markUpdreamRead, readUpdreamTasks, UPDREAM_OPEN_EVENT} from './api';
+import {markUpdreamRead, readAllUpdreamTasks, readUpdreamTasks, UPDREAM_OPEN_EVENT} from './api';
 import {isFinished, needsAttention, STAGE_LABEL, UPDREAM_STAGES, type UpdreamRequest, type UpdreamStage, type UpdreamTask, type UpdreamTaskList, type UpdreamView} from './types';
 import '../codex-task-drawer.css';
 import './updream.css';
@@ -37,29 +37,43 @@ const IDENTITY: Record<string, [string, string] | undefined> = {
 
 /** 读取本机状态。迟到的响应（比后来发出的请求晚回来）直接丢掉；读不到时保留最后已知状态。 */
 function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
-  const [recent, setRecent] = useState<UpdreamTaskList | null>(null), [history, setHistory] = useState<UpdreamTaskList | null>(null);
+  const [recent, setRecent] = useState<(UpdreamTaskList & {complete: boolean}) | null>(null), [history, setHistory] = useState<UpdreamTaskList | null>(null);
+  // 已确认记为已读的版本（id → eventVersion）。比这次确认更早发出的读取晚到时，同一版本不再显示未读；新版本照常提醒。
+  const acked = useRef(new Map<string, string>());
+  const settle = useCallback(<L extends UpdreamTaskList>(list: L): L => {
+    let cleared = 0;
+    const tasks = list.tasks.map(t => {
+      const v = acked.current.get(t.taskId);
+      if (v === undefined) return t;
+      if (v !== t.version) { if (!t.unread) return t; acked.current.delete(t.taskId); return t; }
+      if (!t.unread) { acked.current.delete(t.taskId); return t; }
+      cleared++; return {...t, unread: false};
+    });
+    return cleared ? {...list, tasks, summary: {...list.summary, unread: Math.max(0, list.summary.unread - cleared)}} : list;
+  }, []);
   const [error, setError] = useState(''), [historyError, setHistoryError] = useState(''), [loadingMore, setLoadingMore] = useState(false);
   const seq = useRef(0), applied = useRef(0), historySeq = useRef(0);
   const refresh = useCallback(async () => {
     const id = ++seq.current;
     try {
-      const data = await readUpdreamTasks(request, 'all');
+      const data = await readAllUpdreamTasks(request);
       if (id < applied.current) return;
-      applied.current = id; setRecent(data); setError('');
+      applied.current = id; setRecent(settle(data)); setError('');
     } catch (e) {
       if (id < applied.current) return;
       applied.current = id; setError((e as Error).message || '读取失败');
     }
-  }, [request]);
+  }, [request, settle]);
   const loadHistory = useCallback(async (offset = 0) => {
     const id = ++historySeq.current; if (offset) setLoadingMore(true);
     try {
       const data = await readUpdreamTasks(request, 'history', offset);
       if (id !== historySeq.current) return;
-      setHistory(old => offset && old ? {...data, offset: 0, tasks: [...old.tasks, ...data.tasks.filter(t => !old.tasks.some(o => o.taskId === t.taskId))]} : data); setHistoryError('');
+      const fresh = settle(data);
+      setHistory(old => offset && old ? {...fresh, offset: 0, tasks: [...old.tasks, ...fresh.tasks.filter(t => !old.tasks.some(o => o.taskId === t.taskId))]} : fresh); setHistoryError('');
     } catch (e) { if (id === historySeq.current) setHistoryError((e as Error).message || '读取失败'); }
     finally { if (id === historySeq.current) setLoadingMore(false); }
-  }, [request]);
+  }, [request, settle]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined, stopped = false;
     const tick = async () => {
@@ -74,13 +88,14 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   }, [refresh, loadHistory, open, mode]);
   /** 服务端确认已记的才在本地清掉；版本对不上的（后台已有新版本）保持未读。 */
   const applyRead = useCallback((done: {taskId: string; version: string}[]) => {
+    for (const d of done) acked.current.set(d.taskId, d.version);
     const clear = (list: UpdreamTaskList | null) => {
       if (!list) return list;
       let cleared = 0;
       const tasks = list.tasks.map(t => { if (t.unread && done.some(d => d.taskId === t.taskId && d.version === t.version)) { cleared++; return {...t, unread: false}; } return t; });
       return {...list, tasks, summary: {...list.summary, unread: Math.max(0, list.summary.unread - cleared)}};
     };
-    setRecent(clear); setHistory(clear);
+    setRecent(old => old && {...clear(old)!, complete: old.complete}); setHistory(clear);
   }, []);
   return {recent, history, error, historyError, loadingMore, refresh, loadHistory, applyRead};
 }
@@ -180,10 +195,21 @@ export function UpdreamTaskEntry({request, onView}: {request: UpdreamRequest; on
   useEffect(() => { if (open) { close.current?.focus(); if (mode === 'history') void loadHistory(); } }, [open, mode, loadHistory]);
   useEffect(() => {
     if (!open) return;
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('dialog[open]')) { e.preventDefault(); hide(); } };
+    // Escape 归属：焦点在 Updream 面板或入口上时由它先处理并截住，背后的其他抽屉（如 Codex 自由管家）不受影响；
+    // 焦点在别的面板里时不抢；焦点不在任何控件上时，才按普通顺序处理。
+    const owns = () => { const a = document.activeElement, panel = document.getElementById('updream-task-drawer'); return !!a && (panel?.contains(a) || a === entry.current); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]') || !owns()) return;
+      e.preventDefault(); e.stopPropagation(); hide();
+    };
+    const idle = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+      const a = document.activeElement; if (a && a !== document.body) return;
+      e.preventDefault(); hide();
+    };
     const t = setInterval(() => setNow(Date.now()), 1000);
-    document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); clearInterval(t); };
+    document.addEventListener('keydown', key, true); document.addEventListener('keydown', idle);
+    return () => { document.removeEventListener('keydown', key, true); document.removeEventListener('keydown', idle); clearInterval(t); };
   }, [open, hide]);
 
   // 已读：卡片真的进入面板可见区域后才记；按 id+eventVersion，后台有新版本会重新提醒。
@@ -204,6 +230,8 @@ export function UpdreamTaskEntry({request, onView}: {request: UpdreamRequest; on
       }
       clearTimeout(flushTimer.current); flushTimer.current = setTimeout(flush, 800);
     }, {threshold: [0.6]});
+    // 首批卡片的 ref 回调早于这里执行（那时观察器还没建），补登记已经渲染出来的未读卡片。
+    document.querySelectorAll<HTMLElement>('#updream-task-drawer .ud-card.is-unread').forEach(el => observer.current?.observe(el));
     return () => { observer.current?.disconnect(); observer.current = null; clearTimeout(flushTimer.current); };
   }, [open, flush]);
   const observe = useCallback((el: HTMLElement | null) => { if (el) observer.current?.observe(el); }, []);
@@ -252,6 +280,7 @@ export function UpdreamTaskEntry({request, onView}: {request: UpdreamRequest; on
       {!recent && error && <p className="codex-task-alert" role="alert"><CircleAlert size={15}/><span>没有读到 Updream 任务：{error}</span></p>}
       {recent?.queue.state === 'unavailable' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>本机任务记录暂时读不了{recent.queue.reason ? `（${recent.queue.reason}）` : ''}。不影响素材库其他功能。</span></p>}
       {recent?.queue.state === 'degraded' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>任务记录不完整{recent.queue.invalidCount ? `：有 ${recent.queue.invalidCount} 条读不了，已跳过` : ''}{recent.queue.truncated ? '；记录太多，只读了一部分' : ''}。下面的列表可能不全。</span></p>}
+      {recent && !recent.complete && mode === 'recent' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>登记的任务太多，最近视图只读了前 {recent.tasks.length} 条（共 {recent.total} 条）；更早的请在「查看全部记录」里看。</span></p>}
       {mode === 'history' && historyError && <p className="codex-task-alert" role="alert"><CircleAlert size={15}/><span>任务记录读取失败：{historyError}</span></p>}
       <div className="codex-task-list">
         {!recent && !error ? <p>正在读取任务…</p>

@@ -39,7 +39,7 @@ const T = {
 };
 const summary = tasks => { const activeCount = tasks.filter(t => t.active).length, unreadCount = tasks.filter(t => t.unread).length; return { activeCount, unreadCount, attentionCount: tasks.filter(t => t.attention || ['failed', 'needs_review'].includes(t.phase)).length, showEntry: activeCount > 0 || unreadCount > 0 || queue.state === 'degraded' || queue.state === 'unavailable' }; };
 let tasks = [], queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 }, fail = false, delays = [], reads = [], gets = [], foreign = [];
-const listBody = scope => { const list = scope === 'history' ? tasks.filter(t => !t.active) : tasks; return { schemaVersion: 1, readAt: Date.now(), queue, preferences: { state: 'ready' }, summary: summary(tasks), total: list.length, offset: 0, limit: 50, tasks: list }; };
+const listBody = (scope, offset = 0, limit = 50) => { const list = scope === 'history' ? tasks.filter(t => !t.active) : scope === 'active' ? tasks.filter(t => t.active) : tasks; return { schemaVersion: 1, readAt: Date.now(), queue, preferences: { state: 'ready' }, summary: summary(tasks), total: list.length, offset, limit, tasks: list.slice(offset, offset + limit) }; };
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -54,7 +54,7 @@ try {
   page.on('request', r => { const u = new URL(r.url()); if (u.origin !== origin && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) foreign.push(r.url()); });
   await context.route(u => new URL(u).pathname === '/api/updream-progress', async route => {
     gets.push(Date.now());
-    const delay = delays.shift() ?? 0; const body = listBody(new URL(route.request().url()).searchParams.get('scope')); if (delay) await new Promise(r => setTimeout(r, delay));
+    const delay = delays.shift() ?? 0; const q = new URL(route.request().url()).searchParams; const body = structuredClone(listBody(q.get('scope'), +(q.get('offset') || 0), +(q.get('limit') || 50))); if (delay) await new Promise(r => setTimeout(r, delay));
     if (fail) return route.fulfill({ status: 503, json: { error: '本机服务暂时不可用', code: 'UNAVAILABLE' } });
     return route.fulfill({ json: body });
   });
@@ -185,6 +185,59 @@ try {
       await shot('u12-theme-' + theme); await page.keyboard.press('Escape');
     }
     await page.evaluate(() => localStorage.setItem('shiguang.theme', 'forest'));
+  });
+
+  await check('U13 首次打开只有一个未读的已入库结果：卡片一出现就记已读（首批卡片不漏登记）', async () => {
+    tasks = [structuredClone(T.done)]; reads = []; await load();
+    await expect(entry()).toContainText('1 新'); await entry().click();
+    await expect(drawer().getByRole('button', { name: /^已完成/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => reads.map(r => r.id).join(','), { timeout: 4000 }).toBe('ud-1039');
+    await expect(card('晨光天台 · A段').locator('.ud-new')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+  });
+
+  await check('U14 50 条较新的已结束 + 1 条较早的进行中：进行中能看到，计数和顶栏一致；没显示的不记已读', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({ ...structuredClone(T.old), id: 'ud-old-' + i, name: '已结束 ' + i, unread: i === 49 }));
+    tasks = [...many, { ...structuredClone(T.verify), id: 'ud-early-active', name: '较早的进行中任务' }]; reads = []; await load();
+    await expect(entry()).toContainText('Updream · 进行中 1'); await entry().click();
+    await expect(drawer().getByRole('button', { name: '进行中 1' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(card('较早的进行中任务')).toBeVisible();
+    await page.waitForTimeout(1500); assert.equal(reads.length, 0, '进行中这一栏没有未读，不该记已读');
+    await page.keyboard.press('Escape');
+  });
+
+  await check('U15 已读确认之后才到的旧读取：同一版本不再显示未读；新版本照样提醒', async () => {
+    tasks = [structuredClone(T.gen), structuredClone(T.failed)]; reads = []; await load();
+    await entry().click(); await expect(card('C段 第2版')).toBeVisible();
+    delays = [2200]; await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));   // 这次读取在已读之前发出、之后才到
+    await page.waitForTimeout(150);
+    await drawer().getByRole('button', { name: /^待处理/ }).click();
+    await expect.poll(() => reads.some(r => r.id === 'ud-1038'), { timeout: 4000 }).toBe(true);
+    await expect(card('D段 第2版').locator('.ud-new')).toHaveCount(0);
+    // 连续取样到旧读取到达之后：未读点一次都不能再冒出来，也不能因此再发一次已读
+    let reappeared = 0; const end = Date.now() + 2600;
+    while (Date.now() < end) { reappeared += await card('D段 第2版').locator('.ud-new').count(); await page.waitForTimeout(40); }
+    assert.equal(reappeared, 0, '已读确认后，迟到的旧读取让未读点又出现了');
+    assert.equal(reads.filter(r => r.id === 'ud-1038').length, 1, '同一版本被重复记已读');
+    await expect(entry()).not.toContainText('待处理');
+    const f = tasks.find(t => t.id === 'ud-1038'); f.eventVersion = '7'.repeat(64); f.unread = true;
+    await drawer().getByRole('button', { name: /^进行中/ }).click();
+    await expect(entry()).toContainText('1 待处理', { timeout: 6000 });
+    await page.keyboard.press('Escape');
+  });
+
+  await check('U16 Escape 归属：先开 Codex 自由管家、再开 Updream，Escape 只关 Updream；反过来只关管家', async () => {
+    tasks = [structuredClone(T.gen)]; await load();
+    const codex = page.getByRole('complementary', { name: 'Codex 自由管家' });
+    await page.locator('.codex-tasks-entry').click(); await expect(codex).toBeVisible();
+    await entry().click(); await expect(drawer().getByRole('button', { name: '关闭 Updream 视频任务' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(drawer()).toHaveCount(0); await expect(codex).toBeVisible();
+    await entry().click(); await expect(drawer()).toBeVisible();
+    await codex.locator('textarea, input, button').first().focus();
+    await page.keyboard.press('Escape');
+    await expect(codex).toBeHidden(); await expect(drawer()).toBeVisible();
+    await drawer().getByRole('button', { name: '关闭 Updream 视频任务' }).click(); await expect(drawer()).toHaveCount(0);
   });
 
   assert.deepEqual(errors, []);

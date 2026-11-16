@@ -43,9 +43,23 @@ export function toList(d: ApiList): UpdreamTaskList {
   };
 }
 
-export async function readUpdreamTasks(request: UpdreamRequest, scope: 'all' | 'history', offset = 0, signal?: AbortSignal) {
-  const query = new URLSearchParams({scope, offset: String(offset), limit: '50'});
+export async function readUpdreamTasks(request: UpdreamRequest, scope: 'all' | 'history', offset = 0, signal?: AbortSignal, limit = 50) {
+  const query = new URLSearchParams({scope, offset: String(offset), limit: String(limit)});
   return toList(await request<ApiList>(`${UPDREAM_API}?${query}`, undefined, 'GET', {signal}));
+}
+
+/** 最近视图要把全部本机登记任务读全（后端最多枚举 200 条），否则较早的进行中任务会落在第二页、分类和计数对不上。
+ *  有界：每页 100 条，最多 MAX_PAGES 页；超过时 complete=false，页面会说明列表不全。 */
+const MAX_PAGES = 4;
+export async function readAllUpdreamTasks(request: UpdreamRequest): Promise<UpdreamTaskList & {complete: boolean}> {
+  const first = await readUpdreamTasks(request, 'all', 0, undefined, 100);
+  let tasks = first.tasks, pages = 1;
+  while (tasks.length < first.total && pages < MAX_PAGES) {
+    const next = await readUpdreamTasks(request, 'all', tasks.length, undefined, 100);
+    if (!next.tasks.length) break;
+    tasks = [...tasks, ...next.tasks.filter(t => !tasks.some(o => o.taskId === t.taskId))]; pages++;
+  }
+  return {...first, tasks, complete: tasks.length >= first.total};
 }
 
 /** 只记本机展示偏好；version 是 eventVersion 原值，后台已经有新版本时服务端会跳过，下次照样提醒。 */
