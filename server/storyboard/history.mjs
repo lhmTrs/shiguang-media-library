@@ -24,7 +24,7 @@ export class StoryboardHistory{
   }
   this.schemaState='ready';this.checkedDb=this.db;return true;
  }
- require(){if(!this.ready())throw fail(this.schemaState==='unsupported'?'STORYBOARD_HISTORY_SCHEMA_UNSUPPORTED':'STORYBOARD_HISTORY_MIGRATION_REQUIRED','分镜历史需要先核准表结构并显式迁移',503);}
+ require({fresh=false}={}){if(fresh)this.checkedDb=null;if(!this.ready())throw fail(this.schemaState==='unsupported'?'STORYBOARD_HISTORY_SCHEMA_UNSUPPORTED':'STORYBOARD_HISTORY_MIGRATION_REQUIRED','分镜历史需要先核准表结构并显式迁移',503);}
  install(){const result=installHistory(this.db);this.checkedDb=null;return result;}
  init(fresh=false){if(fresh&&!this.ready()&&this.schemaState==='absent'&&!this.db.prepare('SELECT id FROM storyboard_documents LIMIT 1').get())this.install();return this;}
  row(documentId,version){this.require();if(!integer(version))throw fail('INVALID_VERSION','版本号无效');return this.db.prepare('SELECT * FROM storyboard_versions WHERE document_id=? AND version=?').get(documentId,version);}

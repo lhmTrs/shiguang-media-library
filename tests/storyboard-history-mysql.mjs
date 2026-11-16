@@ -11,6 +11,9 @@ import {randomUUID,createHash} from 'node:crypto';
 import mysql from 'mysql2/promise';
 import {Library} from '../server/library.mjs';
 import {MysqlStorage} from '../server/mysql.mjs';
+import {MysqlDatabase} from '../server/mysql-db.mjs';
+import {installHistory} from '../server/storyboard/history-schema.mjs';
+import {digest} from '../server/project-assets/model.mjs';
 import {Projects} from '../server/projects.mjs';
 import {ProjectAssets} from '../server/project-assets/store.mjs';
 import {StoryboardDatabase} from '../server/storyboard/database.mjs';
@@ -19,7 +22,7 @@ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'storyboard-
 const data=path.join(root,'mysql');await fs.mkdir(data,{mode:0o700});
 const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
 const config={host:'127.0.0.1',port,user:'root',password:'',database:'storyboard_history_test'};
-const checks=[];let server,control,lib,logs='',passed=false,version,workerExit=false;const peers=[];
+const checks=[];let server,control,lib,logs='',passed=false,version,workerExit=false;const peers=[],otherDBs=[];
 async function bounded(p,ms,label){let timer;try{return await Promise.race([p,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error(label)),ms))]);}finally{clearTimeout(timer);}}
 const capture=child=>{child.stdout.on('data',v=>{logs+=v;});child.stderr.on('data',v=>{logs+=v;});};
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -39,6 +42,16 @@ try{
   for(const table of ['storyboard_versions','storyboard_changes','storyboard_pending']){const before=board.backup().checksum;lib.db.exec(`CREATE TRIGGER fail_history BEFORE INSERT ON ${table} FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='owned history rollback'`);assert.throws(()=>save(),/owned history rollback/);assert.equal(board.backup().checksum,before);lib.db.exec('DROP TRIGGER fail_history');}
  });
  await check('MySQL pending clear respects seen revision and restore remains monotonic',async()=>{board.history.clear(p.id,{all:true,through_version:1});const v2=save(),v3=save();board.history.clear(p.id,{all:true,through_version:v2.revision});assert.ok(board.history.pending(p.id).items.every(i=>i.versions.every(v=>v>v2.revision)));const pendingBeforeRestore=lib.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all();const restored=board.restoreVersion(p.id,1,{expected_revision:v3.revision,request_id:randomUUID()});assert.equal(restored.revision,v3.revision+1);assert.equal(board.history.version(p.id,restored.revision).restored_from,1);assert.deepEqual(lib.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all(),pendingBeforeRestore);});
+ await check('B1 old/history backups require migrated and known schema before any native restore write',async()=>{
+  await control.query('CREATE DATABASE storyboard_history_guard CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');const db=new MysqlDatabase({...config,database:'storyboard_history_guard'});otherDBs.push(db);const owner={db,dataDir:path.join(root,'guard')};new Projects(owner).init();const as=new ProjectAssets(owner).init(),target=new StoryboardDatabase(owner,as).init();const full=board.backup(),legacy=structuredClone(full);delete legacy.change_history;legacy.checksum=digest({tables:legacy.tables,creative:legacy.creative});
+  for(const table of ['storyboard_pending','storyboard_changes','storyboard_versions'])db.exec('DROP TABLE '+table);
+  for(const backup of [legacy,full]){await assert.rejects(target.restore(backup),e=>e.status===503&&e.code==='STORYBOARD_HISTORY_MIGRATION_REQUIRED');assert.equal(db.prepare('SELECT COUNT(*) n FROM storyboard_documents').get().n,0);}
+  installHistory(db);db.exec('ALTER TABLE storyboard_pending ADD COLUMN unknown_future_field TEXT');
+  for(const backup of [legacy,full]){await assert.rejects(target.restore(backup),e=>e.status===503&&e.code==='STORYBOARD_HISTORY_SCHEMA_UNSUPPORTED');assert.equal(db.prepare('SELECT COUNT(*) n FROM storyboard_documents').get().n,0);}
+ });
+ await check('B2 native action-only after restore preserves stored characters and has no false document pending',async()=>{
+  const before=JSON.parse(board.head(p.id).document_json).characters,changed=save('action-only after restore');assert.equal(changed.pending_document_count,0);assert.deepEqual(JSON.parse(board.head(p.id).document_json).characters,before);assert.ok(!board.history.changes(p.id,1).items[0].changes.some(c=>c.field==='characters'));
+ });
  await check('two real concurrent MySQL connections with one expected revision only commit once',async()=>{
   const current=board.read(p.id),source=`const {parentPort,workerData}=require('node:worker_threads');(async()=>{const [{MysqlDatabase},{Projects},{ProjectAssets},{StoryboardDatabase}]=await Promise.all(workerData.modules.map(x=>import(x)));const db=new MysqlDatabase(workerData.config),lib={db,dataDir:workerData.dataDir};new Projects(lib).init();const assets=new ProjectAssets(lib).init(),board=new StoryboardDatabase(lib,assets).init();parentPort.postMessage({ready:true});parentPort.once('message',async()=>{let result;try{const p=workerData.project;p.scenes[0].shots[0].action=workerData.label;const saved=board.save(workerData.projectId,{project:p,expected_revision:workerData.revision,request_id:workerData.requestId});result={ok:true,version:saved.version};}catch(e){result={ok:false,status:e.status,code:e.code,message:e.message};}const exited=new Promise(r=>db.worker.once('exit',r));db.close();await exited;parentPort.postMessage(result);parentPort.close();});})();`;
   const modules=['../server/mysql-db.mjs','../server/projects.mjs','../server/project-assets/store.mjs','../server/storyboard/database.mjs'].map(x=>new URL(x,import.meta.url).href);
@@ -54,6 +67,7 @@ try{
 }finally{
  for(const peer of peers)if(peer.threadId!==-1){await peer.terminate();}
  // Parent-owned test actors only; no server process signals or system instances.
+ for(const db of otherDBs){const exited=once(db.worker,'exit');db.close();await bounded(exited,5000,'guard worker exit unconfirmed');}
  if(lib?.db.kind==='mysql'){const exited=once(lib.db.worker,'exit');lib.db.close();await bounded(exited,5000,'business worker exit unconfirmed');workerExit=true;}else lib?.db.close();
  if(control&&server?.exitCode===null){const exited=once(server,'exit');try{await control.query('SHUTDOWN');}catch(e){if(!['PROTOCOL_CONNECTION_LOST','ECONNRESET'].includes(e.code))throw e;}const [code,signal]=await bounded(exited,15000,'owned server exit unconfirmed');assert.equal(code,0);assert.equal(signal,null);}
  const sourceHashes=Object.fromEntries(await Promise.all(['server/storyboard/database.mjs','server/storyboard/history.mjs','server/storyboard/history-schema.mjs','server/storyboard/shared/change-diff.mjs','server/mysql.mjs','server/storyboard-generation/store.mjs','tests/storyboard-history-mysql.mjs'].map(async file=>[file,createHash('sha256').update(await fs.readFile(file)).digest('hex')])));

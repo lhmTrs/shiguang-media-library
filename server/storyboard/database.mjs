@@ -247,6 +247,10 @@ export class StoryboardDatabase {
       const currentView = restoreVersion===null?this.hydrate(old):{project:previous,asset_stamp:null};
       if(input.asset_stamp!==undefined&&input.asset_stamp!==currentView.asset_stamp)throw fault('资产资料已更新，请重读分镜',409,{code:'PROJECT_ASSETS_CHANGED'});
       if(restoreVersion===null&&canonical(p)===canonical(currentView.project)) return {...currentView,unchanged:true};
+      // GET overlays these fields from asset masters. If the submitted value is
+      // still that exact display value, retain its original stored representation.
+      // Explicit author changes remain in p and in the permanent snapshot/diff.
+      if(restoreVersion===null)this.preserveUneditedAssetDisplayStorage(p,previous,currentView.project);
       const isAlias = id => assetResolution.get(id)?.canonical_asset_id !== id;
       const oldCharacters = byId(previous.characters), oldEntries = byId(previous.asset_manifest.character);
       for (const entry of p.asset_manifest.character) if (isAlias(entry.id)) entry.name = oldEntries.get(entry.id).name;
@@ -258,6 +262,7 @@ export class StoryboardDatabase {
           else delete character[field];
         }
       }
+      if(restoreVersion===null&&canonical(p)===canonical(previous))return {...currentView,unchanged:true};
       p.revision=old.revision+1; const now=Math.max(Date.now(),old.updated_at+1);
       const updated=this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(p.title,canonical(p),p.revision,now,old.id,old.revision);
       if(updated.changes!==1)throw fault('分镜已由其它保存更新，请重读',409,{current_revision:this.head(projectId,true)?.revision??null});
@@ -265,6 +270,23 @@ export class StoryboardDatabase {
       for(const id of ids) if(restoreVersion!==null||!current.has(id)) this.db.prepare('INSERT INTO storyboard_asset_links VALUES(?,?,?,?,?)').run(randomUUID(),old.id,id,now,now);
       this.history.add(old,this.head(projectId),author,{restoredFrom:restoreVersion,requestId:input.request_id??null,requestHash:input.request_id?requestHash:null});
       return {...this.readInTransaction(projectId),saved_version:p.revision,repeated:false,unchanged:false};
+  }
+  preserveUneditedAssetDisplayStorage(project,previous,display) {
+    for(const kind of ['character','scene','prop']){
+      const oldEntries=byId(previous.asset_manifest[kind]),viewEntries=byId(display.asset_manifest[kind]);
+      for(const entry of project.asset_manifest[kind]){
+        const old=oldEntries.get(entry.id),view=viewEntries.get(entry.id);
+        if(old&&view&&entry.name===view.name)entry.name=old.name;
+      }
+    }
+    const stored=byId(previous.characters),visible=byId(display.characters);
+    for(const character of project.characters){
+      const old=stored.get(character.id),view=visible.get(character.id);if(!old||!view)continue;
+      for(const field of ['name','age','role','description','appearance','asset_revision']){
+        if(canonical(character[field]??null)!==canonical(view[field]??null)||Object.hasOwn(character,field)!==Object.hasOwn(view,field))continue;
+        if(Object.hasOwn(old,field))character[field]=structuredClone(old[field]);else delete character[field];
+      }
+    }
   }
   restoreVersion(projectId,version,input) {
     const result=this.tx(()=>{
@@ -335,10 +357,12 @@ export class StoryboardDatabase {
     return {...input,creative};
   }
   async restore(input) {
+    this.history.require({fresh:true});
     input=this.validateBackup(input); const before=this.backup();
     const dir=path.join(this.lib.dataDir,'backups');await fs.mkdir(dir,{recursive:true});await fs.writeFile(path.join(dir,`storyboard-before-restore-${Date.now()}-${randomUUID()}.json`),JSON.stringify(before),{flag:'wx',mode:0o600});
     const restored=this.tx(()=>{
       this.assets.lockRestoreScope();
+      this.history.require({fresh:true});
       if(this.backupInTransaction().checksum!==before.checksum)throw fault('备份期间数据库已变化，请重新恢复',409);
       // Restore only into an empty target or identical records. Never overwrite
       // current storyboards or remove protection through a backup endpoint.
@@ -349,7 +373,7 @@ export class StoryboardDatabase {
         else this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(()=>'?')})`).run(...keys.map(k=>row[k]));
       }
       if(Object.hasOwn(input,'change_history'))this.history.restoreRows(input.change_history);
-      else if(this.history.ready())for(const d of input.tables.storyboard_documents)if(!this.history.row(d.id,d.revision))this.history.add(null,d,changeAuthor(null,'restore','旧备份恢复（原作者未知）'));
+      else for(const d of input.tables.storyboard_documents)if(!this.history.row(d.id,d.revision))this.history.add(null,d,changeAuthor(null,'restore','旧备份恢复（原作者未知）'));
       if(Object.hasOwn(input,'video_preview'))this.videos.restoreRows(input.video_preview);
       for(const d of input.tables.storyboard_documents)this.readInTransaction(d.project_id);
       return {restored:true,documents:input.tables.storyboard_documents.length};
