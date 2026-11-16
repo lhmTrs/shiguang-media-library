@@ -1,4 +1,5 @@
 import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
+import {confirmStoryboardLeave} from './storyboard/leave-guard';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
 import { Users } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -1504,8 +1505,13 @@ function App() {
   useEffect(() => {
     if (audio.current) audio.current.volume = volume;
   }, [volume, playing]);
-  function navigate(v: string, fromHistory = false, fromCodexTask = false) {
+  function navigate(v: string, fromHistory = false, fromCodexTask = false, leaveChecked = false) {
     if (!Object.hasOwn(viewPaths, v)) return;
+    // 分镜页有未保存修改时，先问「保存 / 放弃 / 留着」（STORYBOARD-CHANGE-LOG v1）；选留着就不切换，浏览器后退也退回分镜页。
+    if (!leaveChecked && view === "storyboard" && v !== view) {
+      void confirmStoryboardLeave().then(ok => { if (ok) navigate(v, fromHistory, fromCodexTask, true); else if (fromHistory) history.pushState({ shiguangView: view }, "", viewHash(view)); });
+      return;
+    }
     if(!fromCodexTask)cancelCodexNavigation();
     if (!fromHistory && location.hash !== viewHash(v)) history.pushState({ shiguangView: v }, "", viewHash(v));
     if (v !== view) {

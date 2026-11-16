@@ -6,8 +6,8 @@ export function download(name: string, text: string, type = 'application/json') 
   const link = document.createElement('a'); link.href = url; link.download = name; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-type FieldProps = { label: string; value: unknown; onCommit: (value: string) => void; multiline?: boolean; rows?: number; inline?: boolean; type?: string; testid?: string; placeholder?: string };
-export function Field({ label, value, onCommit, multiline = false, rows = 3, inline = false, type = 'text', testid, placeholder = '待补充' }: FieldProps) {
+type FieldProps = { changed?: boolean; label: string; value: unknown; onCommit: (value: string) => void; multiline?: boolean; rows?: number; inline?: boolean; type?: string; testid?: string; placeholder?: string };
+export function Field({ changed = false, label, value, onCommit, multiline = false, rows = 3, inline = false, type = 'text', testid, placeholder = '待补充' }: FieldProps) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const cancelled = useRef(false);
   useEffect(() => setDraft(String(value ?? '')), [value]);
@@ -25,7 +25,7 @@ export function Field({ label, value, onCommit, multiline = false, rows = 3, inl
   const fit = (open: boolean) => { const el = area.current; if (!el || !inline) return; if (open) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 360) + 'px'; } else { el.style.height = ''; el.dataset.overflow = String(el.scrollHeight > el.clientHeight + 1); } };
   useLayoutEffect(() => { if (document.activeElement === area.current) fit(true); else fit(false); });
   const areaProps = inline ? { ...props, ref: area, onFocus: () => fit(true), onInput: () => fit(true), onBlur: () => { props.onBlur(); fit(false); } } : props;
-  return <label className={'sb-field' + (inline ? ' sb-inline' : '')}>{!inline && <span>{label}</span>}{multiline ? <textarea {...areaProps} rows={rows}/> : <input {...props} type={type}/>}</label>;
+  return <label className={'sb-field' + (inline ? ' sb-inline' : '') + (changed ? ' sb-unsaved' : '')}>{!inline && <span>{label}</span>}{multiline ? <textarea {...areaProps} rows={rows}/> : <input {...props} type={type}/>}</label>;
 }
 export function Modal({ title, children, onClose, wide = false,disabled=false }: { disabled?:boolean;title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   const panel = useRef<HTMLElement>(null), close = useRef(onClose); close.current = onClose;
