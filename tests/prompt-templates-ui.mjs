@@ -75,7 +75,7 @@ try{
   await more('生成记录');await expect(page.locator('.prompt-version-list article')).toHaveCount(1);await page.getByText('查看本次输入与完整模板快照',{exact:true}).click();await expect(page.locator('.prompt-version-list')).toContainText(inputs.主题);await page.getByRole('button',{name:'关闭面板'}).click();
  });
  await check('Delete hides only; deleted list allows complete history and restore',async()=>{
-  await more('删除模板');await expect(app.getByRole('heading',{name:'从一个好用的模板开始'})).toBeVisible();assert.equal((await api('/prompt-templates')).items.length,0);
+  await clearToasts();/* 上一项的成功提示在右上角盖住「更多」，鼠标移上去会暂停计时，先关掉 */await more('删除模板');await expect(app.getByRole('heading',{name:'从一个好用的模板开始'})).toBeVisible();assert.equal((await api('/prompt-templates')).items.length,0);
   await button('已删除').click();await expect(button('恢复模板')).toBeVisible();await expect(app.getByLabel('主题',{exact:true})).toBeDisabled();assert.equal((await api('/prompt-templates/'+templateId+'/records')).total,1);
   await button('恢复模板').click();await button('正常').click();await expect(app.getByRole('heading',{name:/合成情绪模板/})).toBeVisible();assert.equal((await current()).deleted_at,null);
  });
@@ -182,6 +182,70 @@ await check('Round 2: list-style sidebar, compact header with 模板库 menu, fi
   for(const width of [1024,760]){await page.setViewportSize({width,height:900});await page.locator('.prompt-main').evaluate(m=>{m.scrollTop=0;m.scrollLeft=0});
    const problems=await head.locator('.prompt-actions > button, .prompt-actions > .prompt-more > button').evaluateAll((xs,w)=>{const main=document.querySelector('.prompt-main'),out=[];if(main.scrollWidth>main.clientWidth+1)out.push('main overflow');for(const x of xs){const r=x.getBoundingClientRect(),q=main.getBoundingClientRect();if(r.left<q.left-.5||r.right>q.right+.5||r.right>w)out.push('clipped '+(x.getAttribute('aria-label')||x.textContent.trim()))}return out},width);assert.deepEqual(problems,[],'header at '+width);
    await lib.click();const r=await libMenu.boundingBox();assert.ok(r&&r.x>=0&&r.x+r.width<=width,'library menu fits at '+width);await page.keyboard.press('Escape');await page.screenshot({path:path.join(evidence,'prompt-r2-'+width+'.png')});}
+  await page.setViewportSize({width:1440,height:900});
+ });
+await check('Global feedback moves to the top-left while a modal is open, so it never covers the dialog close button',async()=>{
+  await page.setViewportSize({width:1440,height:900});await clearToasts();await app.getByLabel('主题',{exact:true}).fill('提示位置验收');
+  const region=page.locator('[data-global-feedback="true"]').last(),card=page.locator('.global-feedback-card').filter({hasText:'生成记录已保存'});
+  await button('保存记录').click();await expect(card).toBeVisible();await card.hover();/* 悬停暂停自动消失（成功提示只停 4 秒），后面用键盘打开弹窗，避免鼠标移走 */
+  let r=await region.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'no modal: feedback stays top-right '+JSON.stringify(r));
+  await page.screenshot({path:path.join(evidence,'feedback-no-modal.png')});
+  await button('编辑模板').focus();await page.keyboard.press('Enter');const dialog=page.getByRole('dialog',{name:'编辑提示词模板'}),close=dialog.getByRole('button',{name:'关闭面板'});await expect(dialog).toBeVisible();await expect(dialog.locator('.global-feedback-card').filter({hasText:'生成记录已保存'})).toBeVisible();/* 提示随弹窗进入顶层（不被遮罩盖住）后再量位置 */
+  r=await card.boundingBox();const c=await close.boundingBox();assert.ok(r&&r.x<=40,'modal open: feedback moved top-left '+JSON.stringify(r));
+  assert.ok(r.x+r.width<c.x||r.y>c.y+c.height||r.y+r.height<c.y,'feedback does not overlap the close button');
+  const hit=await close.evaluate(el=>{const b=el.getBoundingClientRect(),h=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!h&&el.contains(h)});assert.ok(hit,'close button is the top element at its centre');
+  await page.waitForTimeout(400);/* 进入弹窗时淡入动画会重播，等它结束再截图 */await page.screenshot({path:path.join(evidence,'feedback-modal-left.png')});
+  const clear=async(box,closeBtn,label)=>{const r0=await box.boundingBox(),c0=await closeBtn.boundingBox();assert.ok(r0&&c0,label+': boxes');assert.ok(r0.x+r0.width<c0.x||r0.y>c0.y+c0.height||r0.y+r0.height<c0.y,label+': feedback does not overlap the close button '+JSON.stringify({r0,c0}));assert.ok(await closeBtn.evaluate(el=>{const b=el.getBoundingClientRect(),h=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!h&&el.contains(h)}),label+': close button is the top element');};
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(250);await expect(dialog.locator('.global-feedback-card').first()).toBeVisible();await clear(dialog.locator('.global-feedback-card').first(),close,'native dialog at 390');await page.screenshot({path:path.join(evidence,'feedback-modal-390.png')});await page.setViewportSize({width:1440,height:900});
+  await close.click({timeout:2000});await expect(dialog).toHaveCount(0);
+  if(await card.count()){r=await region.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'after closing the modal feedback returns top-right');}
+  // aria-modal 弹窗（界面设置，不是原生 dialog）：提示留在 body，同样挪到左上角；关闭后回到右上角
+  await clearToasts();await page.evaluate(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{window.__copied.push(t)}}})});
+  const copied=page.locator('.global-feedback-card').filter({hasText:'已复制'});await app.locator('.prompt-preview header').getByRole('button',{name:'复制完整提示词',exact:true}).click();await expect(copied).toBeVisible();await copied.hover();
+  await app.getByRole('button',{name:'提示词界面设置'}).focus();await page.keyboard.press('Enter');const settings=page.getByRole('dialog',{name:'界面设置'}),closeSettings=settings.getByRole('button',{name:'关闭界面设置'});await expect(settings).toBeVisible();await expect(copied).toBeVisible();
+  r=await copied.boundingBox();assert.ok(r&&r.x<=40,'aria-modal open: feedback moved top-left '+JSON.stringify(r));await clear(copied,closeSettings,'aria-modal at 1440');await page.waitForTimeout(250);await page.screenshot({path:path.join(evidence,'feedback-aria-modal-left.png')});
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(250);await clear(copied,closeSettings,'aria-modal at 390');await page.screenshot({path:path.join(evidence,'feedback-aria-modal-390.png')});await page.setViewportSize({width:1440,height:900});
+  await closeSettings.click({timeout:2000});await expect(settings).toHaveCount(0);if(await copied.count()){r=await copied.boundingBox();assert.ok(r&&1440-(r.x+r.width)<=40,'after closing aria-modal feedback returns top-right '+JSON.stringify(r));}
+  await page.setViewportSize({width:1440,height:900});
+ });
+await check('Hidden aria-modal leftovers do not move the feedback; at 560 and boundary widths it avoids and lets the real close button close',async()=>{
+  await page.setViewportSize({width:1440,height:900});await clearToasts();
+  await page.evaluate(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{window.__copied.push(t)}}})});
+  const copied=page.locator('.global-feedback-card').first(),copy=app.locator('.prompt-preview header').getByRole('button',{name:'复制完整提示词',exact:true});
+  /* 同一条提示 10 秒内不会重复弹出（feedback-store 去重），所以轮流用三种真实提示，重复用到同一种时先等满 10 秒 */
+  const sources=[['浏览器未允许剪贴板',async()=>{await page.evaluate(()=>{navigator.clipboard.writeText=async()=>{throw Error('denied')}});await copy.click();}],['生成记录已保存',async()=>{await app.getByLabel('主题',{exact:true}).fill('提示位置矩阵');await button('保存记录').click();}],['已复制',async()=>{await page.evaluate(()=>{navigator.clipboard.writeText=async()=>{}});await copy.click();}]];
+  const used=new Map([['已复制',Date.now()],['生成记录已保存',Date.now()]]);let turn=0;/* 上一项检查刚弹过这两种 */
+  const right=async(w,label)=>{const r=await copied.boundingBox();assert.ok(r&&w-(r.x+r.width)<=40,label+': feedback stays top-right '+JSON.stringify(r));};
+  const fresh=async()=>{/* 正在淡出的提示点不到「关闭」，短超时跳过，等它自己消失 */const x=page.getByRole('button',{name:'关闭此提示'});for(let i=0;i<10&&await x.count();i++)await x.first().click({timeout:800}).catch(()=>{});await expect(page.locator('.global-feedback-card')).toHaveCount(0,{timeout:6000});
+    const [text,make]=sources[turn++%sources.length],wait=10500-(Date.now()-(used.get(text)??0));if(wait>0)await page.waitForTimeout(wait);
+    await make();used.set(text,Date.now());await expect(copied).toContainText(text);await expect(page.locator('.global-feedback-card')).toHaveCount(1);await copied.hover();};
+  await fresh();await right(1440,'no residual');
+  // 合成残留：自身 hidden、祖先 hidden、自身行内 display:none、祖先行内 display:none。都不算「弹窗开着」
+  const residuals={'self hidden':'<div role="dialog" aria-modal="true" hidden>残留</div>','ancestor hidden':'<div hidden><div role="dialog" aria-modal="true">残留</div></div>','self display:none':'<div role="dialog" aria-modal="true" style="display:none">残留</div>','ancestor display:none':'<div style="display: none"><div role="dialog" aria-modal="true">残留</div></div>'};
+  for(const [label,html] of Object.entries(residuals)){
+    await page.evaluate(h=>{const d=document.createElement('div');d.dataset.residual='1';d.innerHTML=h;document.body.append(d)},html);
+    assert.equal(await page.locator('[data-residual] [aria-modal="true"]').evaluate(el=>el.checkVisibility()),false,label+': residual is not visible');
+    await right(1440,label);await page.evaluate(()=>document.querySelector('[data-residual]').remove());await right(1440,label+' removed');
+  }
+  // 对照：同样的合成节点不隐藏时算开着（挪到左上），卸载后回到右上
+  await page.evaluate(()=>{const d=document.createElement('div');d.dataset.residual='1';d.innerHTML='<div role="dialog" aria-modal="true">可见</div>';document.body.append(d)});
+  let r=await copied.boundingBox();assert.ok(r&&r.x<=40,'visible aria-modal moves the feedback top-left '+JSON.stringify(r));
+  await page.evaluate(()=>document.querySelector('[data-residual]').remove());await right(1440,'visible aria-modal unmounted');
+  // 实际关闭矩阵（560/561 是窄屏断点，863/864 是「左半边」上限和 400px 的交界）：开着弹窗时提示不超过视口左半边，关闭按钮在最上层且真能点到；关闭后提示回到右上
+  const dialogs={aria:{open:'提示词界面设置',name:'界面设置',close:'关闭界面设置',widths:[560,561,863,864]},native:{open:'编辑模板',name:'编辑提示词模板',close:'关闭面板',widths:[560,561]}};
+  for(const [kind,d] of Object.entries(dialogs))for(const w of d.widths){
+    const label=kind+' at '+w;await page.setViewportSize({width:1440,height:900});await fresh();
+    await app.getByRole('button',{name:d.open,exact:true}).focus();await page.keyboard.press('Enter');
+    const dialog=page.getByRole('dialog',{name:d.name}),close=dialog.getByRole('button',{name:d.close});await expect(dialog).toBeVisible();await expect(copied).toBeVisible();
+    await page.setViewportSize({width:w,height:900});await page.waitForTimeout(250);
+    const t=await copied.boundingBox(),c=await close.boundingBox();assert.ok(t&&c,label+': boxes');
+    assert.ok(t.x+t.width<=w/2,label+': feedback stays in the left half '+JSON.stringify(t));
+    assert.ok(t.x+t.width<c.x||t.y>c.y+c.height||t.y+t.height<c.y,label+': feedback does not overlap the close button '+JSON.stringify({t,c}));
+    assert.ok(await close.evaluate(el=>{const b=el.getBoundingClientRect(),h=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!h&&el.contains(h)}),label+': close button is the top element');
+    if(w===560&&kind==='aria'){await page.waitForTimeout(150);await page.screenshot({path:path.join(evidence,'feedback-aria-modal-560.png')});}
+    await close.click({timeout:2000});await expect(dialog).toHaveCount(0);
+    if(await copied.count())await right(w,label+' after closing');
+  }
   await page.setViewportSize({width:1440,height:900});
  });
  await context.close();passed=true;
