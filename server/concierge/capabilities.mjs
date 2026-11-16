@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import { definition as normalizeTemplate } from '../prompt-templates/model.mjs';
 
 const fault=(message,status=400)=>Object.assign(Error(message),{status});
@@ -50,6 +51,7 @@ add('creative.read','资产详情','仅当前项目和公共人物资料；不�
 add('creative.update','更新资产文字资料','仅改名称、基础信息、性格与表演；保留造型、图片、默认项及身份。project 仅改自己的资产；global 可改公共人物，必须 allowWrites=true。',object({id,expected_revision:revision,patch},['id','expected_revision','patch']),{id:'00000000-0000-4000-8000-000000000001',expected_revision:1,patch:{base_info:'资料'}},{write:true,http:['GET /api/project-assets/assets/:id','GET /api/project-assets/scopes','PUT /api/project-assets/assets/:id']},async(c,a)=>{if(!Object.keys(a.patch).length)throw fault('资产修改不能为空');const current=await c.asset(a.id,true);c.expected(current,a.expected_revision);return c.call('PUT',assetPath(a.id),{asset:{...current,...a.patch},expected_revision:a.expected_revision});});
 add('creative.shots','资产关联镜号','先检查资产归属，再读取关联镜号、场次与关联原因。公共人物返回其现有未关联状态，不跨项目追踪副本。',object({id},['id']),{id:'00000000-0000-4000-8000-000000000001'},{http:['GET /api/project-assets/assets/:id','GET /api/project-assets/scopes','GET /api/project-assets/assets/:id/shots']},async(c,a)=>{await c.asset(a.id);return c.call('GET',assetPath(a.id)+'/shots');});
 add('storyboards.read','读取分镜','当前项目完整分镜及 revision、asset_stamp。结果超限会明确报错；可用单镜读取。',empty,{}, {scopes:['project'],http:['GET /api/storyboard/projects/:scope']},c=>c.call('GET',storyboardPath(c.scope)));
+add('storyboards.changes','读取最近分镜改动','仅当前集已保存版本及原始改动原因；不自动喂入、不写库。',object({limit:integer(1,100)}),{limit:20},{scopes:['project'],http:['GET /api/storyboard/projects/:scope/changes']},(c,a)=>c.call('GET',storyboardPath(c.scope)+'/changes?limit='+(a.limit??20)));
 add('storyboards.shot','读取精确单镜','按镜头永久 id 精确定位，返回场次、单镜、revision 和 asset_stamp；不把镜号当 id。',object({shot_id:str(160)},['shot_id']),{shot_id:'shot-01'},{scopes:['project'],http:['GET /api/storyboard/projects/:scope']},async(c,a)=>{const current=await c.board(),{scene,shot}=c.shot(current,a.shot_id);return {
   project_id:c.scope, revision:current.revision, asset_stamp:current.asset_stamp,
   scene:{id:scene.id,name:scene.name}, shot,
@@ -57,11 +59,11 @@ add('storyboards.shot','读取精确单镜','按镜头永久 id 精确定位，�
   ...(current.look_resolution && { look_resolution: current.look_resolution }),
   ...(current.shot_character_looks?.[shot.id] && { character_looks: current.shot_character_looks[shot.id] }),
 };});
-add('storyboards.updateShot','精确修改单镜','先GET；严格核对 expected_revision 与 asset_stamp，只改指定 id 的镜头文字或时长。保留所有其他镜头和关联字段，通过既有整体PUT保存。原API按revision冲突保护；asset_stamp 在wrapper提交前复读核对，原API尚无资产戳事务CAS。',object({shot_id:str(160),expected_revision:revision,asset_stamp:{type:'string',pattern:'^[a-f0-9]{64}$'},patch:shotPatch},['shot_id','expected_revision','asset_stamp','patch']),{shot_id:'shot-01',expected_revision:1,asset_stamp:'0'.repeat(64),patch:{action:'抬眼'}},{write:true,scopes:['project'],http:['GET /api/storyboard/projects/:scope','PUT /api/storyboard/projects/:scope']},async(c,a)=>{
+add('storyboards.updateShot','精确修改单镜','先GET；严格核对 expected_revision 与 asset_stamp，只改指定 id 的镜头文字或时长。保留所有其他镜头和关联字段，通过既有整体PUT保存。原API按revision冲突保护；asset_stamp 在wrapper提交前复读核对，后端在目录锁内复核资产戳；必须记录用户原话和三类原因。',object({shot_id:str(160),expected_revision:revision,asset_stamp:{type:'string',pattern:'^[a-f0-9]{64}$'},reason_text:str(20000),reason_category:enumeration('shot_feel','miscommunication','prompt_wrong'),patch:shotPatch},['shot_id','expected_revision','asset_stamp','patch','reason_text','reason_category']),{shot_id:'shot-01',expected_revision:1,asset_stamp:'0'.repeat(64),reason_text:'请让他抬眼',reason_category:'shot_feel',patch:{action:'抬眼'}},{write:true,scopes:['project'],http:['GET /api/storyboard/projects/:scope','PUT /api/storyboard/projects/:scope']},async(c,a)=>{
   if(!Object.keys(a.patch).length)throw fault('镜头修改不能为空');const current=await c.board();c.expected(current,a.expected_revision);if(current.asset_stamp!==a.asset_stamp)throw fault('资产资料已经变化，请重新读取分镜',409);
   const {shot}=c.shot(current,a.shot_id);Object.assign(shot,a.patch);shot.revision=(shot.revision??1)+1;
   const latest=await c.board();c.expected(latest,a.expected_revision);if(latest.asset_stamp!==a.asset_stamp)throw fault('资产资料已经变化，未保存分镜',409);
-  return c.call('PUT',storyboardPath(c.scope),{project:current.project,expected_revision:a.expected_revision,asset_stamp:a.asset_stamp});
+  return c.call('PUT',storyboardPath(c.scope),{project:current.project,expected_revision:a.expected_revision,asset_stamp:a.asset_stamp,request_id:randomUUID(),change:{author:'agent',reason_text:a.reason_text,reason_category:a.reason_category}});
 });
 add('materials.search','搜索素材','只查询现有索引，不读取任意本地路径或触发扫描/模型；分页最多100项。',object({q:str(2000),kind:enumeration('photo','video','music','sfx'),page:integer(1,100000),pageSize:integer(1,100),qMode:enumeration('all','any'),qField:enumeration('all','name')}),{q:'雨',page:1,pageSize:20},{http:['GET /api/assets?q&kind&page&pageSize&qMode&qField']},(c,a)=>c.call('GET',query('/api/assets',a)));
 add('materials.read','素材索引详情','读取已有素材条目；无文件打开、移动删除、标签批量修改或模型分析。',object({id},['id']),{id:'00000000-0000-4000-8000-000000000001'},{http:['GET /api/assets/:id']},(c,a)=>c.call('GET','/api/assets/'+a.id));

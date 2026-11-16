@@ -1,0 +1,2 @@
+export interface StoryboardFieldChange {target_kind:'shot'|'scene'|'document'; target_id:string; shot_id:string|null; shot_number_at_time:number|null; field:string; before:unknown; after:unknown; deleted:boolean}
+export function storyboardDiff(before:unknown,after:unknown):{summary_only:boolean; metrics:{changedFieldCount:number;unionFieldCount:number;changedContentBytes:number;unionContentBytes:number};changes:StoryboardFieldChange[]};
