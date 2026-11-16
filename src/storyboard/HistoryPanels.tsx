@@ -7,7 +7,7 @@ import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, kb, sho
 const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
 const fieldName = (f: string) => FIELD_LABEL[f] ?? f;
 const value = (field: string, v: unknown) => field === 'duration_ms' && typeof v === 'number' ? `${(v / 1000).toString()} 秒` : show(v);
-const Problem = ({error}: {error: unknown}) => <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>{error instanceof HistoryError && error.code === MIGRATION_REQUIRED ? '改动记录还没有启用：这个素材库需要先做一次数据库迁移（由维护人员执行），分镜照常可以编辑和保存。' : (error as Error).message}</p>;
+const Problem = ({error}: {error: unknown}) => <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>{error instanceof HistoryError && error.code === MIGRATION_REQUIRED ? '改动记录还没有启用：这个素材库需要先做一次数据库迁移（由维护人员执行）。迁移前可以继续改草稿，但保存会被拒绝，草稿会留在这台电脑上。' : (error as Error).message}</p>;
 const Reason = ({author, category, text}: {author: string; category: ReasonCategory | null; text: string}) => <>
   <span className="sb-history-tag is-who">{AUTHOR_LABEL[author] ?? author}</span>
   {category && <span className="sb-history-tag is-why">{CATEGORY_LABEL[category]}</span>}
@@ -70,9 +70,19 @@ export function LogPanel({api, refreshKey, onOpen}: {api: HistoryApi; refreshKey
 
 /** 只读查看某一版：整屏阅读样式；可和当前版本对比、恢复这一版（另存为新版本）。 */
 export function OldVersion({api, meta, title, currentRevision, onClose, onRestored}: {api: HistoryApi; meta: VersionMeta; title: string; currentRevision: number; onClose: () => void; onRestored: () => void}) {
-  const [project, setProject] = useState<unknown>(null), [diff, setDiff] = useState<Map<string, Change[]> | null>(null), [compare, setCompare] = useState(false), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false), [invalid, setInvalid] = useState<unknown[] | null>(null);
+  const [project, setProject] = useState<unknown>(null), [diff, setDiff] = useState<Change[] | null>(null), [compare, setCompare] = useState(false), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false), [invalid, setInvalid] = useState<unknown[] | null>(null);
   useEffect(() => { void api.version(meta.version).then(d => setProject(d.project), setError); }, [api, meta.version]);
-  useEffect(() => { if (!compare || diff) return; void api.diff(meta.version, 'current').then(d => { const m = new Map<string, Change[]>(); for (const c of d.changes) if (c.shot_id) m.set(c.shot_id, [...(m.get(c.shot_id) ?? []), c]); setDiff(m); }, setError); }, [api, compare, diff, meta.version]);
+  useEffect(() => { if (!compare || diff) return; void api.diff(meta.version, 'current').then(d => setDiff(d.changes), setError); }, [api, compare, diff, meta.version]);
+  // 后端 diff 方向：before = 这一版（V{n}），after = 当前版本。按这一版是否有该镜头分三类，不静默丢弃任何一条。
+  const oldShots = new Set<string>(((project as {scenes?: {shots?: {id: string}[]}[]} | null)?.scenes ?? []).flatMap(sc => (sc.shots ?? []).map(q => q.id)));
+  const byShot = new Map<string, Change[]>(), added = new Map<string, Change[]>(), others: Change[] = [];
+  for (const c of diff ?? []) { if (c.target_kind === 'shot' && c.shot_id) { const m = oldShots.has(c.shot_id) ? byShot : added; m.set(c.shot_id, [...(m.get(c.shot_id) ?? []), c]); } else others.push(c); }
+  const brief = (v: unknown) => { if (v && typeof v === 'object' && !Array.isArray(v)) { const o = v as Record<string, unknown>; const t = [o.framing, o.action].filter(x => typeof x === 'string' && x).join(' · '); if (t) return t; } return show(v); };
+  const extra = compare && diff ? <div className="sb-history-compare">
+    <p className="sb-history-muted">对比方向：<del>删除线</del> 是当前版本，<ins>绿色</ins> 是这一版（V{meta.version}）。{!diff.length && '两版内容相同。'}</p>
+    {others.length > 0 && <section><h4>分镜和场景设置的差异</h4><ul className="sb-history-fields">{others.map((c, i) => <li key={i}><span className="sb-history-field">{c.target_kind === 'scene' ? '场景' : '整体'} · {fieldName(c.field)}：</span><del>{value(c.field, c.after)}</del> → <ins>{value(c.field, c.before)}</ins></li>)}</ul></section>}
+    {added.size > 0 && <section><h4>当前版本有、这一版没有的镜头（{added.size}）</h4><ul className="sb-history-fields">{[...added.values()].map(cs => { const c = cs.find(x => x.field === '$entity') ?? cs[0]; return <li key={c.target_id}><span className="sb-history-field">镜 {c.shot_number_at_time ?? '?'}（当前版本新增）：</span><del>{brief(c.after)}</del></li>; })}</ul></section>}
+  </div> : null;
   const restore = async () => { if (busy || !window.confirm(`把 V${meta.version} 的内容恢复成一个新版本？现在的版本和之后的历史都会保留，可以再恢复回来。`)) return; setBusy(true); try { await api.restore(meta.version, currentRevision); onRestored(); } catch (e) { if (e instanceof HistoryError && e.code === 'RESTORE_ASSETS_INVALID') setInvalid(((e.data as {invalid_assets?: unknown[]})?.invalid_assets) ?? []); else setError(e); } finally { setBusy(false); } };
   const banner = <div className="sb-history-banner">
     <strong>正在查看 V{meta.version}（只读）</strong><span className="sb-history-muted">{when(meta.created_at)} · {AUTHOR_LABEL[meta.author_kind] ?? meta.author_kind}{meta.reason_category ? ' · ' + CATEGORY_LABEL[meta.reason_category] : ''}</span>
@@ -80,8 +90,8 @@ export function OldVersion({api, meta, title, currentRevision, onClose, onRestor
     <button type="button" aria-pressed={compare} onClick={() => setCompare(v => !v)}>{compare ? '✓ ' : ''}和当前版本对比</button>
     <button type="button" disabled={busy || meta.version === currentRevision} onClick={() => void restore()}><RotateCcw size={13}/>恢复这一版</button>
     {error ? <Problem error={error}/> : null}
-    {invalid && <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>不能恢复：这一版引用的 {invalid.length} 个资产现在已不可用，请先在素材清单里处理。</p>}
+    {invalid && <div className="sb-history-alert" role="alert"><AlertTriangle size={15}/><div>不能恢复：这一版引用的 {invalid.length} 项资产现在不可用，请先在素材清单里处理：<ul className="sb-history-fields">{invalid.map((a, i) => { const o = (a ?? {}) as Record<string, unknown>; const name = [o.name, o.label, o.title].find(x => typeof x === 'string' && x); const kind = [o.kind, o.type, o.asset_kind].find(x => typeof x === 'string' && x); const id = [o.id, o.asset_id].find(x => typeof x === 'string' && x); const why = [o.reason, o.message, o.code].find(x => typeof x === 'string' && x); return <li key={i}>{String(name ?? '未命名资产')}{kind ? `（${kind}）` : ''}{id ? <code> {String(id)}</code> : null}{why ? ` · ${why}` : ''}</li>; })}</ul></div></div>}
   </div>;
   if (!project) return <div className="sb-reading" role="dialog" aria-modal="true" aria-label={`查看 V${meta.version}`}><div className="sb-reading-bar"><button type="button" onClick={onClose}>返回当前版本</button></div>{error ? <Problem error={error}/> : <p className="sb-reading-empty">正在读取 V{meta.version}…</p>}</div>;
-  return <ReadingMode project={project} title={title} exitLabel="返回当前版本" banner={banner} diff={compare ? diff ?? new Map() : undefined} onClose={onClose}/>;
+  return <ReadingMode project={project} title={title} exitLabel="返回当前版本" banner={<>{banner}{extra}</>} diff={compare ? byShot : undefined} onClose={onClose}/>;
 }

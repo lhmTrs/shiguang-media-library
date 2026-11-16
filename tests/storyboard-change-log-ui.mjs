@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
+import { emptyShot } from '../server/storyboard/shared/model.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'storyboard-change-log-ui-')));
@@ -152,6 +153,41 @@ try {
     await page.getByTestId('big-cancel').click(); assert.equal(puts.length, 0); await expect(status()).toContainText('未保存');
     await saveBtn().click(); await page.getByTestId('big-save').click(); await expect(status()).toContainText('已保存');
     const v = await api('/storyboard/projects/' + small.id + '/versions?limit=1'); assert.equal(v.items[0].summary_only, true);
+  });
+
+  await check('S10 切换项目也问「保存 / 放弃 / 留着」：不弹系统确认框；留着不切；保存成功才切到新项目', async () => {
+    await open(main.id); let native = null; page.on('dialog', d => { native = d.message(); void d.dismiss(); });
+    await cell('02', '画面与人物动作').fill('合成：切项目前没保存'); await cell('03', '景别与角度').click();
+    await selectProjectInBar(page, small.id); await expect(page.getByTestId('leave-stay')).toBeVisible(); assert.equal(native, null, '不应出现系统确认框');
+    await page.getByTestId('leave-stay').click(); await expect(page.locator('.ppb')).toHaveAttribute('data-project', main.id); await expect(cell('02', '画面与人物动作')).toHaveValue('合成：切项目前没保存');
+    await selectProjectInBar(page, small.id); await page.getByTestId('leave-save').click();
+    await expect(page.locator('.ppb')).toHaveAttribute('data-project', small.id);
+    assert.equal(shotOf((await api('/storyboard/projects/' + main.id)).project, 2).action, '合成：切项目前没保存');
+    page.removeAllListeners('dialog');
+  });
+
+  await check('S11 视频预览里保存镜头修改：大改先确认，确认框在预览上面；「先不保存」不写库且保留输入，「确定保存」才写', async () => {
+    await open(small.id); const before = await api('/storyboard/projects/' + small.id);
+    await page.getByRole('button', { name: '预览视频', exact: true }).click(); const dlg = page.getByRole('dialog', { name: '分镜视频预览' }); await expect(dlg).toBeVisible();
+    const detail = dlg.getByRole('button', { name: '镜头明细', exact: true }); if (await detail.getAttribute('aria-expanded') !== 'true') await detail.click();
+    const input = dlg.getByLabel('预览镜01画面与人物动作', { exact: true }); await input.fill('预览大改'.repeat(1700));
+    await dlg.getByRole('button', { name: '保存镜头修改', exact: true }).click(); await expect(page.getByTestId('big-cancel')).toBeVisible();
+    await page.getByTestId('big-cancel').click({ timeout: 3000 });   // 能点到说明确认框没被视频预览挡住
+    assert.equal((await api('/storyboard/projects/' + small.id)).revision, before.revision, '先不保存不应写库'); await expect(input).toHaveValue(/^预览大改/);
+    await dlg.getByRole('button', { name: '保存镜头修改', exact: true }).click(); await page.getByTestId('big-save').click();
+    await expect.poll(async () => (await api('/storyboard/projects/' + small.id)).revision).toBe(before.revision + 1);
+    assert.equal((await api('/storyboard/projects/' + small.id + '/versions?limit=1')).items[0].summary_only, true);
+    await page.keyboard.press('Escape');
+  });
+
+  await check('S12 和当前版本对比：显示当前版本新增的镜头和标题等整体差异，并写明方向', async () => {
+    const cur = await api('/storyboard/projects/' + small.id), p = structuredClone(cur.project), q = emptyShot(); q.action = '合成：当前版本新增的结尾镜头'; p.scenes[0].shots.push(q); p.title = '合成：新标题';
+    await api('/storyboard/projects/' + small.id, { project: p, expected_revision: cur.revision, change: { author: 'agent', reason_category: 'shot_feel', reason_text: '加结尾镜头并改标题' }, request_id: randomUUID() }, 'PUT');
+    await open(small.id); await tab('改动记录').click();
+    await page.locator('.sb-history-table tr').filter({ has: page.getByText('V1', { exact: true }) }).getByRole('button', { name: '查看' }).click();
+    const dlg = page.getByRole('dialog', { name: '分镜阅读模式' }); await dlg.getByRole('button', { name: /和当前版本对比/ }).click();
+    await expect(dlg.getByText('合成：当前版本新增的结尾镜头')).toBeVisible(); await expect(dlg.getByText('合成：新标题')).toBeVisible(); await expect(dlg).toContainText('对比方向');
+    await shot('s12-compare'); await page.keyboard.press('Escape');
   });
 
   await check('S9 窄屏 390 与六个主题：阅读模式和改动记录正常显示、无横向溢出（截图留证）', async () => {

@@ -1,5 +1,5 @@
 import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
-import {confirmStoryboardLeave} from './storyboard/leave-guard';
+import {confirmStoryboardLeave, hasStoryboardLeaveGuard} from './storyboard/leave-guard';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
 import { Users } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -805,14 +805,18 @@ function App() {
     projectReadVersion.current++;
     setProjectRevision(n => n + 1);
   }
-  function projectChangeAllowed(id: string) {
+  /** retry：分镜有未保存修改时先问「保存 / 放弃 / 留着」（异步），选保存成功或放弃后再执行 retry；留着就不切换。 */
+  function projectChangeAllowed(id: string, retry?: () => void, storyboardChecked = false) {
     if (!projectLibrary.current) return false;
     if (id === activeProject) return true;
     if (busy || projectVideoBusy || projectUsageBusy) {
       setNotice("请等待当前项目的操作完成，再切换项目");
       return false;
     }
-    if (storyboardDirty && !confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？")) return false;
+    if (storyboardDirty && !storyboardChecked) {
+      if (retry && hasStoryboardLeaveGuard()) { void confirmStoryboardLeave("切换项目").then(ok => { if (ok) retry(); }); return false; }
+      if (!confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？")) return false;
+    }
     return assetProjectSwitchGuard.current?.() ?? true;
   }
   function activateProject(id: string) {
@@ -825,10 +829,10 @@ function App() {
     setSeasonSettingsFocus(undefined);
     setActiveProject(id);
   }
-  function selectKnownProject(id: string) {
+  function selectKnownProject(id: string, storyboardChecked = false, then?: () => void) {
     if (!projects.some(project => project.id === id)) return false;
     cancelCodexNavigation();
-    if (!projectChangeAllowed(id)) return false;
+    if (!projectChangeAllowed(id, () => { if (selectKnownProject(id, true)) then?.(); }, storyboardChecked)) return false;
     activateProject(id);
     return true;
   }
@@ -847,10 +851,14 @@ function App() {
     refreshProjects();
   }
   function openProjectPage(page: FolderPage, projectId: string) {
-    if (!projectId || !selectKnownProject(projectId)) return;
-    const routes = { usage: "projectUsage", assets: "projectAssets", videos: "projectVideos", storyboard: "storyboard" };
-    if (page === "assets") setProjectAssetFocus(previous => ({ id: projectId, request: previous.request + 1 }));
-    navigate(routes[page]);
+    const go = () => {
+      const routes = { usage: "projectUsage", assets: "projectAssets", videos: "projectVideos", storyboard: "storyboard" };
+      if (page === "assets") setProjectAssetFocus(previous => ({ id: projectId, request: previous.request + 1 }));
+      navigate(routes[page], false, false, true);
+    };
+    // 分镜未保存时先问「保存 / 放弃 / 留着」，确认后再切项目并打开页面
+    if (!projectId || !selectKnownProject(projectId, false, go)) return;
+    go();
   }
   selectSeasonSettingsProject.current = selectKnownProject;
   async function openSeasonSettings(seasonId: string, projectId: string, signal: AbortSignal) {

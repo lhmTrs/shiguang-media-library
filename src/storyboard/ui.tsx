@@ -27,7 +27,7 @@ export function Field({ changed = false, label, value, onCommit, multiline = fal
   const areaProps = inline ? { ...props, ref: area, onFocus: () => fit(true), onInput: () => fit(true), onBlur: () => { props.onBlur(); fit(false); } } : props;
   return <label className={'sb-field' + (inline ? ' sb-inline' : '') + (changed ? ' sb-unsaved' : '')}>{!inline && <span>{label}</span>}{multiline ? <textarea {...areaProps} rows={rows}/> : <input {...props} type={type}/>}</label>;
 }
-export function Modal({ title, children, onClose, wide = false,disabled=false }: { disabled?:boolean;title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({ title, children, onClose, wide = false,disabled=false, top = false }: { disabled?:boolean;title: string; children: React.ReactNode; onClose: () => void; wide?: boolean; top?: boolean }) {
   const panel = useRef<HTMLElement>(null), close = useRef(onClose); close.current = onClose;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -44,5 +44,5 @@ export function Modal({ title, children, onClose, wide = false,disabled=false }:
     const element = panel.current;
     return () => { element?.removeEventListener('keydown', handler); previous?.focus(); };
   }, []);
-  return <div className="sb-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><section ref={panel} className={'sb-modal' + (wide ? ' sb-wide' : '')} role="dialog" aria-modal="true" aria-label={title}><header><div><small>分镜设计</small><h2>{title}</h2></div><button aria-label="关闭面板" onClick={onClose}><X size={18}/></button></header><div className="sb-modal-body"><fieldset className="sb-modal-editing" disabled={disabled}>{children}</fieldset></div></section></div>;
+  return <div className={"sb-overlay" + (top ? " is-top" : "")} onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><section ref={panel} className={'sb-modal' + (wide ? ' sb-wide' : '')} role="dialog" aria-modal="true" aria-label={title}><header><div><small>分镜设计</small><h2>{title}</h2></div><button aria-label="关闭面板" onClick={onClose}><X size={18}/></button></header><div className="sb-modal-body"><fieldset className="sb-modal-editing" disabled={disabled}>{children}</fieldset></div></section></div>;
 }
