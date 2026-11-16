@@ -16,7 +16,7 @@ test('all-or-nothing document/snapshot/changes/pending; no-op and exact request 
  const f=await fixture(t),b=f.b;const first=init(b,f);assert.equal(first.version,1);const original=b.backup().checksum;
  for(const table of ['storyboard_documents','storyboard_versions','storyboard_changes','storyboard_pending']){
   f.db.exec(`CREATE TRIGGER abort_history BEFORE ${table==='storyboard_documents'?'UPDATE':'INSERT'} ON ${table} BEGIN SELECT RAISE(ABORT,'owned history fault');END`);
-  assert.throws(()=>edit(b,f),/owned history fault/);assert.equal(b.backup().checksum,original);f.db.exec('DROP TRIGGER abort_history');
+  assert.throws(()=>edit(b,f,undefined,{change:{author:'agent',reason_text:'原子回滚合成指令',reason_category:'shot_feel'}}),/owned history fault/);assert.equal(b.backup().checksum,original);f.db.exec('DROP TRIGGER abort_history');
  }
  const request={project:structuredClone(first.project),expected_revision:first.revision,request_id:randomUUID(),change:{author:'agent',reason_category:'shot_feel',reason_text:'把第一镜改成近景'}};request.project.scenes[0].shots[0].action='目光抬起';
  const saved=b.save(f.a.id,request);assert.equal(saved.revision,2);assert.equal(saved.saved_version,2);assert.equal(b.save(f.a.id,request).repeated,true);assert.equal(b.history.versions(f.a.id).total,2);
@@ -32,14 +32,14 @@ test('existing schema migrates only explicitly; read GET never seeds baseline; f
  const existing=new StoryboardDatabase(f.lib,f.store).init();assert.equal(existing.read(f.a.id).history_available,false);assert.throws(()=>existing.history.versions(f.a.id),{code:'STORYBOARD_HISTORY_MIGRATION_REQUIRED'});
  assert.throws(()=>edit(existing,f),{code:'STORYBOARD_HISTORY_MIGRATION_REQUIRED'});installHistory(f.db);assert.equal(existing.history.versions(f.a.id).total,0);
  existing.save(f.a.id,{project:existing.read(f.a.id).project,expected_revision:1});assert.equal(existing.history.versions(f.a.id).total,0);
- f.db.exec("CREATE TRIGGER fail_baseline BEFORE INSERT ON storyboard_pending BEGIN SELECT RAISE(ABORT,'baseline rollback');END");assert.throws(()=>edit(existing,f),/baseline rollback/);assert.equal(existing.history.versions(f.a.id).total,0);f.db.exec('DROP TRIGGER fail_baseline');
+ f.db.exec("CREATE TRIGGER fail_baseline BEFORE INSERT ON storyboard_pending BEGIN SELECT RAISE(ABORT,'baseline rollback');END");assert.throws(()=>edit(existing,f,undefined,{change:{author:'agent',reason_text:'基线回滚合成指令',reason_category:'shot_feel'}}),/baseline rollback/);assert.equal(existing.history.versions(f.a.id).total,0);f.db.exec('DROP TRIGGER fail_baseline');
  edit(existing,f);const versions=existing.history.versions(f.a.id).items;assert.equal(versions.length,2);assert.equal(versions[1].baseline,true);assert.equal(versions[1].author_kind,'baseline');
 });
 
 test('pending clear only touches actually observed versions, category CAS is separate and preserves raw reason',async t=>{
  const f=await fixture(t),b=f.b;init(b,f);b.history.clear(f.a.id,{all:true,through_version:1});
  const v2=edit(b,f,undefined,{change:{author:'agent',reason_category:'prompt_wrong',reason_text:'这句必须逐字保留'}});const old=b.history.pending(f.a.id);assert.equal(old.pending_count,1);
- const v3=edit(b,f);const shot=v3.project.scenes[0].shots[0].id;const cleared=b.history.clear(f.a.id,{shot_ids:[shot],through_version:v2.revision});assert.equal(cleared.pending_count,1);assert.deepEqual(b.history.pending(f.a.id).items.find(i=>i.shot_id===shot).versions,[3]);
+ const v3=edit(b,f,undefined,{change:{author:'agent',reason_text:'第二次Codex合成修改',reason_category:'shot_feel'}});const shot=v3.project.scenes[0].shots[0].id;const cleared=b.history.clear(f.a.id,{shot_ids:[shot],through_version:v2.revision});assert.equal(cleared.pending_count,1);assert.deepEqual(b.history.pending(f.a.id).items.find(i=>i.shot_id===shot).versions,[3]);
  assert.throws(()=>b.history.clear(f.a.id,{all:true}),{code:'VIEW_VERSION_REQUIRED'});assert.throws(()=>b.history.clear(f.a.id,{all:true,through_version:4}),{code:'INVALID_VIEW_VERSION'});
  b.history.category(f.a.id,2,{reason_category:'miscommunication',expected_reason_category:'prompt_wrong'});assert.equal(b.history.version(f.a.id,2).reason_text,'这句必须逐字保留');assert.equal(b.head(f.a.id).revision,3);assert.throws(()=>b.history.category(f.a.id,2,{reason_category:'shot_feel',expected_reason_category:'prompt_wrong'}),{code:'CHANGE_CATEGORY_CONFLICT'});
  assert.equal(b.history.clear(f.a.id,{all:true,through_version:3}).pending_count,0);
@@ -65,18 +65,18 @@ test('postcommit pruning failure cannot report save failed; subsequent save retr
 });
 
 test('history backups retain reason/pending/pruned markers; old backups are accepted without inventing history',async t=>{
- const f=await fixture(t),b=f.b;init(b,f);edit(b,f);const backup=b.backup();assert.equal(backup.change_history.tables.storyboard_versions.length,2);b.validateBackup(backup);
+ const f=await fixture(t),b=f.b;init(b,f);edit(b,f,undefined,{change:{author:'agent',reason_text:'备份合成修改',reason_category:'shot_feel'}});const backup=b.backup();assert.equal(backup.change_history.tables.storyboard_versions.length,2);b.validateBackup(backup);
  const target=await creativeFixture();t.after(target.close);const restored=new StoryboardDatabase(target.lib,target.store).init();target.projects.remove(target.a.id);target.projects.remove(target.b.id);await restored.restore(backup);assert.equal(restored.history.versions(f.a.id).total,2);assert.ok(restored.history.pending(f.a.id).pending_count);
  const old=structuredClone(backup);delete old.change_history;old.checksum=digest({tables:old.tables,creative:old.creative});assert.ok(b.validateBackup(old));
 });
 
 test('generation landing uses generation author/raw instruction in the same transaction as task receipt',async t=>{
  const {GenerationStore}=await import('../server/storyboard-generation/store.mjs');
- const f=await fixture(t),b=f.b;init(b,f);const generation=new GenerationStore(f.lib,b).init(),id=randomUUID(),now=Date.now(),snapshot={assetStamp:generation.assetStamp(f.a.id),requirements:'原始用户指令，不得润色',script:'合成剧本'};
+ const f=await fixture(t),b=f.b;const imported=init(b,f);assert.equal(imported.pending_count,0);const generation=new GenerationStore(f.lib,b).init(),id=randomUUID(),now=Date.now(),snapshot={assetStamp:generation.assetStamp(f.a.id),requirements:'原始用户指令，不得润色',script:'合成剧本'};
  f.db.prepare('INSERT INTO sb_generation_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,f.a.id,'a'.repeat(64),canonical(snapshot),'accepted','waitingConnection','','[]','{}','',1,1,now+60000,'owned',now,now,'test-model','','合成项目');
  f.db.prepare('INSERT INTO sb_generation_locks VALUES(?,?,?,?,?)').run(f.a.id,id,1,now,now);
  f.db.exec("CREATE TRIGGER fail_generation_history BEFORE INSERT ON storyboard_pending BEGIN SELECT RAISE(ABORT,'generation history rollback');END");assert.throws(()=>generation.commit(id,{source:syntheticSource()}),/generation history rollback/);assert.equal(b.head(f.a.id).revision,1);assert.equal(generation.head(id).status,'accepted');assert.equal(b.request(f.a.id,id).completed,false);f.db.exec('DROP TRIGGER fail_generation_history');
- generation.commit(id,{source:syntheticSource()});assert.equal(generation.head(id).status,'completed');const v=b.history.version(f.a.id,2);assert.equal(v.author_kind,'generation');assert.equal(v.reason_text,snapshot.requirements);assert.equal(b.request(f.a.id,id).completed,true);
+ generation.commit(id,{source:syntheticSource()});assert.equal(generation.head(id).status,'completed');const v=b.history.version(f.a.id,2);assert.equal(v.author_kind,'generation');assert.equal(v.reason_text,snapshot.requirements);assert.ok(b.history.pending(f.a.id).pending_count>0);assert.equal(b.request(f.a.id,id).completed,true);
 });
 
 test('restore detects assets becoming invalid after preflight and rolls back body and version',async t=>{
@@ -95,4 +95,21 @@ test('explicit SQLite migration creates a checked private backup before transact
  const {execFile}=await import('node:child_process'),{promisify}=await import('node:util'),fs=await import('node:fs/promises'),path=await import('node:path');
  const f=await creativeFixture({onDisk:true});t.after(f.close);const b=new StoryboardDatabase(f.lib,f.store).init();init(b,f);for(const table of Object.keys(HISTORY_TABLES).reverse())f.db.exec('DROP TABLE '+table);
  const file=path.join(f.dir,'synthetic.sqlite');const {stdout}=await promisify(execFile)(process.execPath,['scripts/storyboard-history-schema.mjs','--apply-sqlite',file]);const result=JSON.parse(stdout);assert.equal(result.tables,3);const backup=new Database(result.backup,{readonly:true});try{assert.equal(backup.pragma('quick_check',{simple:true}),'ok');assert.equal(backup.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='storyboard_versions'").get().n,0);assert.equal(backup.prepare('SELECT COUNT(*) n FROM storyboard_documents').get().n,1);}finally{backup.close();}assert.equal((await fs.stat(result.backup)).mode&0o777,0o600);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM storyboard_versions').get().n,0);
+});
+
+test('only Codex authors create pending; manual/import/restore still log every version and retain old Codex events',async t=>{
+ const f=await fixture(t),b=f.b;const first=init(b,f);assert.equal(first.pending_count,0);assert.equal(first.pending_document_count,0);assert.ok(b.history.changes(f.a.id).items[0].changes.length);
+ const user=edit(b,f);assert.equal(user.pending_count,0);assert.equal(b.history.version(f.a.id,user.version).author_kind,'user');assert.ok(b.history.changes(f.a.id,1).items[0].changes.length);
+ const codex=edit(b,f,undefined,{change:{author:'agent',reason_text:'只标Codex合成原话',reason_category:'miscommunication'}});assert.equal(codex.pending_count,1);const snapshot=f.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all();assert.ok(snapshot.every(e=>e.version===codex.version));
+ const manual=edit(b,f);assert.equal(manual.pending_count,1);assert.deepEqual(f.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all(),snapshot);
+ const restored=b.restoreVersion(f.a.id,1,{expected_revision:manual.version,request_id:randomUUID()});assert.equal(restored.pending_count,1);assert.deepEqual(f.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all(),snapshot);
+ const reimported=init(b,f);assert.equal(reimported.pending_count,1);assert.deepEqual(f.db.prepare('SELECT * FROM storyboard_pending ORDER BY id').all(),snapshot);
+ const versions=b.history.versions(f.a.id);assert.equal(versions.total,6);assert.ok(versions.items.every(v=>v.full_available));assert.deepEqual(versions.items.map(v=>v.author_kind),['import','restore','user','agent','user','import']);assert.equal(b.history.changes(f.a.id,100).items.filter(v=>v.changes.length>0).length,6);assert.deepEqual(b.history.pending(f.a.id).items.flatMap(i=>i.versions),[codex.version]);
+});
+
+test('baseline remains log-only and legacy non-Codex pending is not projected, cleared or deleted',async t=>{
+ const f=await fixture(t),b=f.b;const first=init(b,f),h=b.head(f.a.id),now=Date.now();
+ const legacy={id:randomUUID(),document_id:h.id,version:1,target_kind:'shot',target_id:'shot:'+first.project.scenes[0].shots[0].id,shot_id:first.project.scenes[0].shots[0].id,shot_number_at_time:1,fields_json:'["action"]',deleted:0,created_at:now,updated_at:now,cleared_at:null};b.history.insert('storyboard_pending',legacy);
+ assert.deepEqual(b.history.pending(f.a.id).items,[]);assert.equal(b.history.counts(h.id).pending_count,0);assert.equal(b.history.clear(f.a.id,{all:true,through_version:1}).cleared_events,0);assert.deepEqual(f.db.prepare('SELECT * FROM storyboard_pending WHERE id=?').get(legacy.id),legacy);
+ for(const table of Object.keys(HISTORY_TABLES).reverse())f.db.exec('DROP TABLE '+table);const migrated=new StoryboardDatabase(f.lib,f.store).init();installHistory(f.db);const saved=edit(migrated,f);assert.equal(saved.pending_count,0);assert.deepEqual(migrated.history.pending(f.a.id).items,[]);assert.deepEqual(migrated.history.versions(f.a.id).items.map(v=>v.author_kind),['user','baseline']);assert.equal(migrated.history.versions(f.a.id).total,2);
 });

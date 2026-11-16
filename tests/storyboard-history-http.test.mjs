@@ -18,7 +18,7 @@ test('real isolated HTTP: same local gates, snapshots/diff/read markers/category
   const call=async(url,body,method=body===undefined?'GET':'POST')=>{const r=await fetch(base+'/api'+url,{method,headers,body:body===undefined?undefined:JSON.stringify(body)}),value=await r.json();if(!r.ok)throw Object.assign(Error(value.message||value.error),{status:r.status,...value});return value;};
   const project=await call('/projects',{name:'合成历史HTTP项目'}),prefix='/storyboard/projects/'+project.id;
   assert.equal((await fetch(base+'/api'+prefix+'/versions')).status,401);
-  await call(prefix+'/initialize',{source:syntheticSource(),request_id:randomUUID(),expected_revision:null});const first=await call(prefix);assert.equal(first.version,1);
+  await call(prefix+'/initialize',{source:syntheticSource(),request_id:randomUUID(),expected_revision:null});const first=await call(prefix);assert.equal(first.version,1);assert.equal(first.pending_count,0);
   const draft=structuredClone(first.project);draft.scenes[0].shots[0].action='合成HTTP新动作';
   await assert.rejects(call(prefix,{project:draft,expected_revision:1,change:{author:'agent'}},'PUT'),{status:400,code:'CHANGE_REASON_REQUIRED'});
   const request={project:draft,expected_revision:1,request_id:randomUUID(),change:{author:'agent',reason_text:'原用户指令',reason_category:'shot_feel'}};const second=await call(prefix,request,'PUT');assert.equal(second.version,2);assert.equal((await call(prefix,request,'PUT')).saved_version,2);
@@ -26,7 +26,7 @@ test('real isolated HTTP: same local gates, snapshots/diff/read markers/category
   await call(prefix+'/versions/2/category',{reason_category:'miscommunication',expected_reason_category:'shot_feel'},'PATCH');assert.equal((await call(prefix+'/versions/2')).reason_category,'miscommunication');
   await assert.rejects(call(prefix+'/pending/clear',{all:true}),{status:400,code:'VIEW_VERSION_REQUIRED'});
   const restored=await call(prefix+'/versions/1/restore',{expected_revision:2,request_id:randomUUID()});assert.equal(restored.version,3);assert.equal(restored.project.scenes[0].shots[0].action,first.project.scenes[0].shots[0].action);
-  const cleared=await call(prefix+'/pending/clear',{all:true,through_version:2});assert.equal(cleared.pending_count,1);assert.equal((await call(prefix+'/pending')).items[0].versions[0],3);
+  const cleared=await call(prefix+'/pending/clear',{all:true,through_version:2});assert.equal(cleared.pending_count,0);assert.deepEqual((await call(prefix+'/pending')).items,[]);assert.equal((await call(prefix+'/versions')).total,3);assert.equal((await call(prefix+'/changes?limit=1')).items[0].author_kind,'restore');
   assert.equal((await fetch(base+'/api'+prefix+'/pending/clear',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:'{}'})).status,403);
  }finally{
   if(child.exitCode===null)child.kill('SIGTERM');const [code]=await bound(exited,15000);assert.equal(code,0);assert.match(output,/APPLICATION_CLOSED_KNOWN/);await fs.rm(root,{recursive:true,force:true});

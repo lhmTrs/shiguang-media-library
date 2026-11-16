@@ -182,3 +182,8 @@
 清待看必须提交实际看过的through_version及shot_ids或all:true，只清不晚于该版的事件，后续并发修改保留。返回cleared_events/skipped_shot_ids和当前pending_count/pending_document_count；前者仅镜头实体数，后者为文档/场景实体数。分类修改仅agent事件，需expected_reason_category做CAS，不改正文/原话；待看与历史联查新分类。清待看不意味着已解决，不改内容/改动记录。agent按需GET changes查询，不自动把历史喂入模型。
 
 隔离测试：node --test tests/storyboard-history*.test.mjs及受影响回归；node tests/storyboard-history-mysql.mjs只创建自有临时datadir/随机回环端口MySQL，不读系统配置/凭据，保留证据并正常关闭。MySQL版本按实际证据报告，不把SQLite或mock冒原生MySQL通过。合并、正式DDL与4317上线另批。
+
+
+### v1.1：仅标记 Codex 修改的待看
+
+按用户决定“只标 Codex 改的”，只有author_kind为agent或generation的保存新增pending。user/import/restore/baseline仍照常同事务保存完整版和永久changes，不新增待看，也不会清除已有Codex待看。计数、GET pending和清除接口只处理agent/generation事件；through_version的已看版本保护保持。旧候选存在的其它作者pending保留原行但不再投影，不做数据清理。import保持初始化/导入路径归类，不猜实际操作者，不扩大成新的来源鉴别协议。
