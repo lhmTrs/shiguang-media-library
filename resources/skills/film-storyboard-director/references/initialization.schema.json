@@ -186,7 +186,7 @@
     },
     "场景": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "items": {
         "type": "object",
         "properties": {
@@ -215,7 +215,7 @@
           },
           "镜头": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "items": {
               "type": "object",
               "properties": {
