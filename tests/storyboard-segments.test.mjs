@@ -1,3 +1,4 @@
+import {storyboardDiff} from '../server/storyboard/shared/change-diff.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as S from '../server/storyboard/shared/segments.mjs';
@@ -95,3 +96,5 @@ test('structured diff preserves identity and cut points, legacy materialization 
  const removed=S.segmentChanges(split,S.mergeSegment(split,'b'))[0];assert.equal(removed.merged_into.id,p.segments[0].id);
  const raw=structuredClone(p);delete raw.segments;assert.deepEqual(S.segmentChanges(raw,p),[]);
 });
+
+test('5000-shot initialization diff assigns every added shot to its explicit segment without guessing anchors',()=>{const p={project_id:'large',scenes:[{id:'scene',shots:Array.from({length:5000},(_,i)=>({id:'shot_'+i,duration_ms:1}))}],segments:Array.from({length:5000},(_,i)=>({id:'segment_'+i,name:'A'+(i+1),start_shot_id:'shot_'+i}))};const result=storyboardDiff(null,p),added=result.changes.filter(c=>c.target_kind==='shot');assert.equal(added.length,5000);assert.equal(added.at(-1).segment_context.id,'segment_4999');assert.equal(added.at(-1).segment_context.anchor_shot_id,null);assert.equal(result.changes.filter(c=>c.target_kind==='segment').length,5000);});

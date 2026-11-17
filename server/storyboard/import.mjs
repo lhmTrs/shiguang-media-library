@@ -1,3 +1,4 @@
+import {withSegments, validateSegmentSave, validateSegmentStructure} from './shared/segments.mjs';
 import * as M from './shared/model.mjs';
 import { nameKey, fault } from '../project-assets/model.mjs';
 const kinds = { character: '人物', scene: '场景', prop: '道具' };
@@ -8,7 +9,10 @@ export function parseInitialization(value, { filename = '分镜.json', timing = 
   assert(value && typeof value === 'object' && !Array.isArray(value), '需要完整 JSON 对象');
   if(value['格式版本']!==undefined) assert(value['格式版本']==='2.0.0' && value['完整分镜']===true, '新版 JSON 需要格式版本 2.0.0、完整分镜 true');
   assert(value.complete !== false && value['完整分镜'] !== false && !['fragment','片段'].includes(value.document_type ?? value['文档类型']), '只能使用完整 JSON 初始化，不能导入片段');
+  if ((value.schema_version ? value.segments : value['分段']) === undefined) throw Object.assign(fault('新初始化必须提供分段；最小补法：分段为[{段:"A",起始镜号:"01"}]，规范化JSON提供segments及第一镜ID'), {code:'SEGMENTS_REQUIRED'});
   const input = structuredClone(value);
+  if(value.schema_version){const normalized=withSegments(value);validateSegmentStructure(normalized);input.segments=normalized.segments;}
+  for(const scene of value['场景']??[])for(const shot of scene['镜头']??[])assert(!Object.hasOwn(shot,'段'),'中文分段只能在顶层分段中声明，不接受逐镜段字段');
   if (Array.isArray(input['场景']) && input['素材清单']) {
     const chars=input['素材清单']['人物'];
     if(Array.isArray(chars)) {
@@ -23,9 +27,22 @@ export function parseInitialization(value, { filename = '分镜.json', timing = 
   }
   const result = M.importProject(input, { filename, timing });
   assert(result.project && !result.errors.length, '分镜格式错误：' + result.errors.map(e => e.path + '：' + e.message).join('\n'));
-  const p = result.project;
+  let p = result.project;
+  if (!value.schema_version) {
+    const rows=M.timeline(p), sourceShots=(value['场景']??[]).flatMap(s=>s['镜头']??[]);
+    for(const [i,q]of sourceShots.entries()) assert(/^(?:0*[1-9][0-9]*)$/.test(String(q['镜号']))&&Number(q['镜号'])===i+1,'中文镜号须全片唯一连续，从1开始');
+    assert(Array.isArray(value['分段']),'分段须为数组');
+    p.segments=value['分段'].map((segment,i)=>{
+      const raw=segment?.['起始镜号'], number=Number(raw);
+      assert((!rows.length&&raw===null)||(/^(?:0*[1-9][0-9]*)$/.test(String(raw))&&Number.isSafeInteger(number)&&rows[number-1]),'分段起始镜号须指向正文镜号');
+      return {id:'input_segment_'+i,name:segment['段'],start_shot_id:rows[number-1]?.shot.id??null};
+    });
+    if(value['分割模式']!==undefined)p.segment_settings={mode:value['分割模式']?.['模式'],custom_limit_ms:value['分割模式']?.['自定义上限毫秒']??null};
+  }
+  p=validateSegmentSave(null,withSegments(p),{kind:'initialize',author:'import'});
+
   if(p.import_source) p.import_source.original=structuredClone(value);
-  assert(p.scenes.length > 0 && M.timeline(p).length > 0 && p.scenes.every(s => s.shots.length > 0), '完整分镜至少包含一场一镜，各场不能没有镜头');
+
   assert(p.title.length <= 1000, '分镜标题过长');
   const manifest = [], maps = {}, rawManifest = value['素材清单'] ?? value.asset_manifest;
   assert(!rawManifest || typeof rawManifest === 'object' && !Array.isArray(rawManifest), '素材清单必须为对象');

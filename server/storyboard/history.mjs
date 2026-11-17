@@ -43,7 +43,7 @@ export class StoryboardHistory{
   const project=JSON.parse(next.document_json),diff=baseline?{summary_only:false,changes:[],metrics:{}}:storyboardDiff(previous,project),now=next.updated_at;
   const version={id:randomUUID(),document_id:next.id,version:next.revision,created_at:now,updated_at:now,...author,summary_only:Number(diff.summary_only),restored_from:restoredFrom,changed_shot_count:new Set(diff.changes.filter(c=>c.shot_id!==null).map(c=>c.shot_id)).size,byte_size:Buffer.byteLength(next.document_json),document_json:next.document_json,baseline:Number(baseline),request_id:requestId,request_hash:requestHash};
   this.insert('storyboard_versions',version);
-  const changes=diff.summary_only?[{target_kind:'document',target_id:'document:$document',shot_id:null,shot_number_at_time:null,field:'$summary',before:null,after:null,deleted:false,metrics:diff.metrics}]:diff.changes;
+  const changes=diff.summary_only?[{target_kind:'document',target_id:'document:$document',shot_id:null,shot_number_at_time:null,field:'$summary',before:null,after:null,deleted:false,metrics:diff.metrics},...diff.changes.filter(c=>c.segment_event)]:diff.changes;
   for(const c of changes)this.insert('storyboard_changes',{id:randomUUID(),document_id:next.id,version:next.revision,target_kind:c.target_kind,target_id:c.target_id,shot_id:c.shot_id,shot_number_at_time:c.shot_number_at_time,field:c.field,change_json:canonical(c),created_at:now,updated_at:now});
   // Pending is a review queue for Codex writes, independent of the permanent log.
   if(!['agent','generation'].includes(author.author_kind))return;
@@ -112,7 +112,7 @@ export class StoryboardHistory{
      if(row.request_id&&!idOK(row.request_id)||row.request_hash!==null&&!/^[a-f0-9]{64}$/.test(row.request_hash))throw fail('HISTORY_BACKUP_INVALID','历史请求无效');
      if(row.document_json!==null){const p=JSON.parse(row.document_json);if(p.document_id!==row.document_id||p.bound_project_id!==docs.get(row.document_id).project_id||p.revision!==row.version||Buffer.byteLength(row.document_json)!==row.byte_size)throw fail('HISTORY_BACKUP_INVALID','历史完整版无效');}else if(row.byte_size!==0)throw fail('HISTORY_BACKUP_INVALID','裁剪大小无效');
      versions.set(key,row);if(row.request_id)requests.add(row.request_id);
-    }else if(!['shot','scene','document'].includes(row.target_kind))throw fail('HISTORY_BACKUP_INVALID','历史实体无效');
+    }else if(!['shot','scene','document','segment'].includes(row.target_kind))throw fail('HISTORY_BACKUP_INVALID','历史实体无效');
     if(table==='storyboard_changes')JSON.parse(row.change_json);if(table==='storyboard_pending'&&!Array.isArray(JSON.parse(row.fields_json)))throw fail('HISTORY_BACKUP_INVALID','待看字段无效');
    }
   }

@@ -105,6 +105,69 @@
     "bound_project_id": {
       "type": "string",
       "pattern": "^[a-fA-F0-9]{8}(-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$"
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "start_shot_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,160}$"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Z]+([1-9][0-9]*)?$"
+          },
+          "start_shot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "segment_settings": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "seedance_2_5",
+            "seedance_2_0",
+            "camera",
+            "custom"
+          ]
+        },
+        "custom_limit_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "segment_used_names": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z]+([1-9][0-9]*)?$"
+      }
+    },
+    "segment_used_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,160}$"
+      }
     }
   },
   "required": [

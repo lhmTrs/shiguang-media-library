@@ -97,3 +97,5 @@ test('material query encoding, bounded result and read-only video status use act
  await assert.rejects(cap.execute('global',{operationId:'materials.search',args:{}},{invoke:async()=>({blob:'a'.repeat(1024*1024)})}),/结果超过/);
  for(const operationId of ['database.query','files.move','models.generate','service.stop','accounts.read','templates.delete'])await assert.rejects(f.run('global',operationId),/没有该能力/);
 });
+
+ test('segment capability uses current project readonly route without writes',async t=>{const f=await fixture(t);f.board.initialize(f.a.id,{source:syntheticSource(),request_id:randomUUID(),expected_revision:null});const result=await f.run(f.a.id,'storyboards.segments');assert.ok(result);assert.equal(f.calls.at(-1).method,'GET');assert.equal(f.calls.at(-1).path,'/api/storyboard/projects/'+f.a.id+'/segments');assert.throws(()=>cap.docs('global',{operationId:'storyboards.segments'}));});

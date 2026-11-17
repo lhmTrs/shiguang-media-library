@@ -27,8 +27,8 @@ const entry=obj({'编号':str,'名称':str,'描述':str,'年龄':str,'身份':st
 const dialogue=obj({'人物编号':str,'人物':str,'声源':str,'台词':str,'表演要求':str});
 const continuation=obj({'来源镜号':str,'说明':str});
 const shot=obj({'镜号':str,'开始秒':num,'结束秒':num,'时长秒':num,'景别与角度':str,'画面与人物动作':str,'摄影机设计':str,'人物编号':arr(str),'道具编号':arr(str),'场景编号':str,'声音与对白':obj({'环境与动作声':str,'对白':arr(dialogue),'承接对白':{anyOf:[continuation,{type:'null'}]}}),'剪辑衔接':str});
-export const outputSchema=obj({'格式版本':{type:'string',enum:['2.0.0']},'完整分镜':{type:'boolean',enum:[true]},'项目名称':str,'故事核心':str,'画幅':str,'总时长秒':num,'素材清单':obj({'人物':arr(entry),'场景':arr(entry),'道具':arr(entry)}),'场景':arr(obj({'场次':{type:'integer'},'地点':str,'场景编号':str,'时间':str,'内外景':str,'空间设定':str,'开始秒':num,'结束秒':num,'时长秒':num,'镜头':arr(shot)}))});
-export const PROFILE='storyboard-json-2.0.0-conservative-v1';
+export const outputSchema=obj({'格式版本':{type:'string',enum:['2.0.0']},'完整分镜':{type:'boolean',enum:[true]},'项目名称':str,'故事核心':str,'画幅':str,'总时长秒':num,'素材清单':obj({'人物':arr(entry),'场景':arr(entry),'道具':arr(entry)}),'分段':arr(obj({'段':str,'起始镜号':str})),'分割模式':obj({'模式':{type:'string',enum:['seedance_2_5','seedance_2_0','camera','custom']},'自定义上限毫秒':{anyOf:[{type:'integer'},{type:'null'}]}}),'场景':arr(obj({'场次':{type:'integer'},'地点':str,'场景编号':str,'时间':str,'内外景':str,'空间设定':str,'开始秒':num,'结束秒':num,'时长秒':num,'镜头':arr(shot)}))});
+export const PROFILE='storyboard-json-2.0.0-segments-v1';
 function exactInteger(value,raw,path){
  if(typeof value!=='number'||!Number.isSafeInteger(value)||typeof raw!=='string'||raw.length>80)invalid(path,'须为有界精确整数');
  const match=/^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(raw);if(!match)invalid(path,'整数词法无效');

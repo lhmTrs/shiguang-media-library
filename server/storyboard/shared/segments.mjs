@@ -20,6 +20,7 @@ export function compareSegmentNames(a,b) {
 }
 export function getSegmentLimit(settings = defaults()) {
  if(!settings || !SEGMENT_MODES.includes(settings.mode))fail('SEGMENT_MODE_INVALID','分割模式无效',{path:'segment_settings'});
+ if(settings.custom_limit_ms!=null&&(!Number.isSafeInteger(settings.custom_limit_ms)||settings.custom_limit_ms<=0))fail('SEGMENT_MODE_INVALID','自定义上限须为正安全整数毫秒或null',{path:'segment_settings.custom_limit_ms'});
  if(settings.mode==='custom') {
   if(!Number.isSafeInteger(settings.custom_limit_ms)||settings.custom_limit_ms<=0)fail('SEGMENT_MODE_INVALID','自定义上限须为正安全整数毫秒',{path:'segment_settings.custom_limit_ms'});
   return settings.custom_limit_ms;
@@ -33,6 +34,7 @@ export function withSegments(project) {
  if(!Array.isArray(p.segments))fail('SEGMENT_STRUCTURE_INVALID','segments须为数组',{path:'segments'});
  if(p.segments.some(s=>!s||typeof s!=='object'))fail('SEGMENT_STRUCTURE_INVALID','段须为对象',{path:'segments'});
  if(p.segment_settings===undefined)p.segment_settings=defaults();
+ if(p.segment_settings&&typeof p.segment_settings==='object'&&p.segment_settings.custom_limit_ms===undefined)p.segment_settings.custom_limit_ms=null;
  p.segment_used_names=unique([...(Array.isArray(p.segment_used_names)?p.segment_used_names:[]),...p.segments.map(s=>s.name)]);
  p.segment_used_ids=unique([...(Array.isArray(p.segment_used_ids)?p.segment_used_ids:[]),...p.segments.map(s=>s.id)]);
  return p;
@@ -119,7 +121,7 @@ export function reconcileSegmentCuts(before,next,{insertions=[],firstSegmentId}=
   let index=1;while(old.segment_used_names.includes(baseName(index)))index++;
   retained.push({id:firstSegmentId,name:baseName(index),start_shot_id:all[0].id});
  }
- p.segments=retained;p.segment_settings=copy(old.segment_settings);p.segment_used_names=copy(old.segment_used_names);p.segment_used_ids=copy(old.segment_used_ids);
+ p.segments=retained;p.segment_settings=copy(next.segment_settings===undefined?old.segment_settings:next.segment_settings);p.segment_used_names=copy(old.segment_used_names);p.segment_used_ids=copy(old.segment_used_ids);
  validateSegmentStructure(p);
  // A reorder which interleaves old memberships cannot be repaired unambiguously.
  const summary=segmentSummary(p);
@@ -137,6 +139,7 @@ export function validateSegmentSave(previous,candidate,{kind='save',author='user
  if(candidate.segment_settings===undefined&&old&&kind==='save')p.segment_settings=copy(old.segment_settings);
  const current=segmentSummary(p),prior=old?segmentSummary(old):{segments:[],used_names:[],used_ids:[]};
  const oldById=new Map(prior.segments.map(s=>[s.id,s]));
+ if(!Array.isArray(overwrites)||overwrites.some(o=>!o||typeof o.segment_id!=='string'||typeof o.name!=='string'))fail('SEGMENT_NAME_REUSED','覆盖确认须为段ID和名称列表');
  if(kind==='save')for(const s of current.segments) {
   const was=oldById.get(s.id);
   if(was) {if(was.name!==s.name)fail('SEGMENT_NAME_IMMUTABLE','已有段不可改名',{segment_id:s.id});continue;}
@@ -157,15 +160,16 @@ export function validateSegmentSave(previous,candidate,{kind='save',author='user
  return p;
 }
 export function segmentChanges(before,after) {
- const left=before?segmentSummary(before):{segments:[]},right=after?segmentSummary(after):{segments:[]},events=[];
+ const view=project=>{if(!project)return {segments:[]};const p=withSegments(project),positions=new Map(shots(p).map((q,i)=>[q.id,String(i+1).padStart(2,'0')]));return {segments:p.segments.map(s=>({...s,start_number:positions.get(s.start_shot_id)}))};};
+ const left=view(before),right=view(after),events=[],usedNames=new Set(before?withSegments(before).segment_used_names:[]);
  const a=new Map(left.segments.map(s=>[s.id,s])),b=new Map(right.segments.map(s=>[s.id,s]));
  const point=s=>s?{start_shot_id:s.start_shot_id,start_number:s.start_number}:null;
  for(const id of unique([...a.keys(),...b.keys()])) {
   const old=a.get(id),next=b.get(id),s=next??old;
   if(old&&next&&old.start_shot_id===next.start_shot_id&&old.name===next.name)continue;
-  const retired=!old&&left.segments.find(q=>q.name===s.name);
+  const retired=!old&&usedNames.has(s.name);
   const event={type:!old?(retired?'overwrite':'add'):!next?'remove':'move_start',segment_id:id,name:s.name,before:point(old),after:point(next)};
-  if(retired)event.previous_name=retired.name;
+  if(retired)event.previous_name=s.name;
   if(!next){const index=left.segments.findIndex(q=>q.id===id),parent=left.segments.slice(0,index).reverse().find(q=>b.has(q.id));if(parent)event.merged_into={id:parent.id,name:parent.name};}
   events.push(event);
  }

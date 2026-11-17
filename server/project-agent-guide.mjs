@@ -42,6 +42,28 @@ ${example({ project: '<基于读取结果修改后的完整 project 对象>', ex
 
 初始化请求字段为 \`source\`（完整初始化对象）、\`expected_revision\`（预览返回值，空项目为 null）和新生成的 UUID \`request_id\`。结果未知时，使用原请求 ID 查询 \`GET ${storyboard}/requests/<request_id>\`，保留原请求，避免重复初始化。
 
+## 连续分段与保存边界
+
+读取 \`GET ${storyboard}/segments\`（内置工具 storyboards.segments）可得段的稳定ID、起止镜号、shot_ids、duration_ms、overlong、模式及used_names/used_ids。该接口只读，不修账、不清待看。段可跨场景，按全片切点顺序覆盖全部镜头，第一段必须从第一镜开始；名字只用于展示，不能用镜号或名称代替稳定ID。空稿用segments:[]。
+
+规范化初始化正文最小分段示例（start_shot_id用正文第一镜真实ID；初始化服务会重新分配所有段ID）：
+
+${example({segments:[{id:'input_segment_A',name:'A',start_shot_id:'shot_first'}],segment_settings:{mode:'seedance_2_5',custom_limit_ms:null}})}
+
+中文初始化只使用顶层分段，禁止逐镜段字段：
+
+${example({'分段':[{'段':'A','起始镜号':'01'}],'分割模式':{'模式':'seedance_2_5','自定义上限毫秒':null}})}
+
+两种新初始化都必须显式提供分段，缺少返回SEGMENTS_REQUIRED；中文镜号须全片1..N唯一连续。旧存稿读取派生稳定A段且不写库；旧历史/备份无段时恢复也按A，不修改旧快照。普通PUT须保留现有segments、segment_settings及稳定ID；原多段而遗漏segments会拒绝。segment_used_names和segment_used_ids由服务端维护，客户端传短列表不能清空或回退。
+
+已有段ID不可改名，新段ID不可复用退役ID。默认切段名字为原基础字母加未用最小正整数；例如A1再切仍可能为A2/A3，显示始终按切点而非字母排序。合并保留前段身份，删除整段不回收名字。agent及generation普通修改只能用从未用过的名字，不得覆盖空基础字母；用户明确覆盖最近空基础字母时需另带segment_name_overwrites，不能冒充此确认。整份初始化/重生成按输入重置名称账本并新发段ID，旧ID登记保留；恢复旧版则union账本，不回退后来用过的名字，允许复活原历史实体。
+
+新增、复制镜头归锚点段；在段首上方插入，须同次将该段start_shot_id移到新增镜头。共享reconcileSegmentCuts传insertions:[{shot_id,anchor_shot_id,side:"before"或"after"}]区分前段末镜下方与后段首镜上方。删除段首移到该段下一保留镜，删除整段移除切点。agent整份重排时需明确提供全局连续合法切点。
+
+独立segment_settings模式：seedance_2_5上限30000ms、seedance_2_0上限15000ms、camera不限、custom须正安全整数custom_limit_ms。这些是程序内用户预设，并非已核实的平台官方能力；不要改settings.model替代该字段。时长逐镜求和，整上限可过。普通保存的新超长段、同ID比上一保存版本更长的超长段返回SEGMENT_TOO_LONG；已有超长段不增长可保存，换更小上限也适用此例外。初始化/整集重生成任何超长段均拒绝，不擅自改成camera绕过；旧版本恢复不拦超长，但仍核结构和资产。错误details.segments列出id/name/duration_ms/previous_duration_ms/limit_ms。
+
+段/模式与正文同事务、同expected_revision保存；request_id幂等、409后重读规则不变。永久改动含segment_event；仅agent/generation产生待看，段计入pending_document_count。清除全部须all:true与实际看过的through_version，shot_ids仅清镜头；读取不会清待看。恢复旧版另存新版本，既有资产引用保护不变。本功能不自动分段、不调整现有视频绑定，也不启动平台生成。
+
 ## 人物、场景和道具
 ${shared}
 - 列表：\`GET ${assets}?project_id=${projectId}&kind=character&page=1\`。\`kind\` 可为 \`character\`、\`scene\`、\`prop\`，每页 40 条，可用 \`q\` 搜索。优先复用当前项目中的资产 ID。

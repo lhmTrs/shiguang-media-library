@@ -341,6 +341,51 @@
         ],
         "additionalProperties": true
       }
+    },
+    "分段": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "段",
+          "起始镜号"
+        ],
+        "properties": {
+          "段": {
+            "type": "string",
+            "pattern": "^[A-Z]+([1-9][0-9]*)?$"
+          },
+          "起始镜号": {
+            "type": [
+              "string",
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "分割模式": {
+      "type": "object",
+      "required": [
+        "模式"
+      ],
+      "properties": {
+        "模式": {
+          "enum": [
+            "seedance_2_5",
+            "seedance_2_0",
+            "camera",
+            "custom"
+          ]
+        },
+        "自定义上限毫秒": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
     }
   },
   "required": [
@@ -349,7 +394,8 @@
     "项目名称",
     "总时长秒",
     "素材清单",
-    "场景"
+    "场景",
+    "分段"
   ],
   "additionalProperties": true
 }
