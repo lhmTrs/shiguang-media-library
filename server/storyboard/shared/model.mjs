@@ -1,3 +1,4 @@
+import {validateSegmentStructure, withSegments} from './segments.mjs';
 import { validateSchema } from './schema-validator.mjs';
 // File-format functions run identically in Node and the browser. No filesystem or AI calls.
 export const SCHEMA_VERSION = '1.0.0';
@@ -160,6 +161,7 @@ export function validateProject(p) {
             }
         }
     }
+    if (p.segments !== undefined) { try { validateSegmentStructure(withSegments(p)); } catch(e) { add(e.details?.path ?? 'segments', e.message); } }
     return errors;
 }
 export function normalizeProject(value) { const p = clone(value); p.reference_bindings ??= []; for (const s of p.scenes)

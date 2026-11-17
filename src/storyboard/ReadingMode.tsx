@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import * as domain from '../../server/storyboard/shared/model.mjs';
+import { segmentSummary } from './segments';
 
 type Any = any; // 与 StoryboardEditor 一致：分镜文档是后端共享模型，前端不重复声明完整类型
 const M = domain as Any;
@@ -17,6 +18,7 @@ const text = (v: unknown) => v === null || v === undefined || v === '' ? '（空
 export function ReadingMode({project, title, onClose, onJump, exitLabel = '退出阅读', banner, diff}: {project: Any; title: string; onClose: () => void; onJump?: (shotId: string) => void; exitLabel?: string; banner?: React.ReactNode; diff?: Map<string, DiffChange[]>}) {
   const rows: Row[] = useMemo(() => M.timeline(project), [project]);
   const [side, setSide] = useState(true);
+  const segStart = useMemo(() => new Map<string, Any>(segmentSummary(project).segments.map((g: Any) => [g.start_shot_id, g])), [project]);
   const exit = useRef<HTMLButtonElement>(null), body = useRef<HTMLDivElement>(null);
   const names = useMemo(() => new Map<string, string>((project.characters ?? []).map((c: Any) => [c.id, c.name])), [project]);
   const scenes = useMemo(() => {
@@ -53,7 +55,9 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
         <h2 className="sb-reading-scene">{sceneLabel(g.scene, g.index)}<small>{[g.scene.story_time, g.scene.interior_exterior].filter(Boolean).join(' · ')}{g.scene.story_time || g.scene.interior_exterior ? ' · ' : ''}{g.rows.length} 镜 · {M.sec(g.rows.reduce((n, r) => n + r.shot.duration_ms, 0))} 秒</small></h2>
         {g.rows.map(r => {
           const index = rows.indexOf(r), next = rows[index + 1];
+          const seg = segStart.get(r.shot.id);
           return <React.Fragment key={r.shot.id}>
+            {seg && <div className={'sb-reading-segment' + (seg.overlong ? ' is-over' : '')} data-testid={'reading-segment-' + seg.name}><b>{seg.name} 段</b><span>{seg.shot_count} 镜 · {M.sec(seg.duration_ms)} 秒{seg.overlong ? ' · 超长' : ''}</span></div>}
             <article className={'sb-reading-shot' + (side ? '' : ' is-narrow') + (diff?.has(r.shot.id) ? ' is-diff' : '')} data-shot={r.shot.id}>
               <button type="button" className="sb-reading-num" title={onJump ? '回到编辑并定位到这一镜' : undefined} disabled={!onJump} onClick={() => onJump?.(r.shot.id)}>{r.number}<small>{M.sec(r.shot.duration_ms)} 秒<br/>{tc(r.start_ms)}–{tc(r.end_ms)}</small></button>
               <div className="sb-reading-main">

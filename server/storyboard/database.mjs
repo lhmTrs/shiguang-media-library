@@ -1,3 +1,4 @@
+import {withSegments, validateSegmentSave, segmentSummary, reconcileSegmentCuts} from './shared/segments.mjs';
 import {StoryboardHistory,changeAuthor} from './history.mjs';
 import {tablePresent} from './history-schema.mjs';
 import {creativeReferenceSlots} from './asset-references.mjs';
@@ -55,7 +56,7 @@ export class StoryboardDatabase {
     });
   }
   hydrate(row) {
-    const p = JSON.parse(row.document_json), linked = this.linked(row);
+    const p = withSegments(JSON.parse(row.document_json)), linked = this.linked(row);
     const resolver = this.referenceResolver(row.project_id);
     const failure = () => fault('分镜资产关联损坏，已停止保存', 503);
     const { assetResolution, lookResolution } = validateReferences(p, resolver, { failure });
@@ -106,6 +107,7 @@ export class StoryboardDatabase {
     return this.db.transaction(load)();
   }
   readInTransaction(projectId) { this.project(projectId); const row=this.head(projectId); if(!row) throw fault('此项目尚未初始化分镜',404); return this.hydrate(row); }
+  segments(projectId) { const view=this.read(projectId); return {document_id:view.project.document_id,current_revision:view.revision,...segmentSummary(view.project)}; }
   assetShots(assetId, projectId) {
     const original = this.assets.head(assetId);
     const target = projectId ?? original.project_id;
@@ -190,7 +192,9 @@ export class StoryboardDatabase {
       }
       map.set(e.kind+':'+e.name_key,a.id);
     }
-    const p=bindInitialization(parsed,map,documentId); p.document_id=documentId; p.bound_project_id=projectId; p.revision=(old?.revision??0)+1;
+    let p=bindInitialization(parsed,map,documentId); p.document_id=documentId; p.bound_project_id=projectId; p.revision=(old?.revision??0)+1;
+    p.segments=p.segments.map(segment=>({...segment,id:'segment_'+randomUUID()}));
+    p=validateSegmentSave(old?JSON.parse(old.document_json):null,p,{kind:'initialize',author:context.author_kind??'import'});
     p.legacy_media_project_id=input.source.schema_version==='1.0.0' ? input.source.legacy_media_project_id ?? input.source.project_id : null;
     this.validateWriteReferences(p, projectId);
     const values=[p.title,canonical(p),p.revision,now,input.filename??'分镜.json',sourceHash,now];
@@ -223,7 +227,10 @@ export class StoryboardDatabase {
       this.project(projectId,true);this.history.require();this.generationLocks?.assertWritable(projectId); const old=this.head(projectId,true); if(!old) throw fault('请先用完整 JSON 初始化分镜',404);
       const repeated=this.history.replay(projectId,input,requestHash);if(repeated)return repeated;
       this.expected(old,input.expected_revision);
-      const p=M.normalizeProject(input.project), previous=JSON.parse(old.document_json);
+      const previous=JSON.parse(old.document_json);
+      let candidate=M.normalizeProject(input.project);
+      if(restoreVersion===null&&candidate.segments===undefined&&withSegments(previous).segments.length===0&&M.timeline(candidate).length)candidate=reconcileSegmentCuts(previous,candidate,{firstSegmentId:'segment_'+randomUUID()});
+      const p=validateSegmentSave(previous,candidate,{kind:restoreVersion===null?'save':'restore',author:author.author_kind,overwrites:input.segment_name_overwrites??[]});
       if(p.project_id!==old.id) throw fault('分镜编号不匹配');
       if(p.document_id!==old.id||p.bound_project_id!==projectId)throw fault('分镜所属项目不匹配');
       if(p.generation_batches.length || p.generation_runs.length) throw fault('当前分镜不保存历史批次或快照');
@@ -262,7 +269,7 @@ export class StoryboardDatabase {
           else delete character[field];
         }
       }
-      if(restoreVersion===null&&canonical(p)===canonical(previous))return {...currentView,unchanged:true};
+      if(restoreVersion===null&&canonical(p)===canonical(withSegments(previous)))return {...currentView,unchanged:true};
       p.revision=old.revision+1; const now=Math.max(Date.now(),old.updated_at+1);
       const updated=this.db.prepare('UPDATE storyboard_documents SET title=?,document_json=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(p.title,canonical(p),p.revision,now,old.id,old.revision);
       if(updated.changes!==1)throw fault('分镜已由其它保存更新，请重读',409,{current_revision:this.head(projectId,true)?.revision??null});

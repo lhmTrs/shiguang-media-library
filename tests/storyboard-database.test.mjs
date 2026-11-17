@@ -32,7 +32,7 @@ test('初始化固定请求回执幂等，新请求同文件仍重置；清单�
  const f=await creativeFixture();try{const db=new StoryboardDatabase(f.lib,f.store).init(),source=syntheticSource(),request_id=randomUUID(),input={source,request_id,expected_revision:null};
  const a=db.initialize(f.a.id,input),b=db.initialize(f.a.id,input);assert.equal(b.repeated,true);assert.equal(b.revision,a.revision);assert.equal(db.request(f.a.id,request_id).receipt.revision,a.revision);
  assert.throws(()=>db.initialize(f.a.id,{...input,source:{...source,title:'不同'}}),e=>e.status===409);
- const edit=structuredClone(a.project);edit.scenes[0].shots=[];const saved=db.save(f.a.id,{project:edit,expected_revision:a.revision});assert.equal(saved.project.asset_manifest.character.length,2);
+ const edit=structuredClone(a.project);edit.scenes[0].shots=[];edit.segments=[];const saved=db.save(f.a.id,{project:edit,expected_revision:a.revision});assert.equal(saved.project.asset_manifest.character.length,2);
  const remove=structuredClone(saved.project);remove.asset_manifest.character.pop();remove.characters.pop();assert.throws(()=>db.save(f.a.id,{project:remove,expected_revision:saved.revision}),/不能移除/);
  const again=init(db,f,source);assert.equal(again.project.scenes[0].shots.length,1);assert.ok(again.revision>saved.revision);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM storyboard_import_requests').get().n,2);
  }finally{await f.close();}
@@ -68,7 +68,7 @@ test('完整备份跨新SQLite恢复，重算摘要的悬空关系被拒绝且�
 });
 test('中文清单与局部编号不猜测、原文保留、重复与清单遗漏在写入前拒绝',async()=>{
  const f=await creativeFixture();try{const db=new StoryboardDatabase(f.lib,f.store).init();
- const source={'完整分镜':true,'项目名称':'中文合成','总时长秒':3,'素材清单':{'人物':[{'编号':'C1','名称':'甲'}],'场景':[{'编号':'S1','名称':'甲的客厅'}],'道具':[{'编号':'P1','名称':'包'}]},'场景':[{'场次':1,'地点':'客厅','场景编号':'S1','开始秒':0,'结束秒':3,'时长秒':3,'镜头':[{'镜号':'01','开始秒':0,'结束秒':3,'时长秒':3,'画面与人物动作':'原文','摄影机设计':'原运镜','人物编号':['C1'],'道具编号':['P1'],'声音与对白':{'对白':[{'人物编号':'C1','台词':'原对白'}]}}]}]};
+ const source={'分段':[{'段':'A','起始镜号':'01'}],'完整分镜':true,'项目名称':'中文合成','总时长秒':3,'素材清单':{'人物':[{'编号':'C1','名称':'甲'}],'场景':[{'编号':'S1','名称':'甲的客厅'}],'道具':[{'编号':'P1','名称':'包'}]},'场景':[{'场次':1,'地点':'客厅','场景编号':'S1','开始秒':0,'结束秒':3,'时长秒':3,'镜头':[{'镜号':'01','开始秒':0,'结束秒':3,'时长秒':3,'画面与人物动作':'原文','摄影机设计':'原运镜','人物编号':['C1'],'道具编号':['P1'],'声音与对白':{'对白':[{'人物编号':'C1','台词':'原对白'}]}}]}]};
  const r=init(db,f,source);assert.deepEqual(r.project.import_source.original,source);assert.equal(r.project.characters[0].name,'甲');assert.equal(r.project.scenes[0].shots[0].dialogue[0].text,'原对白');
  const before=db.backup().checksum;
  for(const change of [s=>s.complete=false,s=>s['素材清单']['人物'].push('甲'),s=>s['场景'][0]['镜头'][0]['道具编号']=['missing']]) {const bad=structuredClone(source);change(bad);assert.throws(()=>init(db,f,bad));assert.equal(db.backup().checksum,before);}

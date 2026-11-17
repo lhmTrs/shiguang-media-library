@@ -3,7 +3,7 @@ import {BUILTIN_ID} from './rules.mjs';
 import {outputSchema,PROFILE} from './validation.mjs';
 export function generationRouter(service){const {store,rules}=service,router=express.Router();router.use(express.json({limit:'2mb'}));const route=(method,url,fn)=>router[method](url,(req,res,next)=>Promise.resolve().then(()=>fn(req,res)).catch(next));
  router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
- route('get','/formats',(_req,res)=>res.json({formats:[{id:'2.0.0',revision:'2026-11-04-json-v2',schemaProfile:PROFILE,outputSchema}],defaultMainRule:{id:BUILTIN_ID,version:rules.head(BUILTIN_ID).current_version}}));
+ route('get','/formats',(_req,res)=>res.json({formats:[{id:'2.0.0',revision:'2026-11-17-json-v2-segments',schemaProfile:PROFILE,outputSchema}],defaultMainRule:{id:BUILTIN_ID,version:rules.head(BUILTIN_ID).current_version}}));
  route('get','/rules/categories',(_req,res)=>res.json(rules.categories()));route('post','/rules/categories',(req,res)=>res.status(201).json(rules.saveCategory(req.body)));route('patch','/rules/categories/:id',(req,res)=>res.json(rules.saveCategory(req.body,req.params.id)));route('delete','/rules/categories/:id',(req,res)=>res.json(rules.removeCategory(req.params.id)));
  route('get','/skills',async(_req,res)=>res.json(await service.skills.list()));route('post','/skills/preview',async(req,res)=>res.json(await service.skills.preview(req.body)));
  route('get','/rules/shared-director',async(_req,res)=>res.json(await rules.sharedDirector()));

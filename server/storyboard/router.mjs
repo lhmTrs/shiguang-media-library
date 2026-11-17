@@ -42,6 +42,7 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
     router.post('/projects/:id/pending/clear',route((req,res)=>res.json(store.history.clear(req.params.id,req.body))));
     router.patch('/projects/:id/versions/:v/category',route((req,res)=>res.json(store.history.category(req.params.id,Number(req.params.v),req.body))));
     router.post('/projects/:id/versions/:v/restore',route((req,res)=>res.json(store.restoreVersion(req.params.id,Number(req.params.v),req.body))));
+    router.get('/projects/:id/segments', route((req,res)=>res.json(store.segments(req.params.id))));
     router.get('/projects/:id', route(async (req,res) => res.json(store.read(req.params.id))));
     router.put('/projects/:id', route(async (req,res) => res.json(store.save(req.params.id,req.body))));
   } else {
@@ -67,7 +68,7 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
       message: error.message,
       ...(error.code && { code: error.code }),
       ...(error.invalid_assets && {invalid_assets:error.invalid_assets}),
-      ...error.details, errors: error.errors, current_revision: error.current_revision,
+      ...(error.details && {details:error.details}), ...error.details, errors: error.errors, current_revision: error.current_revision,
     });
   });
   return {

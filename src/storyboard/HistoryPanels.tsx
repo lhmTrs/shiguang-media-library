@@ -2,9 +2,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Check, Crosshair, Eye, RotateCcw } from 'lucide-react';
 import { ReadingMode } from './ReadingMode';
+import { segmentDiffText, segmentEventText } from './segments';
 import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, kb, show, when, type Change, type HistoryApi, type PendingList, type ReasonCategory, type VersionList, type VersionMeta } from './history';
 
-const FIELD_LABEL: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
+const FIELD_LABEL: Record<string, string> = {$segment: '分段', $segment_settings: '分割模式', framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $number: '全片镜号', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
 const fieldName = (f: string) => FIELD_LABEL[f] ?? f;
 const value = (field: string, v: unknown) => field === 'duration_ms' && typeof v === 'number' ? `${(v / 1000).toString()} 秒` : show(v);
 const Problem = ({error}: {error: unknown}) => <p className="sb-history-alert" role="alert"><AlertTriangle size={15}/>{error instanceof HistoryError && error.code === MIGRATION_REQUIRED ? '改动记录还没有启用：这个素材库需要先做一次数据库迁移（由维护人员执行）。迁移前可以继续改草稿，但保存会被拒绝，草稿会留在这台电脑上。' : (error as Error).message}</p>;
@@ -22,20 +23,21 @@ function Fields({fields, before, after}: {fields: string[]; before: unknown; aft
   return <ul className="sb-history-fields">{fields.map(f => { const a = pick(before, f), b = pick(after, f); return <li key={f}><span className="sb-history-field">{fieldName(f)}：</span>{a === undefined && b === undefined ? <span className="sb-history-muted">已修改</span> : <><del>{value(f, a)}</del> → <ins>{value(f, b)}</ins></>}</li>; })}</ul>;
 }
 
-export function PendingPanel({api, refreshKey, onLocate, onCount}: {api: HistoryApi; refreshKey: unknown; onLocate: (shotId: string) => void; onCount: (n: number) => void}) {
+const pendingTotal = (d: {pending_count: number; pending_document_count?: number}) => d.pending_count + (d.pending_document_count ?? 0);
+export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {api: HistoryApi; refreshKey: unknown; onLocate: (shotId: string) => void; onCount: (n: number) => void; shotNumber?: (shotId: string) => string | undefined}) {
   const [data, setData] = useState<PendingList | null>(null), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false);
-  const load = useCallback(async () => { try { const d = await api.pending(); setData(d); setError(null); onCount(d.pending_count); } catch (e) { setError(e); } }, [api, onCount]);
+  const load = useCallback(async () => { try { const d = await api.pending(); setData(d); setError(null); onCount(pendingTotal(d)); } catch (e) { setError(e); } }, [api, onCount]);
   useEffect(() => { void load(); }, [load, refreshKey]);
   const clear = async (target: {shot_ids: string[]} | {all: true}) => { if (!data || busy) return; setBusy(true); try { const r = await api.clearPending(data.current_revision, target); onCount(r.pending_count); await load(); } catch (e) { setError(e); } finally { setBusy(false); } };
   const setCategory = async (v: number, next: ReasonCategory, prev: ReasonCategory | null) => { try { await api.setCategory(v, next, prev); await load(); } catch (e) { setError(e); } };
   return <div className="sb-history" aria-label="待看的修改">
-    <div className="sb-history-head"><div><h3>待看的修改 · {data ? data.pending_count : '…'} 处</h3><p>保存后被改过、你还没看过的镜头。点「看过了」只清掉标记，不影响内容。</p></div>
+    <div className="sb-history-head"><div><h3>待看的修改 · {data ? pendingTotal(data) : '…'} 处</h3><p>保存后被改过、你还没看过的镜头。点「看过了」只清掉标记，不影响内容。</p></div>
       {!!data?.items.length && <button type="button" disabled={busy} onClick={() => void clear({all: true})}>全部看过</button>}</div>
     {error ? <Problem error={error}/> : null}
     {data && !data.items.length && <p className="sb-history-empty">没有待看的修改。</p>}
     {data?.items.map(item => { const v = Math.max(...item.versions); return <article key={item.target_kind + item.target_id} className="sb-history-card">
       <div className="sb-history-row">
-        <strong>{item.target_kind === 'shot' ? (item.deleted ? `已删除镜头（当时镜 ${item.shot_number ?? '?'}）` : `镜 ${String(item.shot_number ?? '').padStart(2, '0')}`) : item.target_kind === 'scene' ? '场景设置' : '分镜整体设置'}</strong>
+        <strong>{item.target_kind === 'shot' ? (item.deleted ? `已删除镜头（当时镜 ${item.shot_number ?? '?'}）` : `镜 ${String(item.shot_number ?? '').padStart(2, '0')}`) : item.target_kind === 'scene' ? '场景设置' : item.target_kind === 'segment' ? '分段' : '分镜整体设置'}</strong>
         <Reason author={item.author_kind} category={item.reason_category} text={item.reason_text}/>
         <span className="sb-history-muted">{item.versions.map(n => 'V' + n).join('、')}</span>
         <span className="sb-history-spacer"/>
@@ -43,7 +45,7 @@ export function PendingPanel({api, refreshKey, onLocate, onCount}: {api: History
         {item.shot_id && !item.deleted && <button type="button" onClick={() => onLocate(item.shot_id!)}><Crosshair size={13}/>定位到镜头</button>}
         {item.shot_id && <button type="button" className="sb-primary" disabled={busy} onClick={() => void clear({shot_ids: [item.shot_id!]})}><Check size={13}/>看过了</button>}
       </div>
-      {item.summary_only ? <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p> : item.target_kind === 'shot' ? <Fields fields={item.fields} before={item.before} after={item.after}/> : <p className="sb-history-muted">改了：{item.fields.map(fieldName).join('、')}（详细内容在「改动记录」里查看那一版）</p>}
+      {item.summary_only ? <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p> : item.target_kind === 'shot' ? <Fields fields={item.fields} before={item.before} after={item.after}/> : item.target_kind === 'segment' ? <p>{segmentDiffText(item.before, item.after, shotNumber)}</p> : <p className="sb-history-muted">改了：{item.fields.map(fieldName).join('、')}（详细内容在「改动记录」里查看那一版）</p>}
     </article>; })}
   </div>;
 }
@@ -80,7 +82,7 @@ export function OldVersion({api, meta, title, currentRevision, onClose, onRestor
   const brief = (v: unknown) => { if (v && typeof v === 'object' && !Array.isArray(v)) { const o = v as Record<string, unknown>; const t = [o.framing, o.action].filter(x => typeof x === 'string' && x).join(' · '); if (t) return t; } return show(v); };
   const extra = compare && diff ? <div className="sb-history-compare">
     <p className="sb-history-muted">对比方向：<del>删除线</del> 是当前版本，<ins>绿色</ins> 是这一版（V{meta.version}）。{!diff.length && '两版内容相同。'}</p>
-    {others.length > 0 && <section><h4>分镜和场景设置的差异</h4><ul className="sb-history-fields">{others.map((c, i) => <li key={i}><span className="sb-history-field">{c.target_kind === 'scene' ? '场景' : '整体'} · {fieldName(c.field)}：</span><del>{value(c.field, c.after)}</del> → <ins>{value(c.field, c.before)}</ins></li>)}</ul></section>}
+    {others.length > 0 && <section><h4>分镜和场景设置的差异</h4><ul className="sb-history-fields">{others.map((c, i) => c.target_kind === 'segment' || c.segment_event ? <li key={i}><span className="sb-history-field">分段（这一版 → 当前）：</span>{segmentEventText(c.segment_event)}</li> : <li key={i}><span className="sb-history-field">{c.target_kind === 'scene' ? '场景' : '整体'} · {fieldName(c.field)}：</span><del>{value(c.field, c.after)}</del> → <ins>{value(c.field, c.before)}</ins></li>)}</ul></section>}
     {added.size > 0 && <section><h4>当前版本有、这一版没有的镜头（{added.size}）</h4><ul className="sb-history-fields">{[...added.values()].map(cs => { const c = cs.find(x => x.field === '$entity') ?? cs[0]; return <li key={c.target_id}><span className="sb-history-field">镜 {c.shot_number_at_time ?? '?'}（当前版本新增）：</span><del>{brief(c.after)}</del></li>; })}</ul></section>}
   </div> : null;
   const restore = async () => { if (busy || !window.confirm(`把 V${meta.version} 的内容恢复成一个新版本？现在的版本和之后的历史都会保留，可以再恢复回来。`)) return; setBusy(true); try { await api.restore(meta.version, currentRevision); onRestored(); } catch (e) { if (e instanceof HistoryError && e.code === 'RESTORE_ASSETS_INVALID') setInvalid(((e.data as {invalid_assets?: unknown[]})?.invalid_assets) ?? []); else setError(e); } finally { setBusy(false); } };
