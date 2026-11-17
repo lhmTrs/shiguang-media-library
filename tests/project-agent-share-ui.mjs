@@ -33,6 +33,7 @@ const server = spawn(process.execPath, ['server/index.mjs'], {
     MEDIA_NO_WATCH: '1',
     MEDIA_CODEX_AUTOCONNECT: '0',
     MEDIA_DISABLE_DESKTOP_NATIVE: '1',
+    MEDIA_UPDREAM_QUEUE_DIR: path.join(temp, 'updream-empty'),
     MEDIA_CLOUD_AUDIO_ENABLED: '0',
     SHIGUANG_AUDIO_ANALYSIS: '0',
     SHIGUANG_CLOUD_RELEASE_CONFIG: path.join(temp, 'no-cloud-config.json'),
@@ -79,10 +80,18 @@ try {
   assert.equal(guide.headers.get('cache-control'), 'no-store');
   assert.equal(guide.headers.get('set-cookie'), null);
   const markdown = await guide.text();
+  assert.match(markdown, /说明版本：2026-11-17\.1/);
   const binding = markdown.match(/^\x60\x60\x60json\n([\s\S]*?)\n\x60\x60\x60$/m);
   assert.deepEqual(JSON.parse(binding?.[1] ?? 'null'), { projectName: b.name, projectId: b.id, instanceId, origin });
   for (const privateValue of [a.id, source.title, token, cookie]) assert.ok(!markdown.includes(privateValue));
   assert.ok(!(await (await get(guidePath(a.id))).text()).includes(note));
+  // Follow the documented read-only entry points in this isolated application.
+  for (const route of [board + '/versions?offset=0&limit=20', board + '/versions/1',
+    board + '/versions/1/diff?against=current', board + '/changes?limit=20',
+    board + '/pending', board + '/segments', '/api/updream-progress?scope=active&offset=0&limit=20']) {
+    assert.ok(markdown.includes(route.includes('/versions/1') ? route.replace('/versions/1', '/versions/<version>') : route));
+    assert.equal((await get(route, {headers: {cookie, 'x-shiguang-library-id': instanceId}})).status, 200, route);
+  }
   assert.equal((await get(guidePath(b.id), { headers: { origin: 'https://example.invalid' } })).status, 403);
   assert.equal((await get(board)).status, 401);
   assert.equal((await get(board, { method: 'PUT', headers: { cookie } })).status, 403);
