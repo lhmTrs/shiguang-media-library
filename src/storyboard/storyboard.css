@@ -96,7 +96,6 @@
 .sb-scene-divider strong { font-weight: 500; }
 .sb-scene-divider small { color: var(--sb-secondary); margin-left: 12px; font-size: 11px; }
 .sb-app .sb-check-cell { padding-inline: 9px; text-align: center; }
-.sb-drag-handle { display: block; cursor: grab; color: var(--sb-secondary); margin-top: 15px; }
 .sb-app .sb-shot-heading { text-align: center; }
 .sb-app .sb-shot-number { padding: 10px 7px; }
 .sb-app .sb-shot-number .sbv-open-shot { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; width: 100%; min-width: 0; min-height: 64px; padding: 8px 3px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--sb-text); transition: background-color .15s, border-color .15s; }
@@ -343,3 +342,22 @@
 .sb-history-compare h4 { margin: 10px 0 4px; font-size: 13px; }
 .sb-history-compare del { color: var(--c-b94f49); background: var(--c-fbefea); text-decoration: line-through; padding: 0 3px; border-radius: 3px; }
 .sb-history-compare ins { color: var(--sb-accent); background: var(--sb-soft); text-decoration: none; padding: 0 3px; border-radius: 3px; }
+
+/* 分镜「段」第二批：镜头右键菜单、空场景新增镜头 */
+.sb-shot-menu { position: fixed; z-index: 60; min-width: 200px; max-width: 240px; padding: 4px; border: 1px solid var(--sb-line); border-radius: 8px; background: var(--sb-paper); box-shadow: 0 8px 24px var(--c-20322920); display: flex; flex-direction: column; }
+.sb-shot-menu button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--sb-text); font-size: 13px; text-align: left; cursor: pointer; }
+.sb-shot-menu button:hover:not(:disabled), .sb-shot-menu button:focus-visible { background: var(--sb-soft); outline: none; }
+.sb-shot-menu button:disabled { color: var(--sb-secondary); cursor: not-allowed; }
+.sb-shot-menu small { padding: 4px 10px 6px; color: var(--sb-secondary); font-size: 11px; line-height: 1.5; }
+.sb-app .sb-scene-shots .sb-scene-add { color: var(--sb-secondary); font-size: 11px; }
+/* 段分隔线：编辑表格与阅读模式 */
+.sb-app .sb-segment-divider > td { padding: 6px 12px; font-size: 12px; background: color-mix(in srgb, var(--sb-accent) 8%, var(--sb-paper)); border-top: 2px solid var(--sb-accent); border-bottom: 1px solid var(--sb-line); }
+.sb-segment-divider strong { color: var(--sb-accent); font-weight: 600; margin-right: 12px; }
+.sb-segment-divider span { color: var(--sb-secondary); font-size: 11px; margin-right: 12px; }
+.sb-segment-divider em { font-style: normal; color: var(--c-b34747, var(--sb-accent)); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
+.sb-app .sb-segment-divider.is-over > td { border-top-color: var(--c-b34747, var(--sb-accent)); background: color-mix(in srgb, var(--c-b34747, var(--sb-accent)) 8%, var(--sb-paper)); }
+.sb-app .sb-segment-divider button { float: right; padding: 2px 8px; font-size: 11px; }
+.sb-app .sb-statusbar .sb-segment-mode { padding: 2px 8px; font-size: 11px; color: var(--sb-secondary); }
+.sb-reading-segment { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 6px; padding: 4px 0 4px 10px; border-left: 3px solid var(--sb-accent); font-size: 13px; color: var(--sb-accent); }
+.sb-reading-segment span { font-size: 12px; color: var(--sb-secondary); }
+.sb-reading-segment.is-over { border-left-color: var(--c-b34747, var(--sb-accent)); }
