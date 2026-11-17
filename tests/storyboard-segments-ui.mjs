@@ -197,6 +197,34 @@ try {
     await expect(page.getByLabel('自定义上限（秒）', { exact: true })).toHaveCount(0);
   });
 
+  await check('G12 右键菜单在六种主题下都不透明：背景、文字、边框取到分镜主题色；窄屏 390 下底部镜头右键插入可用', async () => {
+    const themes = [...(await fs.readFile(path.join(root, 'src/theme-list.ts'), 'utf8')).matchAll(/\{ id: "([a-z]+)"/g)].map(m => m[1]);
+    assert.equal(themes.length, 6);
+    for (const theme of themes) {
+      await page.evaluate(t => { document.documentElement.dataset.theme = t; }, theme);
+      await row(3).click({ button: 'right' });
+      const menuBox = page.getByRole('menu');
+      await expect(menuBox).toBeVisible();
+      const st = await menuBox.evaluate(el => { const c = getComputedStyle(el), b = getComputedStyle(el.querySelector('button')), app = el.closest('.sb-app'); return { inApp: !!app, bg: c.backgroundColor, border: c.borderTopWidth, text: b.color, paper: getComputedStyle(app ?? el).getPropertyValue('--sb-paper').trim() }; });
+      assert.ok(st.inApp, theme + '：菜单应在分镜工作台里继承主题');
+      assert.notEqual(st.bg, 'rgba(0, 0, 0, 0)', theme + '：菜单背景不应透明'); assert.notEqual(st.bg, '', theme);
+      assert.notEqual(st.border, '0px', theme + '：菜单应有边框'); assert.ok(st.paper, theme + '：应取到 --sb-paper');
+      assert.notEqual(st.text, st.bg, theme + '：文字与背景不应同色');
+      await shot('segments-menu-' + theme);
+      await page.keyboard.press('Escape'); await expect(menuBox).toHaveCount(0);
+    }
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'forest'; });
+    await page.setViewportSize({ width: 390, height: 760 });
+    const hide = page.getByRole('button', { name: '关闭镜头详情' }); if (await hide.isVisible()) await hide.click();   // 窄屏详情是浮层，先关掉
+    const rows = page.locator('tr[data-shot]'), before = await rows.count();
+    const last = rows.nth(before - 1); await last.scrollIntoViewIfNeeded(); await last.click({ button: 'right' });
+    const box = await page.getByRole('menu').boundingBox(); assert.ok(box && box.x >= 0 && box.x + box.width <= 390 && box.y + box.height <= 760, '窄屏菜单应完整在屏幕内');
+    await shot('segments-menu-narrow');
+    await page.getByRole('menuitem', { name: '在下方插入镜头' }).click();
+    await expect(rows).toHaveCount(before + 1);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   assert.deepEqual(errors, [], '页面不应报错');
   assert.deepEqual(foreign, [], '不应访问外部地址');
   passed = true;

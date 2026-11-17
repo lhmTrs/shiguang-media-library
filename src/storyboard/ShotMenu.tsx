@@ -1,11 +1,12 @@
 // 分镜表镜头行的右键菜单（在上方插入 / 在下方插入 等）。键盘：上下键移动，Esc/Tab 关闭。
+// 挂到分镜工作台根节点（.sb-app）里而不是 body：分镜的颜色变量只在 .sb-app 上定义，挂到 body 会丢主题、背景透明。固定定位不受影响。
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 export type ShotMenuItem = { key: string; label: string; icon?: React.ReactNode; onSelect: () => void; disabled?: boolean; hint?: string };
 export type ShotMenuTarget = { x: number; y: number; title: string; returnFocus?: HTMLElement | null };
 
-export function ShotMenu({ target, items, close }: { target: ShotMenuTarget; items: ShotMenuItem[]; close: () => void }) {
+export function ShotMenu({ target, items, close, container }: { target: ShotMenuTarget; items: ShotMenuItem[]; close: () => void; container?: HTMLElement | null }) {
   const box = useRef<HTMLDivElement>(null);
   const done = () => { close(); target.returnFocus?.focus(); };
   useEffect(() => {
@@ -29,5 +30,5 @@ export function ShotMenu({ target, items, close }: { target: ShotMenuTarget; ite
       <button type="button" role="menuitem" disabled={item.disabled} title={item.hint} onClick={() => { done(); item.onSelect(); }}>{item.icon}{item.label}</button>
       {item.disabled && item.hint && <small>{item.hint}</small>}
     </React.Fragment>)}
-  </div>, document.body);
+  </div>, container ?? document.body);
 }

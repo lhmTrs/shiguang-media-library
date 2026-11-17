@@ -345,7 +345,7 @@
 
 /* 分镜「段」第二批：镜头右键菜单、空场景新增镜头 */
 .sb-shot-menu { position: fixed; z-index: 60; min-width: 200px; max-width: 240px; padding: 4px; border: 1px solid var(--sb-line); border-radius: 8px; background: var(--sb-paper); box-shadow: 0 8px 24px var(--c-20322920); display: flex; flex-direction: column; }
-.sb-shot-menu button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--sb-text); font-size: 13px; text-align: left; cursor: pointer; }
+.sb-shot-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 8px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--sb-text); font-size: 13px; text-align: left; cursor: pointer; }
 .sb-shot-menu button:hover:not(:disabled), .sb-shot-menu button:focus-visible { background: var(--sb-soft); outline: none; }
 .sb-shot-menu button:disabled { color: var(--sb-secondary); cursor: not-allowed; }
 .sb-shot-menu small { padding: 4px 10px 6px; color: var(--sb-secondary); font-size: 11px; line-height: 1.5; }
