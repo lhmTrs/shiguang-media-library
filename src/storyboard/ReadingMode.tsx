@@ -1,7 +1,7 @@
 // 分镜「阅读模式」（用户认可的设计稿）：整屏只留阅读内容，顶部一条细栏；Esc 退出。
 // 左边是画面和台词，右边一窄栏放镜头和声音（可收起）；两个镜头之间显示上一镜的「剪辑衔接」。只读，不改分镜。
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import * as domain from '../../server/storyboard/shared/model.mjs';
 import { segmentSummary } from './segments';
 
@@ -10,6 +10,11 @@ const M = domain as Any;
 /** 阅读用的短时间码：分:秒.一位小数 */
 const tc = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${(ms % 60000 / 1000).toFixed(1).padStart(4, '0')}`;
 type Row = {shot: Any; scene: Any; sceneIndex: number; number: string; start_ms: number; end_ms: number};
+/** 左侧目录栏（用户认可的设计稿）：宽屏默认展开、可收起并记住；窄屏默认收起，点「目录」滑出，点一镜后收回。 */
+const NAV_KEY = 'shiguang.storyboard.readingNav';
+const narrowScreen = () => typeof window !== 'undefined' && window.matchMedia?.('(max-width: 760px)').matches;
+const readNav = () => { if (narrowScreen()) return false; try { return localStorage.getItem(NAV_KEY) !== 'closed'; } catch { return true; } };
+type NavItem = {kind: 'segment'; key: string; seg: Any} | {kind: 'scene'; key: string; label: string} | {kind: 'shot'; key: string; row: Row};
 
 type DiffChange = {field: string; before: unknown; after: unknown; deleted: boolean};
 const FIELD: Record<string, string> = {framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜', $number: '全片镜号'};
@@ -17,7 +22,8 @@ const text = (v: unknown) => v === null || v === undefined || v === '' ? '（空
 /** banner/diff 用于「查看旧版本」：只读，diff 来自「这一版 → 当前版本」，删除线是当前版，绿色是这一版。 */
 export function ReadingMode({project, title, onClose, onJump, exitLabel = '退出阅读', banner, diff}: {project: Any; title: string; onClose: () => void; onJump?: (shotId: string) => void; exitLabel?: string; banner?: React.ReactNode; diff?: Map<string, DiffChange[]>}) {
   const rows: Row[] = useMemo(() => M.timeline(project), [project]);
-  const [side, setSide] = useState(true);
+  const [side, setSide] = useState(true), [nav, setNav] = useState(readNav), [current, setCurrent] = useState('');
+  const navBox = useRef<HTMLElement>(null), pinned = useRef<{id: string; top: number} | null>(null);
   const segStart = useMemo(() => new Map<string, Any>(segmentSummary(project).segments.map((g: Any) => [g.start_shot_id, g])), [project]);
   const exit = useRef<HTMLButtonElement>(null), body = useRef<HTMLDivElement>(null);
   const names = useMemo(() => new Map<string, string>((project.characters ?? []).map((c: Any) => [c.id, c.name])), [project]);
@@ -33,22 +39,40 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
     return () => { document.removeEventListener('keydown', key, true); if (before && document.contains(before)) before.focus(); };
   }, [onClose]);
   const total = rows.at(-1)?.end_ms ?? 0;
-  const jumpScene = (id: string) => body.current?.querySelector<HTMLElement>(`[data-scene="${CSS.escape(id)}"]`)?.scrollIntoView({block: 'start'});
   const sceneLabel = (s: Any, i: number) => `场 ${String(i + 1).padStart(2, '0')} · ${s.location || s.name || '未命名场景'}`;
+  // 目录顺序与编辑表格一致：段分界在上、场次在下；一个段跨场景时在段下面分别列出场次。
+  const navItems = useMemo(() => { const out: NavItem[] = []; let scene = ''; for (const r of rows) { const seg = segStart.get(r.shot.id); if (seg) { out.push({kind: 'segment', key: 'g' + seg.id, seg}); scene = ''; } if (r.scene.id !== scene) { scene = r.scene.id; out.push({kind: 'scene', key: 's' + r.scene.id + r.shot.id, label: sceneLabel(r.scene, r.sceneIndex)}); } out.push({kind: 'shot', key: r.shot.id, row: r}); } return out; }, [rows, segStart]);
+  const toggleNav = () => setNav(open => { const next = !open; if (!narrowScreen()) { try { localStorage.setItem(NAV_KEY, next ? 'open' : 'closed'); } catch { /* 记不住只影响下次默认 */ } } return next; });
+  // 窄屏点一镜会收起目录（当前按钮随之卸载），把焦点交给正文里这一镜，键盘和读屏用户不丢位置。
+  const jump = (id: string) => { const target = body.current?.querySelector<HTMLElement>(`article[data-shot="${CSS.escape(id)}"]`); target?.scrollIntoView({block: 'start'}); if (body.current) pinned.current = {id, top: body.current.scrollTop}; setCurrent(id); if (narrowScreen()) { setNav(false); target?.focus({preventScroll: true}); } };
+  // 跟着滚动高亮：每次都按当前滚动位置重新量，取「阅读线」（场次标题下方）处或其下第一镜；同一滚动位置结果总相同。
+  useEffect(() => {
+    const root = body.current; if (!root) return;
+    let frame = 0;
+    const pick = () => { frame = 0; if (pinned.current && Math.abs(root.scrollTop - pinned.current.top) < 1) return; pinned.current = null; const line = root.getBoundingClientRect().top + 56; for (const a of root.querySelectorAll<HTMLElement>('article[data-shot]')) { if (a.getBoundingClientRect().bottom > line) { setCurrent(a.dataset.shot!); return; } } };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(pick); };
+    // 从目录跳过去后，只要还停在跳到的位置就保持所点的那一镜（末尾几镜滚不到顶时不被别的镜顶掉）；一离开这个位置就按位置取。
+    pick(); root.addEventListener('scroll', onScroll, {passive: true});
+    return () => { root.removeEventListener('scroll', onScroll); if (frame) cancelAnimationFrame(frame); };
+  }, [rows, side]);
+  useEffect(() => { if (nav && current) navBox.current?.querySelector<HTMLElement>(`[data-nav-shot="${CSS.escape(current)}"]`)?.scrollIntoView({block: 'nearest'}); }, [nav, current]);
   return <div className="sb-reading" role="dialog" aria-modal="true" aria-label="分镜阅读模式">
     <div className="sb-reading-bar">
       <button ref={exit} type="button" onClick={onClose}><ArrowLeft size={15}/>{exitLabel}</button>
       <strong className="sb-reading-title">{title}</strong>
       <span className="sb-reading-muted">{rows.length} 镜 · {M.sec(total)} 秒</span>
-      {scenes.length > 1 && <select aria-label="跳到场次" onChange={e => jumpScene(e.target.value)} defaultValue="">
-        <option value="" disabled>跳到场次…</option>
-        {scenes.map(g => <option key={g.scene.id} value={g.scene.id}>{sceneLabel(g.scene, g.index)}</option>)}
-      </select>}
+      <button type="button" aria-pressed={nav} aria-controls="sb-reading-nav" onClick={toggleNav}>{nav ? <PanelLeftClose size={15}/> : <PanelLeftOpen size={15}/>}目录</button>
       <span className="sb-reading-spacer"/>
       <label className="sb-reading-toggle"><input type="checkbox" checked={side} onChange={e => setSide(e.target.checked)}/>显示镜头与声音</label>
       <span className="sb-reading-muted">Esc 退出</span>
     </div>
     {banner}
+    <div className="sb-reading-layout" data-nav={nav}>
+    {nav && <nav id="sb-reading-nav" ref={navBox} className="sb-reading-nav" aria-label="目录">
+      {navItems.map(it => it.kind === 'segment' ? <div key={it.key} className={'sb-reading-nav-seg' + (it.seg.overlong ? ' is-over' : '')}>{it.seg.name} 段<span>{it.seg.shot_count} 镜 · {M.sec(it.seg.duration_ms)} 秒{it.seg.overlong ? ' · 超长' : ''}</span></div>
+        : it.kind === 'scene' ? <div key={it.key} className="sb-reading-nav-scene" title={it.label}>{it.label}</div>
+        : <button key={it.key} type="button" data-nav-shot={it.row.shot.id} aria-current={current === it.row.shot.id ? 'location' : undefined} className={'sb-reading-nav-shot' + (current === it.row.shot.id ? ' is-now' : '')} onClick={() => jump(it.row.shot.id)}><b>{it.row.number}</b><em>{it.row.shot.framing || it.row.shot.action || '新镜头'}</em><small>{M.sec(it.row.shot.duration_ms)}s</small></button>)}
+    </nav>}
     <div className="sb-reading-body" ref={body}>
       {!rows.length && <p className="sb-reading-empty">这一集还没有镜头。</p>}
       {scenes.map(g => <section key={g.scene.id} data-scene={g.scene.id} aria-label={sceneLabel(g.scene, g.index)}>
@@ -58,7 +82,7 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
           const seg = segStart.get(r.shot.id);
           return <React.Fragment key={r.shot.id}>
             {seg && <div className={'sb-reading-segment' + (seg.overlong ? ' is-over' : '')} data-testid={'reading-segment-' + seg.name}><b>{seg.name} 段</b><span>{seg.shot_count} 镜 · {M.sec(seg.duration_ms)} 秒{seg.overlong ? ' · 超长' : ''}</span></div>}
-            <article className={'sb-reading-shot' + (side ? '' : ' is-narrow') + (diff?.has(r.shot.id) ? ' is-diff' : '')} data-shot={r.shot.id}>
+            <article tabIndex={-1} className={'sb-reading-shot' + (side ? '' : ' is-narrow') + (diff?.has(r.shot.id) ? ' is-diff' : '')} data-shot={r.shot.id}>
               <button type="button" className="sb-reading-num" title={onJump ? '回到编辑并定位到这一镜' : undefined} disabled={!onJump} onClick={() => onJump?.(r.shot.id)}>{r.number}<small>{M.sec(r.shot.duration_ms)} 秒<br/>{tc(r.start_ms)}–{tc(r.end_ms)}</small></button>
               <div className="sb-reading-main">
                 {r.shot.framing && <div className="sb-reading-frame">{r.shot.framing}</div>}
@@ -75,6 +99,7 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
           </React.Fragment>;
         })}
       </section>)}
+    </div>
     </div>
   </div>;
 }

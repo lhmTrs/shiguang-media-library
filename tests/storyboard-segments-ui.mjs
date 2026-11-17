@@ -225,6 +225,94 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  await check('G13 阅读模式左侧目录：段/场/镜与正文一致；点一镜跳过去并高亮；滚动时高亮跟着走；收起会记住；深色主题不是白底；窄屏默认收起、滑出后点一镜自动收回', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'forest'; });
+    const reading = page.getByRole('dialog', { name: '分镜阅读模式' }), nav = reading.getByRole('navigation', { name: '目录' });
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(nav).toBeVisible();
+    await expect(reading.getByLabel('跳到场次')).toHaveCount(0);
+    const seg = await api('/storyboard/projects/' + second.id + '/segments');
+    await expect(nav.locator('.sb-reading-nav-seg')).toHaveCount(seg.segments.length);
+    await expect(nav.locator('.sb-reading-nav-shot')).toHaveCount(await reading.locator('article[data-shot]').count());
+    const target = seg.segments.at(-1).shot_ids[2];
+    await nav.locator(`[data-nav-shot="${target}"]`).click();
+    await expect(nav.locator(`[data-nav-shot="${target}"]`)).toHaveAttribute('aria-current', 'location');
+    await expect(reading.locator(`article[data-shot="${target}"]`)).toBeInViewport();
+    await shot('reading-nav-1-wide');
+    await reading.locator('.sb-reading-body').evaluate(el => { el.scrollTop = 0; });
+    await expect(nav.locator('[aria-current="location"]')).not.toHaveAttribute('data-nav-shot', target);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(reading.getByRole('navigation', { name: '目录' })).toHaveCount(0);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toBeVisible();
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    const bg = await reading.evaluate(el => getComputedStyle(el).backgroundColor);
+    assert.notEqual(bg, 'rgb(255, 255, 255)', '深色主题下阅读模式不应是白底');
+    await shot('reading-nav-2-dark');
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'forest'; });
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(reading.getByRole('navigation', { name: '目录' })).toHaveCount(0);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toBeVisible();
+    await shot('reading-nav-3-narrow');
+    await nav.locator('.sb-reading-nav-shot').nth(3).click();
+    await expect(nav).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  await check('G14 目录高亮只看当前滚动位置（往返回到同一位置结果相同）；窄屏键盘选镜后焦点落到正文那一镜；很长的场景名不撑出横向滚动', async () => {
+    const reading = page.getByRole('dialog', { name: '分镜阅读模式' }), nav = reading.getByRole('navigation', { name: '目录' }), bodyBox = reading.locator('.sb-reading-body');
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(nav).toBeVisible();
+    const base = await bodyBox.evaluate(el => el.querySelectorAll('article[data-shot]')[9].offsetTop);
+    const seen = new Map();
+    for (const d of [0, 60, 150, 270, 200, 80, 280, 780, 280, 0, 150]) {
+      const top = base + d;
+      await bodyBox.evaluate((el, t) => { el.scrollTop = t; }, top);
+      await page.waitForTimeout(150);
+      const { at, oracle } = await bodyBox.evaluate(el => { const line = el.getBoundingClientRect().top + 56; const hit = [...el.querySelectorAll('article[data-shot]')].find(a => a.getBoundingClientRect().bottom > line); return { at: el.scrollTop, oracle: hit?.dataset.shot }; });
+      const cur = await nav.locator('[aria-current="location"]').getAttribute('data-nav-shot');
+      assert.equal(cur, oracle, '高亮应是阅读线处的那一镜（scrollTop ' + at + '）');
+      if (seen.has(at)) assert.equal(cur, seen.get(at), '回到同一位置 ' + at + ' 高亮应相同'); else seen.set(at, cur);
+    }
+    await page.keyboard.press('Escape');
+    // 很长的场景名：只在目录里省略，完整名放 title；目录内容不横向滚动
+    const cur = await api('/storyboard/projects/' + second.id); const p = structuredClone(cur.project);
+    const longName = 'Location_' + 'VeryLongLocationName'.repeat(12); p.scenes[0].location = longName;
+    await api('/storyboard/projects/' + second.id, { project: p, expected_revision: cur.revision, change: { author: 'user' }, request_id: randomUUID() }, 'PUT');
+    await page.goto(origin + '/?r=' + Date.now() + '#/storyboards');
+    const drop = page.getByRole('button', { name: '丢弃草稿' }); await drop.waitFor({ timeout: 15000 }); await drop.click();   // G12 留下的未保存插入
+    await open(second.id);
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(nav).toBeVisible();
+    const geo = await nav.evaluate(el => ({ cw: el.clientWidth, sw: el.scrollWidth }));
+    assert.ok(geo.sw <= geo.cw + 1, '目录不应横向滚动：' + JSON.stringify(geo));
+    await expect(nav.locator('.sb-reading-nav-scene').first()).toHaveAttribute('title', new RegExp(longName));
+    await expect(nav.locator('.sb-reading-nav-shot').first()).toBeInViewport();
+    await page.keyboard.press('Escape');
+    // 窄屏键盘：Enter / 空格选镜，目录收起后焦点在正文那一镜
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    for (const [key, i] of [['Enter', 5], [' ', 7]]) {
+      await reading.getByRole('button', { name: '目录' }).focus(); await page.keyboard.press('Enter');
+      await expect(nav).toBeVisible();
+      const item = nav.locator('.sb-reading-nav-shot').nth(i), id = await item.getAttribute('data-nav-shot');
+      await item.focus(); await page.keyboard.press(key === ' ' ? 'Space' : key);
+      await expect(nav).toHaveCount(0);
+      const focused = await page.evaluate(() => ({ shot: document.activeElement?.getAttribute('data-shot'), inReading: !!document.activeElement?.closest('.sb-reading') }));
+      assert.deepEqual(focused, { shot: id, inReading: true }, key + ' 选镜后焦点应在正文这一镜');
+    }
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   assert.deepEqual(errors, [], '页面不应报错');
   assert.deepEqual(foreign, [], '不应访问外部地址');
   passed = true;
