@@ -225,6 +225,48 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  await check('G13 阅读模式左侧目录：段/场/镜与正文一致；点一镜跳过去并高亮；滚动时高亮跟着走；收起会记住；深色主题不是白底；窄屏默认收起、滑出后点一镜自动收回', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'forest'; });
+    const reading = page.getByRole('dialog', { name: '分镜阅读模式' }), nav = reading.getByRole('navigation', { name: '目录' });
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(nav).toBeVisible();
+    await expect(reading.getByLabel('跳到场次')).toHaveCount(0);
+    const seg = await api('/storyboard/projects/' + second.id + '/segments');
+    await expect(nav.locator('.sb-reading-nav-seg')).toHaveCount(seg.segments.length);
+    await expect(nav.locator('.sb-reading-nav-shot')).toHaveCount(await reading.locator('article[data-shot]').count());
+    const target = seg.segments.at(-1).shot_ids[2];
+    await nav.locator(`[data-nav-shot="${target}"]`).click();
+    await expect(nav.locator(`[data-nav-shot="${target}"]`)).toHaveAttribute('aria-current', 'location');
+    await expect(reading.locator(`article[data-shot="${target}"]`)).toBeInViewport();
+    await shot('reading-nav-1-wide');
+    await reading.locator('.sb-reading-body').evaluate(el => { el.scrollTop = 0; });
+    await expect(nav.locator('[aria-current="location"]')).not.toHaveAttribute('data-nav-shot', target);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(reading.getByRole('navigation', { name: '目录' })).toHaveCount(0);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toBeVisible();
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    const bg = await reading.evaluate(el => getComputedStyle(el).backgroundColor);
+    assert.notEqual(bg, 'rgb(255, 255, 255)', '深色主题下阅读模式不应是白底');
+    await shot('reading-nav-2-dark');
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'forest'; });
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.getByRole('button', { name: '阅读模式' }).click();
+    await expect(reading.getByRole('navigation', { name: '目录' })).toHaveCount(0);
+    await reading.getByRole('button', { name: '目录' }).click();
+    await expect(nav).toBeVisible();
+    await shot('reading-nav-3-narrow');
+    await nav.locator('.sb-reading-nav-shot').nth(3).click();
+    await expect(nav).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   assert.deepEqual(errors, [], '页面不应报错');
   assert.deepEqual(foreign, [], '不应访问外部地址');
   passed = true;
