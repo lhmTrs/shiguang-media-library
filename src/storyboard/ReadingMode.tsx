@@ -23,7 +23,7 @@ const text = (v: unknown) => v === null || v === undefined || v === '' ? '（空
 export function ReadingMode({project, title, onClose, onJump, exitLabel = '退出阅读', banner, diff}: {project: Any; title: string; onClose: () => void; onJump?: (shotId: string) => void; exitLabel?: string; banner?: React.ReactNode; diff?: Map<string, DiffChange[]>}) {
   const rows: Row[] = useMemo(() => M.timeline(project), [project]);
   const [side, setSide] = useState(true), [nav, setNav] = useState(readNav), [current, setCurrent] = useState('');
-  const navBox = useRef<HTMLElement>(null);
+  const navBox = useRef<HTMLElement>(null), pinned = useRef<{id: string; top: number} | null>(null);
   const segStart = useMemo(() => new Map<string, Any>(segmentSummary(project).segments.map((g: Any) => [g.start_shot_id, g])), [project]);
   const exit = useRef<HTMLButtonElement>(null), body = useRef<HTMLDivElement>(null);
   const names = useMemo(() => new Map<string, string>((project.characters ?? []).map((c: Any) => [c.id, c.name])), [project]);
@@ -43,14 +43,17 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
   // 目录顺序与编辑表格一致：段分界在上、场次在下；一个段跨场景时在段下面分别列出场次。
   const navItems = useMemo(() => { const out: NavItem[] = []; let scene = ''; for (const r of rows) { const seg = segStart.get(r.shot.id); if (seg) { out.push({kind: 'segment', key: 'g' + seg.id, seg}); scene = ''; } if (r.scene.id !== scene) { scene = r.scene.id; out.push({kind: 'scene', key: 's' + r.scene.id + r.shot.id, label: sceneLabel(r.scene, r.sceneIndex)}); } out.push({kind: 'shot', key: r.shot.id, row: r}); } return out; }, [rows, segStart]);
   const toggleNav = () => setNav(open => { const next = !open; if (!narrowScreen()) { try { localStorage.setItem(NAV_KEY, next ? 'open' : 'closed'); } catch { /* 记不住只影响下次默认 */ } } return next; });
-  const jump = (id: string) => { body.current?.querySelector<HTMLElement>(`[data-shot="${CSS.escape(id)}"]`)?.scrollIntoView({block: 'start'}); setCurrent(id); if (narrowScreen()) setNav(false); };
-  // 跟着滚动高亮：取正文可见区里最靠上的一镜
+  // 窄屏点一镜会收起目录（当前按钮随之卸载），把焦点交给正文里这一镜，键盘和读屏用户不丢位置。
+  const jump = (id: string) => { const target = body.current?.querySelector<HTMLElement>(`article[data-shot="${CSS.escape(id)}"]`); target?.scrollIntoView({block: 'start'}); if (body.current) pinned.current = {id, top: body.current.scrollTop}; setCurrent(id); if (narrowScreen()) { setNav(false); target?.focus({preventScroll: true}); } };
+  // 跟着滚动高亮：每次都按当前滚动位置重新量，取「阅读线」（场次标题下方）处或其下第一镜；同一滚动位置结果总相同。
   useEffect(() => {
-    const root = body.current; if (!root || typeof IntersectionObserver === 'undefined') return;
-    const seen = new Map<string, number>();
-    const io = new IntersectionObserver(entries => { for (const e of entries) { const id = (e.target as HTMLElement).dataset.shot!; if (e.isIntersecting) seen.set(id, e.boundingClientRect.top); else seen.delete(id); } const top = [...seen.entries()].sort((a, b) => a[1] - b[1])[0]?.[0]; if (top) setCurrent(top); }, {root, rootMargin: '-48px 0px -55% 0px'});
-    root.querySelectorAll<HTMLElement>('article[data-shot]').forEach(a => io.observe(a));
-    return () => io.disconnect();
+    const root = body.current; if (!root) return;
+    let frame = 0;
+    const pick = () => { frame = 0; if (pinned.current && Math.abs(root.scrollTop - pinned.current.top) < 1) return; pinned.current = null; const line = root.getBoundingClientRect().top + 56; for (const a of root.querySelectorAll<HTMLElement>('article[data-shot]')) { if (a.getBoundingClientRect().bottom > line) { setCurrent(a.dataset.shot!); return; } } };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(pick); };
+    // 从目录跳过去后，只要还停在跳到的位置就保持所点的那一镜（末尾几镜滚不到顶时不被别的镜顶掉）；一离开这个位置就按位置取。
+    pick(); root.addEventListener('scroll', onScroll, {passive: true});
+    return () => { root.removeEventListener('scroll', onScroll); if (frame) cancelAnimationFrame(frame); };
   }, [rows, side]);
   useEffect(() => { if (nav && current) navBox.current?.querySelector<HTMLElement>(`[data-nav-shot="${CSS.escape(current)}"]`)?.scrollIntoView({block: 'nearest'}); }, [nav, current]);
   return <div className="sb-reading" role="dialog" aria-modal="true" aria-label="分镜阅读模式">
@@ -67,7 +70,7 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
     <div className="sb-reading-layout" data-nav={nav}>
     {nav && <nav id="sb-reading-nav" ref={navBox} className="sb-reading-nav" aria-label="目录">
       {navItems.map(it => it.kind === 'segment' ? <div key={it.key} className={'sb-reading-nav-seg' + (it.seg.overlong ? ' is-over' : '')}>{it.seg.name} 段<span>{it.seg.shot_count} 镜 · {M.sec(it.seg.duration_ms)} 秒{it.seg.overlong ? ' · 超长' : ''}</span></div>
-        : it.kind === 'scene' ? <div key={it.key} className="sb-reading-nav-scene">{it.label}</div>
+        : it.kind === 'scene' ? <div key={it.key} className="sb-reading-nav-scene" title={it.label}>{it.label}</div>
         : <button key={it.key} type="button" data-nav-shot={it.row.shot.id} aria-current={current === it.row.shot.id ? 'location' : undefined} className={'sb-reading-nav-shot' + (current === it.row.shot.id ? ' is-now' : '')} onClick={() => jump(it.row.shot.id)}><b>{it.row.number}</b><em>{it.row.shot.framing || it.row.shot.action || '新镜头'}</em><small>{M.sec(it.row.shot.duration_ms)}s</small></button>)}
     </nav>}
     <div className="sb-reading-body" ref={body}>
@@ -79,7 +82,7 @@ export function ReadingMode({project, title, onClose, onJump, exitLabel = '退�
           const seg = segStart.get(r.shot.id);
           return <React.Fragment key={r.shot.id}>
             {seg && <div className={'sb-reading-segment' + (seg.overlong ? ' is-over' : '')} data-testid={'reading-segment-' + seg.name}><b>{seg.name} 段</b><span>{seg.shot_count} 镜 · {M.sec(seg.duration_ms)} 秒{seg.overlong ? ' · 超长' : ''}</span></div>}
-            <article className={'sb-reading-shot' + (side ? '' : ' is-narrow') + (diff?.has(r.shot.id) ? ' is-diff' : '')} data-shot={r.shot.id}>
+            <article tabIndex={-1} className={'sb-reading-shot' + (side ? '' : ' is-narrow') + (diff?.has(r.shot.id) ? ' is-diff' : '')} data-shot={r.shot.id}>
               <button type="button" className="sb-reading-num" title={onJump ? '回到编辑并定位到这一镜' : undefined} disabled={!onJump} onClick={() => onJump?.(r.shot.id)}>{r.number}<small>{M.sec(r.shot.duration_ms)} 秒<br/>{tc(r.start_ms)}–{tc(r.end_ms)}</small></button>
               <div className="sb-reading-main">
                 {r.shot.framing && <div className="sb-reading-frame">{r.shot.framing}</div>}

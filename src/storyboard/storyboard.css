@@ -264,11 +264,13 @@
 .sb-reading-body { min-height: 0; overflow: auto; padding: 0 24px 48px; }
 .sb-reading-shot { scroll-margin-top: 56px; }
 /* 左侧目录栏：段 → 场 → 镜，顺序与编辑表格一致 */
-.sb-reading-nav { min-height: 0; overflow: auto; padding: 8px 0 24px; border-right: 1px solid var(--sb-line); background: var(--sb-base); font-size: 12px; }
-.sb-reading-nav-seg { display: flex; align-items: baseline; gap: 6px; margin: 10px 10px 2px; padding: 3px 8px; border-left: 3px solid var(--sb-accent); color: var(--sb-accent); font-weight: 600; font-size: 12px; }
+.sb-reading-nav { min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 8px 0 24px; border-right: 1px solid var(--sb-line); background: var(--sb-base); font-size: 12px; }
+.sb-reading-nav-seg { min-width: 0; overflow-wrap: anywhere; display: flex; align-items: baseline; gap: 6px; margin: 10px 10px 2px; padding: 3px 8px; border-left: 3px solid var(--sb-accent); color: var(--sb-accent); font-weight: 600; font-size: 12px; }
 .sb-reading-nav-seg span { font-weight: 400; font-size: 11px; color: var(--sb-secondary); }
 .sb-reading-nav-seg.is-over { border-left-color: var(--c-b34747, var(--sb-accent)); color: var(--c-b34747, var(--sb-accent)); }
-.sb-reading-nav-scene { padding: 6px 14px 2px 20px; font-size: 11px; color: var(--sb-secondary); }
+.sb-reading-nav-scene { padding: 6px 14px 2px 20px; font-size: 11px; color: var(--sb-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-reading-shot:focus { outline: none; }
+.sb-reading-shot:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
 .sb-app .sb-reading-nav-shot { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 6px; width: calc(100% - 22px); min-height: 26px; margin: 0 8px 0 14px; padding: 4px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--sb-text); font-size: 12px; text-align: left; cursor: pointer; }
 .sb-reading-nav-shot b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .sb-reading-nav-shot em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
