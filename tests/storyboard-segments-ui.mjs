@@ -173,6 +173,30 @@ try {
     await shot('segments-5-pending');
   });
 
+  await check('G11 自定义秒数：从 Seedance 2.0 真正切进「自定义」，输入框带上原上限；填 20 秒保存，刷新后仍是自定义 20 秒；填 0 被拒且不改草稿；可再切回预设', async () => {
+    await page.getByRole('group', { name: '分镜视图' }).getByRole('button', { name: '编辑' }).click();
+    await setMode('seedance_2_0'); await expect(page.locator('.sb-segment-mode')).toHaveText('分割：Seedance 2.0 · 15 秒');
+    await page.locator('.sb-segment-mode').click();
+    await page.getByLabel('分割模式', { exact: true }).selectOption('custom');
+    await expect(page.getByLabel('分割模式', { exact: true })).toHaveValue('custom');
+    const input = page.getByLabel('自定义上限（秒）', { exact: true });
+    await expect(input).toHaveValue('15');
+    await input.fill('0'); await input.press('Tab');
+    await expect(page.locator('.sb-toast, .global-feedback, [role="status"]').filter({ hasText: '大于 0' }).first()).toBeVisible();
+    await expect(input).toHaveValue('15');
+    await input.fill('20'); await input.press('Tab');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.sb-segment-mode')).toHaveText('分割：自定义 · 20 秒');
+    await expect(page.locator('.sb-segment-divider.is-over').first()).toContainText('超过 20 秒');
+    await save();
+    assert.deepEqual(puts.at(-1).project.segment_settings, { mode: 'custom', custom_limit_ms: 20000 });
+    await open(second.id);
+    await expect(page.locator('.sb-segment-mode')).toHaveText('分割：自定义 · 20 秒');
+    const seg = await api('/storyboard/projects/' + second.id + '/segments'); assert.equal(seg.limit_ms, 20000);
+    await setMode('seedance_2_5'); await expect(page.locator('.sb-segment-mode')).toHaveText('分割：Seedance 2.5 · 30 秒');
+    await expect(page.getByLabel('自定义上限（秒）', { exact: true })).toHaveCount(0);
+  });
+
   assert.deepEqual(errors, [], '页面不应报错');
   assert.deepEqual(foreign, [], '不应访问外部地址');
   passed = true;
