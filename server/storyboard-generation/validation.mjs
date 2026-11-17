@@ -64,10 +64,10 @@ export function validateOutput(source){
  if(allEntries>4000)invalid('素材清单','总数超限');
  if(doc['人物']!==undefined){array(doc['人物'],'人物',2000);const names=new Set([...manifests['人物'].values()].map(e=>nameKey(e['名称']))),seen=new Set();for(const e of doc['人物']){record(e,'人物');text(e['姓名'],'人物.姓名',120,true);const k=nameKey(e['姓名']);if(!names.has(k)||seen.has(k))invalid('人物','资料重复或未列入人物清单');seen.add(k);}}
  const resolve=(kind,id,p)=>{local(id,p);if(!manifests[kind].has(id))invalid(p,kind+'编号不存在');return manifests[kind].get(id);};
- array(doc['场景'],'场景',500,1);const shots=new Map();let cursor=0,totalShots=0;
+ array(doc['场景'],'场景',500,0);const shots=new Map();let cursor=0,totalShots=0;
  for(const [si,s]of doc['场景'].entries()){
   const p=`场次 ${si+1}`;record(s,p);if(s['场次']!==si+1)invalid(p,'场次须从1连续排列');resolve('场景',s['场景编号'],p+'.场景编号');for(const k of ['地点','时间','内外景','空间设定'])text(s[k],p+'.'+k,30000,k==='地点');
-  const sceneStart=ms(s,'开始秒',p+'.开始秒');if(sceneStart!==cursor)invalid(p,'场开始时间不连续');array(s['镜头'],p+'.镜头',5000,1);
+  const sceneStart=ms(s,'开始秒',p+'.开始秒');if(sceneStart!==cursor)invalid(p,'场开始时间不连续');array(s['镜头'],p+'.镜头',5000,0);
   for(const q of s['镜头']){
    record(q,p+'.镜头');const id=local(q['镜号'],p+'.镜号'),qp=p+' / 镜 '+id;
    // The legacy continuation resolver pads numbers; reject aliases like 1/01 too.
@@ -81,13 +81,15 @@ export function validateOutput(source){
    const continuation=audio['承接对白'];if(continuation!==undefined&&continuation!==null){record(continuation,qp+'.承接对白');if(Object.keys(continuation).some(k=>!['来源镜号','说明'].includes(k)))invalid(qp+'.承接对白','仅支持来源镜最后一句对白');local(continuation['来源镜号'],qp+'.承接对白.来源镜号');const from=shots.get(continuation['来源镜号'].padStart(2,'0'));if(!from?.['声音与对白']['对白'].length)invalid(qp+'.承接对白','来源须为先前有对白的镜头，且仅承接最后一句');const last=from['声音与对白']['对白'].at(-1);if(!q['人物编号'].includes(last['人物编号']))invalid(qp+'.承接对白','承接声源人物须列入本镜关联');if(audio['对白'].some(d=>d['人物编号']===last['人物编号']&&d['台词']===last['台词']))invalid(qp+'.承接对白','同一跨镜对白不能重复记为新对白');text(continuation['说明'],qp+'.承接对白.说明',30000,true);}
    shots.set(number,q);totalShots++;if(totalShots>5000)invalid(qp,'全片镜头数超过5000');
   }
-  if(ms(s,'结束秒',p+'.结束秒')!==cursor||ms(s,'时长秒',p+'.时长秒',true)!==cursor-sceneStart)invalid(p,'场范围或时长与镜头合计不一致');
+  if(ms(s,'结束秒',p+'.结束秒')!==cursor||ms(s,'时长秒',p+'.时长秒',s['镜头'].length>0)!==cursor-sceneStart)invalid(p,'场范围或时长与镜头合计不一致');
  }
- if(ms(doc,'总时长秒','总时长秒',true)!==cursor)invalid('总时长秒','与全片镜头合计不一致');
+ // Empty boards retain a positive planning target; actual scene ranges stay zero.
+ const target=ms(doc,'总时长秒','总时长秒',true);
+ if(totalShots>0&&target!==cursor)invalid('总时长秒','与全片镜头合计不一致');
  // Reject unknown persistent IDs/paths even nested in extra keys. Bounded parser
  // already limits nodes; field contracts are the source of import authority.
  function forbidden(v,p='$'){if(!v||typeof v!=='object')return;for(const [k,x]of Object.entries(v)){if(/^(?:id|project_id|document_id|request_id|asset_id|schema_version|path|file_path|source|asset_manifest|__proto__|constructor|prototype)$/i.test(k))invalid(p+'.'+k,'不接受数据库ID、路径或外部导入字段');if(typeof x==='string'&&x.length>30000)invalid(p+'.'+k,'字段过长');forbidden(x,p+'.'+k);}}
  forbidden(doc);const plain=JSON.parse(JSON.stringify(doc)),parsed=parseInitialization(plain,{filename:'Codex分镜.json',timing:'duration'});
- if(parsed.warnings.some(w=>w.kind==='timing'))invalid('$','不允许导入器修正时间轴');
+ if(parsed.warnings.some(w=>w.kind==='timing'&&!(totalShots===0&&w.path==='总时长秒')))invalid('$','不允许导入器修正时间轴');
  return {source:plain,summary:parsed.summary};
 }
