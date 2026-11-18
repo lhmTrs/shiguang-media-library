@@ -340,7 +340,7 @@ for (const a of lib.db
   lib.enqueue(a.id);
 const storyboard = createStoryboardModule({ dataDir, lib, projectAssets });
 const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:storyboard.store,codex:codexService,projects});
-const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia,instanceId:()=>mysqlStorage.sourceId});
+const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia,instanceId:()=>mysqlStorage.sourceId,installFresh:false});
 const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
 const projectAssetDesktop=new ProjectAssetDesktopActions(projectAssets,projectVideos.desktopNative,{
   withActivity:fn=>uploadHost.track(fn),
@@ -727,9 +727,11 @@ app.post(
 );
 app.post(
   "/api/mysql/config",
-  asyncRoute(async (req, res) =>
-    res.json(await mysqlStorage.activate(req.body)),
-  ),
+  asyncRoute(async (req, res) => {
+    const result=await mysqlStorage.activate(req.body);
+    await storyboardVideo.bindingV2.startup();
+    res.json({...result,videoBindingMigration:storyboardVideo.bindingV2.migrationStatus()});
+  }),
 );
 const visibleManagedRoots=protectManagedRoots(app,lib,managedIntake.directory);
 app.get("/api/roots", (req, res) => res.json(visibleManagedRoots(lib.roots())));
@@ -1491,19 +1493,11 @@ async function listen(n) {
   });
 }
 let server;
-for (let p = startPort; p < startPort + 30; p++) {
-  try {
-    server = await listen(p);
-    break;
-  } catch (e) {
-    if (e.code !== "EADDRINUSE") throw e;
-  }
-}
-if (!server) throw Error("没有可用端口");
 let shutdownWork = null;
 async function shutdownApplication() {
   if (shutdownWork) return shutdownWork;
   applicationClosing = true;
+  storyboardVideo.bindingV2.beginClose();
   fileIntake.beginClose();
   intakeNative.beginClose();
   projectAssetDesktop.beginClose();
@@ -1522,8 +1516,8 @@ async function shutdownApplication() {
     await drainTaskEntry({ allowNeverStarted: true });
     manifestSync.stop();
     await viteServer?.close();
-    const stopped = new Promise(resolve => server.close(() => resolve(true)));
-    server.closeIdleConnections?.();
+    const stopped = server?new Promise(resolve => server.close(() => resolve(true))):Promise.resolve(true);
+    server?.closeIdleConnections?.();
     let timer;
     const stoppedKnown = await Promise.race([stopped, new Promise(resolve => { timer = setTimeout(() => resolve(false), 10000); })]);
     clearTimeout(timer);
@@ -1550,6 +1544,17 @@ async function shutdownApplication() {
 }
 process.on("SIGTERM", () => { void shutdownApplication(); });
 process.on("SIGINT", () => { void shutdownApplication(); });
+await storyboardVideo.bindingV2.startup();
+if (!applicationClosing) {
+for (let p = startPort; p < startPort + 30; p++) {
+  try {
+    server = await listen(p);
+    break;
+  } catch (e) {
+    if (e.code !== "EADDRINUSE") throw e;
+  }
+}
+if (!server) throw Error("没有可用端口");
 console.log(`拾光素材库 http://127.0.0.1:${port}`);
 await fs.writeFile(
   path.join(dataDir, "server.json"),
@@ -1624,4 +1629,6 @@ if (!process.env.MEDIA_SKIP_IMPORT && !lib.directoryClassification) {
       console.warn("初始导入：" + e.message);
     }
   }
+}
+
 }

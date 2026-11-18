@@ -99,7 +99,7 @@ export class StoryboardDatabase {
       shot_character_looks: shotCharacterLooks(p, resolver, characters),
     };
     p.revision=row.revision;
-    return this.history.attach({project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})});
+    return this.history.attach({...(this.videoBindingV2?{videoBindingMigration:this.videoBindingV2.migrationStatus()}:{}),project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})});
   }
   read(projectId) {
     const load = () => this.readInTransaction(projectId);

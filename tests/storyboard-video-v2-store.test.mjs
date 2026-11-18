@@ -64,7 +64,7 @@ test('origin confirmation rechecks its original ready receipt and original impor
 });
 
 test('an existing project library never installs v2 automatically merely because old source tables were absent',async t=>{
- const f=await videoV2Fixture(t);for(const table of Object.keys(V2_TABLES))f.db.exec('DROP TABLE '+table);f.db.exec('DROP TABLE storyboard_video_sources');const newEntry=createStoryboardVideo({lib:f.lib,storyboards:f.board,media:f.entry.media,instanceId:'synthetic-instance'});assert.equal(newEntry.bindingV2.schemaState().status,'schema-required');assert.throws(()=>newEntry.bindingV2.state(f.a.id),{code:'VIDEO_V2_MIGRATION_REQUIRED'});newEntry.bindingV2.installSchema();assert.equal(newEntry.bindingV2.schemaState().status,'pending');assert.throws(()=>newEntry.bindingV2.retainedVersionNumbers(randomUUID()),{code:'VIDEO_V2_MIGRATION_REQUIRED'});
+ const f=await videoV2Fixture(t);for(const table of Object.keys(V2_TABLES))f.db.exec('DROP TABLE '+table);f.db.exec('DROP TABLE storyboard_video_sources');const newEntry=createStoryboardVideo({lib:f.lib,storyboards:f.board,media:f.entry.media,instanceId:'synthetic-instance'});assert.equal(newEntry.bindingV2.schemaState().status,'schema-required');assert.equal(newEntry.bindingV2.state(f.a.id).migration.status,'schema-required');assert.equal(newEntry.bindingV2.state(f.a.id).migration.adoptionKnown,false);newEntry.bindingV2.installSchema();assert.equal(newEntry.bindingV2.schemaState().status,'pending');assert.throws(()=>newEntry.bindingV2.retainedVersionNumbers(randomUUID()),{code:'VIDEO_V2_MIGRATION_REQUIRED'});
 });
 
 test('explicit release drops an unused pin; reinitialization leaves old bindings historical and project deletion protected',async t=>{

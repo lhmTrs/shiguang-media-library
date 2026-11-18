@@ -1,3 +1,4 @@
+import {videoV2Startup} from './startup.mjs';
 import {videoV2Io} from './io-proof.mjs';
 import {videoV2Backup} from './backup.mjs';
 import {videoV2Migration} from './migration.mjs';
@@ -17,10 +18,10 @@ export class VideoBindingV2 {
  get instanceId(){return typeof this._instanceId==='function'?this._instanceId():this._instanceId;}
  get db(){return this.lib.db;}
  get catalog(){return this.videos.catalog;}
- init({fresh=false}={}){
+ init({fresh=false,installFresh=true}={}){
   const present=Object.keys(V2_TABLES).filter(t=>tablePresent(this.db,t));
   const empty=fresh&&!this.db.prepare("SELECT id FROM media_projects WHERE COALESCE(system_key,'')='' LIMIT 1").get()&&!this.db.prepare('SELECT id FROM roots LIMIT 1').get()&&!this.db.prepare('SELECT id FROM storyboard_documents LIMIT 1').get();
-  if(empty&&!present.length)this.installSchema({fresh:true});
+  if(installFresh&&empty&&!present.length)this.installSchema({fresh:true});
   this.videos.bindingV2=this;this.board.videoBindingV2=this;this.lib.videoBindingV2=this;return this;
  }
  installSchema({fresh=false}={}){
@@ -43,7 +44,7 @@ export class VideoBindingV2 {
   const row=this.stateRow('global');if(!row||decode(row.data_json).schemaVersion!==SCHEMA_VERSION)fail('VIDEO_V2_UNSETTLED','视频绑定v2实例状态无法核验',503);
   this.checkedDb=this.db;
  }
- require(){this.requireSchema();const migration=this.schemaState();if(migration.schemaVersion!==SCHEMA_VERSION)fail('VIDEO_V2_UNSETTLED','视频绑定v2版本无法核验',503);if(migration.status!=='complete')fail('VIDEO_V2_MIGRATION_REQUIRED','旧绑定尚未完成受控迁移',503,{migration});if(this.closing||this.videos.media.closing||this.lib.migrating)fail('VIDEO_V2_UNSETTLED','视频绑定正在关闭或迁移',503);}
+ require(){this.requireSchema();const migration=this.migrationStatus();if(migration.schemaVersion!==SCHEMA_VERSION)fail('VIDEO_V2_UNSETTLED','视频绑定v2版本无法核验',503);if(migration.status!=='complete')fail('VIDEO_V2_MIGRATION_REQUIRED','旧绑定尚未完成受控迁移',503,{migration});if(this.closing||this.videos.media.closing||this.lib.migrating)fail('VIDEO_V2_UNSETTLED','视频绑定正在关闭或迁移',503);}
  stateRow(id,lock=false){return this.db.prepare('SELECT * FROM storyboard_video_v2_state WHERE id=?'+(lock&&this.db.kind==='mysql'?' FOR UPDATE':'')).get(id);}
  lock(projectIds=[]){this.assets.lockDirectory();this.require();const row=this.stateRow('global',true);if(!row||!integer(row.sequence))fail('VIDEO_V2_UNSETTLED','全局事件序无法核验',503);for(const id of [...new Set(projectIds.filter(Boolean))].sort())this.board.project(id,true);}
  sequence(){const r=this.stateRow('global',true),sequence=r.sequence+1;if(!integer(sequence,1))fail('VIDEO_V2_UNSETTLED','事件序已达边界',503);this.db.prepare('UPDATE storyboard_video_v2_state SET sequence=?,revision=?,updated_at=? WHERE id=?').run(sequence,r.revision+1,Date.now(),'global');return sequence;}
@@ -51,8 +52,8 @@ export class VideoBindingV2 {
  bumpSelection(projectId){const key='selection:'+projectId,old=this.stateRow(key),now=Date.now();if(old)this.db.prepare('UPDATE storyboard_video_v2_state SET revision=?,updated_at=? WHERE id=?').run(old.revision+1,now,key);else this.db.prepare('INSERT INTO storyboard_video_v2_state VALUES(?,?,?,?,?,?)').run(key,1,0,canonical({projectId}),now,now);return (old?.revision??0)+1;}
  insert(table,row){const keys=Object.keys(V2_TABLES[table]);this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(()=>'?')})`).run(...keys.map(k=>row[k]??null));}
  read(fn,{allowPending=false}={}){if(allowPending)this.requireSchema();else this.require();if(this.db.kind==='mysql')this.db.exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');return this.db.transaction(fn)();}
- view(projectId,lock=false){
-  this.board.project(projectId,lock);const head=this.board.head(projectId,lock),selectionRevision=this.selectionRevision(projectId);
+ view(projectId,lock=false,{selectionKnown=true}={}){
+  this.board.project(projectId,lock);const head=this.board.head(projectId,lock),selectionRevision=selectionKnown?this.selectionRevision(projectId):null;
   if(!head)return {head:null,project:null,context:{instanceId:this.instanceId,projectId,documentId:null,initializedAt:null,storyboardRevision:null,assetStamp:null,selectionRevision}};
   let view;try{view=this.board.hydrate(head);}catch(error){view={project:decode(head.document_json),project_id:projectId,asset_stamp:null,dependencyError:true};}
   return {...view,head,context:{instanceId:this.instanceId,projectId,documentId:head.id,initializedAt:head.initialized_at,storyboardRevision:head.revision,assetStamp:view.asset_stamp??null,selectionRevision}};
@@ -93,21 +94,22 @@ export class VideoBindingV2 {
  }
  selectionRows(projectId,view){return view.head?this.db.prepare('SELECT * FROM storyboard_video_v2_selections WHERE target_project_id=? AND document_id=? AND initialized_at=?').all(projectId,view.head.id,view.head.initialized_at):[];}
  selectionView(row){if(!row)return null;const info=this.videoInfo(row.source_project_id,row.video_id);return {videoId:row.video_id,sourceProjectId:row.source_project_id,bindingId:row.binding_id,name:info.name,kind:row.kind,selectedAt:row.selected_at};}
- sourceBinding(sourceProjectId,videoId){return this.read(()=>{const info=this.videoInfo(sourceProjectId,videoId),row=this.bindingRow(videoId),view=row?.target_project_id?this.view(row.target_project_id):null;return {sourceProjectId,videoId,videoRevision:info.videoRevision,bindingRevision:row?.revision??0,binding:this.bindingDTO(row,view),review:this.reviewDTO(row,view,info),allowedTargets:this.allowedTargets(sourceProjectId),context:view?.context??null};});}
- state(projectId){return this.read(()=>{
-  const view=this.view(projectId);if(!view.head)return {schemaVersion:2,initialized:false,context:view.context,migration:this.schemaState(),shots:[]};
+ readAvailable(fn){if(this.db.kind==='mysql')this.db.exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');return this.db.transaction(fn)();}
+ sourceBinding(sourceProjectId,videoId){const migration=this.migrationStatus();if(!migration.adoptionKnown)return this.readAvailable(()=>{const info=this.videoInfo(sourceProjectId,videoId);return {migration,sourceProjectId,videoId,videoRevision:info.videoRevision,bindingRevision:null,binding:null,review:null,allowedTargets:this.allowedTargets(sourceProjectId),context:null};});return this.read(()=>{const info=this.videoInfo(sourceProjectId,videoId),row=this.bindingRow(videoId),view=row?.target_project_id?this.view(row.target_project_id):null;return {migration,sourceProjectId,videoId,videoRevision:info.videoRevision,bindingRevision:row?.revision??0,binding:this.bindingDTO(row,view),review:this.reviewDTO(row,view,info),allowedTargets:this.allowedTargets(sourceProjectId),context:view?.context??null};});}
+ state(projectId){const migration=this.migrationStatus();if(!migration.adoptionKnown)return this.readAvailable(()=>{const view=this.view(projectId,false,{selectionKnown:false});return {schemaVersion:2,initialized:!!view.head,context:view.context,migration,shots:rows(view.project??{scenes:[]}).map(r=>({shotId:r.shot.id,number:r.number,adopted:null,defaultVideo:null,candidateCount:null,newVideoCount:null,needsReview:null,reviewReasons:null}))};});return this.read(()=>{
+  const view=this.view(projectId);if(!view.head)return {schemaVersion:2,initialized:false,context:view.context,migration,shots:[]};
   const candidates=this.db.prepare('SELECT s.* FROM storyboard_video_v2_shots s JOIN storyboard_video_v2_bindings b ON b.id=s.binding_id WHERE s.target_project_id=? AND s.document_id=? AND s.initialized_at=? AND b.target_project_id=s.target_project_id AND b.initialized_at=s.initialized_at ORDER BY s.association_seq DESC,s.video_id DESC').all(projectId,view.head.id,view.head.initialized_at);
   const grouped=Map.groupBy(candidates,c=>c.shot_id),selections=new Map(this.selectionRows(projectId,view).map(s=>[s.shot_id,s])),cache=new Map();
   const binding=id=>{if(!cache.has(id)){const row=this.bindingRow(id);cache.set(id,{row,info:this.videoInfo(row.source_project_id,id),review:this.reviewDTO(row,view)});}return cache.get(id);};
   const shots=rows(view.project).map(r=>{const list=grouped.get(r.shot.id)??[],selection=selections.get(r.shot.id),defaultId=selection?.video_id??list[0]?.video_id,chosen=defaultId?binding(defaultId):null;return {shotId:r.shot.id,number:r.number,adopted:this.selectionView(selection),defaultVideo:chosen?{videoId:defaultId,sourceProjectId:chosen.row.source_project_id,bindingId:chosen.row.id,name:chosen.info.name}:null,candidateCount:list.length,newVideoCount:selection?new Set(list.filter(c=>c.association_seq>selection.selection_seq&&c.video_id!==selection.video_id).map(c=>c.video_id)).size:0,needsReview:chosen?.review.needsReview??false,reviewReasons:chosen?.review.reasons??[]};});
-  return {schemaVersion:2,initialized:true,context:view.context,migration:this.schemaState(),shots};
+  return {schemaVersion:2,initialized:true,context:view.context,migration,shots};
  });}
- shotVideos(projectId,shotId,{offset=0,limit=20}={}){return this.read(()=>{
+ shotVideos(projectId,shotId,{offset=0,limit=20}={}){const migration=this.migrationStatus();if(!integer(offset)||!integer(limit,1)||limit>100)fail('VIDEO_V2_INVALID_INPUT','分页范围无效');if(!migration.adoptionKnown)return this.readAvailable(()=>{const view=this.view(projectId,false,{selectionKnown:false});if(!view.project||!rows(view.project).some(r=>r.shot.id===shotId))fail('SHOT_NOT_FOUND','当前镜头不存在',404);return {migration,context:view.context,shotId,total:null,offset,limit,items:[]};});return this.read(()=>{
   if(!integer(offset)||!integer(limit,1)||limit>100)fail('VIDEO_V2_INVALID_INPUT','分页范围无效');const view=this.view(projectId);if(!view.project||!rows(view.project).some(r=>r.shot.id===shotId))fail('SHOT_NOT_FOUND','当前镜头不存在',404);
   const args=[projectId,view.head.id,view.head.initialized_at,shotId],total=this.db.prepare('SELECT COUNT(*) n FROM storyboard_video_v2_shots WHERE target_project_id=? AND document_id=? AND initialized_at=? AND shot_id=?').get(...args).n;
   const selected=this.db.prepare('SELECT * FROM storyboard_video_v2_shots WHERE target_project_id=? AND document_id=? AND initialized_at=? AND shot_id=? ORDER BY association_seq DESC,video_id DESC LIMIT ? OFFSET ?').all(...args,limit,offset);
   const items=selected.map(s=>{const row=this.bindingRow(s.video_id),info=this.videoInfo(s.source_project_id,s.video_id);return {videoId:s.video_id,sourceProjectId:s.source_project_id,name:info.name,durationMs:info.source.durationMs,status:info.status,errorCode:info.errorCode,mediaUrl:`/api/project-videos/projects/${s.source_project_id}/videos/${s.video_id}/media`,thumbnailUrl:info.status==='available'&&info.meta.data.mediaAssetId?`/api/media/${info.meta.data.mediaAssetId}/thumb`:null,videoRevision:info.videoRevision,binding:this.bindingDTO(row,view),review:this.reviewDTO(row,view,info)};});
-  return {context:view.context,shotId,total,offset,limit,items};
+  return {migration,context:view.context,shotId,total,offset,limit,items};
  });}
  replay(operation,scope,input){const row=this.db.prepare('SELECT * FROM storyboard_video_v2_requests WHERE id=?').get(input.requestId);if(!row)return null;if(row.operation!==operation||row.scope!==scope||row.request_hash!==hash(input))fail('REQUEST_ID_CONFLICT','请求编号已用于其他输入或项目',409);const result=decode(row.result_json);if(row.status==='rejected')fail(result.code,result.message,result.status,result.details);return {...result,repeated:true};}
  request(requestId){if(!idOK(requestId))fail('VIDEO_V2_INVALID_INPUT','请求ID无效');return this.read(()=>{const row=this.db.prepare('SELECT * FROM storyboard_video_v2_requests WHERE id=?').get(requestId);if(!row)fail('VIDEO_V2_NOT_FOUND','未发现此请求回执',404);return {requestId,status:row.status,operation:row.operation,...(row.status==='committed'?{result:decode(row.result_json)}:{error:decode(row.result_json)})};},{allowPending:true});}
@@ -133,3 +135,5 @@ Object.assign(VideoBindingV2.prototype,videoV2Protection);
 Object.assign(VideoBindingV2.prototype,videoV2Backup,videoV2Migration);
 
 Object.assign(VideoBindingV2.prototype,videoV2Io);
+
+Object.assign(VideoBindingV2.prototype,videoV2Startup);
