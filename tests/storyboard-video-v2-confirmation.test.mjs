@@ -19,3 +19,20 @@ test('legacy unique IDs stay compatible across episodes; empty explicit fields s
  const unique=[{projectId:a,id:'one'},{projectId:b,shotId:'two'}];assert.doesNotThrow(()=>confirmUnbind({confirmUnbind:true,confirmedUnbindShotIds:['two','one']},unique));assert.doesNotThrow(()=>confirmUnbind({confirmedUnbindShotRefs:[]},[]));assert.doesNotThrow(()=>confirmUnbind({},[]));
  assert.throws(()=>confirmUnbind({confirmedUnbindShotRefs:[],confirmedUnbindShotIds:[]},[]),{code:'VIDEO_V2_INVALID_INPUT'});assert.throws(()=>confirmUnbind({confirmedUnbindShotRefs:null},[]),{code:'VIDEO_V2_INVALID_INPUT'});
 });
+
+test('direct callers may propagate undefined optional fields as omissions while null remains malformed',()=>{
+ const unique=[{projectId:a,shotId:'one'}];
+ for(const omitted of [{},{confirmedUnbindShotRefs:undefined},{confirmedUnbindShotIds:undefined},{confirmedUnbindShotRefs:undefined,confirmedUnbindShotIds:undefined}]){
+  assert.doesNotThrow(()=>confirmUnbind(omitted,[]));assert.throws(()=>confirmUnbind({...omitted,confirmUnbind:true},unique),{code:'UNBIND_CONFIRMATION_REQUIRED'});
+ }
+ assert.doesNotThrow(()=>confirmUnbind({confirmUnbind:true,confirmedUnbindShotRefs:refs,confirmedUnbindShotIds:undefined},affected));
+ assert.doesNotThrow(()=>confirmUnbind({confirmUnbind:true,confirmedUnbindShotRefs:undefined,confirmedUnbindShotIds:['one']},unique));
+ for(const field of ['confirmedUnbindShotRefs','confirmedUnbindShotIds'])for(const value of [null,false,'',{},0])assert.throws(()=>confirmUnbind({[field]:value},[]),{code:'VIDEO_V2_INVALID_INPUT'});
+});
+test('strict empty-impact operations still require an explicit empty set and confirmation after undefined is omitted',()=>{
+ const options={requireConfirmation:true,invalidCode:'INVALID_INPUT'};
+ for(const input of [{},{confirmUnbind:true},{confirmUnbind:true,confirmedUnbindShotIds:undefined},{confirmUnbind:true,confirmedUnbindShotRefs:undefined},{confirmUnbind:false,confirmedUnbindShotIds:[]}])assert.throws(()=>confirmUnbind(input,[],options),{code:'UNBIND_CONFIRMATION_REQUIRED'});
+ for(const input of [{confirmUnbind:true,confirmedUnbindShotIds:[]},{confirmUnbind:true,confirmedUnbindShotRefs:[],confirmedUnbindShotIds:undefined}])assert.doesNotThrow(()=>confirmUnbind(input,[],options));
+ assert.throws(()=>confirmUnbind({confirmUnbind:true,confirmedUnbindShotIds:null},[],options),{code:'INVALID_INPUT'});
+ assert.throws(()=>confirmUnbind({confirmUnbind:true,confirmedUnbindShotRefs:[],confirmedUnbindShotIds:[]},[],options),{code:'INVALID_INPUT'});
+});
