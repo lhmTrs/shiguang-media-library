@@ -2,9 +2,11 @@ import {randomUUID} from 'node:crypto';
 import {canonical,digest,fault,idOK} from '../project-assets/model.mjs';
 import {storyboardDiff} from './shared/change-diff.mjs';
 import {HISTORY_TABLES,tablePresent,installHistory} from './history-schema.mjs';
+import {classifyVersion,pendingView,plainlyReal,realFields,versionView} from './pending-view.mjs';
 export const HISTORY_CATEGORIES=['shot_feel','miscommunication','prompt_wrong'];
 const fail=(code,message,status=400,extra={})=>fault(message,status,{code,...extra});
 const integer=v=>Number.isSafeInteger(v)&&v>=1;
+const CLASS_CACHE_LIMIT=500;
 export function changeAuthor(change,kind=null,reason=''){
  if(kind)return {author_kind:kind,reason_category:null,reason_text:typeof reason==='string'?reason:''};
  if(!change||change.author==='user')return {author_kind:'user',reason_category:null,reason_text:'用户手动保存'};
@@ -51,7 +53,33 @@ export class StoryboardHistory{
   for(const [target,items]of groups){const c=items[0];this.insert('storyboard_pending',{id:randomUUID(),document_id:next.id,version:next.revision,target_kind:c.target_kind,target_id:target,shot_id:c.shot_id,shot_number_at_time:c.shot_number_at_time,fields_json:canonical(items.map(x=>x.field)),deleted:Number(c.deleted),created_at:now,updated_at:now,cleared_at:null});}
  }
  insert(table,row){const keys=Object.keys(HISTORY_TABLES[table]);this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(()=>'?')})`).run(...keys.map(k=>row[k]));}
- counts(id){this.require();const rows=this.db.prepare("SELECT p.target_kind,p.target_id FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND v.author_kind IN ('agent','generation')").all(id),shots=new Set(),other=new Set();for(const r of rows)(r.target_kind==='shot'?shots:other).add(r.target_id);return {pending_count:shots.size,pending_document_count:other.size};}
+ pendingRows(id){return this.db.prepare("SELECT p.*,v.id version_row_id,v.created_at version_created_at,v.author_kind,v.reason_category,v.reason_text,v.summary_only version_summary_only FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND v.author_kind IN ('agent','generation') ORDER BY p.version,p.id").all(id).map(r=>({...r,version:Number(r.version)}));}
+ changeRows(id,versions){
+  const out=new Map();if(!versions.length)return out;
+  // storyboard_changes 只有主键，这里一次读完范围，不按版本逐条扫表。
+  for(const r of this.db.prepare('SELECT version,change_json FROM storyboard_changes WHERE document_id=? AND version>=? AND version<=?').all(id,Math.min(...versions),Math.max(...versions))){const v=Number(r.version);if(!out.has(v))out.set(v,[]);out.get(v).push(JSON.parse(r.change_json));}
+  return out;
+ }
+ snapshots(id,version){const read=this.db.prepare('SELECT document_json FROM storyboard_versions WHERE document_id=? AND version=?'),before=read.get(id,version-1)?.document_json,after=read.get(id,version)?.document_json;return before&&after?[JSON.parse(before),JSON.parse(after)]:null;}
+ /** wanted: 版本号 → {rowId,summaryOnly}。一版的改动记录不再变化，所以按版本行（随机 id，回滚重存不会撞）缓存。 */
+ classes(id,wanted,loaded=null){
+  this.classCache??=new Map();const out=new Map(),missing=[];
+  for(const [version,w]of wanted){if(w.summaryOnly)out.set(version,null);else if(this.classCache.has(w.rowId))out.set(version,this.classCache.get(w.rowId));else missing.push(version);}
+  if(!missing.length)return out;
+  const changes=loaded??this.changeRows(id,missing);
+  for(const version of missing){
+   const list=changes.get(version),cls=list?.length?classifyVersion(list,()=>this.snapshots(id,version)):null;out.set(version,cls);
+   this.classCache.set(wanted.get(version).rowId,cls);if(this.classCache.size>CLASS_CACHE_LIMIT)this.classCache.delete(this.classCache.keys().next().value);
+  }
+  return out;
+ }
+ counts(id){
+  this.require();const rows=this.pendingRows(id).map(r=>({row:r,fields:JSON.parse(r.fields_json)})),wanted=new Map(),shots=new Set(),other=new Set();
+  for(const {row,fields}of rows)if(!plainlyReal(fields))wanted.set(row.version,{rowId:row.version_row_id,summaryOnly:!!row.version_summary_only});
+  const classes=this.classes(id,wanted);
+  for(const {row,fields}of rows)if(plainlyReal(fields)||realFields(row,fields,classes.get(row.version)).length)(row.target_kind==='shot'?shots:other).add(row.target_id);
+  return {pending_count:shots.size,pending_document_count:other.size};
+ }
  attach(view){return {...view,version:view.revision,...(this.ready()?this.counts(view.project.document_id):{pending_count:null,pending_document_count:null}),history_available:this.ready()};}
  afterCommit(view){
   if(!view)return view;let state='complete';
@@ -72,24 +100,41 @@ export class StoryboardHistory{
   const stats=this.db.prepare('SELECT SUM(byte_size) bytes, SUM(CASE WHEN document_json IS NULL THEN 0 ELSE 1 END) kept FROM storyboard_versions WHERE document_id=?').get(h.id);
   const length=this.db.kind==='mysql'?'OCTET_LENGTH(change_json)':'length(CAST(change_json AS BLOB))';
   const record=this.db.prepare(`SELECT SUM(${length}) bytes FROM storyboard_changes WHERE document_id=?`).get(h.id);
-  return {document_id:h.id,current_revision:h.revision,total,storage:{bytes:Number(stats.bytes||0),record_bytes:Number(record.bytes||0),kept_full:Number(stats.kept||0),limit:50,physical_bytes:null},items:rows.map(r=>this.meta(r))};
+  const classes=this.classes(h.id,new Map(rows.map(r=>[r.version,{rowId:r.id,summaryOnly:!!r.summary_only}])));
+  const contentShots=r=>{const cls=classes.get(r.version);return cls?[...cls.targets.keys()].filter(t=>t.startsWith('shot:')).length:r.changed_shot_count;};
+  return {document_id:h.id,current_revision:h.revision,total,storage:{bytes:Number(stats.bytes||0),record_bytes:Number(record.bytes||0),kept_full:Number(stats.kept||0),limit:50,physical_bytes:null},items:rows.map(r=>({...this.meta(r),content_shot_count:contentShots(r)}))};
  }
  version(projectId,v){const h=this.head(projectId),r=this.row(h.id,v);const project=this.full(r);return {document_id:h.id,...this.meta(r),project};}
  diff(projectId,v,against='current'){const h=this.head(projectId),left=this.full(this.row(h.id,v)),right=against==='current'?JSON.parse(h.document_json):this.full(this.row(h.id,Number(against)));return {document_id:h.id,from_version:v,to_version:against==='current'?h.revision:Number(against),...storyboardDiff(left,right)};}
  changes(projectId,limit=20){const page=this.versions(projectId,{limit});return {document_id:page.document_id,current_revision:page.current_revision,items:page.items.map(v=>({...v,changes:this.db.prepare('SELECT change_json FROM storyboard_changes WHERE document_id=? AND version=? ORDER BY id').all(page.document_id,v.version).map(r=>JSON.parse(r.change_json))}))};}
- pending(projectId){
-  const h=this.head(projectId),rows=this.db.prepare("SELECT p.* FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND v.author_kind IN ('agent','generation') ORDER BY p.version,p.id").all(h.id),items=[];
-  for(const [target,events]of Map.groupBy(rows,r=>r.target_id)){
-   const last=events.at(-1),v=this.row(h.id,last.version),before={},after={};let summaryOnly=false;
-   for(const event of events){const meta=this.row(h.id,event.version);summaryOnly ||= !!meta.summary_only;
-    for(const {change_json}of this.db.prepare('SELECT change_json FROM storyboard_changes WHERE document_id=? AND version=? AND target_id=?').all(h.id,event.version,target)){const c=JSON.parse(change_json);if(!Object.hasOwn(before,c.field))Object.defineProperty(before,c.field,{value:c.before,enumerable:true,writable:true});Object.defineProperty(after,c.field,{value:c.after,enumerable:true,writable:true});}
-   }
-   items.push({target_kind:last.target_kind,target_id:target,shot_id:last.shot_id,shot_number:last.shot_number_at_time,deleted:!!last.deleted,versions:events.map(e=>e.version),fields:[...new Set(events.flatMap(e=>JSON.parse(e.fields_json)))],author_kind:v.author_kind,reason_category:v.reason_category,reason_text:v.reason_text,summary_only:summaryOnly,before:summaryOnly?null:before,after:summaryOnly?null:after});
-  }
-  return {document_id:h.id,current_revision:h.revision,...this.counts(h.id),items};
+ /** 改动记录展开一版：只读，不碰待看标记。只记摘要的大改在前后完整版都还在时重新比对出明细。 */
+ versionChanges(projectId,v){
+  const h=this.head(projectId),row=this.row(h.id,v);if(!row)throw fail('VERSION_NOT_FOUND','此版本尚未记录',404);
+  const stored=this.changeRows(h.id,[v]).get(v)??[],pair=row.summary_only?this.snapshots(h.id,v):null,changes=pair?storyboardDiff(pair[0],pair[1]).changes:stored,meta=this.meta(row);
+  const cls=classifyVersion(changes,()=>this.snapshots(h.id,v));
+  return {document_id:h.id,current_revision:h.revision,...meta,detail:!row.summary_only?'full':pair?'rebuilt':'summary',metrics:stored.find(c=>c.field==='$summary')?.metrics??null,...versionView({meta:{version:meta.version,created_at:meta.created_at,author_kind:meta.author_kind,reason_category:meta.reason_category,reason_text:meta.reason_text,summary_only:false},changes,cls,project:JSON.parse(h.document_json)})};
  }
- clear(projectId,input){return this.board.tx(()=>{this.board.assets.lockDirectory();this.board.project(projectId,true);const h=this.head(projectId);if(!integer(input.through_version))throw fail('VIEW_VERSION_REQUIRED','必须指定实际看过的版本');if(input.through_version>h.revision)throw fail('INVALID_VIEW_VERSION','看过的版本不能超出当前版本');if(input.all!==true&&(!Array.isArray(input.shot_ids)||!input.shot_ids.length||input.shot_ids.length>1000||input.shot_ids.some(id=>typeof id!=='string')))throw fail('INVALID_INPUT','请指定镜头或全部实体');if(input.all===true&&input.shot_ids!==undefined)throw fail('INVALID_INPUT','全部与指定镜头不能混用');
-  const rows=this.db.prepare("SELECT p.* FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND p.version<=? AND v.author_kind IN ('agent','generation')").all(h.id,input.through_version),selected=rows.filter(r=>input.all===true||input.shot_ids.includes(r.shot_id));for(const row of selected)this.db.prepare('UPDATE storyboard_pending SET cleared_at=?,updated_at=? WHERE id=? AND cleared_at IS NULL').run(Math.max(Date.now(),row.updated_at+1),Math.max(Date.now(),row.updated_at+1),row.id);
+ pending(projectId){
+  const h=this.head(projectId),rows=this.pendingRows(h.id),wanted=new Map(rows.map(r=>[r.version,{rowId:r.version_row_id,summaryOnly:!!r.version_summary_only}]));
+  const changes=this.changeRows(h.id,[...wanted.keys()]),classes=this.classes(h.id,wanted,changes),view=pendingView({rows,classes,changes,project:JSON.parse(h.document_json),revision:h.revision});
+  return {document_id:h.id,current_revision:h.revision,...this.counts(h.id),...view};
+ }
+ /** 原有 through_version + all/shot_ids 语义不变；version（只清这一版）和 target_ids（按目标）必须带 expected_revision。 */
+ clear(projectId,input){return this.board.tx(()=>{
+  this.board.assets.lockDirectory();this.board.project(projectId,true);const h=this.head(projectId);
+  if(!integer(input.through_version))throw fail('VIEW_VERSION_REQUIRED','必须指定实际看过的版本');
+  if(input.through_version>h.revision)throw fail('INVALID_VIEW_VERSION','看过的版本不能超出当前版本');
+  const list=v=>Array.isArray(v)&&v.length>0&&v.length<=1000&&v.every(id=>typeof id==='string');
+  const scopes=[input.all===true,input.shot_ids!==undefined,input.target_ids!==undefined].filter(Boolean).length;
+  if(input.all===true&&scopes>1)throw fail('INVALID_INPUT','全部与指定镜头不能混用');
+  if(scopes!==1||input.shot_ids!==undefined&&!list(input.shot_ids)||input.target_ids!==undefined&&!list(input.target_ids))throw fail('INVALID_INPUT','请指定镜头或全部实体');
+  if(input.version!==undefined&&(!integer(input.version)||input.version>input.through_version))throw fail('INVALID_VIEW_VERSION','要清除的版本无效');
+  if(input.version!==undefined||input.target_ids!==undefined){
+   if(!integer(input.expected_revision))throw fail('EXPECTED_REVISION_REQUIRED','必须带上看到的当前版本');
+   if(input.expected_revision!==h.revision)throw fail('PENDING_REVISION_CHANGED','分镜已有新版本，请重新查看后再确认',409,{current_revision:h.revision});
+  }
+  const shots=new Set(input.shot_ids??[]),targets=new Set(input.target_ids??[]),selected=this.pendingRows(h.id).filter(r=>r.version<=input.through_version&&(input.version===undefined||r.version===input.version)&&(input.all===true||shots.has(r.shot_id)||targets.has(r.target_id)));
+  for(const row of selected){const now=Math.max(Date.now(),row.updated_at+1);this.db.prepare('UPDATE storyboard_pending SET cleared_at=?,updated_at=? WHERE id=? AND cleared_at IS NULL').run(now,now,row.id);}
   return {cleared_events:selected.length,skipped_shot_ids:(input.shot_ids??[]).filter(id=>!selected.some(r=>r.shot_id===id)),current_revision:h.revision,...this.counts(h.id)};
  });}
  category(projectId,v,input){return this.board.tx(()=>{this.board.assets.lockDirectory();this.board.project(projectId,true);const h=this.head(projectId),row=this.row(h.id,v);if(!row)throw fail('VERSION_NOT_FOUND','版本不存在',404);if(row.author_kind!=='agent'||!HISTORY_CATEGORIES.includes(input.reason_category))throw fail('INVALID_CHANGE_CATEGORY','只能修改agent事件的三类分类');if(input.expected_reason_category!==row.reason_category)throw fail('CHANGE_CATEGORY_CONFLICT','分类已被修改',409);this.db.prepare('UPDATE storyboard_versions SET reason_category=?,updated_at=? WHERE id=?').run(input.reason_category,Math.max(Date.now(),row.updated_at+1),row.id);return this.meta(this.row(h.id,v));});}
