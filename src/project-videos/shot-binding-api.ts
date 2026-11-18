@@ -1,6 +1,7 @@
 import * as domain from '../../server/storyboard/shared/model.mjs';
 import {v2ErrorText} from '../storyboard/shot-video-model.mjs';
 import {bindingFromResponse, previewFromResponse, type BindingIntent, type BindingPreview, type BindingRead, type EpisodeShot, type UnbindShotRef} from './shot-binding-model.mjs';
+import type {BindingPreview as V2BindingPreview, BindingWrite as V2BindingWrite, SourceVideoBinding} from '../storyboard/video-binding-v2-types';
 import type {ProjectVideoRequest} from './types';
 
 const M: any = domain;
@@ -30,14 +31,15 @@ export function createShotBindingApi(request: ProjectVideoRequest, sourceProject
     catch (e) { const failure = e as Error & {code?: string}; failure.message = v2ErrorText(failure.code, failure.message); throw failure; }
   };
   return {
-    read: async videoId => bindingFromResponse(await call<any>(path(videoId))),
+    read: async videoId => bindingFromResponse(await call<SourceVideoBinding>(path(videoId))),
     async episode(projectId) {
       try { return episodeFromRecord(await request<any>('/storyboard/projects/' + encodeURIComponent(projectId))); }
       catch (e) { if ((e as {status?: number}).status === 404) return null; throw e; }
     },
-    preview: async (videoId, intent) => previewFromResponse(await call<any>(path(videoId) + '/preview', intent)),
+    preview: async (videoId, intent) => previewFromResponse(await call<V2BindingPreview>(path(videoId) + '/preview', intent)),
     async write({videoId, intent, requestId, previewHash, confirmedUnbindShotRefs}) {
-      await call(path(videoId), {...intent, requestId, previewHash, ...(confirmedUnbindShotRefs ? {confirmUnbind: true, confirmedUnbindShotRefs} : {})}, 'PUT');
+      const body: V2BindingWrite = {...intent, requestId, previewHash, ...(confirmedUnbindShotRefs ? {confirmUnbind: true as const, confirmedUnbindShotRefs} : {})};
+      await call(path(videoId), body, 'PUT');
     },
   };
 }

@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {clipFromItem, rowsFromChanges, summariesFromState, v2ErrorText, type SelectionChange, type SelectionIntent, type ShotClip, type ShotSummaries} from './shot-video-model.mjs';
 import type {StoryboardTransport} from './transport';
+import type {ReviewWrite as V2ReviewWrite, SelectionPreview as V2SelectionPreview, SelectionWrite as V2SelectionWrite, ShotVideoPage, VideoV2State} from './video-binding-v2-types';
 
 export type ShotClips = { selectionRevision: number; storyboardRevision: number; clips: ShotClip[] };
 export type SelectionPreview = { previewHash: string; requiresConfirmation: boolean; rows: SelectionChange[] };
@@ -31,27 +32,28 @@ export function createShotVideoApi(transport: Pick<StoryboardTransport, 'videoV2
     return data as T;
   }
   return {
-    summaries: async signal => summariesFromState(await call<any>(project + '/state', undefined, signal)),
+    summaries: async signal => summariesFromState(await call<VideoV2State>(project + '/state', undefined, signal)),
     async clips(shotId, signal) {
-      const items: any[] = [];
-      let page: any;
+      const items: ShotVideoPage['items'] = [];
+      let page: ShotVideoPage;
       do {
-        page = await call<any>(`${project}/shots/${part(shotId)}/videos?offset=${items.length}&limit=${PAGE_SIZE}`, undefined, signal);
+        page = await call<ShotVideoPage>(`${project}/shots/${part(shotId)}/videos?offset=${items.length}&limit=${PAGE_SIZE}`, undefined, signal);
         items.push(...page.items);
       } while (page.items.length && items.length < page.total);
       return {selectionRevision: page.context?.selectionRevision ?? 0, storyboardRevision: page.context?.storyboardRevision ?? 0, clips: items.map(clipFromItem)};
     },
     async previewSelection(intent) {
-      const preview = await call<any>(project + '/selections/preview', intent);
+      const preview = await call<V2SelectionPreview>(project + '/selections/preview', intent);
       return {previewHash: preview.previewHash, requiresConfirmation: !!preview.requiresConfirmation, rows: rowsFromChanges(preview.changes)};
     },
     async writeSelection({intent, requestId, previewHash, confirmReplace}) {
-      await call(project + '/selections', {...intent, requestId, previewHash, ...(confirmReplace ? {confirmReplace: true} : {})});
+      const body: V2SelectionWrite = {...intent, requestId, previewHash, ...(confirmReplace ? {confirmReplace: true as const} : {})};
+      await call(project + '/selections', body);
     },
     async writeReview({action, clip, seenStoryboardRevision, requestId}) {
-      await call(`/ui/source-projects/${part(clip.sourceProjectId)}/videos/${part(clip.id)}/review`, {
-        requestId, action, expectedBindingRevision: clip.bindingRevision, seenStoryboardRevision, expectedComparisonHash: clip.comparisonHash,
-      });
+      if (!clip.comparisonHash) throw Object.assign(Error('这条片子现在无法核对，暂时不能复核'), {code: 'VIDEO_REVIEW_CONFLICT', status: 409});
+      const body: V2ReviewWrite = {requestId, action, expectedBindingRevision: clip.bindingRevision, seenStoryboardRevision, expectedComparisonHash: clip.comparisonHash};
+      await call(`/ui/source-projects/${part(clip.sourceProjectId)}/videos/${part(clip.id)}/review`, body);
     },
   };
 }

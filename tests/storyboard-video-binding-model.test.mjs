@@ -1,6 +1,7 @@
 // 分镜视频绑定 v2 前端纯逻辑，字段按合同 v1，只用合成数据。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { canPlayStatus, clipFromItem, coveredShotsText, defaultClip, estimateStart, newClipCount, originText, reviewReasonText, rowsFromChanges, safeMediaUrl, selectionIntent, selectionText, startText, summariesFromState, v2ErrorText, wholeAdopted } from '../src/storyboard/shot-video-model.mjs';
 import { adoptedShotsText, bindIntent, bindingFromResponse, bindingOriginText, boundText, initialShotIds, nextText, orderedShotIds, previewFromResponse, releasedShotRefs, sameBinding, targetChoices, unbindConfirmation, unbindIntent } from '../src/project-videos/shot-binding-model.mjs';
 
@@ -147,4 +148,20 @@ test('受影响的采用：带集名时按集分开，旧后台不带集名时�
   assert.equal(adoptedShotsText([{ id: 'a', number: 1 }, { id: 'b', number: 2 }]), '镜 1、镜 2');
   assert.equal(adoptedShotsText([{ id: 'a', number: 1, projectId: 'e1', projectName: '一' }, { id: 'a', number: 5, projectId: 'e2', projectName: '二' }, { id: 'b', number: 2, projectId: 'e1', projectName: '一' }]), '一：镜 1、镜 2；二：镜 5');
   assert.equal(adoptedShotsText([]), '');
+});
+
+const fixture = name => JSON.parse(fs.readFileSync(new URL('./fixtures/storyboard-video-v2/' + name + '.json', import.meta.url), 'utf8'));
+
+test('后端合成样例：状态、候选、绑定、预览、错误和复合确认都能按合同读取', () => {
+  const state = summariesFromState(fixture('state')), shot01 = Object.values(state.shots)[0];
+  assert.equal(shot01.number, '01'); assert.equal(shot01.adopted.name, '合成视频'); assert.equal(shot01.playVideoId, shot01.adopted.videoId);
+  const candidate = clipFromItem(fixture('candidates').items[0]);
+  assert.equal(coveredShotsText(candidate), '镜 01、镜 02'); assert.equal(estimateStart(candidate, candidate.shots[1].shotId).state, 'estimated');
+  const read = bindingFromResponse(fixture('binding')); assert.equal(read.binding.projectName, '合成集'); assert.equal(read.targets.length > 0, true);
+  const preview = previewFromResponse(fixture('binding-preview'));
+  assert.deepEqual([preview.rows[0].beforeText, preview.rows[0].afterText], ['合成视频（整条采用）', '未采用（播最新）']);
+  assert.deepEqual(releasedShotRefs(preview.rows), [{ projectId: preview.rows[0].projectId, shotId: 'shot_1' }]);
+  const error = fixture('error'); assert.equal(v2ErrorText(error.code, error.message), error.error);
+  const { confirmedUnbindShotRefs: refs } = fixture('unbind-confirmation');
+  assert.deepEqual(unbindConfirmation(refs.map(ref => ({ id: ref.shotId, projectId: ref.projectId, number: '1' }))), { confirmedUnbindShotRefs: refs });
 });

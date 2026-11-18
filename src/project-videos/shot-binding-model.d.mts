@@ -1,4 +1,6 @@
-import type {ShotSelection} from '../storyboard/shot-video-model.mjs';
+import type {AffectedBindingShot, BindingIntent, BindingPreview as V2BindingPreview, SourceVideoBinding, UnbindShotRef} from '../storyboard/video-binding-v2-types';
+
+export type {BindingIntent, UnbindShotRef};
 
 export type BindingProject = { id: string; name: string; project_kind?: string; series_id?: string | null; season_id?: string | null; episode_no?: number | null };
 export type BindingTarget = { projectId: string; name: string; seriesId: string | null };
@@ -10,17 +12,15 @@ export type VideoBinding = {
 };
 export type BindingRead = { bindingRevision: number; targets: BindingTarget[]; binding: VideoBinding | null };
 export type EpisodeShot = { id: string; number: string; sceneIndex: number; sceneName: string; durationMs: number; summary: string };
-export type BindingIntent = { action: 'bind' | 'unbind'; expectedBindingRevision: number; targetProjectId: string | null; expectedStoryboardRevision: number | null; expectedAssetStamp: string | null; shotIds: string[] };
-export type AffectedRow = { projectId: string; projectName: string; shotId: string; number: string; before: ShotSelection | null; after: ShotSelection | null; beforeText: string; afterText: string };
+export type AffectedRow = AffectedBindingShot & { beforeText: string; afterText: string };
 export type BindingPreview = { previewHash: string; requiresConfirmation: boolean; rows: AffectedRow[] };
 export function episodeLabel(project: BindingProject): string;
 export function targetChoices(targets: BindingTarget[], projects: BindingProject[], boundProjectId?: string | null, boundProjectName?: string): TargetChoice[];
-export function bindingFromResponse(body: any): BindingRead;
+export function bindingFromResponse(body: SourceVideoBinding): BindingRead;
 export function bindingOriginText(binding: VideoBinding): string;
 export function bindIntent(expectedBindingRevision: number, projectId: string, episode: { revision: number; assetStamp: string | null }, shotIds: string[]): BindingIntent;
 export function unbindIntent(expectedBindingRevision: number): BindingIntent;
-export function previewFromResponse(body: any): BindingPreview;
-export type UnbindShotRef = { projectId: string; shotId: string };
+export function previewFromResponse(body: V2BindingPreview): BindingPreview;
 export function releasedShotRefs(rows: AffectedRow[]): UnbindShotRef[];
 export function unbindConfirmation(shots?: { id: string; shotId?: string; projectId?: string }[]): { confirmedUnbindShotRefs: UnbindShotRef[] } | { confirmedUnbindShotIds: string[] };
 export function initialShotIds(binding: VideoBinding | null, projectId: string, rows: EpisodeShot[]): string[];

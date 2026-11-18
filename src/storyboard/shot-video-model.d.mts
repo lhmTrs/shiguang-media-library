@@ -1,8 +1,10 @@
-export type ShotSelection = { videoId: string; sourceProjectId: string; bindingId: string; name: string; kind: 'whole' | 'shot'; selectedAt: number };
+import type {ReviewReason, SelectionChange as V2SelectionChange, SelectionIntent, SelectionView, ShotVideoItem, VideoV2State} from './video-binding-v2-types';
+
+export type {ReviewReason, SelectionIntent};
+export type ShotSelection = SelectionView;
 export type ShotVideoSummary = { number?: string; adopted: ShotSelection | null; playVideoId: string | null; candidateCount: number; newCount: number; needsReview: boolean };
 export type ShotSummaries = { initialized: boolean; selectionRevision: number; storyboardRevision: number; shots: Record<string, ShotVideoSummary> };
 export type ClipShot = { shotId: string; boundNumber: string; durationMs: number; currentNumber: string | null };
-export type ReviewReason = { category: string; shotIds: string[] };
 export type ShotClip = {
   id: string; sourceProjectId: string; name: string; durationMs: number; status: string; mediaUrl: string;
   bindingId: string; bindingRevision: number; boundRevision: number; boundAt: number; origin: 'agent' | 'manual'; provenanceRevision: number | null;
@@ -11,8 +13,7 @@ export type ShotClip = {
 };
 export type StartEstimate = { startMs: number; estimatedMs: number; state: 'start' | 'estimated' | 'beyond-end' | 'not-bound' };
 export type SelectionAction = 'adopt-video' | 'adopt-shot' | 'clear-shot' | 'clear-video';
-export type SelectionIntent = { action: SelectionAction; expectedSelectionRevision: number; expectedStoryboardRevision: number; sourceProjectId?: string; videoId?: string; bindingId?: string; expectedBindingRevision?: number; shotId?: string };
-export type SelectionChange = { projectId: string; shotId: string; number: string; before: ShotSelection | null; after: ShotSelection | null; beforeText: string; afterText: string };
+export type SelectionChange = V2SelectionChange & { beforeText: string; afterText: string };
 export const REVIEW_REASON_LABELS: Readonly<Record<string, string>>;
 export const MEDIA_STATUS_TEXT: Readonly<Record<string, string>>;
 export function reviewReasonText(reasons?: ReviewReason[] | null): string;
@@ -28,7 +29,7 @@ export function selectionText(selection: ShotSelection | null): string;
 export function coveredShotsText(clip: ShotClip): string;
 export function wholeAdopted(clip: ShotClip, summaries: Record<string, ShotVideoSummary>): boolean;
 export function originText(clip: ShotClip): string;
-export function summariesFromState(state: any): ShotSummaries;
-export function clipFromItem(item: any): ShotClip;
-export function rowsFromChanges(changes: any[]): SelectionChange[];
+export function summariesFromState(state: VideoV2State): ShotSummaries;
+export function clipFromItem(item: ShotVideoItem): ShotClip;
+export function rowsFromChanges(changes: V2SelectionChange[]): SelectionChange[];
 export function selectionIntent(action: SelectionAction, clip: ShotClip, shotId: string, context: { selectionRevision: number; storyboardRevision: number }): SelectionIntent;
