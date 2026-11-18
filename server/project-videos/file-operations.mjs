@@ -175,7 +175,7 @@ export class ProjectVideoFileOperations {
   if (input.previewHash !== data.plan.previewHash || !data.plan.ready) {
    fail('PREVIEW_REQUIRED', '请先处理全部冲突并确认当前预览', 409);
   }
-  if(this.catalog.videos.bindingV2)confirmUnbind(input,data.plan.affectedShots,{invalidCode:'INVALID_INPUT'});
+  if(this.catalog.videos.bindingV2)confirmUnbind(input,data.plan.affectedShots,{invalidCode:'INVALID_INPUT',requireConfirmation:data.strictUnbind});
   if (data.strictUnbind && !this.catalog.videos.bindingV2 && (input.confirmUnbind !== true || !exactShotIds(input.confirmedUnbindShotIds, data.plan.affectedShots))) {
    fail('UNBIND_CONFIRMATION_REQUIRED', '请完整确认本批视频及覆盖目标影响的全部镜号', 409);
   }
