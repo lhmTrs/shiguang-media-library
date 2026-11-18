@@ -13,7 +13,7 @@ import {createShotVideoApi,useShotSummaries} from './shot-video-api';
 import {migrationText,migrationView,newClipCount,shotButtonLabel,type MigrationView} from './shot-video-model.mjs';
 import {ReadingMode} from './ReadingMode';
 import {unsavedChanges, summary as unsavedSummary} from './unsaved';
-import {historyApi, type VersionMeta} from './history';
+import {historyApi, pendingBadge, type VersionMeta} from './history';
 import {LogPanel, OldVersion, PendingPanel} from './HistoryPanels';
 import {setStoryboardLeaveGuard} from './leave-guard';
 import {storyboardDiff} from '../../server/storyboard/shared/change-diff.mjs';
@@ -121,7 +121,7 @@ export function StoryboardEditor({generationRequest,generationFocus,onGeneration
         }
         if (!response.ok)
             throw Error((result.message || result.error || '保存失败') + (result.errors ? '\n' + result.errors.map((e: Any) => e.path + '：' + e.message).join('\n') : ''));
-        overwrites.current=[]; hash.current = result.hash; dbRevision.current=result.revision; assetStamp.current=result.asset_stamp; if(typeof result.pending_count==='number')setPendingCount(result.pending_count+(result.pending_document_count??0));
+        overwrites.current=[]; hash.current = result.hash; dbRevision.current=result.revision; assetStamp.current=result.asset_stamp; if(typeof result.pending_count==='number')setPendingCount(pendingBadge(result));
         cache.set(storageKey('last-project'), p.project_id);
         savedRef.current = serialized;
         setSaved(serialized);
@@ -230,7 +230,7 @@ export function StoryboardEditor({generationRequest,generationFocus,onGeneration
     useEffect(()=>{ if(!visible) return; return setStoryboardLeaveGuard((reason?:string)=>askLeave(reason??'离开分镜页')); },[visible]);
     // 待看标记与数量：载入或保存出新版本后重读；旧库没迁移时（503）静默不显示。
     const loadedRevision = project ? dbRevision.current : null;
-    useEffect(()=>{ if(loadedRevision==null) return; let alive=true; history.pending().then(d=>{ if(!alive) return; setPendingCount(d.pending_count+(d.pending_document_count??0)); setPendingShots(new Set(d.items.filter(i=>i.shot_id&&!i.deleted).map(i=>i.shot_id as string))); }).catch(()=>{ if(alive){setPendingCount(null);setPendingShots(new Set());} }); return()=>{alive=false;}; },[history,loadedRevision,pendingCount,view]);
+    useEffect(()=>{ if(loadedRevision==null) return; let alive=true; history.pending().then(d=>{ if(!alive) return; setPendingCount(pendingBadge(d)); setPendingShots(new Set(d.items.filter(i=>i.shot_id&&!i.deleted&&!i.net_unchanged).map(i=>i.shot_id as string))); }).catch(()=>{ if(alive){setPendingCount(null);setPendingShots(new Set());} }); return()=>{alive=false;}; },[history,loadedRevision,pendingCount,view]);
     const reloadCurrent = async () => { try { const res=await transport.request('/api/projects/'+projectId),data=await res.json(); if(!res.ok) throw Error(data.message); cache.remove(storageKey('recovery')); install(data.project,data); } catch(e:Any) { say(e.message); } };
     // 冲突时 AI 优先（用户确认的规则）：别处（通常是 agent）已保存新版本时，放弃页面里没保存的修改、载入最新，并说明放弃了几处。
     const aiFirst = async (latest?: Any) => { const lost=unsavedChanges(savedRef.current,pRef.current).places; try { const data=latest??await (async()=>{const res=await transport.request('/api/projects/'+projectId),d=await res.json();if(!res.ok)throw Error(d.message);return d;})(); conflict.current=false; conflictData.current=null; cache.remove(storageKey('recovery')); install(data.project,data); setStatus('已载入最新分镜'); if(lost) notifyFeedback({kind:'warning',source:'分镜',title:'Codex 刚保存了新版本',message:`你的 ${lost} 处未保存修改已放弃。改过的镜头已标「待看」。`,key:'storyboard-ai-first'}); } catch(e:Any){ say(e.message); } };

@@ -192,6 +192,8 @@ GET pending除items（全部未看，按目标合并，events列出各版原话�
 
 POST pending/clear的through_version加all/shot_ids语义不变。新增version（只清这一版，不连带更早版本）和target_ids（按target_id清，可清场景、段、整体设置）；用这两项时必须带expected_revision，分镜已有新版本返回409 PENDING_REVISION_CHANGED和current_revision，调用方应重读后再确认。
 
+待看净无变化：同一目标的全部未看记录，逐个真实字段比较最早改前和最新改后，全部相同（规范化JSON，噪音不参与）才算；改前改后都不存在也算；$move比较最早和最新位置及场景。只记摘要或缺逐字段记录一律算有变化。分镜读取、GET pending和清除响应增加net_pending_count、net_pending_document_count，GET pending的items增加net_unchanged；原有pending_count、pending_document_count、items、pending_versions和清除语义不变。
+
 ### v1.1：仅标记 Codex 修改的待看
 
 按用户决定“只标 Codex 改的”，只有author_kind为agent或generation的保存新增pending。user/import/restore/baseline仍照常同事务保存完整版和永久changes，不新增待看，也不会清除已有Codex待看。计数、GET pending和清除接口只处理agent/generation事件；through_version的已看版本保护保持。旧候选存在的其它作者pending保留原行但不再投影，不做数据清理。import保持初始化/导入路径归类，不猜实际操作者，不扩大成新的来源鉴别协议。
