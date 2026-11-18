@@ -18,7 +18,9 @@ export interface SelectionChange {projectId:string;shotId:string;number:string;b
 export interface AffectedBindingShot extends SelectionChange {projectName:string}
 export interface BindingPreview {previewHash:string;before:VideoV2Binding|null;after:VideoV2Binding|null;contexts:VideoV2Context[];affectedShots:AffectedBindingShot[];requiresConfirmation:boolean}
 export interface SelectionPreview {context:VideoV2Context;previewHash:string;requiresConfirmation:boolean;changes:SelectionChange[]}
-export interface BindingWrite extends BindingIntent {requestId:string;previewHash:string;confirmUnbind?:true;confirmedUnbindShotIds?:string[]}
+export interface UnbindShotRef {projectId:string;shotId:string}
+export interface VideoV2Error {code:string;message:string;error:string;details?:Record<string,unknown>}
+export interface BindingWrite extends BindingIntent {requestId:string;previewHash:string;confirmUnbind?:true;confirmedUnbindShotRefs?:UnbindShotRef[];confirmedUnbindShotIds?:string[]}
 export interface SelectionWrite extends SelectionIntent {requestId:string;previewHash:string;confirmReplace?:true}
 export interface BindingWriteResult {context:VideoV2Context|null;binding:VideoV2Binding|null;review:VideoV2Review|null;changes:AffectedBindingShot[];requestId:string;repeated:boolean}
 export interface SelectionWriteResult {context:VideoV2Context;changes:SelectionChange[];requestId:string;repeated:boolean}
