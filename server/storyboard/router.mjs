@@ -36,6 +36,7 @@ export function createStoryboardModule({ dataDir, lib, projectAssets }) {
     const historyRead=fn=>route((req,res)=>res.json(store.history.read(()=>fn(req))));
     router.get('/projects/:id/versions',historyRead(req=>store.history.versions(req.params.id,{offset:req.query.offset===undefined?0:Number(req.query.offset),limit:req.query.limit===undefined?20:Number(req.query.limit)})));
     router.get('/projects/:id/versions/:v/diff',historyRead(req=>store.history.diff(req.params.id,Number(req.params.v),req.query.against??'current')));
+    router.get('/projects/:id/versions/:v/changes',historyRead(req=>store.history.versionChanges(req.params.id,Number(req.params.v))));
     router.get('/projects/:id/versions/:v',historyRead(req=>store.history.version(req.params.id,Number(req.params.v))));
     router.get('/projects/:id/changes',historyRead(req=>store.history.changes(req.params.id,req.query.limit===undefined?20:Number(req.query.limit))));
     router.get('/projects/:id/pending',historyRead(req=>store.history.pending(req.params.id)));

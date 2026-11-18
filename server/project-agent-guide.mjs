@@ -97,7 +97,7 @@ ${example({ expected_revision: 3, request_id: '<本次恢复的新UUID>' })}
 
 ${example({ through_version: 3, shot_ids: ['<实际看过的永久镜头ID>'] })}
 
-只清指定镜头用上例；确认全部已看（包括段、文档及场景事项）时改传 \`{ "through_version": 3, "all": true }\`，不能同时传 shot_ids。仅 agent/generation 修改产生待看；手动保存、初始化/导入和恢复不新增，也不自动清已有待看。返回 \`cleared_events/skipped_shot_ids/pending_count/pending_document_count\`；晚于 through_version 的并发改动保留。不要为了交付“零提醒”而自动清除。
+只清指定镜头用上例；确认全部已看（包括段、文档及场景事项）时改传 \`{ "through_version": 3, "all": true }\`，不能同时传 shot_ids。仅 agent/generation 修改产生待看；手动保存、初始化/导入和恢复不新增，也不自动清已有待看。返回 \`cleared_events/skipped_shot_ids/pending_count/pending_document_count\`；晚于 through_version 的并发改动保留。不要为了交付“零提醒”而自动清除。读取结果已去掉镜号顺延和原始导入数据；\`pending_versions\` 按版本列出未看内容。用户明确说只把某一版标为看过时，传 \`{ "through_version": 3, "expected_revision": 3, "version": 3, "all": true }\`，不会清更早版本；按场景、段等目标清除时用 \`target_ids\` 并带 \`expected_revision\`，返回 409 时重读再确认。
 
 ## 连续分段与保存边界
 
