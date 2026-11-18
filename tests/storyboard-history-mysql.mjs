@@ -70,6 +70,12 @@ try{
   const cleared=board.history.clear(p.id,{all:true,version:move.revision,through_version:move.revision,expected_revision:move.revision});assert.equal(cleared.pending_count,1);assert.deepEqual(board.history.pending(p.id).pending_versions.map(v=>v.version),[removed.revision]);
   assert.deepEqual(board.history.versionChanges(p.id,move.revision).items.map(i=>i.shot_id),[moved]);board.history.clear(p.id,{all:true,through_version:move.revision});
  });
+ await check('MySQL net-unchanged pending targets fold without changing original counts',async()=>{
+  const edit=fn=>{const current=board.read(p.id),project=structuredClone(current.project);fn(project);return board.save(p.id,{project,expected_revision:current.revision,request_id:randomUUID(),change:{author:'agent',reason_text:'净无变化合成',reason_category:'shot_feel'}});},shots=x=>x.scenes[0].shots;
+  board.history.clear(p.id,{all:true,through_version:board.head(p.id).revision});const target=shots(board.read(p.id).project)[1],old=target.framing;
+  edit(x=>{shots(x)[1].framing='净无变化中途';});const back=edit(x=>{shots(x)[1].framing=old;});assert.equal(back.pending_count,1);assert.equal(back.net_pending_count,0);let view=board.history.pending(p.id);assert.equal(view.items[0].net_unchanged,true);assert.equal(view.pending_versions.length,2);
+  const cleared=board.history.clear(p.id,{target_ids:['shot:'+target.id],through_version:back.revision,expected_revision:back.revision});assert.equal(cleared.pending_count,0);assert.equal(cleared.net_pending_count,0);
+ });
  await check('MySQL full retention limit and permanent events survive pruning; cleanup failure stays committed',async()=>{
   while(board.head(p.id).revision<50)save('retention');lib.db.exec("CREATE TRIGGER fail_prune BEFORE UPDATE ON storyboard_versions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='owned prune rollback'");const saved=save();assert.equal(saved.version,51);assert.equal(saved.history_cleanup,'failed');assert.equal(board.history.versions(p.id).storage.kept_full,51);lib.db.exec('DROP TRIGGER fail_prune');save();assert.equal(board.history.versions(p.id).storage.kept_full,50);assert.throws(()=>board.history.version(p.id,1),{code:'VERSION_PRUNED'});assert.equal(board.history.versions(p.id).total,52);
  });

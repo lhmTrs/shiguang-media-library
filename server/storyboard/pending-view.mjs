@@ -126,15 +126,56 @@ function toItem(events,view){
 const sorted=items=>items.sort((a,b)=>KIND_ORDER[a.target_kind]-KIND_ORDER[b.target_kind]||(a.shot_number??0)-(b.shot_number??0)||a.target_id.localeCompare(b.target_id));
 const metaOf=r=>({version:r.version,created_at:r.version_created_at,author_kind:r.author_kind,reason_category:r.reason_category,reason_text:r.reason_text,summary_only:!!r.version_summary_only});
 
-/** 组装待看：items 是「全部未看」（按目标合并），pending_versions 是按版本的视图（新到旧，只含还有真实未看内容的版本）。 */
-export function pendingView({rows,classes,changes,project,revision}){
- const view=overview(project),events=[],index=new Map();
+/** 未看记录去噪后的事件，按版本从早到晚；计数和列表共用，两边口径不会分叉。 */
+function collectEvents({rows,classes,changes}){
+ const events=[],index=new Map();
  const inVersion=(version,target)=>{if(!index.has(version))index.set(version,Map.groupBy(changes.get(version)??[],c=>c.target_id));return index.get(version).get(target)??[];};
  for(const row of rows){
   const cls=classes.get(row.version),fields=realFields(row,JSON.parse(row.fields_json),cls);if(!fields.length)continue;
   events.push({target:row,meta:metaOf(row),fields,changes:inVersion(row.version,row.target_id),move:cls?.targets.get(row.target_id)?.move??null});
  }
- const items=sorted([...Map.groupBy(events,e=>e.target.target_id).values()].map(list=>toItem(list,view)));
+ return events;
+}
+
+const sameValue=(field,a,b)=>{const norm=v=>field==='$entity'?v??null:withoutRaw(field,v??null);return canonical(norm(a))===canonical(norm(b));};
+function sameMove(seen){
+ if(seen.length<2||seen.some(e=>!e.move))return false;   // 只移动过一次就是真实移动；缺记录按有变化
+ const first=seen[0].move,last=seen.at(-1).move;
+ if(!Number.isSafeInteger(first.from)||first.from!==last.to)return false;
+ return seen.find(e=>e.move.scene_from!==undefined)?.move.scene_from===seen.findLast(e=>e.move.scene_to!==undefined)?.move.scene_to;
+}
+/** 所有未看记录合起来是否净无变化。只记摘要或缺逐字段记录时无法判断，一律算有变化。 */
+function netUnchanged(events){
+ if(events.length<2||events.some(e=>e.meta.summary_only))return false;
+ const records=new Map();
+ for(const field of new Set(events.flatMap(e=>e.fields))){
+  const seen=events.filter(e=>e.fields.includes(field));
+  if(field===MOVE)continue;
+  const list=seen.map(e=>e.changes.find(c=>c.field===field));if(list.some(c=>!c))return false;
+  records.set(field,{seen,list});
+ }
+ const entity=records.get('$entity');
+ // 最早记录之前和最新记录之后都不存在：中途出现又消失，中途改过什么都不算最终变化。
+ if(entity&&entity.seen[0]===events[0]&&entity.seen.at(-1)===events.at(-1)&&entity.list[0].before==null&&entity.list.at(-1).after==null)return true;
+ if(events.some(e=>e.fields.includes(MOVE))&&!sameMove(events.filter(e=>e.fields.includes(MOVE))))return false;
+ for(const [field,{list}]of records)if(!sameValue(field,list[0].before,list.at(-1).after))return false;
+ return true;
+}
+
+/** 待看计数：原有两项按未看目标；net_ 两项去掉净无变化的目标。 */
+export function pendingCounts(input){
+ const counts={pending_count:0,pending_document_count:0,net_pending_count:0,net_pending_document_count:0};
+ for(const list of Map.groupBy(collectEvents(input),e=>e.target.target_id).values()){
+  const shot=list[0].target.target_kind==='shot';counts[shot?'pending_count':'pending_document_count']++;
+  if(!netUnchanged(list))counts[shot?'net_pending_count':'net_pending_document_count']++;
+ }
+ return counts;
+}
+
+/** 组装待看：items 是「全部未看」（按目标合并），pending_versions 是按版本的视图（新到旧，只含还有真实未看内容的版本）。 */
+export function pendingView({rows,classes,changes,project,revision}){
+ const view=overview(project),events=collectEvents({rows,classes,changes});
+ const items=sorted([...Map.groupBy(events,e=>e.target.target_id).values()].map(list=>({...toItem(list,view),net_unchanged:netUnchanged(list)})));
  const pending_versions=[...Map.groupBy(events,e=>e.meta.version).entries()].sort((a,b)=>b[0]-a[0]).map(([version,list])=>({...list[0].meta,is_current:version===revision,item_count:list.length,items:sorted(list.map(e=>toItem([e],view)))}));
  return {items,pending_versions};
 }

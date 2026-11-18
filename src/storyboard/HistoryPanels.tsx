@@ -1,9 +1,9 @@
 // 「待看的修改」「改动记录」两个视图，以及「查看旧版本」（用户认可的设计稿②③④）。
 import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Crosshair, Eye, RotateCcw } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Eye, RotateCcw } from 'lucide-react';
 import { ReadingMode } from './ReadingMode';
 import { segmentDiffText, segmentEventText } from './segments';
-import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, PENDING_REVISION_CHANGED, kb, show, when, type Change, type HistoryApi, type NoiseChange, type PendingItem, type PendingList, type PendingTarget, type ReasonCategory, type VersionChanges, type VersionList, type VersionMeta } from './history';
+import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, PENDING_REVISION_CHANGED, kb, pendingBadge, show, when, type Change, type HistoryApi, type NoiseChange, type PendingItem, type PendingList, type PendingTarget, type ReasonCategory, type VersionChanges, type VersionList, type VersionMeta } from './history';
 
 const FIELD_LABEL: Record<string, string> = {$segment: '分段', $segment_settings: '分割模式', framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $move: '位置', $number: '全片镜号', $order: '场内序号', $scene_id: '所属场景', $scene_order: '场次顺序', source: '原始数据', import_source: '原始导入数据', extensions: '扩展数据', prop_ids: '道具', scene_asset_id: '场景素材', asset_manifest: '素材清单', metadata: '项目信息', generation_batches: '生成批次', generation_runs: '生成记录', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
 const fieldName = (f: string) => FIELD_LABEL[f] ?? '其它内容';
@@ -134,31 +134,42 @@ function CategorySelect({version, category, onChange}: {version: number; categor
   return <select aria-label={'修改原因分类 V' + version} value={category ?? ''} onChange={e => onChange(e.target.value as ReasonCategory)}>{!category && <option value="">未分类</option>}{(Object.keys(CATEGORY_LABEL) as ReasonCategory[]).map(k => <option key={k} value={k}>{CATEGORY_LABEL[k]}</option>)}</select>;
 }
 
-const pendingTotal = (d: {pending_count: number; pending_document_count?: number}) => d.pending_count + (d.pending_document_count ?? 0);
 /** 看的版本没了（看过或被清）：先找更早的未看版本，没有再找最近的更新版本。list 从新到旧。 */
 const nextVersion = (list: number[], previous: number | null) => previous === null ? list[0] ?? null : list.includes(previous) ? previous : list.find(v => v < previous) ?? list.filter(v => v > previous).at(-1) ?? null;
 
 export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {api: HistoryApi; refreshKey: unknown; onLocate: (shotId: string) => void; onCount: (n: number) => void; shotNumber?: (shotId: string) => string | undefined}) {
-  const [data, setData] = useState<PendingList | null>(null), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false), [mode, setMode] = useState<'version' | 'all'>('version'), [selected, setSelected] = useState<number | null>(null), [notice, setNotice] = useState(''), [detail, setDetail] = useState<number | null>(null);
+  const [data, setData] = useState<PendingList | null>(null), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false), [mode, setMode] = useState<'version' | 'all'>('version'), [selected, setSelected] = useState<number | null>(null), [notice, setNotice] = useState(''), [detail, setDetail] = useState<number | null>(null), [foldOpen, setFoldOpen] = useState(false);
   const latest = useRef(0);
-  const load = useCallback(async () => { const ticket = ++latest.current; try { const d = await api.pending(); if (ticket !== latest.current) return; setData(d); setError(null); setSelected(old => nextVersion(d.pending_versions.map(v => v.version), old)); onCount(pendingTotal(d)); } catch (e) { if (ticket === latest.current) setError(e); } }, [api, onCount]);
-  useEffect(() => { setData(null); setSelected(null); setMode('version'); setNotice(''); setDetail(null); }, [api]);
+  const load = useCallback(async () => { const ticket = ++latest.current; try { const d = await api.pending(); if (ticket !== latest.current) return; setData(d); setError(null); setSelected(old => nextVersion(d.pending_versions.map(v => v.version), old)); onCount(pendingBadge(d)); } catch (e) { if (ticket === latest.current) setError(e); } }, [api, onCount]);
+  useEffect(() => { setData(null); setSelected(null); setMode('version'); setNotice(''); setDetail(null); setFoldOpen(false); }, [api]);
   useEffect(() => { void load(); }, [load, refreshKey]);
   const clear = async (target: PendingTarget, version?: number, guarded = true) => {
     if (!data || busy) return; setBusy(true); setNotice('');
-    try { const r = await api.clearPending(data.current_revision, target, {...(version === undefined ? {} : {version}), ...(guarded ? {expected_revision: data.current_revision} : {})}); onCount(pendingTotal(r)); await load(); }
+    try { const r = await api.clearPending(data.current_revision, target, {...(version === undefined ? {} : {version}), ...(guarded ? {expected_revision: data.current_revision} : {})}); onCount(pendingBadge(r)); await load(); }
     catch (e) { if (e instanceof HistoryError && e.code === PENDING_REVISION_CHANGED) { setNotice('Codex 刚保存了新版本，列表已刷新。这次没有清除，请确认后再点一次。'); await load(); } else setError(e); }
     finally { setBusy(false); }
   };
   const setCategory = async (v: number, next: ReasonCategory, prev: ReasonCategory | null) => { try { await api.setCategory(v, next, prev); await load(); } catch (e) { setError(e); } };
   const names = useCharacterNames(api, data?.current_revision);
   const versions = data?.pending_versions ?? [], index = versions.findIndex(v => v.version === selected), page = index >= 0 ? versions[index] : null, older = index >= 0 ? versions.length - index - 1 : 0;
+  const changed = data?.items.filter(i => !i.net_unchanged) ?? [], folded = data?.items.filter(i => i.net_unchanged) ?? [];
+  const card = (item: PendingItem) => { const current = item.target_kind === 'shot' ? item.current_number ?? item.shot_number : null, inVersion = (v: number) => versions.find(p => p.version === v)?.items.find(i => i.target_id === item.target_id); return <article key={item.target_id} className="sb-history-card">
+    <div className="sb-history-row">
+      <strong>{targetLabel(item, current)}</strong>
+      <span className="sb-history-muted">{item.versions.map(n => 'V' + n).join('、')}</span>
+      <span className="sb-history-spacer"/>
+      {item.shot_id && !item.deleted && item.current_number != null && <button type="button" onClick={() => onLocate(item.shot_id!)}><Crosshair size={13}/>定位到镜头</button>}
+      <button type="button" className="sb-primary" disabled={busy} onClick={() => void clear({target_ids: [item.target_id]})}><Check size={13}/>看过了</button>
+    </div>
+    <ul className="sb-pending-reasons">{item.events.map(e => { const step = item.net_unchanged ? inVersion(e.version) : undefined; return <li key={e.version}><div className="sb-history-row"><span className="sb-history-muted">V{e.version}</span><Reason author={e.author_kind} category={e.reason_category} text={e.reason_text}/>{e.author_kind === 'agent' && <CategorySelect version={e.version} category={e.reason_category} onChange={next => void setCategory(e.version, next, e.reason_category)}/>}</div>{step && <ChangeBody item={step} shotNumber={shotNumber}/>}</li>; })}</ul>
+    {item.net_unchanged ? <p className="sb-history-muted">合起来看，最后和改之前一样。</p> : <>{item.summary_only && <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p>}<ChangeBody item={item} shotNumber={shotNumber}/></>}
+  </article>; };
   return <CharacterNames.Provider value={names}><div className="sb-history" aria-label="待看的修改">
     <div className="sb-history-head"><div><h3>待看的修改</h3><p>Codex 保存后改过、你还没看过的内容。点「看过了」只清掉标记，不影响内容。</p></div>
       {!!data?.items.length && <button type="button" disabled={busy} onClick={() => void clear({all: true}, undefined, false)}>全部看过</button>}</div>
     <div className="sb-pending-switch" role="group" aria-label="待看查看方式">
       <button type="button" aria-pressed={mode === 'version'} onClick={() => setMode('version')}>当前版本</button>
-      <button type="button" aria-pressed={mode === 'all'} onClick={() => setMode('all')}>全部未看 · {data ? pendingTotal(data) : '…'} 处</button>
+      <button type="button" aria-pressed={mode === 'all'} onClick={() => setMode('all')}>全部未看 · {data ? pendingBadge(data) : '…'} 处</button>
     </div>
     {error ? <Problem error={error}/> : null}
     {notice && <p className="sb-history-alert" role="status"><AlertTriangle size={15}/>{notice}</p>}
@@ -183,18 +194,16 @@ export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {
         {page.summary_only && detail === page.version ? <VersionDetail api={api} version={page.version} shotNumber={shotNumber}/> : page.items.map(item => <ChangeRow key={item.target_id} item={item} shotNumber={shotNumber}/>)}
       </div>
     </section>}
-    {mode === 'all' && data?.items.map(item => { const current = item.target_kind === 'shot' ? item.current_number ?? item.shot_number : null; return <article key={item.target_id} className="sb-history-card">
+    {mode === 'all' && !!data?.items.length && !changed.length && <p className="sb-history-empty">没有最终变化。</p>}
+    {mode === 'all' && changed.map(card)}
+    {mode === 'all' && folded.length > 0 && <section className="sb-pending-fold" aria-label="最后没有变化的内容">
       <div className="sb-history-row">
-        <strong>{targetLabel(item, current)}</strong>
-        <span className="sb-history-muted">{item.versions.map(n => 'V' + n).join('、')}</span>
+        <button type="button" className="sb-history-link" aria-expanded={foldOpen} onClick={() => setFoldOpen(v => !v)}>{foldOpen ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}还有 {folded.length} 处中途改过，最后没有变化</button>
         <span className="sb-history-spacer"/>
-        {item.shot_id && !item.deleted && item.current_number != null && <button type="button" onClick={() => onLocate(item.shot_id!)}><Crosshair size={13}/>定位到镜头</button>}
-        <button type="button" className="sb-primary" disabled={busy} onClick={() => void clear({target_ids: [item.target_id]})}><Check size={13}/>看过了</button>
+        <button type="button" disabled={busy} onClick={() => void clear({target_ids: folded.map(i => i.target_id)})}><Check size={13}/>这些都看过了</button>
       </div>
-      <ul className="sb-pending-reasons">{item.events.map(e => <li key={e.version} className="sb-history-row"><span className="sb-history-muted">V{e.version}</span><Reason author={e.author_kind} category={e.reason_category} text={e.reason_text}/>{e.author_kind === 'agent' && <CategorySelect version={e.version} category={e.reason_category} onChange={next => void setCategory(e.version, next, e.reason_category)}/>}</li>)}</ul>
-      {item.summary_only && <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p>}
-      <ChangeBody item={item} shotNumber={shotNumber}/>
-    </article>; })}
+      {foldOpen && folded.map(card)}
+    </section>}
   </div></CharacterNames.Provider>;
 }
 
