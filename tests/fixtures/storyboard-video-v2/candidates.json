@@ -69,5 +69,14 @@
         "disabledReason": null
       }
     }
-  ]
+  ],
+  "migration": {
+    "schemaVersion": 1,
+    "status": "complete",
+    "phase": "complete",
+    "reasonCode": null,
+    "writeAllowed": true,
+    "adoptionKnown": true,
+    "historyPrune": "active"
+  }
 }

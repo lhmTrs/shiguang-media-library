@@ -63,5 +63,14 @@
     "storyboardRevision": 4,
     "assetStamp": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "selectionRevision": 2
+  },
+  "migration": {
+    "schemaVersion": 1,
+    "status": "complete",
+    "phase": "complete",
+    "reasonCode": null,
+    "writeAllowed": true,
+    "adoptionKnown": true,
+    "historyPrune": "active"
   }
 }
