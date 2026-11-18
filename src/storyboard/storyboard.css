@@ -353,6 +353,10 @@
 .sb-pending-version .sb-pending-note { margin: 8px 0 0; }
 .sb-pending-version > .sb-history-row .sb-history-quote, .sb-pending-reasons .sb-history-quote { order: 1; }
 .sb-pending-reasons { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sb-pending-fold { margin-top: 12px; padding: 10px 14px; border: 1px dashed var(--sb-line); border-radius: 9px; }
+.sb-pending-fold > .sb-history-row .sb-history-link { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; text-decoration: none; }
+.sb-pending-fold .sb-history-card { margin: 10px 0 0; }
+.sb-pending-reasons .sb-change-line, .sb-pending-reasons .sb-history-fields { margin: 4px 0 0; }
 .sb-change { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 8px 0; border-top: 1px solid var(--sb-line); }
 .sb-pending-version > .sb-change:first-of-type { margin-top: 10px; }
 .sb-change strong { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
