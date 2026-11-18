@@ -166,18 +166,19 @@ try {
     page.removeAllListeners('dialog');
   });
 
-  await check('S11 视频预览里保存镜头修改：大改先确认，确认框在预览上面；「先不保存」不写库且保留输入，「确定保存」才写', async () => {
+  await check('S11 绑定 v2：旧的绑定/预览按钮已移除；点镜号开播放窗，不抢单元格编辑；升级前的预览输入草稿能恢复到主表', async () => {
     await open(small.id); const before = await api('/storyboard/projects/' + small.id);
-    await page.getByRole('button', { name: '预览视频', exact: true }).click(); const dlg = page.getByRole('dialog', { name: '分镜视频预览' }); await expect(dlg).toBeVisible();
-    const detail = dlg.getByRole('button', { name: '镜头明细', exact: true }); if (await detail.getAttribute('aria-expanded') !== 'true') await detail.click();
-    const input = dlg.getByLabel('预览镜01画面与人物动作', { exact: true }); await input.fill('预览大改'.repeat(1700));
-    await dlg.getByRole('button', { name: '保存镜头修改', exact: true }).click(); await expect(page.getByTestId('big-cancel')).toBeVisible();
-    await page.getByTestId('big-cancel').click({ timeout: 3000 });   // 能点到说明确认框没被视频预览挡住
-    assert.equal((await api('/storyboard/projects/' + small.id)).revision, before.revision, '先不保存不应写库'); await expect(input).toHaveValue(/^预览大改/);
-    await dlg.getByRole('button', { name: '保存镜头修改', exact: true }).click(); await page.getByTestId('big-save').click();
-    await expect.poll(async () => (await api('/storyboard/projects/' + small.id)).revision).toBe(before.revision + 1);
-    assert.equal((await api('/storyboard/projects/' + small.id + '/versions?limit=1')).items[0].summary_only, true);
-    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: '绑定项目视频', exact: true })).toHaveCount(0); await expect(page.getByRole('button', { name: '预览视频', exact: true })).toHaveCount(0);
+    await cell('01', '画面与人物动作').click(); await expect(page.getByRole('dialog', { name: '镜 01 的片子' })).toHaveCount(0);
+    await page.getByRole('button', { name: '播放镜01的片子', exact: true }).click(); const dlg = page.getByRole('dialog', { name: '镜 01 的片子' }); await expect(dlg).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(dlg).toHaveCount(0); assert.equal((await api('/storyboard/projects/' + small.id)).revision, before.revision, '看片不写分镜');
+    const shotId = before.project.scenes[0].shots[0].id, key = 'shiguang.storyboard.integrated.' + origin + '.' + small.id + '.recovery', library = (await api('/session')).instanceId;
+    await page.evaluate(([k, value]) => localStorage.setItem(k, JSON.stringify(value)), [key, { project: before.project, hash: before.hash, revision: before.revision, file: before.file, videoEdits: { [shotId]: { action: '合成：升级前的预览输入' } }, videoBase: before.project, documentId: before.project.document_id ?? before.project.project_id, initializedAt: before.initialized_at, libraryId: library }]);
+    await page.reload(); await page.getByRole('button', { name: '恢复编辑', exact: true }).click();
+    await expect(cell('01', '画面与人物动作')).toHaveValue('合成：升级前的预览输入'); await expect(status()).toContainText('未保存');
+    assert.equal((await api('/storyboard/projects/' + small.id)).revision, before.revision, '恢复只进草稿，不写库');
+    await saveBtn().click(); await page.getByTestId('big-save').click();   // S8 存过超长文字，这次替换也算大改
+    await expect(status()).toContainText('已保存'); assert.equal(shotOf((await api('/storyboard/projects/' + small.id)).project, 1).action, '合成：升级前的预览输入');
   });
 
   await check('S12 和当前版本对比：显示当前版本新增的镜头和标题等整体差异，并写明方向', async () => {

@@ -144,7 +144,7 @@ export type ProjectVideoRequest = <T = any>(url: string, body?: unknown, method?
 export interface ProjectVideoWorkspaceProps {
   active: boolean;
   projectId: string;
-  projects: { id: string; name: string; project_kind?: string }[];
+  projects: { id: string; name: string; project_kind?: string; series_id?: string | null; season_id?: string | null; episode_no?: number | null }[];
   /** Receives /project-videos/projects/:projectId followed by the contract suffix. */
   request: ProjectVideoRequest;
   onProject: (id: string) => void;

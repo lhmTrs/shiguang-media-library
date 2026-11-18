@@ -11,6 +11,8 @@ import {MediaViewer} from '../MediaViewer';
 import {Modal, ModalActions} from './Modal';
 import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
+import {ShotBindingDialog} from './ShotBindingDialog';
+import {createShotBindingApi} from './shot-binding-api';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import {openUpdreamTasks} from '../updream/api';
@@ -202,6 +204,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const [queryScope, setQueryScope] = useState<'all' | 'name' | 'prompt'>('all');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [openMenu, setOpenMenu] = useState<MenuName | ''>('');
+  const [bindingVideoId, setBindingVideoId] = useState('');
   const sessionRef = useRef<HTMLDivElement>(null);
   const [adoptionFilter, setAdoptionFilter] = useState<'all' | 'candidate' | 'adopted'>('all');
   const [importOpen, setImportOpen] = useState(false);
@@ -535,7 +538,10 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     </div>;
   }
 
-  const modalOpen = importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm || !!contentChange.video && contentChange.visible || !!reject.mode && reject.visible;
+  const bindingVideo = active ? videos.find(video => video.id === bindingVideoId) : undefined;
+  const bindingApi = useMemo(() => createShotBindingApi((url, body, method) => requestRef.current(url, body, method), projectId), [projectId]);
+  useEffect(() => setBindingVideoId(''), [projectId]);
+  const modalOpen = !!bindingVideo || importOpen || upgradeOpen || !!confirmation || !!folderAction || revealConfirm || !!contentChange.video && contentChange.visible || !!reject.mode && reject.visible;
   const expandedVideo = active && !modalOpen ? videos.find(video => video.id === expandedId) : undefined;
   useEffect(() => setExpandedId(''), [active, projectId, modalOpen]);
   useEffect(() => { if (expandedId && !videos.some(video => video.id === expandedId)) setExpandedId(''); }, [collection, expandedId]);
@@ -957,6 +963,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         {actionTargets.length === 1 && <>
           <hr/>
           {menuItem('查看原视频', () => setExpandedId(actionTargets[0]))}
+          {menuItem('对应到分镜镜头…', () => setBindingVideoId(actionTargets[0]), {disabled: locked})}
           {menuItem('移动到…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, label: v.name}); }, {disabled: locked || operationPending || !videos.find(x => x.id === actionTargets[0])?.managed, hint: operationPending ? '上一笔完成后可用' : undefined})}
           {videos.find(x => x.id === actionTargets[0])?.inRejectArea && menuItem('移回…', () => { const v = videos.find(x => x.id === actionTargets[0]); if (v) setFolderAction({kind: 'move-video', sourceId: v.id, destinationFolderId: 'root', label: v.name}); }, {disabled: rejectBlocked, hint: '不会自动恢复采用'})}
         </>}
@@ -975,6 +982,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         : expandedVideo.status === 'unsupported' || !expandedVideo.supported ? '浏览器不支持此视频格式，请返回详情核对格式信息。'
         : expandedVideo.status !== 'available' ? '原视频当前不可用，请返回详情核对。' : undefined,
     }} onClose={() => setExpandedId('')} repairLabel="返回详情重新定位" onRepair={() => { requestAnimationFrame(() => relinkButton.current?.focus()); }}/>} 
+    {bindingVideo && <ShotBindingDialog key={bindingVideo.id} video={bindingVideo} projectId={projectId} projects={projects} api={bindingApi} onSaved={() => void refresh(bindingVideo.id)} onClose={() => setBindingVideoId('')}/>}
     <input className="pv-sr-only" ref={fileInput} type="file" tabIndex={-1} accept="video/*,.mkv,.m2ts,.mts" onChange={e => { if (e.target.files?.length) acceptFiles(e.target.files); e.target.value = ''; }}/>
     {active && importOpen && <Modal title={duplicate ? '目标文件夹有同名视频' : importConfirm ? '确认导入视频' : '导入视频'} locked={false} onClose={() => { setImportOpen(false); setImportConfirm(false); }}>
       <p className="pv-notice">固定归属项目：<strong>{projectName}</strong> / <strong>{importTask?.folderName || folderName}</strong>。复制原文件到项目托管位置，原文件保留。</p>

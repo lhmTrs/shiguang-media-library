@@ -1,0 +1,23 @@
+export type ShotSelection = { videoId: string; videoName: string; kind: 'video' | 'shot' };
+export type ShotVideoSummary = { number?: string; adopted: ShotSelection | null; playVideoId: string | null; candidateCount: number; newCount: number; needsReview: boolean };
+export type ClipShot = { shotId: string; boundNumber: string; durationMs: number; currentNumber: string | null };
+export type ShotClip = {
+  id: string; name: string; durationMs: number; status: string; mediaUrl: string;
+  boundRevision: number; bindingRevision: number; boundAt: number; origin: 'auto' | 'manual';
+  needsReview: boolean; reviewFields: string[]; review: { revision: number; at: number } | null; shots: ClipShot[];
+};
+export type StartEstimate = { startMs: number; estimatedMs: number; state: 'start' | 'estimated' | 'beyond-end' | 'not-bound' };
+export type SelectionAction = 'adopt-video' | 'adopt-shot' | 'clear-shot' | 'clear-video';
+export type SelectionChange = { shotId: string; number: string; before: ShotSelection | null; after: ShotSelection | null; beforeText: string; afterText: string };
+export const REVIEW_FIELD_LABELS: Readonly<Record<string, string>>;
+export const MEDIA_STATUS_TEXT: Readonly<Record<string, string>>;
+export function canPlayStatus(status: string): boolean;
+export function clockLabel(ms: number): string;
+export function safeMediaUrl(url: string, origin: string): string;
+export function estimateStart(clip: ShotClip, shotId: string): StartEstimate;
+export function startText(estimate: StartEstimate): string;
+export function defaultClip(clips: ShotClip[], summary?: ShotVideoSummary | null): ShotClip | null;
+export function newClipCount(summary?: ShotVideoSummary | null): number;
+export function selectionText(selection: ShotSelection | null): string;
+export function coveredShotsText(clip: ShotClip): string;
+export function selectionChanges(action: SelectionAction, clip: ShotClip, shotId: string, summaries: Record<string, ShotVideoSummary>): { rows: SelectionChange[]; needsConfirm: boolean };
