@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
 import {legacyVideoLibrary} from './helpers/video-v2-legacy-library.mjs';
 import {upgradePolicy} from '../server/storyboard-video-v2/upgrade-policy.mjs';
 import {hash} from '../server/storyboard-video-v2/model.mjs';
@@ -41,4 +43,21 @@ test('stale exported rows are never silently replaced with new input on restart'
 });
 test('a live startup owner leaves reads available and never steals the instance lock',async t=>{
  const f=await legacyVideoLibrary(t),directory=await privateDirectory(path.join(f.lib.dataDir,'video-binding-v2')),release=await acquireUpgradeFileLock(directory,f.instanceId);try{assert.equal((await f.v2.startup()).status,'pending');assert.equal(f.v2.migrationStatus().reasonCode,'VIDEO_V2_UPGRADE_BUSY');await readableUnknown(f,'pending');}finally{await release();}assert.equal((await f.v2.startup()).status,'complete');
+});
+test('a proven exited owned helper leaves a reclaimable lock without killing a process',async t=>{
+ const f=await legacyVideoLibrary(t),directory=path.join(f.lib.dataDir,'video-binding-v2'),child=spawn(process.execPath,['tests/fixtures/storyboard-video-v2/startup-lock-owner.mjs',directory,f.instanceId],{stdio:['ignore','pipe','pipe']});let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);assert.equal((await once(child,'exit'))[0],0,output);assert.match(output,/OWNED_LOCK_PUBLISHED/);assert.equal((await f.v2.startup()).status,'complete');
+});
+test('a defer policy arriving at the delete checkpoint stops before the transaction',async t=>{
+ const f=await legacyVideoLibrary(t);f.v2.upgradeCheckpoint=async phase=>{if(phase==='delete')await upgradePolicy({dataDir:f.lib.dataDir,instanceId:f.instanceId,mode:'defer',reason:'synthetic late stop'});};assert.equal((await f.v2.startup()).status,'deferred');await readableUnknown(f,'deferred');assert.equal(f.v2.schemaState().status,'pending');
+});
+test('explicit legacy restoration after a completed upgrade is not silently deleted by replaying its committed request',async t=>{
+ const f=await legacyVideoLibrary(t);await f.v2.startup();const journal=JSON.parse(await fs.readFile(journalFile(f),'utf8')),exported=JSON.parse(await fs.readFile(path.join(path.dirname(journalFile(f)),journal.exportFile),'utf8'));f.v2.restoreLegacy(exported,{requestId:randomUUID()});assert.equal((await f.v2.startup()).status,'failed');assert.equal(f.v2.migrationStatus().reasonCode,'VIDEO_V2_UPGRADE_RESTORED');await readableUnknown(f,'failed');
+});
+test('lost execute acknowledgement uses the durable complete result and reconciles an interrupted journal on restart',async t=>{
+ const f=await legacyVideoLibrary(t),execute=f.v2.executeMigration.bind(f.v2);f.v2.executeMigration=(...args)=>{execute(...args);throw Object.assign(Error('owned ACK lost'),{code:'VIDEO_V2_UPGRADE_TEST_ACK_LOST'});};assert.equal((await f.v2.startup()).status,'complete');const file=journalFile(f),journal=JSON.parse(await fs.readFile(file,'utf8'));assert.equal(f.v2.request(journal.requestId).status,'committed');assert.ok(Object.values(f.v2.legacyRows()).every(rows=>!rows.length));
+ await fs.writeFile(file,JSON.stringify({...journal,status:'pending',phase:'delete'}));f.v2.executeMigration=execute;assert.equal((await f.v2.startup()).status,'complete');const after=JSON.parse(await fs.readFile(file,'utf8'));assert.equal(after.status,'complete');assert.equal(after.requestId,journal.requestId);assert.equal((await fs.readdir(path.dirname(file))).filter(n=>n.startsWith('legacy-')).length,1);
+});
+test('explicit policy CLI checks without creating a directory and writes only a matching instance defer policy',async t=>{
+ const f=await legacyVideoLibrary(t),run=async extra=>{const child=spawn(process.execPath,['scripts/video-binding-v2-policy.mjs','--data-dir',f.lib.dataDir,'--instance-id',f.instanceId,...extra],{stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>err+=b);assert.equal((await once(child,'exit'))[0],0,err);return JSON.parse(out);};
+ assert.equal((await run(['--check'])).policy,null);await assert.rejects(fs.stat(path.join(f.lib.dataDir,'video-binding-v2')),{code:'ENOENT'});assert.equal((await run(['--mode','defer','--reason','synthetic CLI approval'])).policy.instanceId,f.instanceId);assert.equal((await f.v2.startup()).status,'deferred');assert.deepEqual(f.v2.legacyRows(),f.legacy);
 });
