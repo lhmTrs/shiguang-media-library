@@ -2,8 +2,9 @@ import type {ReviewReason, SelectionChange as V2SelectionChange, SelectionIntent
 
 export type {ReviewReason, SelectionIntent};
 export type ShotSelection = SelectionView;
-export type ShotVideoSummary = { number?: string; adopted: ShotSelection | null; playVideoId: string | null; candidateCount: number; newCount: number; needsReview: boolean };
-export type ShotSummaries = { initialized: boolean; selectionRevision: number; storyboardRevision: number; shots: Record<string, ShotVideoSummary> };
+export type MigrationView = { status: string; blocked: boolean; adoptionKnown: boolean; prunePaused: boolean; shortLabel: string; title: string; reasonCode: string | null };
+export type ShotVideoSummary = { number?: string; adopted: ShotSelection | null; playVideoId: string | null; candidateCount: number | null; newCount: number | null; needsReview: boolean | null };
+export type ShotSummaries = { initialized: boolean; migration: MigrationView | null; selectionRevision: number; storyboardRevision: number; shots: Record<string, ShotVideoSummary> };
 export type ClipShot = { shotId: string; boundNumber: string; durationMs: number; currentNumber: string | null };
 export type ShotClip = {
   id: string; sourceProjectId: string; name: string; durationMs: number; status: string; mediaUrl: string;
@@ -16,6 +17,9 @@ export type SelectionAction = 'adopt-video' | 'adopt-shot' | 'clear-shot' | 'cle
 export type SelectionChange = V2SelectionChange & { beforeText: string; afterText: string };
 export const REVIEW_REASON_LABELS: Readonly<Record<string, string>>;
 export const MEDIA_STATUS_TEXT: Readonly<Record<string, string>>;
+export function migrationView(migration: unknown): MigrationView | null;
+export function migrationText(view: MigrationView | null): string;
+export function shotButtonLabel(summaries: ShotSummaries | null | undefined, shotId: string): string;
 export function reviewReasonText(reasons?: ReviewReason[] | null): string;
 export function v2ErrorText(code?: string, message?: string, fallback?: string): string;
 export function canPlayStatus(status: string): boolean;

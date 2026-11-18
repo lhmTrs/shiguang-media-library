@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { canPlayStatus, clipFromItem, coveredShotsText, defaultClip, estimateStart, newClipCount, originText, reviewReasonText, rowsFromChanges, safeMediaUrl, selectionIntent, selectionText, startText, summariesFromState, v2ErrorText, wholeAdopted } from '../src/storyboard/shot-video-model.mjs';
+import { migrationText, migrationView, shotButtonLabel, canPlayStatus, clipFromItem, coveredShotsText, defaultClip, estimateStart, newClipCount, originText, reviewReasonText, rowsFromChanges, safeMediaUrl, selectionIntent, selectionText, startText, summariesFromState, v2ErrorText, wholeAdopted } from '../src/storyboard/shot-video-model.mjs';
 import { adoptedShotsText, bindIntent, bindingFromResponse, bindingOriginText, boundText, initialShotIds, nextText, orderedShotIds, previewFromResponse, episodeLabel, releasedShotRefs, sameBinding, targetChoices, unbindConfirmation, unbindIntent } from '../src/project-videos/shot-binding-model.mjs';
 
 const shot = (shotId, durationMs, currentNumber = shotId) => ({ shotId, numberAtBinding: shotId, durationMs, associationSeq: 1, existsInCurrent: currentNumber !== null, currentNumber });
@@ -47,7 +47,7 @@ test('新片子数只在有采用时显示', () => {
 test('读接口映射：每镜摘要和片子字段按合同', () => {
   const state = summariesFromState({ initialized: true, context: { selectionRevision: 4, storyboardRevision: 9 }, shots: [{ shotId: 's', number: '01', adopted: use('a'), defaultVideo: { videoId: 'a' }, candidateCount: 3, newVideoCount: 1, needsReview: true, reviewReasons: [] }] });
   assert.deepEqual([state.selectionRevision, state.storyboardRevision, state.shots.s.playVideoId, state.shots.s.newCount], [4, 9, 'a', 1]);
-  assert.deepEqual(summariesFromState({ initialized: false, context: null, shots: [] }), { initialized: false, selectionRevision: 0, storyboardRevision: 0, shots: {} });
+  assert.deepEqual(summariesFromState({ initialized: false, context: null, shots: [] }), { initialized: false, migration: null, selectionRevision: 0, storyboardRevision: 0, shots: {} });
   const c = clip('a', [shot('01', 1000), shot('02', 1000, null)], {}, {}, { reviewedToRevision: 8, reviewedAt: 5 });
   assert.deepEqual([c.bindingId, c.bindingRevision, c.boundRevision, c.provenanceRevision], ['b-a', 2, 3, 3]);
   assert.deepEqual(c.review, { revision: 8, at: 5 }); assert.equal(c.shots[1].currentNumber, null);
@@ -170,4 +170,19 @@ test('后端合成样例：状态、候选、绑定、预览、错误和复合�
   const error = fixture('error'); assert.equal(v2ErrorText(error.code, error.message), error.error);
   const { confirmedUnbindShotRefs: refs } = fixture('unbind-confirmation');
   assert.deepEqual(unbindConfirmation(refs.map(ref => ({ id: ref.shotId, projectId: ref.projectId, number: '1' }))), { confirmedUnbindShotRefs: refs });
+});
+
+test('迁移状态：完成时不打扰；暂缓时写清状态、保护未知和裁剪暂停', () => {
+  assert.equal(migrationView({ status: 'complete', writeAllowed: true, adoptionKnown: true, historyPrune: 'active' }), null);
+  assert.equal(migrationView(undefined), null);
+  const state = summariesFromState(fixture('state-deferred')), view = state.migration, [id] = Object.keys(state.shots);
+  assert.equal(view.blocked, true); assert.equal(view.adoptionKnown, false); assert.equal(view.prunePaused, true); assert.equal(view.shortLabel, '已暂缓');
+  assert.match(migrationText(view), /已暂缓.*暂时无法确认.*旧版本清理已暂停/); assert.equal(state.shots[id].candidateCount, null);
+  assert.equal(shotButtonLabel(state, id), '已暂缓'); assert.equal(newClipCount(state.shots[id]), 0);
+  assert.equal(migrationView({ status: 'pending', writeAllowed: true, adoptionKnown: true, historyPrune: 'paused' }).blocked, false);
+});
+
+test('镜号按钮：数量未知不写无片子，确实为 0 才写', () => {
+  const data = c => ({ migration: null, shots: { s: { candidateCount: c } } });
+  assert.equal(shotButtonLabel(null, 's'), '播放'); assert.equal(shotButtonLabel(data(2), 's'), '播放'); assert.equal(shotButtonLabel(data(null), 's'), '播放'); assert.equal(shotButtonLabel(data(0), 's'), '无片子');
 });

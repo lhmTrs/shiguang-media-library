@@ -2,9 +2,9 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {AlertTriangle, Play, RotateCcw, X} from 'lucide-react';
 import {bindPlaybackSpace} from '../playback-shortcuts';
 import {
-  MEDIA_STATUS_TEXT, canPlayStatus, clockLabel, coveredShotsText, defaultClip, estimateStart, newClipCount,
+  MEDIA_STATUS_TEXT, canPlayStatus, clockLabel, coveredShotsText, defaultClip, estimateStart, migrationText, newClipCount,
   originText, reviewReasonText, safeMediaUrl, selectionIntent, startText, wholeAdopted,
-  type SelectionAction, type SelectionIntent, type ShotClip, type ShotVideoSummary,
+  type MigrationView, type SelectionAction, type SelectionIntent, type ShotClip, type ShotVideoSummary,
 } from './shot-video-model.mjs';
 import type {SelectionPreview, ShotVideoApi} from './shot-video-api';
 import './video-binding-v2.css';
@@ -27,6 +27,7 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
   const [mediaError, setMediaError] = useState(''), [mediaMs, setMediaMs] = useState<number | undefined>(undefined);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const [migration, setMigration] = useState<MigrationView | null>(null), writesOff = !!migration?.blocked, relationUnknown = migration?.adoptionKnown === false;
   const root = useRef<HTMLElement>(null), confirmRef = useRef<HTMLDivElement>(null), video = useRef<HTMLVideoElement>(null), revision = useRef(0), storyboardRevision = useRef(0), picked = useRef(false);
   // 结果未知的写入：同一操作再点时原样重发同一请求，不重新预览。
   const retry = useRef<{key: string; requestId: string; again: () => Promise<void>} | null>(null), live = useRef(true);
@@ -36,7 +37,7 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
     const [next, state] = await Promise.all([api.clips(shotId), api.summaries()]);
     if (!live.current) return;
     revision.current = next.selectionRevision; storyboardRevision.current = next.storyboardRevision;
-    setClips(next.clips);
+    setClips(next.clips); setMigration(next.migration ?? state.migration);
     // 只在第一次选片。之后重读列表不改变正在播放的片子；选片按刚读到的采用状态，不等角标轮询。
     if (!picked.current) { picked.current = true; setPlaying(defaultClip(next.clips, state.shots[shotId])); }
   }, [api, shotId]);
@@ -98,12 +99,14 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
     requestId => api.writeSelection({intent, requestId, previewHash: preview.previewHash, confirmReplace: preview.requiresConfirmation}),
     '已更新采用。正在播放的片子没有变。', '采用没有写入，请重试');
   const review = (action: 'confirm' | 'undo', clip: ShotClip) => {
+    if (writesOff) return;
     const seenStoryboardRevision = storyboardRevision.current;
     return submit([action, clip.id, clip.bindingRevision, seenStoryboardRevision, clip.comparisonHash].join(':'),
       requestId => api.writeReview({action, clip, seenStoryboardRevision, requestId}),
       action === 'confirm' ? '已标记复核。' : '已撤销复核，按原来的基准重新判断。', '复核没有写入，请重试');
   };
   const request = async (action: SelectionAction, clip: ShotClip) => {
+    if (writesOff) return;
     const intent = selectionIntent(action, clip, shotId, {selectionRevision: revision.current, storyboardRevision: storyboardRevision.current});
     const key = JSON.stringify(intent);
     if (retry.current?.key === key) return retry.current.again();
@@ -137,10 +140,13 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
       </header>
       {error && <p className="sv-message" data-tone="bad" role="alert">{error}</p>}
       {notice && <p className="sv-message" role="status">{notice}</p>}
+      {migration && <p className="sv-message" data-tone={migration.status === 'failed' ? 'bad' : undefined} role="status">{migrationText(migration)}</p>}
       <div className="sv-body">
         <div className="sv-stage">
           {!clips && <div className="sv-screen sv-empty" role="status">正在读取片子…</div>}
-          {clips && !playing && (adopted
+          {clips && !playing && (relationUnknown
+            ? <div className="sv-screen sv-empty" role="status"><AlertTriangle size={20}/><strong>暂时读不到这一镜对应的片子</strong><span>片子还在，可以到生成视频页播放。</span></div>
+            : adopted
             ? <div className="sv-screen sv-empty" role="alert"><AlertTriangle size={20}/><strong>采用的片子暂时读不到</strong><span>没有自动换成别的片子，可以从右边选一条来看。</span></div>
             : <div className="sv-screen sv-empty"><strong>这一镜还没有对应的片子</strong><span>到生成视频页右键片子，选「对应到分镜镜头…」。</span></div>)}
           {playing && (playable
@@ -155,7 +161,7 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
           </div>}
         </div>
         <aside className="sv-clips" aria-label="这一镜的片子">
-          <h3>这一镜的片子{clips ? ' · ' + clips.length + ' 条' : ''}</h3>
+          <h3>这一镜的片子{clips ? ' · ' + (relationUnknown ? '待确认' : clips.length + ' 条') : ''}</h3>
           {clips?.map(clip => {
             const isPlaying = clip.id === playing?.id, isAdopted = adopted?.videoId === clip.id;
             const adoptedElsewhere = clip.shots.some(shot => shot.currentNumber !== null && summaries[shot.shotId]?.adopted?.videoId === clip.id);
@@ -176,12 +182,12 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
               {clip.needsReview && !clip.canReview && <p className="sv-source">暂时不能复核：{clip.reviewBlockedReason || '当前内容无法核对'}</p>}
               {clip.review && <p className="sv-source">{clip.needsReview ? '上次复核到第 ' + clip.review.revision + ' 版，之后又有变化' : '已复核到第 ' + clip.review.revision + ' 版'} {clip.review.at ? ' · ' + timeText(clip.review.at) : ''}</p>}
               <div className="sv-actions">
-                {clip.needsReview && <button type="button" disabled={busy || !clip.canReview} onClick={() => void review('confirm', clip)}>已复核</button>}
-                {clip.review && !clip.needsReview && <button type="button" disabled={busy} onClick={() => void review('undo', clip)}>撤销复核</button>}
-                {!wholeAdopted(clip, summaries) && <button type="button" disabled={busy} onClick={() => void request('adopt-video', clip)}>采用（{coveredShotsText(clip)}）</button>}
-                {!(isAdopted && adopted?.kind === 'shot') && <button type="button" disabled={busy} onClick={() => void request('adopt-shot', clip)}>只这一镜用</button>}
-                {isAdopted && <button type="button" disabled={busy} onClick={() => void request('clear-shot', clip)}>取消这一镜的采用</button>}
-                {adoptedElsewhere && <button type="button" disabled={busy} onClick={() => void request('clear-video', clip)}>取消整条的采用</button>}
+                {clip.needsReview && <button type="button" disabled={busy || writesOff || !clip.canReview} onClick={() => void review('confirm', clip)}>已复核</button>}
+                {clip.review && !clip.needsReview && <button type="button" disabled={busy || writesOff} onClick={() => void review('undo', clip)}>撤销复核</button>}
+                {!wholeAdopted(clip, summaries) && <button type="button" disabled={busy || writesOff} onClick={() => void request('adopt-video', clip)}>采用（{coveredShotsText(clip)}）</button>}
+                {!(isAdopted && adopted?.kind === 'shot') && <button type="button" disabled={busy || writesOff} onClick={() => void request('adopt-shot', clip)}>只这一镜用</button>}
+                {isAdopted && <button type="button" disabled={busy || writesOff} onClick={() => void request('clear-shot', clip)}>取消这一镜的采用</button>}
+                {adoptedElsewhere && <button type="button" disabled={busy || writesOff} onClick={() => void request('clear-video', clip)}>取消整条的采用</button>}
               </div>
             </article>;
           })}

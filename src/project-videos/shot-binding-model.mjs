@@ -1,5 +1,5 @@
 // 分镜视频绑定 v2：生成视频页「对应到分镜镜头…」的纯逻辑。字段按 STORYBOARD-VIDEO-BINDING-V2 合同 v1。
-import { selectionText } from '../storyboard/shot-video-model.mjs';
+import { migrationView, selectionText } from '../storyboard/shot-video-model.mjs';
 
 const collator = new Intl.Collator('zh-CN', { numeric: true });
 
@@ -28,6 +28,7 @@ export function bindingFromResponse(body) {
   return {
     bindingRevision: body.bindingRevision,
     targets: body.allowedTargets,
+    migration: migrationView(body.migration),
     binding: binding && {
       bindingId: binding.bindingId, projectId: binding.targetProjectId, projectName: target?.name ?? '', revision: binding.storyboardRevision,
       bindingRevision: binding.revision, origin: binding.origin, provenanceRevision: binding.provenance?.storyboardRevision ?? null, boundAt: binding.boundAt,

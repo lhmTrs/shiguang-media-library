@@ -4,6 +4,7 @@ import {
   bindIntent, bindingOriginText, boundText, episodeLabel, initialShotIds, nextText, orderedShotIds, releasedShotRefs, sameBinding, targetChoices, unbindIntent,
   type BindingIntent, type BindingPreview, type BindingProject, type BindingRead,
 } from './shot-binding-model.mjs';
+import {migrationText} from '../storyboard/shot-video-model.mjs';
 import type {EpisodeStoryboard, ShotBindingApi} from './shot-binding-api';
 import type {ProjectVideo} from './types';
 
@@ -20,7 +21,7 @@ export function ShotBindingDialog({video, projectId, projects, api, onSaved, onC
   // 结果未知的写入：同一操作再点时原样重发同一请求，不重新预览。
   const retry = useRef<{key: string; requestId: string; again: () => Promise<void>} | null>(null);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-  const binding = state?.binding ?? null;
+  const binding = state?.binding ?? null, migration = state?.migration ?? null, writesOff = !!migration?.blocked || state?.bindingRevision === null, relationUnknown = migration?.adoptionKnown === false || state?.bindingRevision === null;
   // 确认内容在弹窗底部，打开时滚到能看见确认按钮的位置。
   useEffect(() => { if (plan) planRef.current?.scrollIntoView?.({block: 'nearest'}); }, [plan]);
 
@@ -40,6 +41,7 @@ export function ShotBindingDialog({video, projectId, projects, api, onSaved, onC
     catch (e) { if (live.current) { setState(null); setEpisode(null); setError((e as Error).message || '绑定信息读取失败'); } return; }
     if (!live.current) return;
     setState(current);
+    if (current.migration?.blocked || current.bindingRevision === null) { setEpisode(null); return; }
     const allowed = current.targets.map(target => target.projectId);
     const first = current.binding?.projectId ?? (allowed.includes(projectId) ? projectId : allowed[0]);
     if (first) await openEpisode(first, current); else setEpisode(null);
@@ -51,7 +53,7 @@ export function ShotBindingDialog({video, projectId, projects, api, onSaved, onC
   const rows = episode?.shots ?? [];
   const shotIds = orderedShotIds(rows, selected);
   const unchanged = !!episode && sameBinding(binding, episodeId, episode.revision, shotIds);
-  const canSave = !!state && !!episode && !!project?.selectable && !busy && shotIds.length > 0 && !unchanged;
+  const canSave = !writesOff && !!state && !!episode && !!project?.selectable && !busy && shotIds.length > 0 && !unchanged;
   const scenes = useMemo(() => {
     const groups: {index: number; name: string; shots: typeof rows}[] = [];
     for (const row of rows) { const last = groups[groups.length - 1]; if (last?.index === row.sceneIndex) last.shots.push(row); else groups.push({index: row.sceneIndex, name: row.sceneName, shots: [row]}); }
@@ -91,27 +93,28 @@ export function ShotBindingDialog({video, projectId, projects, api, onSaved, onC
     } catch (e) { await failed(e); }
     finally { if (live.current) setBusy(false); }
   };
-  const save = () => { if (state && episode) void begin(bindIntent(state.bindingRevision, episodeId, episode, shotIds)); };
-  const clear = () => { if (state) void begin(unbindIntent(state.bindingRevision)); };
+  const save = () => { if (state?.bindingRevision != null && !writesOff && episode) void begin(bindIntent(state.bindingRevision, episodeId, episode, shotIds)); };
+  const clear = () => { if (state?.bindingRevision != null && !writesOff) void begin(unbindIntent(state.bindingRevision)); };
   const unbinding = plan?.intent.action === 'unbind';
 
   return <Modal title="对应到分镜镜头" locked={busy} onClose={onClose} className="pv-binding-modal">
     <p className="pv-binding-video">片子：<strong>{video.name}</strong></p>
     {error && <p className="pv-error" role="alert">{error}</p>}
+    {migration && <p className="pv-notice" role="status">{migrationText(migration)}</p>}
     <section className="pv-binding-now" aria-label="当前绑定">
       <h3>现在对应</h3>
-      <p>{state ? boundText(binding, choices) : error ? '没有读到' : '正在读取…'}</p>
+      <p>{state ? (relationUnknown ? '绑定关系暂时无法确认' : boundText(binding, choices)) : error ? '没有读到' : '正在读取…'}</p>
       {binding && <small>{bindingOriginText(binding)} · {new Date(binding.boundAt).toLocaleString('zh-CN', {hour12: false})}</small>}
       {binding?.needsReview && <span className="pv-binding-review">需复核：绑定后内容有变化，片子仍可播放</span>}
     </section>
-    {state && !choices.length && <p className="pv-notice">这个项目没有可对应的分镜集。</p>}
-    {!!choices.length && <label className="pv-field">选集
+    {state && !writesOff && !choices.length && <p className="pv-notice">这个项目没有可对应的分镜集。</p>}
+    {!writesOff && !!choices.length && <label className="pv-field">选集
       <select aria-label="选集" value={episodeId} disabled={busy} onChange={e => { if (state) void openEpisode(e.target.value, state); }}>
         {choices.map(item => <option key={item.id} value={item.id} disabled={!item.selectable}>{episodeLabel(item)}{item.selectable ? '' : '（已不在可选范围）'}</option>)}
       </select>
     </label>}
     {state && episode === undefined && <p role="status">正在读取分镜…</p>}
-    {state && episode === null && !error && !!choices.length && <p className="pv-notice">这一集还没有分镜。</p>}
+    {state && !writesOff && episode === null && !error && !!choices.length && <p className="pv-notice">这一集还没有分镜。</p>}
     {episode && <fieldset className="pv-binding-shots" disabled={busy}>
       <legend>勾选这条片子对应的镜头（第 {episode.revision} 版）</legend>
       {scenes.map(scene => <div key={scene.index}>
@@ -135,7 +138,7 @@ export function ShotBindingDialog({video, projectId, projects, api, onSaved, onC
       <div className="pv-actions"><button type="button" disabled={busy} onClick={() => setPlan(null)}>取消</button><button type="button" className="pv-danger" disabled={busy} onClick={() => void commit(JSON.stringify(plan.intent), plan)}>{unbinding ? '确认解除' : '确认修改'}</button></div>
     </div>}
     <ModalActions>
-      {binding ? <button type="button" className="pv-danger" disabled={busy || !!plan} onClick={clear}>解除对应</button> : <span/>}
+      {binding ? <button type="button" className="pv-danger" disabled={busy || writesOff || !!plan} onClick={clear}>解除对应</button> : <span/>}
       <button type="button" disabled={busy} onClick={onClose}>取消</button>
       <button type="button" className="pv-primary" disabled={!canSave || !!plan} onClick={save}>保存对应</button>
     </ModalActions>

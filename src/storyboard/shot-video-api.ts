@@ -1,9 +1,9 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {clipFromItem, rowsFromChanges, summariesFromState, v2ErrorText, type SelectionChange, type SelectionIntent, type ShotClip, type ShotSummaries} from './shot-video-model.mjs';
+import {clipFromItem, migrationView, rowsFromChanges, summariesFromState, v2ErrorText, type MigrationView, type SelectionChange, type SelectionIntent, type ShotClip, type ShotSummaries} from './shot-video-model.mjs';
 import type {StoryboardTransport} from './transport';
 import type {ReviewWrite as V2ReviewWrite, SelectionPreview as V2SelectionPreview, SelectionWrite as V2SelectionWrite, ShotVideoPage, VideoV2State} from './video-binding-v2-types';
 
-export type ShotClips = { selectionRevision: number; storyboardRevision: number; clips: ShotClip[] };
+export type ShotClips = { selectionRevision: number; storyboardRevision: number; clips: ShotClip[]; migration: MigrationView | null };
 export type SelectionPreview = { previewHash: string; requiresConfirmation: boolean; rows: SelectionChange[] };
 export type SelectionWrite = { intent: SelectionIntent; requestId: string; previewHash: string; confirmReplace: boolean };
 export type ReviewWrite = { action: 'confirm' | 'undo'; clip: ShotClip; seenStoryboardRevision: number; requestId: string };
@@ -39,8 +39,8 @@ export function createShotVideoApi(transport: Pick<StoryboardTransport, 'videoV2
       do {
         page = await call<ShotVideoPage>(`${project}/shots/${part(shotId)}/videos?offset=${items.length}&limit=${PAGE_SIZE}`, undefined, signal);
         items.push(...page.items);
-      } while (page.items.length && items.length < page.total);
-      return {selectionRevision: page.context?.selectionRevision ?? 0, storyboardRevision: page.context?.storyboardRevision ?? 0, clips: items.map(clipFromItem)};
+      } while (page.items.length && items.length < (page.total ?? 0));
+      return {selectionRevision: page.context?.selectionRevision ?? 0, storyboardRevision: page.context?.storyboardRevision ?? 0, clips: items.map(clipFromItem), migration: migrationView(page.migration)};
     },
     async previewSelection(intent) {
       const preview = await call<V2SelectionPreview>(project + '/selections/preview', intent);

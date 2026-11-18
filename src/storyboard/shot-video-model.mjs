@@ -37,6 +37,35 @@ const V2_ERROR_TEXT = Object.freeze({
   VIDEO_V2_UNSETTLED: '片子绑定数据正在处理，请稍后再试。',
 });
 
+const MIGRATION_LABELS = Object.freeze({
+  pending: ['待升级', '片子绑定数据待升级'], 'schema-required': ['待升级', '片子绑定数据待升级'],
+  deferred: ['已暂缓', '片子绑定数据升级已暂缓'], failed: ['升级失败', '片子绑定数据升级失败'], unknown: ['状态未知', '片子绑定数据状态未知'],
+});
+
+/** 迁移状态。正常完成返回 null；未知的采用关系不能当成“没有采用”。 */
+export function migrationView(migration) {
+  if (!migration || typeof migration !== 'object') return null;
+  const adoptionKnown = migration.adoptionKnown !== false, blocked = migration.writeAllowed === false || !adoptionKnown, prunePaused = migration.historyPrune === 'paused';
+  if (!blocked && !prunePaused) return null;
+  const [shortLabel, title] = MIGRATION_LABELS[migration.status] ?? MIGRATION_LABELS.unknown;
+  return { status: migration.status ?? 'unknown', blocked, adoptionKnown, prunePaused, shortLabel, title, reasonCode: migration.reasonCode ?? null };
+}
+
+export function migrationText(view) {
+  if (!view) return '';
+  const reason = view.reasonCode ? '（' + view.reasonCode + '）' : '';
+  const blocked = !view.blocked ? '' : view.title + reason + '。' + (view.adoptionKnown ? '相关修改已停用' : '采用和绑定关系暂时无法确认，相关修改已停用') + '，片子列表和播放不受影响。';
+  return blocked + (view.prunePaused ? '分镜旧版本清理已暂停，现有历史都会保留。' : '');
+}
+
+/** 主表镜号下的文字。数量未知时不能写成“无片子”。 */
+export function shotButtonLabel(summaries, shotId) {
+  if (!summaries) return '播放';
+  if (summaries.migration?.blocked && !summaries.migration.adoptionKnown) return summaries.migration.shortLabel;
+  const count = summaries.shots[shotId]?.candidateCount;
+  return count === null || count > 0 ? '播放' : '无片子';
+}
+
 /** 优先用后端的说明；通用请求层拿不到说明时按错误码给中文。 */
 export function v2ErrorText(code, message, fallback = '操作没有完成，请重试') {
   return message && message !== '请求失败' ? message : V2_ERROR_TEXT[code] ?? fallback;
@@ -120,6 +149,7 @@ export function originText(clip) {
 export function summariesFromState(state) {
   return {
     initialized: !!state.initialized,
+    migration: migrationView(state.migration),
     selectionRevision: state.context?.selectionRevision ?? 0,
     storyboardRevision: state.context?.storyboardRevision ?? 0,
     shots: Object.fromEntries(state.shots.map(shot => [shot.shotId, {

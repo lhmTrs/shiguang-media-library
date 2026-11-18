@@ -165,6 +165,21 @@ try {
     await page.keyboard.press('Escape'); await expect(d).toHaveCount(0);
   });
 
+  const deferred = { schemaVersion: 2, status: 'deferred', phase: 'deferred', reasonCode: 'INSTANCE_DEFERRED', writeAllowed: false, adoptionKnown: false, historyPrune: 'paused' };
+  const unknownShot = id => ({ ...shot(id), candidateCount: null, newVideoCount: null, needsReview: null, reviewReasons: null });
+
+  await check('迁移暂缓：播放窗说明真实状态，不写成没有片子，也不发写入', async () => {
+    const d = await openShot({ ...scenario([unknownShot('03')], [clip('new', three())]), migration: deferred });
+    await expect(d.getByRole('status').filter({ hasText: '片子绑定数据升级已暂缓（INSTANCE_DEFERRED）' })).toContainText('分镜旧版本清理已暂停'); await expect(d.getByText('暂时读不到这一镜对应的片子')).toBeVisible();
+    await expect(d.getByRole('heading', { name: '这一镜的片子 · 待确认' })).toBeVisible(); await expect(d.getByText('这一镜还没有对应的片子')).toHaveCount(0); await expect(d.getByRole('button', { name: '只这一镜用' })).toHaveCount(0); assert.equal((await sent('/selections/preview')).length, 0);
+  });
+
+  await check('写入被停用但关系已知：片子照常播，采用和复核按钮不可点', async () => {
+    const d = await openShot({ ...scenario([shot('03', use('old'))], [clip('old', three(), { review: { needsReview: true } })]), migration: { ...deferred, status: 'failed', adoptionKnown: true, reasonCode: null } });
+    await expect(player(d)).toHaveAttribute('aria-label', '正在播放 old.webm'); const c = card(d, 'old.webm'); for (const name of ['已复核', '只这一镜用', '取消这一镜的采用']) await expect(c.getByRole('button', { name })).toBeDisabled();
+    await expect(d.getByRole('status').filter({ hasText: '片子绑定数据升级失败' })).toContainText('相关修改已停用');
+  });
+
   const record = (revision, prefix, n) => ({ revision, asset_stamp: 'stamp-' + revision, project: { scenes: [{ location: '客厅', shots: Array.from({ length: Math.min(n, 2) }, (_, i) => ({ id: prefix + (i + 1), duration_ms: 3000, action: '合成动作 ' + (i + 1) })) }, ...(n > 2 ? [{ location: '走廊', shots: Array.from({ length: n - 2 }, (_, i) => ({ id: prefix + (i + 3), duration_ms: 3000, action: '合成动作 ' + (i + 3) })) }] : [])] } });
   const target = (projectId, name) => ({ projectId, name, seriesId: 's' });
   const bindingBody = (binding, extra = {}) => ({ sourceProjectId: 'e1', videoId: 'v1', videoRevision: 1, bindingRevision: binding?.revision ?? 0, binding, review: binding ? { needsReview: true, reasons: [{ category: 'action', shotIds: ['a1'] }], reviewedToRevision: null, reviewedAt: null, comparisonHash: 'h', canReview: true, disabledReason: null } : null, allowedTargets: [target('e2', '第二集'), target('e1', '第一集'), target('e3', '无分镜集')], context: null, ...extra });
@@ -209,6 +224,12 @@ try {
     await c.getByRole('button', { name: '取消' }).click(); assert.equal((await bindingWrites('PUT')).length, 0);
     await d.getByRole('button', { name: '保存对应' }).click(); await d.getByRole('alertdialog').getByRole('button', { name: '确认修改' }).click(); await expect(d).toHaveCount(0);
     const [write] = await bindingWrites('PUT'); assert.equal(write.body.confirmUnbind, true); assert.deepEqual(write.body.confirmedUnbindShotRefs, [{ projectId: 'e1', shotId: 'a1' }, { projectId: 'e2', shotId: 'a1' }]); assert.equal('confirmedUnbindShotIds' in write.body, false, '两个确认字段不能同时发');
+  });
+
+  await check('绑定弹窗：迁移未完成时不显示成没有绑定，不能选集、保存或解除', async () => {
+    const f = bindingFake(null); f.binding = bindingBody(null, { bindingRevision: null, migration: deferred }); const d = await openBinding(f);
+    await expect(d.getByRole('region', { name: '当前绑定' })).toContainText('绑定关系暂时无法确认'); await expect(d.getByRole('region', { name: '当前绑定' })).not.toContainText('还没有对应镜头'); await expect(d.getByRole('status').filter({ hasText: '已暂缓' })).toBeVisible();
+    await expect(d.getByLabel('选集')).toHaveCount(0); await expect(d.getByRole('button', { name: '保存对应' })).toBeDisabled(); await expect(d.getByRole('button', { name: '解除对应' })).toHaveCount(0); assert.equal((await bindingWrites('POST')).length, 0);
   });
 
   await check('绑定弹窗：冲突时不关闭，重读并提示；解除先预览再确认，错误码有中文说明', async () => {

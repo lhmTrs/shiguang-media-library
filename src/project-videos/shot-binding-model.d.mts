@@ -1,3 +1,4 @@
+import type {MigrationView} from '../storyboard/shot-video-model.mjs';
 import type {AffectedBindingShot, BindingIntent, BindingPreview as V2BindingPreview, SourceVideoBinding, UnbindShotRef} from '../storyboard/video-binding-v2-types';
 
 export type {BindingIntent, UnbindShotRef};
@@ -10,7 +11,7 @@ export type VideoBinding = {
   bindingId: string; projectId: string; projectName: string; revision: number; bindingRevision: number;
   origin: 'agent' | 'manual'; provenanceRevision: number | null; boundAt: number; needsReview: boolean; shots: BindingShot[];
 };
-export type BindingRead = { bindingRevision: number; targets: BindingTarget[]; binding: VideoBinding | null };
+export type BindingRead = { bindingRevision: number | null; targets: BindingTarget[]; binding: VideoBinding | null; migration: MigrationView | null };
 export type EpisodeShot = { id: string; number: string; sceneIndex: number; sceneName: string; durationMs: number; summary: string };
 export type AffectedRow = AffectedBindingShot & { beforeText: string; afterText: string };
 export type BindingPreview = { previewHash: string; requiresConfirmation: boolean; rows: AffectedRow[] };

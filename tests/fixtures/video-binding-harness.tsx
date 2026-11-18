@@ -58,15 +58,16 @@ async function serveVideoV2(path: string, options: RequestInit = {}) {
     const failure = injected();
     if (failure) return refuse(failure.code, failure.status ?? 409);
   }
-  if (route === '/projects/p1/state') return json({schemaVersion: 2, initialized: true, context: fake.context, migration: null, shots: fake.shots.map((shot: any) => {
+  if (route === '/projects/p1/state') return json({schemaVersion: 2, initialized: true, context: fake.context, migration: fake.migration ?? null, shots: fake.shots.map((shot: any) => {
     const first = boundTo(shot.shotId)[0], chosen = shot.adopted ? videoOf(shot.adopted.videoId) : first;
     return {...shot, defaultVideo: chosen ? {videoId: chosen.videoId, sourceProjectId: chosen.sourceProjectId, bindingId: chosen.binding.bindingId, name: chosen.name} : null};
   })});
   const list = route.match(/^\/projects\/p1\/shots\/([^/]+)\/videos$/);
   if (list) {
     fake.clipReads = (fake.clipReads ?? 0) + 1;
+    if (fake.migration?.adoptionKnown === false) return json({migration: fake.migration, context: fake.context, shotId: decodeURIComponent(list[1]), total: null, offset: 0, limit: 100, items: []});
     const all = boundTo(decodeURIComponent(list[1])), offset = Number(url.searchParams.get('offset')), limit = Number(url.searchParams.get('limit'));
-    return json({context: fake.context, shotId: decodeURIComponent(list[1]), total: all.length, offset, limit, items: all.slice(offset, offset + limit)});
+    return json({migration: fake.migration ?? null, context: fake.context, shotId: decodeURIComponent(list[1]), total: all.length, offset, limit, items: all.slice(offset, offset + limit)});
   }
   if (route === '/projects/p1/selections/preview') {
     if (staleSelection(body)) return refuse('VIDEO_SELECTION_CONFLICT');

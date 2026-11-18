@@ -34,6 +34,7 @@
 .sv-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
 .sv-confirm { position: absolute; left: 50%; bottom: 18px; width: min(680px, calc(100% - 32px)); max-height: 70%; overflow: auto; padding: 16px; transform: translateX(-50%); border: 1px solid var(--sb-line); border-radius: 10px; background: var(--sb-paper); box-shadow: 0 12px 40px var(--c-20322920); }
 .sv-confirm:focus { outline: none; }
+.sv-migration { margin: 0; padding: 8px 14px; border-bottom: 1px solid var(--sb-line); background: var(--sb-soft); color: var(--sb-text); font-size: 12px; line-height: 1.5; }
 .sb-app .sv-confirm table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
 .sb-app .sv-confirm th:first-child, .sb-app .sv-confirm td:first-child { width: 72px; }
 .sb-app .sv-confirm th, .sb-app .sv-confirm td { position: static; width: auto; min-width: 0; padding: 6px 8px; border-bottom: 1px solid var(--sb-line); text-align: left; overflow-wrap: anywhere; }
