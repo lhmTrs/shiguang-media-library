@@ -1,3 +1,5 @@
+import {videoBindingV2AgentGuide} from './storyboard-video-v2/agent-guide.mjs';
+import {v2ErrorEnvelope} from './storyboard-video-v2/router.mjs';
 import {UpdreamProgress} from './updream-progress/store.mjs';
 import {updreamProgressRouter} from './updream-progress/router.mjs';
 import {upgradeRenderSchemaAtStartup} from './render-schema-startup.mjs';
@@ -338,7 +340,7 @@ for (const a of lib.db
   lib.enqueue(a.id);
 const storyboard = createStoryboardModule({ dataDir, lib, projectAssets });
 const storyboardGeneration = await createStoryboardGeneration({lib,storyboards:storyboard.store,codex:codexService,projects});
-const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia});
+const storyboardVideo=createStoryboardVideo({lib,storyboards:storyboard.store,sendMedia,instanceId:()=>mysqlStorage.sourceId});
 const projectVideos=new ProjectVideos(storyboardVideo.store,{directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR || path.join(project,'personal_item'),'video'),onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)});
 const projectAssetDesktop=new ProjectAssetDesktopActions(projectAssets,projectVideos.desktopNative,{
   withActivity:fn=>uploadHost.track(fn),
@@ -359,6 +361,7 @@ const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakeP
 const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();
+app.use("/api/storyboard-video/v2", v2ErrorEnvelope);
 app.disable("x-powered-by");
 app.use("/api/projects/:id/timeline-import/preview", express.json({ limit: "10mb" }));
 app.use("/api/projects/:id/timeline-import/confirm", express.json({ limit: "1mb" }));
@@ -453,7 +456,8 @@ app.get("/api/projects/:id/agent-guide", asyncRoute(async (req, res) => {
     throw error;
   }
   if (target.project_kind !== "normal") return res.status(404).json({ error: "未找到可分享的项目" });
-  res.type("text/markdown").send(projectAgentGuide({ project: { ...target, ...projects.series.membership(target.id) }, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }));
+  const guideContext={ project: { ...target, ...projects.series.membership(target.id) }, origin: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId };
+  res.type("text/markdown").send(projectAgentGuide(guideContext)+videoBindingV2AgentGuide(guideContext));
 }));
 app.use("/api", (req, res, next) => {
   const cookie = req.headers.cookie?.match(
@@ -503,6 +507,7 @@ app.use("/api", (req, res, next) => {
 });
 // Storyboard shares the existing Host/origin, cookie and write-token gates.
 app.use("/api/storyboard-generation", storyboardGeneration.router);
+app.use("/api/storyboard-video/v2", storyboardVideo.v2Router);
 app.use("/api/storyboard-video", storyboardVideo.router);
 const updreamProgress = new UpdreamProgress({dataDir,queueDir:process.env.MEDIA_UPDREAM_QUEUE_DIR,libraryId:mysqlStorage.sourceId,
   projectName:id=>{try{return projects.get(id).name;}catch{return null;}},

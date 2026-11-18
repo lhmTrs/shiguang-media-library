@@ -1,0 +1,25 @@
+--- a/scripts/workflow.py
++++ b/scripts/workflow.py
+@@ -17,0 +18 @@
++import video_binding_v2
+@@ -62,0 +64 @@
++    video_binding_v2.reserve_before_submit(state, path, save_state, Library)
+@@ -114 +116 @@
+-        if not path.startswith("/api/project-videos/projects/"):
++        if not video_binding_v2.allowed_library_call(method, path):
+@@ -144,0 +147 @@
++    expected_origin = video_binding_v2.import_origin(state)
+@@ -196,0 +200 @@
++    expected_origin = video_binding_v2.import_origin(state)
+@@ -231,0 +236,2 @@
++            if expected_origin is not None:
++                receipt["import_body"]["storyboardOrigin"] = expected_origin
+@@ -233,0 +240,2 @@
++        if receipt["import_body"].get("storyboardOrigin") != expected_origin:
++            raise RuntimeError("固定导入出处已变化，保留原回执，不为旧任务补造")
+@@ -240,0 +249 @@
++        receipt["binding"] = video_binding_v2.verify_bound(state, library, project, result)
+@@ -242,0 +252,3 @@
++    if expected_origin is not None:
++        result = library.api("GET", ep + "/imports/" + receipt["request_id"])
++        receipt["binding"] = video_binding_v2.verify_bound(state, library, project, result)
