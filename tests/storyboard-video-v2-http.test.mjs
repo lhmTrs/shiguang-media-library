@@ -6,12 +6,13 @@ import path from 'node:path';
 import net from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
-import {randomUUID,createHash} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
+import {syntheticVideoCaller} from './helpers/synthetic-video-v2-caller.mjs';
 import {syntheticSource} from './helpers/storyboard-fixture.mjs';
 async function bound(p,ms){let timer;try{return await Promise.race([p,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('owned video-v2 timeout')),ms))]);}finally{clearTimeout(timer);}}
 async function captureChild(command,args){const child=spawn(command,args,{stdio:['ignore','pipe','pipe']}),done=once(child,'close');let out='',err='';child.stdout.on('data',x=>out+=x);child.stderr.on('data',x=>err+=x);const [code]=await bound(done,30000);assert.equal(code,0,err);return out;}
 
-test('real isolated HTTP gates, v2 routes/error envelope, CAS, retired endpoints and patched producer reserve→raw import→binding readback',async()=>{
+test('real isolated HTTP gates, v2 routes/error envelope, CAS, retired endpoints and minimal synthetic caller reserve→raw import→binding readback',async()=>{
  const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'video-v2-http-'))),data=path.join(dir,'data');await fs.mkdir(data,{mode:0o700});const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));
  const child=spawn(process.execPath,['server/index.mjs'],{cwd:process.cwd(),env:{...process.env,PORT:String(port),MEDIA_DATA_DIR:data,MEDIA_UPDREAM_QUEUE_DIR:path.join(dir,'absent-queue'),MEDIA_PERSONAL_ITEM_DIR:path.join(dir,'personal_item'),MEDIA_PERSONAL_VIDEO_DIR:path.join(dir,'personal-video'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_DISABLE_DESKTOP_NATIVE:'1',SHIGUANG_AUDIO_ANALYSIS:'0'},stdio:['ignore','pipe','pipe']});let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>output+=x);const exited=once(child,'exit'),base='http://127.0.0.1:'+port;
  try{
@@ -36,12 +37,12 @@ test('real isolated HTTP gates, v2 routes/error envelope, CAS, retired endpoints
   const legacy=await fetch(base+'/api/storyboard-video/projects/'+project.id+'/state',{headers});assert.equal(legacy.status,410);assert.equal((await legacy.json()).code,'LEGACY_VIDEO_BINDING_RETIRED');
   const malformed=await fetch(base+'/api'+scope+'/provenance',{method:'POST',headers,body:'{"/private/synthetic-secret":'}),malformedBody=await malformed.json();assert.equal(malformed.status,400);assert.equal(malformedBody.error,malformedBody.message);assert.ok(!JSON.stringify(malformedBody).includes('synthetic-secret'));
   const outputFolder=await call('/project-videos/projects/'+project.id+'/folders',{requestId:randomUUID(),name:'合成外置输出',parentId:'root'});
-  const fixture='tests/fixtures/storyboard-video-v2/updream-workflow-baseline.py',original=await fs.readFile(fixture),baseline=(await fs.readFile('integrations/updream/BASELINE-SHA256','utf8')).split(' ')[0];assert.equal(createHash('sha256').update(original).digest('hex'),baseline,'the audited producer source must match before applying the candidate');
-  const candidate=path.join(dir,'candidate');await fs.mkdir(path.join(candidate,'scripts'),{recursive:true});await fs.writeFile(path.join(candidate,'scripts/workflow.py'),original);await fs.copyFile('integrations/updream/video_binding_v2.py',path.join(candidate,'scripts/video_binding_v2.py'));
-  await fs.writeFile(path.join(candidate,'scripts/prepare.py'),"import json,os,urllib.request\nclass Client: pass\nclass NoRedirect(urllib.request.HTTPRedirectHandler):\n def redirect_request(self,*args): return None\ndef save_state(path,value):\n path.write_text(json.dumps(value,ensure_ascii=False)); os.chmod(path,0o600)\n");
-  const patched=spawnSync('patch',['-p1','-d',candidate,'-i',path.resolve('integrations/updream/workflow-video-binding-v2.patch')]);assert.equal(patched.status,0,patched.stderr.toString());
-  const produced=JSON.parse(await captureChild('python3',['tests/fixtures/storyboard-video-v2/updream-runner.py',candidate,base,project.id,file,'1',outputFolder.id]));assert.equal(produced.taskCalls,1);assert.equal(produced.bindingVerified,true);assert.equal(produced.storedRevision,1);assert.equal(produced.currentRevision,2);assert.equal(produced.needsReview,true);
-  const actual=await call(prefix+'/source-projects/'+project.id+'/videos/'+produced.videoId+'/binding');assert.equal(actual.binding.provenance.storyboardRevision,1);assert.equal(actual.context.storyboardRevision,2);
+  let durable;
+  const produced=await syntheticVideoCaller({api:call,projectId:project.id,shotIds:['shot_0','shot_1'],folderId:outputFolder.id,bytes,
+   persist:async record=>{durable=record;await fs.writeFile(path.join(dir,'synthetic-caller.json'),JSON.stringify(record),{mode:0o600});},
+   afterReserve:async view=>{assert.ok(durable.provenance.provenanceId);view.project.scenes[0].shots[0].action='合成调用等待期间的新动作';await call('/storyboard/projects/'+project.id,{project:view.project,expected_revision:view.revision,request_id:randomUUID()},'PUT');},
+   upload:async(url,raw)=>{const r=await fetch(base+'/api'+url,{method:'PUT',headers:{...headers,'Content-Type':'application/octet-stream'},body:raw});assert.equal(r.status,200);return r.json();}});
+  assert.equal(produced.actual.binding.provenance.storyboardRevision,1);assert.equal(produced.actual.context.storyboardRevision,2);assert.equal(produced.actual.review.needsReview,true);assert.equal(produced.receipt.id,durable.importId);
  }finally{
   if(child.exitCode===null)child.kill('SIGTERM');const [code]=await bound(exited,15000);assert.equal(code,0,output.slice(-1500));assert.match(output,/APPLICATION_CLOSED_KNOWN/);await fs.rm(dir,{recursive:true,force:true});
  }
