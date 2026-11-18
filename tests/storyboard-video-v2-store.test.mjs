@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
+import {createStoryboardVideo} from '../server/storyboard-video/index.mjs';
+import {V2_TABLES} from '../server/storyboard-video-v2/schema.mjs';
 import {videoV2Fixture} from './helpers/video-binding-v2-fixture.mjs';
 
 test('state is readonly, uninitialized is explicit, real raw imports bind current revision and retain old-shot timing',async t=>{
@@ -51,6 +53,7 @@ test('pin provider retains reserved, original binding and review versions beyond
  const full=f.db.prepare('SELECT COUNT(*) n FROM storyboard_versions WHERE document_json IS NOT NULL').get().n;
  f.db.prepare('UPDATE storyboard_video_v2_state SET data_json=? WHERE id=?').run(JSON.stringify({schemaVersion:1,status:'unknown'}),'migration');
  current=f.board.read(f.a.id);project=structuredClone(current.project);project.scenes[0].shots[0].camera='无法核验时保留';const saved=f.board.save(f.a.id,{project,expected_revision:current.revision});assert.equal(saved.history_cleanup,'failed');assert.equal(f.db.prepare('SELECT COUNT(*) n FROM storyboard_versions WHERE document_json IS NOT NULL').get().n,full+1);
+ f.db.prepare('UPDATE storyboard_video_v2_state SET data_json=? WHERE id=?').run(JSON.stringify({schemaVersion:1,status:'complete'}),'migration');f.db.exec('ALTER TABLE storyboard_video_v2_provenance ADD COLUMN future_unknown TEXT');current=f.board.read(f.a.id);project=structuredClone(current.project);project.scenes[0].shots[0].camera='未知表结构保留';assert.equal(f.board.save(f.a.id,{project,expected_revision:current.revision}).history_cleanup,'failed');
 });
 
 test('origin confirmation rechecks its original ready receipt and original import retry survives bound provenance revision',async t=>{
@@ -58,4 +61,13 @@ test('origin confirmation rechecks its original ready receipt and original impor
  const receipt=f.catalog.receipt(f.a.id,video.id),request={requestId:randomUUID(),provenanceId:origin.provenanceId,expectedProvenanceRevision:1,expectedBindingRevision:1,importRequestId:receipt.id};
  assert.equal((await f.v2.recordOrigin(f.a.id,video.videoId,request)).binding.status,'bound');await assert.rejects(()=>f.v2.recordOrigin(f.a.id,video.videoId,{...request,requestId:randomUUID(),importRequestId:randomUUID()}),{code:'VIDEO_ORIGIN_CONFLICT'});
  const again=await f.catalog.start(f.a.id,{requestId:receipt.id,fileName:receipt.fileName,bytes:receipt.bytes,prompt:{mode:'none'},storyboardOrigin:origin});assert.equal(again.status,'ready');assert.equal(again.videoId,video.videoId);
+});
+
+test('an existing project library never installs v2 automatically merely because old source tables were absent',async t=>{
+ const f=await videoV2Fixture(t);for(const table of Object.keys(V2_TABLES))f.db.exec('DROP TABLE '+table);f.db.exec('DROP TABLE storyboard_video_sources');const newEntry=createStoryboardVideo({lib:f.lib,storyboards:f.board,media:f.entry.media,instanceId:'synthetic-instance'});assert.equal(newEntry.bindingV2.schemaState().status,'schema-required');assert.throws(()=>newEntry.bindingV2.state(f.a.id),{code:'VIDEO_V2_MIGRATION_REQUIRED'});newEntry.bindingV2.installSchema();assert.equal(newEntry.bindingV2.schemaState().status,'pending');assert.throws(()=>newEntry.bindingV2.retainedVersionNumbers(randomUUID()),{code:'VIDEO_V2_MIGRATION_REQUIRED'});
+});
+
+test('explicit release drops an unused pin; reinitialization leaves old bindings historical and project deletion protected',async t=>{
+ const f=await videoV2Fixture(t);f.initialize();const first=f.board.read(f.a.id),reserved=await f.v2.reserve(f.a.id,{requestId:randomUUID(),expectedStoryboardRevision:1,expectedAssetStamp:first.asset_stamp,shotIds:['shot_0']});assert.ok(f.v2.retainedVersionNumbers(first.project.document_id).has(1));f.v2.release(reserved.provenance.provenanceId,{requestId:randomUUID(),expectedProvenanceRevision:1,reason:'not-submitted'});assert.equal(f.v2.retainedVersionNumbers(first.project.document_id).has(1),false);
+ const video=await f.imported();await f.bind(video.videoId);f.select(video.videoId);f.initialize();const current=f.v2.state(f.a.id),old=f.v2.sourceBinding(f.a.id,video.videoId);assert.equal(current.shots[0].defaultVideo,null);assert.equal(current.shots[0].adopted,null);assert.equal(old.review.canReview,false);assert.equal(old.review.disabledReason,'STORYBOARD_GENERATION_CHANGED');assert.equal(old.binding.shots[0].existsInCurrent,false);assert.ok(f.v2.retainedVersionNumbers(first.project.document_id).has(1));assert.ok(f.board.validateBackup(f.board.backup()));assert.throws(()=>f.projects.remove(f.a.id));
 });

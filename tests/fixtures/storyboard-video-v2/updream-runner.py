@@ -60,6 +60,10 @@ w.save_state(journal, state)
 w.deliver(state, journal, library, project, folder, filename, False)
 assert state['delivery']['stage'] == 'ready' and state['delivery']['verified']
 assert state['delivery']['binding']['verified']
+# A ready reentry still reads the original receipt and binding, with no new import or paid submit.
+request_id = state['delivery']['request_id']
+w.deliver(state, journal, library, project, folder, filename, False)
+assert state['delivery']['request_id'] == request_id and state['delivery']['binding']['verified']
 result = library.api('GET', '/api/storyboard-video/v2/source-projects/' + project + '/videos/' + state['delivery']['video_id'] + '/binding')
 assert result['binding']['storyboardRevision'] == int(revision)
 assert result['review']['needsReview']

@@ -37,7 +37,7 @@ def reserve_before_submit(state, journal_path, save_state, library_factory):
             raise RuntimeError('出处配置已变化，不复用原预留或生成请求')
         if original.get('provenance'):
             current = library.api('GET', '/api/storyboard-video/v2/provenance/' + original['provenance']['provenanceId'])
-            if current['provenance'] != original['provenance'] or current['status'] == 'released':
+            if current['provenance'] != original['provenance'] or current['status'] == 'released' or current['status'] == 'bound' and not state.get('generation'):
                 raise RuntimeError('固定出处不可核验或已释放，不提交生成')
             return original
     elif state.get('generation'):
@@ -72,6 +72,8 @@ def verify_bound(state, library, source_project_id, result):
     expected = import_origin(state)
     if expected is None:
         return None
+    if library.instance != state['storyboard_binding_v2']['instanceId'] or library.origin != state['storyboard_binding_v2']['origin']:
+        raise RuntimeError('素材库实例或地址变化，保留原任务与下载')
     p = state['storyboard_origin_v2']['provenance']
     bound = result.get('binding', {})
     if result.get('status') != 'ready' or bound.get('status') != 'bound' or bound.get('provenanceId') != expected['provenanceId']:

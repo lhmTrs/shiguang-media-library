@@ -13,7 +13,7 @@ export const videoV2Io={
   for(const [mediaId,expected]of used){
    try{const media=this.lib.asset(mediaId),key=this.dependencyKey(mediaId,expected),file=await this.lib.checked(media.path,media.root_id),before=await fs.lstat(file),checked=await this.assets.inspect(mediaId,expected,true),after=await fs.lstat(file);
     if(!before.isFile()||before.isSymbolicLink()||canonical(stamp(before))!==canonical(stamp(after))||checked.state!=='available'||checked.sha256!==expected||this.dependencyKey(mediaId,expected)!==key)fail('ASSET_CONTEXT_CHANGED','分镜实际使用的参考图内容或读取资格已变化',409,{mediaId});
-    this.dependencyChecks.set(mediaId+':'+expected,{key,verified:true});proofs.push({path:file,identity:stamp(after),mediaId,expectedSha256:expected,mediaKey:mediaKey(media)});
+    this.dependencyChecks.set(mediaId+':'+expected,{key,verified:true});proofs.push({path:file,identity:stamp(after),mediaId,expectedSha256:expected,mediaKey:mediaKey(media),dependencyKey:key});
    }catch(error){try{this.dependencyChecks.set(mediaId+':'+expected,{key:this.dependencyKey(mediaId,expected),verified:false});}catch{}fail('ASSET_CONTEXT_CHANGED','分镜实际使用的参考图无法核验',409,{mediaId});}
   }
   if(this.capture(view,shotIds,{allowMissing:true}).shots.some(s=>s.unverifiable.length))fail('ASSET_CONTEXT_CHANGED','分镜使用的外部依赖无法核验',409);
@@ -26,7 +26,7 @@ export const videoV2Io={
  },
  assertIoProofs(proofs,{code='VIDEO_REVIEW_CONFLICT'}={}){
   for(const proof of proofs){try{const current=sync.lstatSync(proof.path);if(!current.isFile()||current.isSymbolicLink()||sync.realpathSync(proof.path)!==proof.path||canonical(stamp(current))!==canonical(proof.identity))fail(code,'核验后媒体文件再次变化，未提交',409);
-   if(proof.mediaId&&mediaKey(this.lib.asset(proof.mediaId))!==proof.mediaKey)fail(code,'核验后参考图资料再次变化，未提交',409);
+   if(proof.mediaId&&(mediaKey(this.lib.asset(proof.mediaId))!==proof.mediaKey||this.dependencyKey(proof.mediaId,proof.expectedSha256)!==proof.dependencyKey))fail(code,'核验后参考图资料再次变化，未提交',409);
    if(proof.videoId&&this.catalog.verification.authority(proof.sourceProjectId,proof.videoId)!==proof.authority)fail(code,'核验后视频读取上下文再次变化，未提交',409);
   }catch(error){if(proof.videoId)try{const source=this.source(proof.sourceProjectId,proof.videoId);this.catalog.verification.remember(source,{state:'needs_verification',match:null,metadataChanged:false,errorCode:'SOURCE_CHANGED'});}catch{}if(proof.mediaId)try{this.dependencyChecks.set(proof.mediaId+':'+proof.expectedSha256,{key:this.dependencyKey(proof.mediaId,proof.expectedSha256),verified:false});}catch{}if(error.code===code)throw error;fail(code,'核验后媒体位置或读取资格变化，未提交',409);}}
  }

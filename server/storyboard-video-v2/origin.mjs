@@ -39,6 +39,7 @@ export const videoV2Origin={
  },
  async recordOrigin(sourceProjectId,videoId,input){
   if(!input||Object.keys(input).some(k=>!['requestId','provenanceId','expectedProvenanceRevision','expectedBindingRevision','importRequestId'].includes(k)))fail('VIDEO_V2_INVALID_INPUT','补记出处请求字段无效');
+  if(!idOK(input.provenanceId)||!idOK(input.importRequestId)||!Number.isSafeInteger(input.expectedProvenanceRevision)||input.expectedProvenanceRevision<1||!Number.isSafeInteger(input.expectedBindingRevision)||input.expectedBindingRevision<0)fail('VIDEO_V2_INVALID_INPUT','出处确认的ID或期望修订无效');
   this.require();const replay=this.replay('record-origin',sourceProjectId+':'+videoId,input);if(replay)return replay;
   const checked=await this.catalog.verifiedSource(sourceProjectId,videoId),proof=this.videos.proof(checked),p=this.provenanceRow(input.provenanceId);
   return this.mutation('record-origin',sourceProjectId+':'+videoId,input,[sourceProjectId,p.project_id],()=>{if(this.videos.proof(this.source(sourceProjectId,videoId))!==proof)fail('VIDEO_ORIGIN_CONFLICT','核验期间视频身份变化',409);return {binding:this.attachOriginInTransaction(sourceProjectId,videoId,input)};});

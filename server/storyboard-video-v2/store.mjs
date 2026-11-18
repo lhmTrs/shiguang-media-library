@@ -19,7 +19,8 @@ export class VideoBindingV2 {
  get catalog(){return this.videos.catalog;}
  init({fresh=false}={}){
   const present=Object.keys(V2_TABLES).filter(t=>tablePresent(this.db,t));
-  if(fresh&&!present.length)this.installSchema({fresh:true});
+  const empty=fresh&&!this.db.prepare("SELECT id FROM media_projects WHERE COALESCE(system_key,'')='' LIMIT 1").get()&&!this.db.prepare('SELECT id FROM roots LIMIT 1').get()&&!this.db.prepare('SELECT id FROM storyboard_documents LIMIT 1').get();
+  if(empty&&!present.length)this.installSchema({fresh:true});
   this.videos.bindingV2=this;this.board.videoBindingV2=this;this.lib.videoBindingV2=this;return this;
  }
  installSchema({fresh=false}={}){
@@ -42,7 +43,7 @@ export class VideoBindingV2 {
   const row=this.stateRow('global');if(!row||decode(row.data_json).schemaVersion!==SCHEMA_VERSION)fail('VIDEO_V2_UNSETTLED','视频绑定v2实例状态无法核验',503);
   this.checkedDb=this.db;
  }
- require(){this.requireSchema();const migration=this.schemaState();if(migration.status!=='complete')fail('VIDEO_V2_MIGRATION_REQUIRED','旧绑定尚未完成受控迁移',503,{migration});if(this.closing||this.videos.media.closing||this.lib.migrating)fail('VIDEO_V2_UNSETTLED','视频绑定正在关闭或迁移',503);}
+ require(){this.requireSchema();const migration=this.schemaState();if(migration.schemaVersion!==SCHEMA_VERSION)fail('VIDEO_V2_UNSETTLED','视频绑定v2版本无法核验',503);if(migration.status!=='complete')fail('VIDEO_V2_MIGRATION_REQUIRED','旧绑定尚未完成受控迁移',503,{migration});if(this.closing||this.videos.media.closing||this.lib.migrating)fail('VIDEO_V2_UNSETTLED','视频绑定正在关闭或迁移',503);}
  stateRow(id,lock=false){return this.db.prepare('SELECT * FROM storyboard_video_v2_state WHERE id=?'+(lock&&this.db.kind==='mysql'?' FOR UPDATE':'')).get(id);}
  lock(projectIds=[]){this.assets.lockDirectory();this.require();const row=this.stateRow('global',true);if(!row||!integer(row.sequence))fail('VIDEO_V2_UNSETTLED','全局事件序无法核验',503);for(const id of [...new Set(projectIds.filter(Boolean))].sort())this.board.project(id,true);}
  sequence(){const r=this.stateRow('global',true),sequence=r.sequence+1;if(!integer(sequence,1))fail('VIDEO_V2_UNSETTLED','事件序已达边界',503);this.db.prepare('UPDATE storyboard_video_v2_state SET sequence=?,revision=?,updated_at=? WHERE id=?').run(sequence,r.revision+1,Date.now(),'global');return sequence;}
@@ -119,7 +120,7 @@ export class VideoBindingV2 {
   }
  }
  event(type,{binding=null,provenance=null,before=null,after=null,view=null}={}){const now=Date.now(),context=view?.context??(binding?.target_project_id?{projectId:binding.target_project_id,documentId:binding.document_id,initializedAt:binding.initialized_at,storyboardRevision:binding.storyboard_revision}:null);this.insert('storyboard_video_v2_events',{id:randomUUID(),binding_id:binding?.id??null,provenance_id:provenance?.id??binding?.provenance_id??null,project_id:context?.projectId??null,document_id:context?.documentId??null,initialized_at:context?.initializedAt??null,storyboard_revision:context?.storyboardRevision??null,event_type:type,sequence:this.sequence(),before_json:before===null?null:canonical(before),after_json:after===null?null:canonical(after),created_at:now,updated_at:now});}
- retainedVersionNumbers(documentId){this.require();const result=new Set();for(const p of this.db.prepare('SELECT status FROM storyboard_video_v2_provenance WHERE document_id=?').all(documentId))if(!['reserved','bound','released'].includes(p.status))fail('VIDEO_V2_UNSETTLED','未知出处保留状态，已停止裁剪',503);for(const row of this.db.prepare("SELECT storyboard_revision version FROM storyboard_video_v2_provenance WHERE document_id=? AND status IN ('reserved','bound') UNION SELECT storyboard_revision version FROM storyboard_video_v2_bindings WHERE document_id=? UNION SELECT storyboard_revision version FROM storyboard_video_v2_events WHERE document_id=?").all(documentId,documentId,documentId)){if(!integer(row.version,1))fail('VIDEO_V2_UNSETTLED','保留版本引用损坏',503);result.add(row.version);}return result;}
+ retainedVersionNumbers(documentId){this.checkedDb=null;this.require();const result=new Set();for(const p of this.db.prepare('SELECT status FROM storyboard_video_v2_provenance WHERE document_id=?').all(documentId))if(!['reserved','bound','released'].includes(p.status))fail('VIDEO_V2_UNSETTLED','未知出处保留状态，已停止裁剪',503);for(const row of this.db.prepare("SELECT storyboard_revision version FROM storyboard_video_v2_provenance WHERE document_id=? AND status IN ('reserved','bound') UNION SELECT storyboard_revision version FROM storyboard_video_v2_bindings WHERE document_id=? UNION SELECT storyboard_revision version FROM storyboard_video_v2_events WHERE document_id=?").all(documentId,documentId,documentId)){if(!integer(row.version,1))fail('VIDEO_V2_UNSETTLED','保留版本引用损坏',503);result.add(row.version);}return result;}
 }
 export const V2_INTERNAL={integer,decode};
 

@@ -13,7 +13,8 @@ export function snapshotDependencies(board,view,shotIds){
   const readAsset=(id,category)=>{const asset=resolver.asset(id);if(!asset)missing('asset',id);else dep[category].push(master(asset));return asset;};
   const image=id=>{if(usedImages.has(id))return;usedImages.add(id);const binding=resolver.image(id);if(!binding){missing('image',id);return;}
    const media=board.db.prepare('SELECT * FROM assets WHERE id=?').get(binding.media_asset_id);
-   if(!media||media.trashed||!binding.expected_sha256||(media.sha256&&binding.expected_sha256!==media.sha256)||media.online===0||['missing','changed','unreadable'].includes(media.file_status))missing('image-content',id);
+   const root=media?board.db.prepare('SELECT * FROM roots WHERE id=?').get(media.root_id):null;
+   if(!root||root.retired||root.online===0||!media||media.trashed||!binding.expected_sha256||(media.sha256&&binding.expected_sha256!==media.sha256)||media.online===0||['missing','changed','unreadable'].includes(media.file_status))missing('image-content',id);
    dep.references.push({id:binding.id,assetId:binding.asset_id,lookId:binding.look_id,data:json(binding),expectedSha256:binding.expected_sha256,mediaId:binding.media_asset_id,sha256:binding.expected_sha256});
   };
   const look=id=>{if(!id||usedLooks.has(id))return;usedLooks.add(id);const item=resolver.look(id);if(!item){missing('look',id);return;}dep.references.push({id:item.id,assetId:item.asset_id,data:json(item)});};

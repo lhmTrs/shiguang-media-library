@@ -5,11 +5,13 @@ import sync from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {Readable} from 'node:stream';
+import {spawnSync} from 'node:child_process';
 import {videoV2Fixture} from './helpers/video-binding-v2-fixture.mjs';
 import {moveWithAttributePlan,addLook,addImage} from './helpers/creative-fixture.mjs';
 import {videoBindingV2AgentGuide} from '../server/storyboard-video-v2/agent-guide.mjs';
 import {createConciergeCapabilities} from '../server/concierge/capabilities.mjs';
 const group=f=>{const series=f.projects.series.createSeries({request_id:randomUUID(),name:'合成剧'});moveWithAttributePlan(f.projects.series,{request_id:randomUUID(),target:{series_id:series.id,season_id:null},items:[f.a,f.b].map((p,i)=>({project_id:p.id,episode_no:i+1,expected_revision:f.projects.series.membership(p.id).revision}))});return series;};
+async function action(f,initial){await f.catalog.actionJournal.active.get(initial.requestId);return f.catalog.actionJournal.dto(f.catalog.actionJournal.row(f.a.id,initial.requestId));}
 
 test('same-series cross-episode binding keeps source ownership, guarded detach returns actual selection rows, scope changes invalidate pending bind',async t=>{
  const f=await videoV2Fixture(t);f.initialize();f.initialize(f.b.id);const video=await f.imported();await assert.rejects(()=>f.bind(video.videoId,['shot_0'],f.b.id),{code:'VIDEO_TARGET_SCOPE_CHANGED'});group(f);
@@ -51,4 +53,26 @@ test('an origin binding failure rolls back source/record/index/binding together 
 test('dynamic guide and concierge expose readonly v2 status and origin workflow, never the UI review endpoint',()=>{
  const text=videoBindingV2AgentGuide({project:{id:'synthetic'},origin:'http://127.0.0.1:0',instanceId:'synthetic'});for(const term of ['最后verified','verified','provenance','storyboardOrigin','confirmedUnbindShotRefs','VERSION_PRUNED'])assert.ok(text.includes(term),term);assert.ok(!text.includes('/ui/'));assert.ok(!text.includes('/review'));
  const capabilities=createConciergeCapabilities(),operation=capabilities.definitions.find(d=>d.operationId==='videos.state');assert.ok(JSON.stringify(operation).includes('/api/storyboard-video/v2/'));assert.ok(!JSON.stringify(capabilities.definitions).includes('/ui/'));
+});
+
+test('batch move with explicit unbind checks both episode scopes and preserves physical source bytes',async t=>{
+ const f=await videoV2Fixture(t);group(f);f.initialize();f.initialize(f.b.id);const a=await f.imported(),b=await f.imported();await f.bind(a.videoId,['shot_0']);await f.bind(b.videoId,['shot_0'],f.b.id);f.select(a.videoId);f.select(b.videoId,{targetProjectId:f.b.id});const folder=await f.catalog.folders.create(f.a.id,{requestId:randomUUID(),name:'合成移动目标',parentId:'root'}),roles=f.catalog.folders.roleState(f.a.id),p=await f.catalog.fileOperations.preview(f.a.id,{requestId:randomUUID(),kind:'move-videos',sourceIds:[a.videoId,b.videoId],destinationFolderId:folder.id,unbindAdoptions:true,expectedRolesRevision:roles.revision});
+ assert.equal(p.ready,true);assert.equal(p.affectedShots.length,2);await assert.rejects(()=>f.catalog.fileOperations.execute(f.a.id,{requestId:p.requestId,previewHash:p.previewHash,confirmUnbind:true,confirmedUnbindShotIds:['shot_0']}),{code:'VIDEO_UNBIND_SCOPE_REQUIRED'});
+ await f.catalog.fileOperations.execute(f.a.id,{requestId:p.requestId,previewHash:p.previewHash,confirmUnbind:true,confirmedUnbindShotRefs:p.affectedShots.map(s=>({projectId:s.projectId,shotId:s.id}))});let result;for(let n=0;n<400;n++){const row=f.catalog.fileOperations.row(f.a.id,p.requestId);if(row.status!=='running'){result=f.catalog.fileOperations.dto(p.requestId,row);break;}await new Promise(r=>setTimeout(r,5));}assert.equal(result?.status,'ready',JSON.stringify(result));
+ for(const video of [a,b]){const source=f.entry.store.source(f.a.id,video.videoId);assert.equal(path.dirname(source.path),folder.path);assert.deepEqual(await fs.readFile(source.path),f.bytes);assert.equal(f.v2.sourceBinding(f.a.id,video.videoId).binding,null);}assert.equal(f.catalog.adoption(f.a.id).shots.size,0);
+});
+
+test('same-name overwrite requires the cross-episode exact selection set before archiving the old record',async t=>{
+ const f=await videoV2Fixture(t);group(f);f.initialize();f.initialize(f.b.id);const old=await f.imported({fileName:'owned-overwrite.mp4'});await f.bind(old.videoId,['shot_0'],f.b.id);f.select(old.videoId,{targetProjectId:f.b.id});const duplicate=await f.imported({fileName:'owned-overwrite.mp4'});assert.equal(duplicate.status,'duplicate');const base={choice:'overwrite',candidateId:duplicate.candidates[0].id,adoptionStamp:duplicate.adoptionStamp,confirmUnbind:true};
+ await assert.rejects(()=>f.catalog.resolve(f.a.id,duplicate.id,{...base,confirmedUnbindShotRefs:[{projectId:f.a.id,shotId:'shot_0'}]}));assert.notEqual(f.v2.sourceBinding(f.a.id,old.videoId).binding,null);
+ const done=await f.catalog.resolve(f.a.id,duplicate.id,{...base,confirmedUnbindShotRefs:[{projectId:f.b.id,shotId:'shot_0'}]});assert.equal(done.status,'ready');assert.notEqual(done.videoId,old.videoId);assert.equal(f.v2.sourceBinding(f.a.id,old.videoId).binding,null);assert.equal(f.v2.state(f.b.id).shots[0].adopted,null);assert.deepEqual(await fs.readFile(f.entry.store.source(f.a.id,done.videoId).path),f.bytes);
+});
+
+test('accepting shorter changed content keeps v2 adoptions, marks video review, and removal validates the full episode scope',async t=>{
+ const f=await videoV2Fixture(t);group(f);f.initialize();f.initialize(f.b.id);const v=await f.imported();await f.bind(v.videoId,['shot_0','shot_1'],f.b.id);f.select(v.videoId,{targetProjectId:f.b.id});const source=f.entry.store.source(f.a.id,v.videoId),replacement=path.join(f.dir,'replacement.mp4'),encoded=spawnSync((process.env.VIDEO_V2_FFMPEG||'ffmpeg'),['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=red:s=96x64:r=8:d=1','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',replacement]);assert.equal(encoded.status,0);await fs.writeFile(source.path,await fs.readFile(replacement));
+ const preview=await action(f,f.catalog.changes.preview(f.a.id,source.id,{requestId:randomUUID(),expectedRevision:f.catalog.metadata(f.a.id,source).row.revision}));assert.equal(preview.status,'ready');assert.deepEqual(preview.invalidAdoptedShots,[]);
+ const accepted=await action(f,f.catalog.changes.accept(f.a.id,source.id,{requestId:randomUUID(),expectedRevision:preview.expectedRevision,adoptionStamp:preview.adoptionStamp,contentToken:preview.contentToken,confirmAcceptContent:true,confirmedUnbindShotRefs:[]}));assert.equal(accepted.status,'completed',JSON.stringify(accepted));assert.equal(f.catalog.adoption(f.a.id).shots.get(source.id).length,2);assert.ok(f.v2.sourceBinding(f.a.id,source.id).review.reasons.some(r=>r.category==='video_content'));
+ const removal=await action(f,f.catalog.changes.removePreview(f.a.id,source.id,{requestId:randomUUID(),expectedRevision:f.catalog.metadata(f.a.id,f.entry.store.source(f.a.id,source.id)).row.revision})),base={requestId:randomUUID(),expectedRevision:f.catalog.metadata(f.a.id,f.entry.store.source(f.a.id,source.id)).row.revision,adoptionStamp:removal.adoptionStamp,removalToken:removal.removalToken,fileAction:'keep',confirmUnbind:true};
+ const bad=await action(f,f.catalog.changes.remove(f.a.id,source.id,{...base,confirmedUnbindShotRefs:[{projectId:f.b.id,shotId:'shot_0'}]}));assert.equal(bad.status,'failed');assert.equal(f.catalog.adoption(f.a.id).shots.get(source.id).length,2);
+ const done=await action(f,f.catalog.changes.remove(f.a.id,source.id,{...base,requestId:randomUUID(),confirmedUnbindShotRefs:['shot_0','shot_1'].map(shotId=>({projectId:f.b.id,shotId}))}));assert.equal(done.status,'completed',JSON.stringify(done));assert.equal(f.v2.sourceBinding(f.a.id,source.id).binding,null);assert.deepEqual(await fs.readFile(source.path),await fs.readFile(replacement));
 });

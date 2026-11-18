@@ -24,7 +24,7 @@ export function v2Schema(mysql=false){
  for(const [table,columns]of Object.entries(V2_TABLES)){
   const fields=Object.entries(columns).map(([name,t])=>`\`${name}\` ${mysql?v2ColumnType(table,{name}):['integer','nullableInteger'].includes(t)?'INTEGER':['id','stateKey'].includes(t)?'TEXT PRIMARY KEY':'TEXT'}${t.startsWith('nullable')?'':' NOT NULL'}`);
   fields.push(...v2Constraints(table).filter(c=>mysql||!c.startsWith('INDEX')));
-  result.push(`CREATE TABLE IF NOT EXISTS ${table} (${fields.join(',')})${mysql?' ENGINE=InnoDB':''}`);
+  result.push(`CREATE TABLE IF NOT EXISTS ${table} (${fields.join(',')})${mysql?' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin':''}`);
   if(!mysql)for(const c of v2Constraints(table).filter(c=>c.startsWith('INDEX'))){const match=/^INDEX (\w+)\((.+)\)$/.exec(c);result.push(`CREATE INDEX IF NOT EXISTS ${match[1]} ON ${table}(${match[2]})`);}
  }
  return result;
