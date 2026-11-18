@@ -1,14 +1,31 @@
+import type {ShotSelection} from '../storyboard/shot-video-model.mjs';
+
 export type BindingProject = { id: string; name: string; project_kind?: string; series_id?: string | null; season_id?: string | null; episode_no?: number | null };
+export type BindingTarget = { projectId: string; name: string; seriesId: string | null };
+export type TargetChoice = BindingProject & { selectable: boolean };
 export type BindingShot = { shotId: string; boundNumber: string; currentNumber: string | null };
 export type VideoBinding = {
-  projectId: string; projectName: string; revision: number; bindingRevision: number;
-  origin: 'auto' | 'manual'; boundAt: number; needsReview: boolean; reviewFields: string[]; shots: BindingShot[];
+  bindingId: string; projectId: string; projectName: string; revision: number; bindingRevision: number;
+  origin: 'agent' | 'manual'; provenanceRevision: number | null; boundAt: number; needsReview: boolean; shots: BindingShot[];
 };
+export type BindingRead = { bindingRevision: number; targets: BindingTarget[]; binding: VideoBinding | null };
 export type EpisodeShot = { id: string; number: string; sceneIndex: number; sceneName: string; durationMs: number; summary: string };
+export type BindingIntent = { action: 'bind' | 'unbind'; expectedBindingRevision: number; targetProjectId: string | null; expectedStoryboardRevision: number | null; expectedAssetStamp: string | null; shotIds: string[] };
+export type AffectedRow = { projectId: string; projectName: string; shotId: string; number: string; before: ShotSelection | null; after: ShotSelection | null; beforeText: string; afterText: string };
+export type BindingPreview = { previewHash: string; requiresConfirmation: boolean; rows: AffectedRow[] };
 export function episodeLabel(project: BindingProject): string;
-export function episodeChoices<T extends BindingProject>(projects: T[], ownProjectId: string, boundProjectId?: string | null): T[];
+export function targetChoices(targets: BindingTarget[], projects: BindingProject[], boundProjectId?: string | null, boundProjectName?: string): TargetChoice[];
+export function bindingFromResponse(body: any): BindingRead;
+export function bindingOriginText(binding: VideoBinding): string;
+export function bindIntent(expectedBindingRevision: number, projectId: string, episode: { revision: number; assetStamp: string | null }, shotIds: string[]): BindingIntent;
+export function unbindIntent(expectedBindingRevision: number): BindingIntent;
+export function previewFromResponse(body: any): BindingPreview;
+export type UnbindShotRef = { projectId: string; shotId: string };
+export function releasedShotRefs(rows: AffectedRow[]): UnbindShotRef[];
+export function unbindConfirmation(shots?: { id: string; shotId?: string; projectId?: string }[]): { confirmedUnbindShotRefs: UnbindShotRef[] } | { confirmedUnbindShotIds: string[] };
 export function initialShotIds(binding: VideoBinding | null, projectId: string, rows: EpisodeShot[]): string[];
 export function orderedShotIds(rows: EpisodeShot[], selected: Set<string>): string[];
 export function boundText(binding: VideoBinding | null, projects: BindingProject[]): string;
 export function nextText(project: BindingProject, revision: number, rows: EpisodeShot[], selected: Set<string>): string;
 export function sameBinding(binding: VideoBinding | null, projectId: string, revision: number, shotIds: string[]): boolean;
+export function adoptedShotsText(shots?: { number: number | string; projectId?: string; projectName?: string }[]): string;

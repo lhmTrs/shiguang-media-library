@@ -13,6 +13,7 @@ import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {ShotBindingDialog} from './ShotBindingDialog';
 import {createShotBindingApi} from './shot-binding-api';
+import {adoptedShotsText} from './shot-binding-model.mjs';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import {openUpdreamTasks} from '../updream/api';
@@ -68,7 +69,7 @@ function duration(value: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 function shotsLabel(shots: AdoptedShot[]) {
-  return shots.length ? shots.map(shot => `镜 ${shot.number}`).join('、') : '尚未被分镜采用';
+  return adoptedShotsText(shots) || '尚未被分镜采用';
 }
 
 
@@ -937,7 +938,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : selected.verification?.state === 'content_changed' ? '视频内容已发生变化' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : selected.verification?.state === 'content_changed' ? '位置和名称没变，但画面或声音与登记时不同。可以预览当前内容，再决定继续使用还是不再使用；在你决定前，原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。可以先核对并预览当前内容。'}</span>
               <span className="pv-callout-actions">{selected.status !== 'missing' && <button type="button" disabled={locked || unresolved} onClick={() => openContentChange(selected)}>处理内容变化…</button>}<button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></span></div>}
             {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，可在访达中打开。采用不受影响。</span></div>}
-            {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。请先显式升级为项目托管副本，再到分镜中新增绑定。</span>{needsUpgrade && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
+            {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。建议先升级为项目托管副本，再右键选「对应到分镜镜头…」。</span>{needsUpgrade && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
             <form id={formId} className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
               <fieldset disabled={locked}><legend className="pv-sr-only">编辑视频资料</legend>
                 <PromptFields value={draft.prompt} prompts={prompts} disabled={locked} onChange={prompt => setEdits(old => ({ ...old, [selected.id]: { ...draft, prompt } }))}/>
@@ -1056,7 +1057,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
       {confirmation.kind === 'remove' ? <>
         <p className="pv-notice">将移除本项目的视频记录并解除以下实际采用关系，原文件和托管文件均保留。</p>
         <h3>受影响镜号</h3><p>{shotsLabel(confirmation.video.adoptedShots)}</p>
-        <p className="pv-muted">若分镜时序或采用关系已经变化，请先前往分镜预览清空旧关联，再重新读取资料确认。</p>
+        <p className="pv-muted">若采用关系已经变化，请刷新资料后重新确认；也可以到分镜点开镜头取消采用。</p>
         <ModalActions><button type="button" disabled={locked || loading} onClick={() => { setConfirmation(null); void refresh(); }}>取消并刷新资料</button><button type="button" disabled={locked} onClick={() => { setConfirmation(null); onStoryboard(); }}>前往分镜查看</button><button type="button" className="pv-danger" disabled={locked} onClick={() => void confirmAction()}>确认移除并解除关联</button></ModalActions>
       </> : <>
         <p className="pv-notice">明确指定同一内容文件的新位置。后台核验内容一致后复制到项目托管位置，保留既有绑定与新位置的原文件。</p>

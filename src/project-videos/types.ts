@@ -1,5 +1,6 @@
 export type ProjectVideoStatus = 'available' | 'unsupported' | 'missing' | 'changed' | 'untrusted' | 'unchecked';
-export type AdoptedShot = { id: string; number: number | string };
+/** projectId/projectName：v2 的采用可能在同剧别集，用来分清是哪一集；旧后台不返回。 */
+export type AdoptedShot = { id: string; number: number | string; projectId?: string; projectName?: string };
 
 export interface ProjectVideo {
   id: string;

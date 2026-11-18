@@ -145,7 +145,7 @@ try {
     await card(order[0]).click(); await card(order[1]).click({ modifiers: ['Meta'] }); await card(order[1]).click({ button: 'right' });
     const menu = page.getByRole('menu', { name: '视频操作' }); await expect(menu).toBeVisible(); await expect(menu.getByRole('menuitem', { name: '对应到分镜镜头…' })).toHaveCount(0); await page.keyboard.press('Escape');
     await card(order[2]).click(); await card(order[2]).click({ button: 'right' }); await menu.getByRole('menuitem', { name: '对应到分镜镜头…' }).click();
-    const dialog = page.getByRole('dialog', { name: '对应到分镜镜头' }); await expect(dialog).toContainText(order[2]); await expect(dialog.getByLabel('选集')).toBeVisible();
+    const dialog = page.getByRole('dialog', { name: '对应到分镜镜头' }); await expect(dialog).toContainText(order[2]); await expect(dialog.getByRole('region', { name: '当前绑定' })).toBeVisible();
     await dialog.getByRole('button', { name: '取消', exact: true }).click(); await expect(dialog).toHaveCount(0);
   });
 

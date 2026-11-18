@@ -442,3 +442,7 @@
 .pv-workspace .pv-binding-diff > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; min-width: 0; }
 .pv-binding-diff dt { color: var(--muted); }
 .pv-binding-diff dd { margin: 0; overflow-wrap: anywhere; }
+.pv-binding-confirm { display: grid; gap: 6px; margin-top: 12px; }
+.pv-workspace .pv-binding-affected { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.pv-binding-affected th, .pv-binding-affected td { padding: 4px 6px; border-top: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+.pv-binding-affected th { color: var(--muted); font-weight: 500; }

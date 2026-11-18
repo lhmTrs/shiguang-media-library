@@ -15,7 +15,8 @@ export function folderContains(folders: Folder[], ancestor: string, child: strin
   return ancestor === child || ancestor === 'root' || folderTrail(folders, child).some(f => f.id === ancestor);
 }
 export function uniqueShots(shots: AdoptedShot[]): AdoptedShot[] {
-  return [...new Map(shots.map(s => [s.id, s])).values()];
+  // 不同集可能有相同镜头 ID，要按集区分，不能少列一集的解除。
+  return [...new Map(shots.map(s => [`${s.projectId ?? ''}\0${s.id}`, s])).values()];
 }
 /** 拖动的视频：拖已选中的一个时带整组（videoIds，和访达一样），否则只有被拖的那一个。 */
 export function readVideoDrag(data: Pick<DataTransfer, 'types' | 'getData'>, projectId: string): string[] | null {

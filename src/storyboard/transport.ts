@@ -24,9 +24,9 @@ export function createStoryboardTransport() {
     apiBase,
     url: (path: string) => apiBase + path.slice(4),
     request,
-    video(projectId:string,path='',options:RequestInit={}) {
-      if(path&&!/^\/[a-zA-Z0-9_/?=&%.-]*$/.test(path))throw Error('视频预览接口路径无效');
-      return hostReads.fetch('/api/storyboard-video/projects/'+encodeURIComponent(projectId)+path,{...options,credentials:'same-origin',signal:options.signal??AbortSignal.timeout(30000)}, assertCurrent);
+    videoV2(path:string,options:RequestInit={}) {
+      if(!/^\/[a-zA-Z0-9_/?=&%.~!*'()-]*$/.test(path))throw Error('片子接口路径无效');
+      return hostReads.fetch('/api/storyboard-video/v2'+path,{...options,credentials:'same-origin',signal:options.signal??AbortSignal.timeout(30000)}, assertCurrent);
     },
     async projectAssets(projectId:string,kind:string,page=1,q='') {
       const params=new URLSearchParams({project_id:projectId,kind,page:String(page),q});

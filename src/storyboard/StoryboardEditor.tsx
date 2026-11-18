@@ -55,7 +55,7 @@ export function StoryboardEditor({generationRequest,generationFocus,onGeneration
     const editorRef=useRef<HTMLElement>(null),pendingShotScroll=useRef('');
     const dbRevision = useRef<number | null>(null), initializedAt=useRef<number|null>(null),libraryId=useRef(''),assetStamp = useRef('');
     const [shotVideo,setShotVideo]=useState<{shotId:string;number:string}|null>(null),shotVideoRef=useRef(shotVideo);shotVideoRef.current=shotVideo;
-    const shotVideoApi=useMemo(()=>createShotVideoApi(transport,projectId),[transport,projectId]),shotSummaries=useShotSummaries(shotVideoApi,visible&&!!project);
+    const shotVideoApi=useMemo(()=>createShotVideoApi(transport,projectId,()=>token.current),[transport,projectId]),shotSummaries=useShotSummaries(shotVideoApi,visible&&!!project);
     const persistDraft=()=>{if(pRef.current&&!cache.set(storageKey('recovery'),JSON.stringify({project:pRef.current,hash:hash.current,revision:dbRevision.current,file,documentId:pRef.current.document_id??pRef.current.project_id,initializedAt:initializedAt.current,libraryId:libraryId.current})))say('浏览器未能缓存镜头输入，请保持页面打开并保存或导出，避免刷新丢失。');};
     const say = (s: string) => setNotice(s);
     useEffect(() => { if (!notice)
@@ -168,7 +168,7 @@ export function StoryboardEditor({generationRequest,generationFocus,onGeneration
       } catch(e:Any) { say(e.message); }
     },Math.max(1000,refreshSeconds*1000)); return()=>clearInterval(timer); },[visible,refreshSeconds,transport,projectId]);
     const openShotVideo=(shotId:string,number:string)=>setShotVideo({shotId,number});
-    useEffect(()=>{if(!visible)setShotVideo(null);},[visible]);useEffect(()=>{setShotVideo(null);},[projectId]);
+    useEffect(()=>{void shotSummaries.refresh();},[saved]);useEffect(()=>{if(!visible)setShotVideo(null);},[visible]);useEffect(()=>{setShotVideo(null);},[projectId]);
     const prepareGeneration=async():Promise<number|null>=>{if(generationBlock.current)throw Error('目标项目的锁或接纳结果尚未解除，请核对任务');if(conflict.current||modalRef.current)throw Error('请先处理当前分镜面板或版本冲突；原输入保留');if(saving.current)throw Error('当前分镜正在保存，请稍后重新检查');await save();if(pRef.current&&M.canonical(pRef.current)!==savedRef.current)throw Error('分镜草稿未保存成功，未开始生成；原输入保留');return pRef.current?dbRevision.current:null;};
     const readGeneratedStoryboard=(taskId:string):Promise<void>=>{
       if(pRef.current&&M.canonical(pRef.current)!==savedRef.current)return Promise.reject(Error('本地仍有未保存草稿，已保留；请先导出或核对后载入数据库分镜'));
