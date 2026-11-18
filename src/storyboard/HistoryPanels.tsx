@@ -1,12 +1,12 @@
 // 「待看的修改」「改动记录」两个视图，以及「查看旧版本」（用户认可的设计稿②③④）。
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Crosshair, Eye, RotateCcw } from 'lucide-react';
 import { ReadingMode } from './ReadingMode';
 import { segmentDiffText, segmentEventText } from './segments';
 import { AUTHOR_LABEL, CATEGORY_LABEL, HistoryError, MIGRATION_REQUIRED, PENDING_REVISION_CHANGED, kb, show, when, type Change, type HistoryApi, type NoiseChange, type PendingItem, type PendingList, type PendingTarget, type ReasonCategory, type VersionChanges, type VersionList, type VersionMeta } from './history';
 
-const FIELD_LABEL: Record<string, string> = {$segment: '分段', $segment_settings: '分割模式', framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $move: '位置', $number: '全片镜号', $order: '场内序号', $scene_id: '所属场景', $scene_order: '场次顺序', source: '原始数据', import_source: '原始导入数据', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
-const fieldName = (f: string) => FIELD_LABEL[f] ?? f;
+const FIELD_LABEL: Record<string, string> = {$segment: '分段', $segment_settings: '分割模式', framing: '景别与角度', action: '画面与人物动作', camera: '摄影机设计', sound: '环境与动作声', dialogue: '对白', duration_ms: '时长', transition: '剪辑衔接', first_frame: '第一帧状态', continuity: '连续性要求', design_note: '设计备注', physical_feedback: '物理反馈', environment_feedback: '环境反馈', result: '段落结果', character_ids: '关联人物', character_presence: '人物在场方式', reference_bindings: '参考图', audio_continuations: '语音承接', order: '镜头顺序', scene_id: '所属场景', $entity: '整镜增删', $move: '位置', $number: '全片镜号', $order: '场内序号', $scene_id: '所属场景', $scene_order: '场次顺序', source: '原始数据', import_source: '原始导入数据', extensions: '扩展数据', prop_ids: '道具', scene_asset_id: '场景素材', asset_manifest: '素材清单', metadata: '项目信息', generation_batches: '生成批次', generation_runs: '生成记录', characters: '人物', assets: '素材清单', settings: '项目设置', title: '标题', synopsis: '故事核心', name: '场景名', location: '地点', story_time: '时间', interior_exterior: '内外景', spatial_setup: '空间设定', global_rules: '全片规则'};
+const fieldName = (f: string) => FIELD_LABEL[f] ?? '其它内容';
 const FIELD_RANK = new Map(Object.keys(FIELD_LABEL).map((f, i) => [f, i]));
 const byFieldOrder = (fields: string[]) => [...fields].sort((a, b) => (FIELD_RANK.get(a) ?? 999) - (FIELD_RANK.get(b) ?? 999));
 const pad = (n: number | null | undefined) => n == null ? '?' : String(n).padStart(2, '0');
@@ -22,9 +22,59 @@ const Reason = ({author, category, text}: {author: string; category: ReasonCateg
   {text && !['user', 'agent', 'generation'].includes(author) && <span className="sb-history-muted">{text}</span>}
 </>;
 
-/** 把一组「字段改前改后」显示成一行行。场景和整体设置里的结构数据只说「已修改」，不铺开整段。 */
-function Fields({fields, before, after, compact}: {fields: string[]; before: unknown; after: unknown; compact?: boolean}) {
-  return <ul className="sb-history-fields">{byFieldOrder(fields).map(f => { const a = own(before, f), b = own(after, f), bulky = compact && [a, b].some(x => x && typeof x === 'object'); return <li key={f}><span className="sb-history-field">{fieldName(f)}：</span>{bulky || a === undefined && b === undefined ? <span className="sb-history-muted">已修改</span> : <><del>{value(f, a)}</del> → <ins>{value(f, b)}</ins></>}</li>; })}</ul>;
+const CharacterNames = createContext<ReadonlyMap<string, string>>(new Map());
+/** 人物名只用于显示；取不到时对白仍显示台词，其它人物字段显示「已修改」。 */
+function useCharacterNames(api: HistoryApi, revision: number | undefined) {
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    if (revision === undefined) return; let live = true;
+    api.version(revision).then(d => { if (!live) return; const list = (d.project as {characters?: {id?: unknown; name?: unknown}[]} | null)?.characters ?? []; setNames(new Map(list.flatMap(c => typeof c.id === 'string' && typeof c.name === 'string' && c.name ? [[c.id, c.name] as [string, string]] : []))); }, () => { if (live) setNames(new Map()); });
+    return () => { live = false; };
+  }, [api, revision]);
+  return names;
+}
+
+type Line = {label: string; body: ReactNode};
+type Row = Record<string, unknown>;
+const MODIFIED = <span className="sb-history-muted">已修改</span>;
+const PRESENCE: Record<string, string> = {visible: '画内', offscreen: '画外', voice_only: '仅声音', unspecified: '未说明'};
+const rowsOf = (v: unknown): Row[] => Array.isArray(v) ? v.filter(x => x && typeof x === 'object' && !Array.isArray(x)) as Row[] : [];
+const textOf = (v: unknown) => typeof v === 'string' ? v : '';
+const Swap = ({a, b}: {a: ReactNode; b: ReactNode}) => <><del>{a === '' ? '（空）' : a}</del> → <ins>{b === '' ? '（空）' : b}</ins></>;
+
+/** 对白按内部 id 对齐，但只显示说话人和台词等可读内容。 */
+function dialogueLines(before: unknown, after: unknown, names: ReadonlyMap<string, string>): Line[] {
+  const keyed = (v: unknown) => new Map(rowsOf(v).map((d, i) => [textOf(d.id) || '#' + i, d])), a = keyed(before), b = keyed(after), lines: Line[] = [];
+  const who = (d: Row) => { const name = names.get(textOf(d.character_id)); return name ? name + '：' : ''; };
+  for (const [key, next] of b) {
+    const old = a.get(key);
+    if (!old) { lines.push({label: '新增对白', body: <>{who(next)}<ins>{textOf(next.text) || '（空）'}</ins></>}); continue; }
+    if (textOf(old.text) !== textOf(next.text)) lines.push({label: '对白', body: <>{who(next)}<Swap a={textOf(old.text)} b={textOf(next.text)}/></>});
+    if (textOf(old.character_id) !== textOf(next.character_id)) { const x = names.get(textOf(old.character_id)), y = names.get(textOf(next.character_id)); lines.push({label: '说话人', body: x && y ? <Swap a={x} b={y}/> : MODIFIED}); }
+    if (textOf(old.performance) !== textOf(next.performance)) lines.push({label: '表演要求', body: <>{who(next)}<Swap a={textOf(old.performance)} b={textOf(next.performance)}/></>});
+    if (textOf(old.source) !== textOf(next.source)) lines.push({label: '声源', body: <>{who(next)}<Swap a={textOf(old.source)} b={textOf(next.source)}/></>});
+  }
+  for (const [key, old] of a) if (!b.has(key)) lines.push({label: '删除对白', body: <>{who(old)}<del>{textOf(old.text) || '（空）'}</del></>});
+  if (!lines.length && [...a.keys()].join('\n') !== [...b.keys()].join('\n')) lines.push({label: '对白', body: '顺序有调整'});
+  return lines.length ? lines : [{label: '对白', body: MODIFIED}];
+}
+
+/** 全部写成人话：名字齐全才列人物，其它结构只说数量变化或「已修改」，不显示内部 id 和原始 JSON。 */
+function fieldLines(field: string, before: unknown, after: unknown, names: ReadonlyMap<string, string>): Line[] {
+  if (field === 'dialogue') return dialogueLines(before, after, names);
+  const label = fieldName(field), people = (ids: string[], tail: (i: number) => string = () => '') => ids.every(id => names.has(id)) ? ids.map((id, i) => names.get(id)! + tail(i)).join('、') : null;
+  if (field === 'character_ids' && [before, after].every(v => v == null || Array.isArray(v))) { const x = people((before as string[] | null) ?? []), y = people((after as string[] | null) ?? []); return [{label, body: x === null || y === null || x === y ? MODIFIED : <Swap a={x} b={y}/>}]; }
+  if (field === 'character_presence') { const text = (v: unknown) => { const list = rowsOf(v); return people(list.map(r => textOf(r.character_id)), i => `（${PRESENCE[textOf(list[i].mode)] ?? '未说明'}）`); }, x = text(before), y = text(after); return [{label, body: x === null || y === null || x === y ? MODIFIED : <Swap a={x} b={y}/>}]; }
+  const structured = (v: unknown) => !!v && typeof v === 'object';
+  if (structured(before) || structured(after)) { const size = (v: unknown) => Array.isArray(v) ? v.length : v == null ? 0 : null, x = size(before), y = size(after); return [{label, body: x !== null && y !== null && x !== y ? <Swap a={`${x} 项`} b={`${y} 项`}/> : MODIFIED}]; }
+  if (/(^|_)ids?$/.test(field) || before === undefined && after === undefined) return [{label, body: MODIFIED}];
+  return [{label, body: <Swap a={value(field, before)} b={value(field, after)}/>}];
+}
+
+/** 把一组「字段改前改后」显示成一行行。 */
+function Fields({fields, before, after}: {fields: string[]; before: unknown; after: unknown}) {
+  const names = useContext(CharacterNames);
+  return <ul className="sb-history-fields">{byFieldOrder(fields).flatMap(f => fieldLines(f, own(before, f), own(after, f), names).map((line, i) => <li key={f + i}><span className="sb-history-field">{line.label}：</span>{line.body}</li>))}</ul>;
 }
 
 /** 整镜或整场增删：一句话，不显示原始数据。 */
@@ -50,7 +100,7 @@ function ChangeBody({item, shotNumber}: {item: PendingItem; shotNumber?: (shotId
   return <>
     {item.fields.includes('$entity') && <p className="sb-change-line">{entityText(item)}</p>}
     {item.fields.includes('$move') && <p className="sb-change-line">{moveText(item)}</p>}
-    {rest.length > 0 && <Fields fields={rest} before={item.before} after={item.after} compact={item.target_kind !== 'shot'}/>}
+    {rest.length > 0 && <Fields fields={rest} before={item.before} after={item.after}/>}
   </>;
 }
 
@@ -62,7 +112,7 @@ function ChangeRow({item, shotNumber}: {item: PendingItem; shotNumber?: (shotId:
   </article>;
 }
 
-const noiseLine = (n: NoiseChange) => `${n.target_kind === 'shot' ? `镜 ${pad(n.shot_number)}` : n.target_kind === 'scene' ? '场景设置' : '分镜整体设置'} · ${fieldName(n.field)}${'before' in n ? `：${show(n.before)} → ${show(n.after)}` : '有变化'}`;
+const noiseLine = (n: NoiseChange) => `${n.target_kind === 'shot' ? `镜 ${pad(n.shot_number)}` : n.target_kind === 'scene' ? '场景设置' : '分镜整体设置'} · ${fieldName(n.field)}${typeof n.before === 'number' && typeof n.after === 'number' ? `：${n.before} → ${n.after}` : '有变化'}`;
 
 /** 只读展开一版的改动；不碰待看标记。 */
 function VersionDetail({api, version, refreshKey, shotNumber}: {api: HistoryApi; version: number; refreshKey?: unknown; shotNumber?: (shotId: string) => string | undefined}) {
@@ -101,8 +151,9 @@ export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {
     finally { setBusy(false); }
   };
   const setCategory = async (v: number, next: ReasonCategory, prev: ReasonCategory | null) => { try { await api.setCategory(v, next, prev); await load(); } catch (e) { setError(e); } };
+  const names = useCharacterNames(api, data?.current_revision);
   const versions = data?.pending_versions ?? [], index = versions.findIndex(v => v.version === selected), page = index >= 0 ? versions[index] : null, older = index >= 0 ? versions.length - index - 1 : 0;
-  return <div className="sb-history" aria-label="待看的修改">
+  return <CharacterNames.Provider value={names}><div className="sb-history" aria-label="待看的修改">
     <div className="sb-history-head"><div><h3>待看的修改</h3><p>Codex 保存后改过、你还没看过的内容。点「看过了」只清掉标记，不影响内容。</p></div>
       {!!data?.items.length && <button type="button" disabled={busy} onClick={() => void clear({all: true}, undefined, false)}>全部看过</button>}</div>
     <div className="sb-pending-switch" role="group" aria-label="待看查看方式">
@@ -144,15 +195,16 @@ export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {
       {item.summary_only && <p className="sb-history-muted">这次改动超过一半，只记了摘要；具体内容请在「改动记录」里查看那一版。</p>}
       <ChangeBody item={item} shotNumber={shotNumber}/>
     </article>; })}
-  </div>;
+  </div></CharacterNames.Provider>;
 }
 
 export function LogPanel({api, refreshKey, onOpen}: {api: HistoryApi; refreshKey: unknown; onOpen: (meta: VersionMeta) => void}) {
   const [data, setData] = useState<VersionList | null>(null), [error, setError] = useState<unknown>(null), [more, setMore] = useState(false), [open, setOpen] = useState<ReadonlySet<number>>(new Set());
+  const names = useCharacterNames(api, data?.current_revision);
   const toggle = (v: number) => setOpen(old => { const next = new Set(old); if (!next.delete(v)) next.add(v); return next; });
   const load = useCallback(async (offset = 0) => { try { const d = await api.versions(offset, 20); setData(old => offset && old ? {...d, items: [...old.items, ...d.items]} : d); setError(null); } catch (e) { setError(e); } finally { setMore(false); } }, [api]);
   useEffect(() => { void load(0); }, [load, refreshKey]);
-  return <div className="sb-history" aria-label="改动记录">
+  return <CharacterNames.Provider value={names}><div className="sb-history" aria-label="改动记录">
     <div className="sb-history-head"><div><h3>改动记录</h3>{data && <p>本集历史占用 {kb(data.storage.bytes + data.storage.record_bytes)} · 保留最近 {data.storage.limit} 份完整版（现有 {data.storage.kept_full} 份）· 改动记录永久保留</p>}</div></div>
     {error ? <Problem error={error}/> : null}
     {data && <table className="sb-history-table"><colgroup><col style={{width:64}}/><col style={{width:100}}/><col/><col style={{width:150}}/><col style={{width:96}}/></colgroup><thead><tr><th>版本</th><th>时间</th><th>谁改的 · 原因</th><th>改了</th><th/></tr></thead><tbody>
@@ -165,7 +217,7 @@ export function LogPanel({api, refreshKey, onOpen}: {api: HistoryApi; refreshKey
       </tr>{expanded && <tr className="sb-history-expanded"><td colSpan={5}><VersionDetail api={api} version={m.version} refreshKey={refreshKey}/></td></tr>}</Fragment>; })}
     </tbody></table>}
     {data && data.items.length < data.total && <button type="button" className="sb-history-more" disabled={more} onClick={() => { setMore(true); void load(data.items.length); }}>{more ? '正在加载…' : '加载更早的记录'}</button>}
-  </div>;
+  </div></CharacterNames.Provider>;
 }
 
 /** 只读查看某一版：整屏阅读样式；可和当前版本对比、恢复这一版（另存为新版本）。 */

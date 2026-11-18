@@ -109,6 +109,21 @@ try {
     await page.evaluate(() => localStorage.setItem('shiguang.theme', 'forest')); await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  await check('P9 对白和结构字段写成人话：不显示原始 JSON 或内部 id；取不到人物名时只显示台词', async () => {
+    const cur = await api(base), target = shotsOf(cur.project).find(q => q.dialogue.length), line = target.dialogue[0], speaker = cur.project.characters.find(c => c.id === line.character_id).name;
+    const saved = await agent(p => { const d = shotsOf(p).find(q => q.id === target.id).dialogue[0]; d.text = '合成：改过的台词'; d.performance = '合成：压低声音'; }, '台词再克制一点');
+    const leaked = async el => { const text = await el.innerText(); for (const bad of [line.id, line.character_id, target.id, '[{', '"id"', 'import_source']) assert.ok(!text.includes(bad), '不应显示 ' + bad + '：' + text); };
+    await open(); const card = panel().locator('.sb-change').filter({ hasText: '合成：改过的台词' });
+    await expect(card).toContainText(speaker + '：'); await expect(card).toContainText(line.text); await expect(card).toContainText('合成：压低声音'); await leaked(card); await shot('p9-dialogue');
+    await tab('改动记录').click(); await page.getByRole('button', { name: `展开 V${saved.revision} 的改动` }).click();
+    const logged = page.locator('.sb-history-expanded .sb-change'); await expect(logged).toContainText(speaker + '：'); await expect(logged).toContainText('合成：改过的台词'); await leaked(logged);
+    const noNames = u => new URL(u).pathname.endsWith('/versions/' + saved.revision); await page.route(noNames, route => route.fulfill({ status: 404, json: { message: '合成：取不到' } }));
+    await open(); const plain = panel().locator('.sb-change').filter({ hasText: '合成：改过的台词' }); await expect(plain).toBeVisible(); await expect(plain).not.toContainText(speaker + '：'); await leaked(plain); await page.unroute(noNames);
+    const isPending = u => new URL(u).pathname.endsWith('/pending');
+    await page.route(isPending, async route => { const actual = await route.fetch(), d = await actual.json(), item = d.pending_versions[0].items[0]; Object.assign(item, { fields: ['reference_bindings', 'audio_continuations', 'character_presence', 'prop_ids'], summary_only: false, before: { reference_bindings: [{ id: 'secret_ref' }], audio_continuations: [{ source_shot_id: 'secret_shot' }], character_presence: [{ character_id: 'secret_char', mode: 'visible' }], prop_ids: ['secret_prop'] }, after: { reference_bindings: [{ id: 'secret_ref2' }], audio_continuations: [{ source_shot_id: 'secret_shot' }, { source_shot_id: 'secret_shot2' }], character_presence: [{ character_id: 'secret_char', mode: 'offscreen' }], prop_ids: ['secret_prop2'] } }); await route.fulfill({ response: actual, json: d }); });
+    await open(); const structured = panel().locator('.sb-change').first(); await expect(structured).toContainText('参考图：已修改'); await expect(structured).toContainText('1 项'); await expect(structured).not.toContainText('secret'); await page.unroute(isPending);
+  });
+
   await check('P8 全部看过后显示空状态', async () => {
     await open(); await button('全部看过').click(); await expect(panel()).toContainText('没有待看的修改'); await expect(button(/全部未看 · 0 处/)).toBeVisible(); await expect(tab(/待看的修改/).locator('b')).toHaveCount(0);
   });
