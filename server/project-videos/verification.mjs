@@ -67,7 +67,7 @@ export class ProjectVideoVerification {
   verify(id,sourceId) {
     const key=id+':'+sourceId;
     if(this.pending.has(key))return this.pending.get(key);
-    const work=this.perform(id,sourceId).finally(()=>this.pending.delete(key));
+    const work=this.perform(id,sourceId).catch(error=>{try{const source=this.catalog.videos.source(id,sourceId);this.remember(source,{state:'needs_verification',match:null,metadataChanged:false,errorCode:error.code??'SOURCE_UNTRUSTED'});}catch{}throw error;}).finally(()=>this.pending.delete(key));
     this.pending.set(key,work);return work;
   }
   async perform(id,sourceId) {

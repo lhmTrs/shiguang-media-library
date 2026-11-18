@@ -1,3 +1,4 @@
+import {confirmUnbind} from '../storyboard-video-v2/confirmation.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -42,7 +43,7 @@ export class ProjectVideoRejectArea {
     return this.catalog.videos.sources(id).filter(s=>!this.catalog.metadata(id,s).data.removedAt&&this.folders.inSubtree(this.folders.folderId(id,s.path,rows),folderId,rows)).map(s=>({id:s.id,path:s.path,identity:s.identity,revision:this.catalog.metadata(id,s).row?.revision||0,authority:digest(this.catalog.verification.authority(id,s.id))})).sort((a,b)=>a.id.localeCompare(b.id));
   }
   affected(id,sources,adoption=this.catalog.adoption(id)){
-    const shots=new Map();for(const source of sources)for(const shot of adoption.shots.get(source.id)||[]){if(!shots.has(shot.id))shots.set(shot.id,{...shot,sourceIds:[]});shots.get(shot.id).sourceIds.push(source.id);}
+    const shots=new Map();for(const source of sources)for(const shot of adoption.shots.get(source.id)||[]){const key=(shot.projectId??id)+':'+shot.id;if(!shots.has(key))shots.set(key,{...shot,sourceIds:[]});shots.get(key).sourceIds.push(source.id);}
     return [...shots.values()].map(s=>({...s,sourceIds:s.sourceIds.sort()})).sort((a,b)=>a.id.localeCompare(b.id));
   }
   assertMetadata(id,s){
@@ -99,9 +100,10 @@ export class ProjectVideoRejectArea {
     if(input.previewHash!==s.plan.previewHash)fail('PREVIEW_REQUIRED','请确认同一请求的收纳设置预览',409);
     if(s.status!=='preview')return this.dto(requestId,s);
     if(input.confirmRoleChange!==true)fail('ROLE_CHANGE_CONFIRMATION_REQUIRED','请明确确认设置、取消或更换收纳处',409);
+    if(this.catalog.videos.bindingV2)confirmUnbind(input,s.plan.affectedShots,{invalidCode:'INVALID_INPUT'});
     if(s.plan.affectedShots.length){
       const expected=s.plan.affectedShots.map(shot=>shot.id).sort(),confirmed=input.confirmedUnbindShotIds;
-      if(input.confirmUnbind!==true||!Array.isArray(confirmed)||!equal([...confirmed].sort(),expected))fail('UNBIND_CONFIRMATION_REQUIRED','请确认本次预览中完整且精确的解除镜号集合',409);
+      if(!this.catalog.videos.bindingV2&&(input.confirmUnbind!==true||!Array.isArray(confirmed)||!equal([...confirmed].sort(),expected)))fail('UNBIND_CONFIRMATION_REQUIRED','请确认本次预览中完整且精确的解除镜号集合',409);
     }
     if(this.active.has(requestId))return this.dto(requestId,s);
     // Persist intent before scheduling any IO. Replays never enter perform again.

@@ -71,7 +71,7 @@ add('materials.read','素材索引详情','读取已有素材条目；无文件�
 add('templates.list','提示词模板列表','只读未删除模板；不包含模型生成调用。',object({q:str(2000)}),{q:''},{http:['GET /api/prompt-templates?q']},(c,a)=>c.call('GET',query(templatePath(),a)));
 add('templates.read','模板详情','读取模板定义与修订号。',object({id},['id']),{id:'00000000-0000-4000-8000-000000000001'},{http:['GET /api/prompt-templates/:id']},(c,a)=>c.call('GET',templatePath(a.id)));
 add('templates.save','保存全局模板','仅global且明确允许修改时可保存现有模板；先GET核对修订号，保留原API版本链。',object({id,expected_revision:revision,definition:templateDefinition},['id','expected_revision','definition']),{id:'00000000-0000-4000-8000-000000000001',expected_revision:1,definition:{name:'合成模板',body:'正文',fields:[]}},{write:true,scopes:['global'],http:['GET /api/prompt-templates/:id','PUT /api/prompt-templates/:id']},async(c,a)=>{const definition=normalizeTemplate(a.definition),current=await c.call('GET',templatePath(a.id));c.expected(current,a.expected_revision);return c.call('PUT',templatePath(a.id),{definition,expected_revision:a.expected_revision});});
-add('videos.state','视频关联状态','只读当前项目已有视频关联、候选与采用状态。此接口会走原视频文件身份检查；不导入、重绑、校准或生成。',empty,{}, {scopes:['project'],http:['GET /api/storyboard-video/projects/:scope/state']},c=>c.call('GET',`/api/storyboard-video/projects/${c.scope}/state`));
+add('videos.state','视频关联状态','只读当前集v2采用、默认片子、候选数、新片数与需复核标记；不扫描磁盘、不逐片探测，不导入、采用或生成。',empty,{}, {scopes:['project'],http:['GET /api/storyboard-video/v2/projects/:scope/state']},c=>c.call('GET',`/api/storyboard-video/v2/projects/${c.scope}/state`));
 
 function freeze(v){if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;}
 const definitions=freeze(registry.map(({run,...d})=>d));
