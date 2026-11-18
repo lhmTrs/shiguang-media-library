@@ -12,6 +12,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
+import { lowContrast as contrastIssues } from './helpers/contrast.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'video-binding-real-ui-')));
@@ -76,21 +77,9 @@ const row = n => page.getByTestId('shot-row-' + n);
 const openShot = async n => { await shotButton(n).click(); const d = page.getByRole('dialog', { name: '镜 ' + n + ' 的片子' }); await expect(d.getByRole('heading', { name: /这一镜的片子 · / })).toBeVisible({ timeout: 10000 }); return d; };
 const clip = (d, name) => d.locator('.sv-clip').filter({ hasText: name });
 const openBinding = async id => { await videoCard(id).click({ button: 'right' }); await page.getByRole('menu', { name: '视频操作' }).getByRole('menuitem', { name: '对应到分镜镜头…' }).click(); const d = page.getByRole('dialog', { name: '对应到分镜镜头' }); await expect(d.getByRole('region', { name: '当前绑定' })).not.toContainText('正在读取', { timeout: 10000 }); return d; };
+const lowContrast = (selector, minimum) => contrastIssues(page, selector, minimum);
 const insideViewport = async locator => { const box = await locator.boundingBox(), view = page.viewportSize(); assert.ok(box && box.x >= -1 && box.y >= -1 && box.x + box.width <= view.width + 1 && box.y + box.height <= view.height + 1, '内容超出窗口：' + JSON.stringify(box)); };
 const noSideScroll = locator => locator.evaluate(el => el.scrollWidth <= el.clientWidth + 1).then(ok => assert.ok(ok, '出现横向滚动'));
-/** 文字和实际背景的对比度，按 WCAG 公式计算。 */
-const lowContrast = (selector, minimum) => page.evaluate(([css, min]) => {
-  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1; const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const rgba = color => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data; return [r, g, b, a / 255]; };
-  const over = (top, under) => top.slice(0, 3).map((value, i) => value * top[3] + under[i] * (1 - top[3]));
-  const backdrop = el => { const layers = []; for (let node = el; node; node = node.parentElement) { const c = rgba(getComputedStyle(node).backgroundColor); if (c[3]) layers.push(c); if (c[3] === 1) break; } return layers.reverse().reduce((under, top) => over(top, under), [255, 255, 255]); };
-  const light = c => { const [r, g, b] = c.map(v => { const x = v / 255; return x <= .03928 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; }); return .2126 * r + .7152 * g + .0722 * b; };
-  return [...document.querySelectorAll(css)].filter(el => el.textContent.trim() && el.getClientRects().length).flatMap(el => {
-    const bg = backdrop(el), fg = over(rgba(getComputedStyle(el).color), bg), [a, b] = [light(fg), light(bg)].sort((x, y) => y - x), ratio = (a + .05) / (b + .05);
-    return ratio < min ? [el.className + ':' + el.textContent.trim().slice(0, 16) + ':' + ratio.toFixed(2)] : [];
-  });
-}, [selector, minimum]);
-
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
   const session = await fetch(origin + '/api/session'), auth = await session.json(); cookie = session.headers.get('set-cookie').split(';')[0]; token = auth.token; library = auth.instanceId;
