@@ -124,6 +124,24 @@ try {
     await open(); const structured = panel().locator('.sb-change').first(); await expect(structured).toContainText('参考图：已修改'); await expect(structured).toContainText('1 项'); await expect(structured).not.toContainText('secret'); await page.unroute(isPending);
   });
 
+  await check('P10 最后没有变化的内容折叠：不计入角标，可展开和单独看过；当前版本翻页照常显示', async () => {
+    const roundTrip = async (index, text) => { const old = shotsOf((await api(base)).project)[index].framing; await agent(p => { shotsOf(p)[index].framing = text; }, '先改成' + text); return agent(p => { shotsOf(p)[index].framing = old; }, '又改回去'); };
+    const before = await api(base + '/pending'), real = before.net_pending_count + before.net_pending_document_count; await roundTrip(9, '合成：中途的景别');
+    const after = await api(base + '/pending'); assert.equal(after.pending_count, before.pending_count + 1, '旧计数不变'); assert.equal(after.net_pending_count + after.net_pending_document_count, real);
+    await open(); await expect(tab(/待看的修改/).locator('b')).toHaveText(String(real)); await expect(panel().locator('.sb-change').filter({ hasText: '合成：中途的景别' })).toBeVisible();
+    const marker = n => page.getByTestId('shot-row-' + n).getByText('待看', { exact: true }), backToPending = async () => { await tab(/待看的修改/).click(); await expect(panel()).toBeVisible(); };
+    await tab('编辑').click(); await expect(marker('06')).toBeVisible(); await expect(marker('10')).toHaveCount(0); await backToPending();
+    await button(/全部未看/).click(); await expect(button(`全部未看 · ${real} 处`)).toBeVisible(); const fold = panel().getByRole('region', { name: '最后没有变化的内容' });
+    await expect(fold).toContainText('还有 1 处中途改过，最后没有变化'); await expect(fold.getByRole('article')).toHaveCount(0); await fold.getByRole('button', { name: /中途改过/ }).click();
+    await expect(fold.getByRole('article')).toContainText('合起来看，最后和改之前一样'); await expect(fold.getByRole('article')).toContainText('合成：中途的景别'); await shot('p10-folded-open');
+    await fold.getByRole('button', { name: '这些都看过了' }).click(); await expect(fold).toHaveCount(0); const left = await api(base + '/pending'); assert.equal(left.pending_count, before.pending_count); assert.equal(left.net_pending_count, before.net_pending_count);
+    await tab('编辑').click(); await expect(marker('06')).toBeVisible(); await expect(marker('10')).toHaveCount(0); await backToPending();
+    await api(base + '/pending/clear', { all: true, through_version: left.current_revision }); await roundTrip(10, '合成：又一次中途修改'); await open(); await button(/全部未看/).click();
+    await expect(button('全部未看 · 0 处')).toBeVisible(); await expect(panel()).toContainText('没有最终变化'); await expect(panel()).not.toContainText('没有待看的修改'); await expect(panel().getByRole('region', { name: '最后没有变化的内容' })).toBeVisible(); await expect(tab(/待看的修改/).locator('b')).toHaveCount(0); await shot('p10-only-folded');
+    await tab('编辑').click(); await expect(marker('06')).toHaveCount(0); await expect(marker('11')).toHaveCount(0); await backToPending();
+    await button(/全部未看/).click(); const onlyFold = panel().getByRole('region', { name: '最后没有变化的内容' }); await onlyFold.getByRole('button', { name: /中途改过/ }).click(); await expect(onlyFold.getByRole('article')).toContainText('合起来看，最后和改之前一样');
+  });
+
   await check('P8 全部看过后显示空状态', async () => {
     await open(); await button('全部看过').click(); await expect(panel()).toContainText('没有待看的修改'); await expect(button(/全部未看 · 0 处/)).toBeVisible(); await expect(tab(/待看的修改/).locator('b')).toHaveCount(0);
   });

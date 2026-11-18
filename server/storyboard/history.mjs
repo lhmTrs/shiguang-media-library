@@ -2,11 +2,11 @@ import {randomUUID} from 'node:crypto';
 import {canonical,digest,fault,idOK} from '../project-assets/model.mjs';
 import {storyboardDiff} from './shared/change-diff.mjs';
 import {HISTORY_TABLES,tablePresent,installHistory} from './history-schema.mjs';
-import {classifyVersion,pendingView,plainlyReal,realFields,versionView} from './pending-view.mjs';
+import {classifyVersion,pendingCounts,pendingView,versionView} from './pending-view.mjs';
 export const HISTORY_CATEGORIES=['shot_feel','miscommunication','prompt_wrong'];
 const fail=(code,message,status=400,extra={})=>fault(message,status,{code,...extra});
 const integer=v=>Number.isSafeInteger(v)&&v>=1;
-const CLASS_CACHE_LIMIT=500;
+const CLASS_CACHE_LIMIT=500,COUNT_CACHE_LIMIT=200;
 export function changeAuthor(change,kind=null,reason=''){
  if(kind)return {author_kind:kind,reason_category:null,reason_text:typeof reason==='string'?reason:''};
  if(!change||change.author==='user')return {author_kind:'user',reason_category:null,reason_text:'用户手动保存'};
@@ -53,7 +53,7 @@ export class StoryboardHistory{
   for(const [target,items]of groups){const c=items[0];this.insert('storyboard_pending',{id:randomUUID(),document_id:next.id,version:next.revision,target_kind:c.target_kind,target_id:target,shot_id:c.shot_id,shot_number_at_time:c.shot_number_at_time,fields_json:canonical(items.map(x=>x.field)),deleted:Number(c.deleted),created_at:now,updated_at:now,cleared_at:null});}
  }
  insert(table,row){const keys=Object.keys(HISTORY_TABLES[table]);this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(()=>'?')})`).run(...keys.map(k=>row[k]));}
- pendingRows(id){return this.db.prepare("SELECT p.*,v.id version_row_id,v.created_at version_created_at,v.author_kind,v.reason_category,v.reason_text,v.summary_only version_summary_only FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND v.author_kind IN ('agent','generation') ORDER BY p.version,p.id").all(id).map(r=>({...r,version:Number(r.version)}));}
+ pendingRows(id,{countsOnly=false}={}){return this.db.prepare("SELECT "+(countsOnly?"p.id,p.version,p.target_kind,p.target_id,p.fields_json,v.id version_row_id,v.summary_only version_summary_only":"p.*,v.id version_row_id,v.created_at version_created_at,v.author_kind,v.reason_category,v.reason_text,v.summary_only version_summary_only")+" FROM storyboard_pending p JOIN storyboard_versions v ON v.document_id=p.document_id AND v.version=p.version WHERE p.document_id=? AND p.cleared_at IS NULL AND v.author_kind IN ('agent','generation') ORDER BY p.version,p.id").all(id).map(r=>({...r,version:Number(r.version)}));}
  changeRows(id,versions){
   const out=new Map();if(!versions.length)return out;
   // storyboard_changes 只有主键，这里一次读完范围，不按版本逐条扫表。
@@ -73,12 +73,14 @@ export class StoryboardHistory{
   }
   return out;
  }
+ /** 分镜每次读取都会算。改动记录不可变，所以未看记录集合（随机行 id）不变时直接用上次结果；清除或新增记录即失效。 */
  counts(id){
-  this.require();const rows=this.pendingRows(id).map(r=>({row:r,fields:JSON.parse(r.fields_json)})),wanted=new Map(),shots=new Set(),other=new Set();
-  for(const {row,fields}of rows)if(!plainlyReal(fields))wanted.set(row.version,{rowId:row.version_row_id,summaryOnly:!!row.version_summary_only});
-  const classes=this.classes(id,wanted);
-  for(const {row,fields}of rows)if(plainlyReal(fields)||realFields(row,fields,classes.get(row.version)).length)(row.target_kind==='shot'?shots:other).add(row.target_id);
-  return {pending_count:shots.size,pending_document_count:other.size};
+  this.require();const rows=this.pendingRows(id,{countsOnly:true}),key=rows.map(r=>r.id).join();
+  this.countCache??=new Map();const hit=this.countCache.get(id);if(hit?.key===key)return {...hit.value};
+  const wanted=new Map(rows.map(r=>[r.version,{rowId:r.version_row_id,summaryOnly:!!r.version_summary_only}])),changes=this.changeRows(id,[...wanted.keys()]);
+  const value=pendingCounts({rows,classes:this.classes(id,wanted,changes),changes});
+  this.countCache.delete(id);this.countCache.set(id,{key,value});if(this.countCache.size>COUNT_CACHE_LIMIT)this.countCache.delete(this.countCache.keys().next().value);
+  return {...value};
  }
  attach(view){return {...view,version:view.revision,...(this.ready()?this.counts(view.project.document_id):{pending_count:null,pending_document_count:null}),history_available:this.ready()};}
  afterCommit(view){
