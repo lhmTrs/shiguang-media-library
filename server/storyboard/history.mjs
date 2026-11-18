@@ -60,7 +60,7 @@ export class StoryboardHistory{
  }
  prune(documentId){
   this.require();if(!documentId)return;
-  this.board.tx(()=>{this.board.assets.lockDirectory();const head=this.db.prepare('SELECT * FROM storyboard_documents WHERE id=?').get(documentId);if(!head)return;this.board.project(head.project_id,true);const rows=this.db.prepare('SELECT id,version,updated_at FROM storyboard_versions WHERE document_id=? AND document_json IS NOT NULL ORDER BY version DESC').all(documentId);for(const r of rows.slice(50))if(r.version!==head.revision)this.db.prepare('UPDATE storyboard_versions SET document_json=NULL,byte_size=0,updated_at=? WHERE id=?').run(Math.max(Date.now(),r.updated_at+1),r.id);});
+  this.board.tx(()=>{this.board.assets.lockDirectory();const head=this.db.prepare('SELECT * FROM storyboard_documents WHERE id=?').get(documentId);if(!head)return;this.board.project(head.project_id,true);const rows=this.db.prepare('SELECT id,version,updated_at FROM storyboard_versions WHERE document_id=? AND document_json IS NOT NULL ORDER BY version DESC').all(documentId);const retained=this.board.videoBindingV2?.retainedVersionNumbers(documentId);for(const r of rows.slice(50))if(r.version!==head.revision&&!retained?.has(r.version))this.db.prepare('UPDATE storyboard_versions SET document_json=NULL,byte_size=0,updated_at=? WHERE id=?').run(Math.max(Date.now(),r.updated_at+1),r.id);});
  }
  head(projectId){this.board.project(projectId);const head=this.board.head(projectId);if(!head)throw fail('STORYBOARD_NOT_INITIALIZED','请先初始化分镜',404);this.require();return head;}
  read(fn){if(this.db.kind==='mysql')this.db.exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');return this.db.transaction(fn)();}
