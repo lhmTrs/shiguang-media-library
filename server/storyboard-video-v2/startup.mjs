@@ -14,7 +14,11 @@ export const videoV2Startup={
   const known=status==='complete'&&stored.schemaVersion===SCHEMA_VERSION;
   return {...stored,status,phase,reasonCode,writeAllowed:known,adoptionKnown:known,historyPrune:known?'active':'paused'};
  },
- upgradeCheckpoint(){if(this.closing)fail('VIDEO_V2_UPGRADE_STOPPED','升级正常停止，保留阶段回执',503);},
+ assertUpgradeActive(db=this.db,instanceId=this.instanceId){
+  if(this.closing||this.videos.media.closing)fail('VIDEO_V2_UPGRADE_STOPPED','升级正常停止，保留阶段回执',503);
+  if(this.db!==db||this.instanceId!==instanceId||this.lib.migrating)fail('VIDEO_V2_UPGRADE_INSTANCE_CHANGED','升级期间库实例或提供方变化，未执行迁移',503);
+ },
+ upgradeCheckpoint(){this.assertUpgradeActive();},
  async startup(){
   if(this.upgradeWork)return this.upgradeWork;
   this.upgradeWork=this.videos.media.track(()=>this.runStartupUpgrade()).then(()=>this.migrationStatus());
@@ -50,12 +54,12 @@ export const videoV2Startup={
    }
    if(journal&&this.schemaState().status!=='schema-required'&&this.db.prepare('SELECT status FROM storyboard_video_v2_requests WHERE id=?').get(journal.requestId)?.status==='committed')fail('VIDEO_V2_UPGRADE_RESTORED','旧行在已完成升级后重新恢复，保留现场等待明确维护',503);
    journal??={format:'shiguang-video-v2-upgrade-journal',schemaVersion:SCHEMA_VERSION,instanceId,requestId:randomUUID(),status:'pending',phase:'schema',exportFile:null,exportHash:null};
-   const stage=async phase=>{journal={...journal,status:'pending',phase,reasonCode:null};runtime('pending',phase);await writePrivateJson(journalFile,journal);await this.upgradeCheckpoint(phase);const currentPolicy=await readPrivateJson(path.join(directory,'upgrade-policy.json'));if(currentPolicy)validateUpgradePolicy(currentPolicy,instanceId);if(currentPolicy?.mode==='defer')fail('VIDEO_V2_UPGRADE_DEFERRED','升级已按实例策略暂缓，旧行保留',503);};
+   const stage=async phase=>{journal={...journal,status:'pending',phase,reasonCode:null};runtime('pending',phase);await writePrivateJson(journalFile,journal);await this.upgradeCheckpoint(phase);const currentPolicy=await readPrivateJson(path.join(directory,'upgrade-policy.json'));this.assertUpgradeActive(db,instanceId);if(currentPolicy)validateUpgradePolicy(currentPolicy,instanceId);if(currentPolicy?.mode==='defer')fail('VIDEO_V2_UPGRADE_DEFERRED','升级已按实例策略暂缓，旧行保留',503);};
    await stage('schema');this.installSchema();this.requireSchema();
    this.assets.tx(()=>{this.assets.lockDirectory();const marker=this.stateRow('migration',true),data=JSON.parse(marker.data_json);if(data.schemaVersion!==SCHEMA_VERSION||!['pending','complete'].includes(data.status))fail('VIDEO_V2_UPGRADE_JOURNAL_INVALID','迁移标记无法核验',503);if(data.instanceId!==instanceId){this.db.prepare('UPDATE storyboard_video_v2_state SET data_json=?,revision=?,updated_at=? WHERE id=?').run(JSON.stringify({...data,status:'pending',instanceId}),marker.revision+1,Date.now(),'migration');}});
    if(!journal.exportFile){await stage('export');const exported=await this.exportLegacy(directory);await syncDirectory(directory);journal={...journal,exportFile:path.basename(exported.file),exportHash:exported.checksum};await writePrivateJson(journalFile,journal);}
    await stage('check');const exported=await readPrivateJson(path.join(directory,journal.exportFile));if(!exported||exported.checksum!==journal.exportHash)fail('VIDEO_V2_UPGRADE_EXPORT_INVALID','原私有导出无法读回核验',503);const checked=this.checkMigration(exported);if(!checked.exportMatches)fail('VIDEO_V2_UPGRADE_EXPORT_STALE','旧行在导出后变化，未删除，请保留现场核对',503);
-   await stage('delete');commitAttempted=true;this.executeMigration(exported,{requestId:journal.requestId});
+   await stage('delete');this.assertUpgradeActive(db,instanceId);commitAttempted=true;this.executeMigration(exported,{requestId:journal.requestId});
    journal={...journal,status:'complete',phase:'complete',reasonCode:null};await writePrivateJson(journalFile,journal);runtime('complete','complete');return this.migrationStatus();
   }catch(error){
    // A lost journal/commit ACK cannot turn a durable complete transaction into failure.

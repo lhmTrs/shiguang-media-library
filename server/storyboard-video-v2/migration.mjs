@@ -34,9 +34,9 @@ export const videoV2Migration={
  },
  checkMigration(input){this.validateLegacyExport(input);const preview=this.migrationPreview();return {...preview,exportHash:input.checksum,exportMatches:preview.rowsHash===hash(input.tables)};},
  migrationMutation(action,input,{requestId}){
-  this.requireSchema();this.validateLegacyExport(input);if(!idOK(requestId))fail('VIDEO_V2_INVALID_INPUT','迁移操作须保留有效requestId');
+  const db=this.db,instanceId=this.instanceId;this.assertUpgradeActive(db,instanceId);this.requireSchema();this.validateLegacyExport(input);if(!idOK(requestId))fail('VIDEO_V2_INVALID_INPUT','迁移操作须保留有效requestId');
   return this.assets.tx(()=>{
-   this.assets.lockDirectory();this.stateRow('global',true);this.validateLegacyExport(input);const request={requestId,exportHash:input.checksum},operation='migration-'+action,scope='library';const repeated=this.replay(operation,scope,request);if(repeated)return repeated;
+   this.assets.lockDirectory();this.assertUpgradeActive(db,instanceId);this.stateRow('global',true);this.validateLegacyExport(input);const request={requestId,exportHash:input.checksum},operation='migration-'+action,scope='library';const repeated=this.replay(operation,scope,request);if(repeated)return repeated;
    const marker=this.stateRow('migration',true),state=decode(marker.data_json),current=this.legacyRows();
    if(action==='execute'){
     if(state.status==='complete'&&state.exportHash===input.checksum)return this.commitMigrationReceipt(operation,request,{status:'complete',counts:input.counts,exportHash:input.checksum,repeated:true});

@@ -45,7 +45,7 @@ export class ProjectVideos{
  get db(){return this.lib.db;}
  get renders(){return this.lib.projectRenders;}
  databaseToken(){const db=this.db;if(!this.databaseTokens.has(db))this.databaseTokens.set(db,randomUUID());return this.databaseTokens.get(db);}
- project(id,write=false){const p=this.videos.storyboards.project(id,write);if(write){this.videos.bindingV2?.require();if(this.media.closing||this.lib.migrating)fail('VIDEO_BUSY','项目视频正在关闭或迁移',423);if(process.env.MEDIA_READONLY_FILES==='1')fail('READONLY_FILES','当前目录只读，不能复制或修改视频',403);this.videos.storyboards.generationLocks?.assertWritable(id);}return p;}
+ project(id,write=false){const p=this.videos.storyboards.project(id,write);if(write){if(this.media.closing||this.lib.migrating)fail('VIDEO_BUSY','项目视频正在关闭或迁移',423);if(process.env.MEDIA_READONLY_FILES==='1')fail('READONLY_FILES','当前目录只读，不能复制或修改视频',403);this.videos.storyboards.generationLocks?.assertWritable(id);this.videos.bindingV2?.require();}return p;}
  serial(fn){const work=this.queue.then(fn);this.queue=work.catch(()=>{});return work;}
  row(id,sourceId){return this.db.prepare('SELECT * FROM project_video_records WHERE id=? AND project_id=?').get(sourceId,id);}
  metadata(id,source){const row=this.row(id,source.id);return{row,data:row?validateProjectVideoData('project_video_records',JSON.parse(row.data_json)):{title:source.name,notes:'',promptId:null,managed:false,sha256:null,removedAt:0,mediaAssetId:null}};}

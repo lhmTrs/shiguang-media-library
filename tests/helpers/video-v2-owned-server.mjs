@@ -5,9 +5,9 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import assert from 'node:assert/strict';
 export async function bounded(p,ms,label){let timer;try{return await Promise.race([p,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error(label)),ms))]);}finally{clearTimeout(timer);}}
-export async function ownedVideoServer(f,{phase,hold=false}={}){
+export async function ownedVideoServer(f,{phase,hold=false,policyIO=false}={}){
  const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
- const args=[...(phase?['--import','./tests/fixtures/storyboard-video-v2/startup-checkpoint.mjs']:[]),'server/index.mjs'];
+ const args=[...(policyIO?['--import','./tests/fixtures/storyboard-video-v2/startup-policy-io.mjs']:phase?['--import','./tests/fixtures/storyboard-video-v2/startup-checkpoint.mjs']:[]),'server/index.mjs'];
  const child=spawn(process.execPath,args,{cwd:process.cwd(),env:{...process.env,PORT:String(port),MEDIA_DATA_DIR:f.lib.dataDir,MEDIA_UPDREAM_QUEUE_DIR:path.join(f.dir,'absent-queue'),MEDIA_PERSONAL_ITEM_DIR:path.join(f.dir,'personal_item'),MEDIA_PERSONAL_VIDEO_DIR:path.join(f.dir,'personal-video'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_DISABLE_DESKTOP_NATIVE:'1',SHIGUANG_AUDIO_ANALYSIS:'0',...(phase?{VIDEO_V2_TEST_PHASE:phase,VIDEO_V2_TEST_HOLD:hold?'1':'0'}:{})},stdio:['ignore','pipe','pipe','ipc']});
  let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);const exited=once(child,'exit');let stopped=false;
  const stop=async()=>{if(stopped)return;stopped=true;if(child.exitCode===null)child.kill('SIGTERM');const [code]=await bounded(exited,20000,'owned application normal exit timeout');assert.equal(code,0,output.slice(-2000));assert.match(output,/APPLICATION_CLOSED_KNOWN/);};
