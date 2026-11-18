@@ -15,7 +15,7 @@ async function legacy(f){
  f.v2.markLegacyRestored();return video;
 }
 test('migration exports/reads private rows, interrupted DELETE rolls back, execute and restore are exact and idempotent; sources/files unchanged',async t=>{
- const f=await videoV2Fixture(t),video=await legacy(f),source=f.entry.store.source(f.a.id,video.videoId),raw=f.v2.legacyRows();assert.throws(()=>f.v2.state(f.a.id),{code:'VIDEO_V2_MIGRATION_REQUIRED'});
+ const f=await videoV2Fixture(t),video=await legacy(f),source=f.entry.store.source(f.a.id,video.videoId),raw=f.v2.legacyRows();assert.equal(f.v2.state(f.a.id).migration.status,'pending');assert.equal(f.v2.state(f.a.id).shots[0].candidateCount,null);
  const exported=await f.v2.exportLegacy(path.join(f.dir,'private-export')),saved=JSON.parse(await fs.readFile(exported.file,'utf8'));assert.deepEqual(saved.tables,raw);assert.equal((await fs.stat(exported.file)).mode&0o077,0);assert.equal(f.v2.checkMigration(saved).exportMatches,true);
  f.db.exec("CREATE TRIGGER fail_old_delete BEFORE DELETE ON storyboard_video_plans BEGIN SELECT RAISE(ABORT,'owned migration interruption');END");assert.throws(()=>f.v2.executeMigration(saved,{requestId:randomUUID()}),/owned migration interruption/);assert.deepEqual(f.v2.legacyRows(),raw);assert.equal(f.v2.schemaState().status,'pending');f.db.exec('DROP TRIGGER fail_old_delete');
  const input={requestId:randomUUID()},done=f.v2.executeMigration(saved,input);assert.equal(done.status,'complete');assert.equal(f.v2.executeMigration(saved,input).repeated,true);assert.ok(Object.values(f.v2.legacyRows()).every(rows=>rows.length===0));assert.equal(f.v2.request(input.requestId).status,'committed');
