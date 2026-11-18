@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { Modal, ModalActions } from './Modal';
 import { actionPending, useDesktopAction, type DesktopReceipt } from './desktop-actions';
-import { adoptedShotsText } from './shot-binding-model.mjs';
+import { adoptedShotsText, unbindConfirmation } from './shot-binding-model.mjs';
 import type { AdoptedShot, ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from './types';
 
 /*
@@ -106,7 +106,10 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
   }
   function remove() {
     const rp = removal.current; if (!video || !rp || !fileAction) return;
-    act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction });
+    const shots = rp.affectedAdoptedShots || [];
+    let confirmation = {};
+    try { if (shots.length) confirmation = unbindConfirmation(shots); } catch (e) { setNotice((e as Error).message); return; }
+    act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction, ...confirmation });
   }
   return {
     act, video, visible, setVisible, unresolved, unread, resultKey, markSeen, attention, recordRemoved, fileUnknown, notice, view, setView, playing, setPlaying, acceptOk, setAcceptOk, unbindOk, setUnbindOk,

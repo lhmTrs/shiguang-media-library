@@ -140,7 +140,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
     inFlight.current = true; setBusy(true); setError('');
     const original = {requestId: plan.requestId, api: request}; mutation.current = original;
     // 批量移动执行严格校验：即使没有受影响镜号也要带 confirmUnbind:true 与 []；有影响时按最终预览的镜号、经用户勾选后提交
-    const body = batch ? {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: true, ...confirmation} : {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: confirmed};
+    const body = batch ? {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: true, ...confirmation} : {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: confirmed, ...(affected.length ? confirmation : {})};
     try { receive(await original.api<OperationReceipt>(base + '/operations', body, 'POST')); }
     catch (e) { setReceipt({requestId: plan.requestId, status: 'unknown', description: plan.description}); report(`结果尚未确认：${(e as Error).message}。保留原编号，请查询或恢复原操作。`); }
     finally { inFlight.current = false; setBusy(false); }

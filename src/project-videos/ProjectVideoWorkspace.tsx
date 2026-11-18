@@ -13,7 +13,7 @@ import {FolderCards} from './FolderBrowser';
 import {FolderOperations, type FolderAction} from './FolderOperations';
 import {ShotBindingDialog} from './ShotBindingDialog';
 import {createShotBindingApi} from './shot-binding-api';
-import {adoptedShotsText} from './shot-binding-model.mjs';
+import {adoptedShotsText, unbindConfirmation} from './shot-binding-model.mjs';
 import {VIDEO_DRAG_TYPE, folderTarget, folderContains, folderTrail, readVideoDrag} from './folders';
 import {rememberImportTarget} from '../import-presets.mjs';
 import {openUpdreamTasks} from '../updream/api';
@@ -431,7 +431,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     taskSendingRef.current = true; setTaskSending(true); setError('');
     try {
       const receipt = await current.api<Receipt>(`/imports/${encodeURIComponent(current.queryId)}/resolve`,
-        {choice, ...(candidate ? {candidateId: candidate.id} : {}), ...(choice === 'overwrite' ? {adoptionStamp: current.receipt.adoptionStamp, confirmUnbind: true} : {})}, 'POST');
+        {choice, ...(candidate ? {candidateId: candidate.id} : {}), ...(choice === 'overwrite' ? {adoptionStamp: current.receipt.adoptionStamp, confirmUnbind: true, ...(candidate?.adoptedShots?.length ? unbindConfirmation(candidate.adoptedShots) : {})} : {})}, 'POST');
       if (choice === 'cancel' && ['failed', 'cancelled'].includes(receipt.status)) { releaseImport(projectId); putTask(null); setImportConfirm(false); setError(''); setNotice('已取消本次导入，文件与资料输入保留。'); return; }
       receive(receipt); await uploadContent();
     } catch (e) { taskError(e); }
@@ -480,6 +480,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
       if (action.kind === 'remove') {
         const result = await api<{ removed: true }>(`/videos/${encodeURIComponent(action.video.id)}/remove`, {
           expectedRevision: action.video.revision, adoptionStamp: action.adoptionStamp, confirmUnbind: true,
+          ...(action.video.adoptedShots.length ? unbindConfirmation(action.video.adoptedShots) : {}),
         }, 'POST');
         if (!isCurrent(ticket)) return;
         if (!result.removed) throw Error('未取得移除成功回执，请刷新资料核对。');

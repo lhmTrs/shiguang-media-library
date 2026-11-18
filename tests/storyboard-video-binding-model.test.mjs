@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { canPlayStatus, clipFromItem, coveredShotsText, defaultClip, estimateStart, newClipCount, originText, reviewReasonText, rowsFromChanges, safeMediaUrl, selectionIntent, selectionText, startText, summariesFromState, v2ErrorText, wholeAdopted } from '../src/storyboard/shot-video-model.mjs';
-import { adoptedShotsText, bindIntent, bindingFromResponse, bindingOriginText, boundText, initialShotIds, nextText, orderedShotIds, previewFromResponse, releasedShotRefs, sameBinding, targetChoices, unbindConfirmation, unbindIntent } from '../src/project-videos/shot-binding-model.mjs';
+import { adoptedShotsText, bindIntent, bindingFromResponse, bindingOriginText, boundText, initialShotIds, nextText, orderedShotIds, previewFromResponse, episodeLabel, releasedShotRefs, sameBinding, targetChoices, unbindConfirmation, unbindIntent } from '../src/project-videos/shot-binding-model.mjs';
 
 const shot = (shotId, durationMs, currentNumber = shotId) => ({ shotId, numberAtBinding: shotId, durationMs, associationSeq: 1, existsInCurrent: currentNumber !== null, currentNumber });
 const item = (id, shots, extra = {}, binding = {}, review = {}) => ({ videoId: id, sourceProjectId: 'src', name: id + '.mp4', durationMs: 12000, status: 'available', errorCode: null, mediaUrl: '/api/m/' + id, thumbnailUrl: null, videoRevision: 1,
@@ -106,6 +106,12 @@ test('选集：以后端范围为准并按集排序；已绑定但不在范围�
   assert.deepEqual(targetChoices(targets, projects).map(p => [p.id, p.selectable]), [['e1', true], ['e2', true]]);
   assert.deepEqual(targetChoices(targets, projects, 'x').find(p => p.id === 'x').selectable, false);
   assert.equal(targetChoices([], [], 'gone', '').at(0).selectable, false);
+});
+
+test('集名已带第几集时不重复', () => {
+  assert.equal(episodeLabel({ name: '合成剧 第1季 第1集', episode_no: 1 }), '合成剧 第1季 第1集');
+  assert.equal(episodeLabel({ name: '开场', episode_no: 2 }), '第 2 集 · 开场');
+  assert.equal(episodeLabel({ name: '未归组', episode_no: null }), '未归组');
 });
 
 test('绑定读取和来历写法', () => {

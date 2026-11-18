@@ -3,8 +3,10 @@ import { selectionText } from '../storyboard/shot-video-model.mjs';
 
 const collator = new Intl.Collator('zh-CN', { numeric: true });
 
+/** 剧集项目的名字常已带“第N集”，这时不重复写。 */
 export function episodeLabel(project) {
-  return (project.episode_no == null ? '' : '第 ' + project.episode_no + ' 集 · ') + project.name;
+  const number = project.episode_no;
+  return (number == null || project.name.replace(/\s/g, '').includes('第' + number + '集') ? '' : '第 ' + number + ' 集 · ') + project.name;
 }
 
 /** 可选的集以后端给的范围为准；已绑定的集不在范围里时也列出，但不能再选。 */
