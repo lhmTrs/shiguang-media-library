@@ -184,6 +184,14 @@
 隔离测试：node --test tests/storyboard-history*.test.mjs及受影响回归；node tests/storyboard-history-mysql.mjs只创建自有临时datadir/随机回环端口MySQL，不读系统配置/凭据，保留证据并正常关闭。MySQL版本按实际证据报告，不把SQLite或mock冒原生MySQL通过。合并、正式DDL与4317上线另批。
 
 
+### 待看去噪与按版本查看
+
+待看在读取和计数时去噪，存量数据不改：镜头的$order/$number、任意实体的source/import_source，以及characters[].source、dialogue[].import_source、audio_continuations[].import_source的单独变化都不算修改；dialogue[].source是声源，属于正文。永久changes仍完整保留，只有噪音的版本不进待看。删或插一镜造成的顺延不算移动：只有前后都存在的镜头相对顺序变了，或$scene_id变了，才产生字段$move（before/after含number、scene_id、scene_name）。场次换序时用前后完整版在每场内部判断，完整版已裁剪、只记摘要等无法判断的情况按噪音处理。
+
+GET pending除items（全部未看，按目标合并，events列出各版原话和分类）外增加pending_versions（新到旧，只含还有真实未看内容的版本，每版有自己的原话、分类和items）；pending_count/pending_document_count与items一致。GET versions/:v/changes只读返回一版的items和noise，detail为full、rebuilt（只记摘要但前后完整版仍在，重新比对）或summary，不清待看。
+
+POST pending/clear的through_version加all/shot_ids语义不变。新增version（只清这一版，不连带更早版本）和target_ids（按target_id清，可清场景、段、整体设置）；用这两项时必须带expected_revision，分镜已有新版本返回409 PENDING_REVISION_CHANGED和current_revision，调用方应重读后再确认。
+
 ### v1.1：仅标记 Codex 修改的待看
 
 按用户决定“只标 Codex 改的”，只有author_kind为agent或generation的保存新增pending。user/import/restore/baseline仍照常同事务保存完整版和永久changes，不新增待看，也不会清除已有Codex待看。计数、GET pending和清除接口只处理agent/generation事件；through_version的已看版本保护保持。旧候选存在的其它作者pending保留原行但不再投影，不做数据清理。import保持初始化/导入路径归类，不猜实际操作者，不扩大成新的来源鉴别协议。

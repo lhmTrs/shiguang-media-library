@@ -97,7 +97,7 @@ try {
     await open(main.id);
     await expect(tab(/待看的修改/).locator('b')).toHaveText('2');
     await expect(page.getByTestId('shot-row-02').getByText('待看')).toBeVisible();
-    await tab(/待看的修改/).click();
+    await tab(/待看的修改/).click(); await page.getByRole('button', { name: /全部未看/ }).click();
     const card = page.getByRole('article').filter({ hasText: '镜 02' });
     await expect(card).toContainText('Codex'); await expect(card).toContainText('提示词不对'); await expect(card).toContainText('把镜2改成近景');
     await expect(card).toContainText('近景，略俯拍'); await shot('s4-pending');

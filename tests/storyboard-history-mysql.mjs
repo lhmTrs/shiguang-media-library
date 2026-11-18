@@ -18,6 +18,7 @@ import {Projects} from '../server/projects.mjs';
 import {ProjectAssets} from '../server/project-assets/store.mjs';
 import {StoryboardDatabase} from '../server/storyboard/database.mjs';
 import {syntheticSource} from './helpers/storyboard-fixture.mjs';
+import {emptyShot} from '../server/storyboard/shared/model.mjs';
 const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'storyboard-history-mysql-')));await fs.chmod(root,0o700);
 const data=path.join(root,'mysql');await fs.mkdir(data,{mode:0o700});
 const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
@@ -58,6 +59,16 @@ try{
   const workers=[],exits=[];
   for(const i of [0,1]){const worker=new Worker(source,{eval:true,workerData:{modules,config,dataDir:path.join(root,'peer'+i),project:current.project,revision:current.revision,projectId:p.id,label:'peer'+i,requestId:randomUUID()}});workers.push(worker);peers.push(worker);exits.push(new Promise(resolve=>worker.once('exit',resolve)));await once(worker,'message');}
   const results=workers.map(w=>once(w,'message'));workers.forEach(w=>w.postMessage('go'));const values=(await bounded(Promise.all(results),15000,'peer saves timeout')).map(r=>r[0]);await bounded(Promise.all(exits),5000,'peer exits timeout');await fs.writeFile(path.join(root,'peer-results.json'),JSON.stringify(values));console.log('PEER_RESULTS '+JSON.stringify(values));assert.equal(values.filter(r=>r.ok).length,1);assert.equal(values.filter(r=>r.status===409).length,1);assert.equal(board.head(p.id).revision,current.revision+1);assert.equal(board.history.version(p.id,current.revision+1).author_kind,'user');assert.ok(board.history.pending(p.id).items.every(i=>i.versions.every(v=>v!==current.revision+1)));
+ });
+ await check('MySQL pending de-noise, per-version view and single-version clear match SQLite behaviour',async()=>{
+  const edit=(fn,reason)=>{const current=board.read(p.id),project=structuredClone(current.project);fn(project);return board.save(p.id,{project,expected_revision:current.revision,request_id:randomUUID(),change:{author:'agent',reason_text:reason,reason_category:'shot_feel'}});};
+  const shot=n=>({...emptyShot(),framing:'中景'+n,action:'合成动作'+n+'长'.repeat(300),camera:'固定'+'长'.repeat(300)}),list=x=>x.scenes[0].shots;
+  const grown=edit(x=>list(x).push(shot(1),shot(2),shot(3),shot(4)),'加镜头');board.history.clear(p.id,{all:true,through_version:grown.revision});
+  const gone=list(board.read(p.id).project)[2].id,removed=edit(x=>list(x).splice(2,1),'删一镜');let view=board.history.pending(p.id);assert.deepEqual(view.items.map(i=>i.shot_id),[gone]);assert.equal(view.pending_count,1);assert.ok(lib.db.prepare('SELECT COUNT(*) n FROM storyboard_changes WHERE version=? AND field=?').get(removed.revision,'$number').n>=2);
+  const moved=list(board.read(p.id).project)[1].id,move=edit(x=>{const [q]=list(x).splice(1,1);list(x).push(q);},'挪一镜');view=board.history.pending(p.id);assert.deepEqual(view.pending_versions.map(v=>v.version),[move.revision,removed.revision]);assert.deepEqual(view.pending_versions[0].items.map(i=>[i.shot_id,i.fields]),[[moved,['$move']]]);
+  assert.throws(()=>board.history.clear(p.id,{all:true,version:removed.revision,through_version:move.revision,expected_revision:removed.revision}),{code:'PENDING_REVISION_CHANGED'});
+  const cleared=board.history.clear(p.id,{all:true,version:move.revision,through_version:move.revision,expected_revision:move.revision});assert.equal(cleared.pending_count,1);assert.deepEqual(board.history.pending(p.id).pending_versions.map(v=>v.version),[removed.revision]);
+  assert.deepEqual(board.history.versionChanges(p.id,move.revision).items.map(i=>i.shot_id),[moved]);board.history.clear(p.id,{all:true,through_version:move.revision});
  });
  await check('MySQL full retention limit and permanent events survive pruning; cleanup failure stays committed',async()=>{
   while(board.head(p.id).revision<50)save('retention');lib.db.exec("CREATE TRIGGER fail_prune BEFORE UPDATE ON storyboard_versions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='owned prune rollback'");const saved=save();assert.equal(saved.version,51);assert.equal(saved.history_cleanup,'failed');assert.equal(board.history.versions(p.id).storage.kept_full,51);lib.db.exec('DROP TRIGGER fail_prune');save();assert.equal(board.history.versions(p.id).storage.kept_full,50);assert.throws(()=>board.history.version(p.id,1),{code:'VERSION_PRUNED'});assert.equal(board.history.versions(p.id).total,52);

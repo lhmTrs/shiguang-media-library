@@ -4,14 +4,20 @@ import type { StoryboardTransport } from './transport';
 export type ReasonCategory = 'shot_feel' | 'miscommunication' | 'prompt_wrong';
 export const CATEGORY_LABEL: Record<ReasonCategory, string> = {shot_feel: '追求镜头感', miscommunication: '沟通失误', prompt_wrong: '提示词不对'};
 export const AUTHOR_LABEL: Record<string, string> = {user: '你', agent: 'Codex', import: '导入', generation: 'Codex 生成', restore: '恢复', baseline: '启用前版本'};
-export type VersionMeta = {version: number; created_at: number | string; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; reason_missing?: boolean; summary_only: boolean; changed_shot_count: number; restored_from: number | null; full_available: boolean; baseline?: boolean; byte_size?: number};
+export type VersionMeta = {version: number; created_at: number | string; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; reason_missing?: boolean; summary_only: boolean; changed_shot_count: number; restored_from: number | null; full_available: boolean; baseline?: boolean; byte_size?: number; content_shot_count?: number};
 export type VersionList = {document_id: string; current_revision: number; total: number; storage: {bytes: number; record_bytes: number; kept_full: number; limit: number; physical_bytes: null}; items: VersionMeta[]};
 export type SegmentEvent = {type: 'add' | 'remove' | 'move_start' | 'overwrite' | 'mode'; segment_id?: string; name?: string; before?: Any; after?: Any; previous_name?: string; merged_into?: {id?: string; name?: string} | null};
 type Any = any; // 段事件的改前改后结构见 STORYBOARD-SEGMENTS 合同
 export type Change = {target_kind: 'shot' | 'scene' | 'document' | 'segment'; segment_event?: SegmentEvent; target_id: string; shot_id: string | null; shot_number_at_time: number | null; field: string; before: unknown; after: unknown; deleted: boolean};
 export type Diff = {document_id: string; from_version: number; to_version: number | 'current'; summary_only: boolean; changes: Change[]};
-export type PendingItem = {target_kind: 'shot' | 'scene' | 'document' | 'segment'; target_id: string; shot_id: string | null; shot_number: number | null; deleted: boolean; versions: number[]; fields: string[]; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; before: unknown; after: unknown; summary_only: boolean};
-export type PendingList = {document_id: string; current_revision: number; pending_count: number; pending_document_count: number; items: PendingItem[]};
+export type ChangeEvent = {version: number; created_at: number | string; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; summary_only: boolean; fields: string[]};
+export type PendingItem = {target_kind: 'shot' | 'scene' | 'document' | 'segment'; target_id: string; shot_id: string | null; shot_number: number | null; current_number: number | null; deleted: boolean; versions: number[]; fields: string[]; author_kind: string; reason_category: ReasonCategory | null; reason_text: string; before: unknown; after: unknown; summary_only: boolean; events: ChangeEvent[]};
+export type PendingVersion = Omit<ChangeEvent, 'fields'> & {is_current: boolean; item_count: number; items: PendingItem[]};
+export type PendingList = {document_id: string; current_revision: number; pending_count: number; pending_document_count: number; items: PendingItem[]; pending_versions: PendingVersion[]};
+export type NoiseChange = {target_kind: PendingItem['target_kind']; target_id: string; shot_id: string | null; shot_number: number | null; field: string; before?: unknown; after?: unknown};
+export type VersionChanges = VersionMeta & {document_id: string; current_revision: number; detail: 'full' | 'rebuilt' | 'summary'; items: PendingItem[]; noise: NoiseChange[]};
+export type PendingTarget = {shot_ids: string[]} | {target_ids: string[]} | {all: true};
+export const PENDING_REVISION_CHANGED = 'PENDING_REVISION_CHANGED';
 export class HistoryError extends Error { constructor(message: string, readonly code: string, readonly status: number, readonly data: unknown) { super(message); } }
 
 export function historyApi(transport: StoryboardTransport, projectId: string, token: () => string) {
@@ -27,8 +33,9 @@ export function historyApi(transport: StoryboardTransport, projectId: string, to
     versions: (offset = 0, limit = 20) => call<VersionList>(`/versions?offset=${offset}&limit=${limit}`),
     version: (v: number) => call<VersionMeta & {document_id: string; project: unknown}>(`/versions/${v}`),
     diff: (v: number, against: number | 'current' = 'current') => call<Diff>(`/versions/${v}/diff?against=${against}`),
+    versionChanges: (v: number) => call<VersionChanges>(`/versions/${v}/changes`),
     pending: () => call<PendingList>('/pending'),
-    clearPending: (throughVersion: number, target: {shot_ids: string[]} | {all: true}) => call<{cleared_events: number; skipped_shot_ids: string[]; current_revision: number; pending_count: number; pending_document_count: number}>('/pending/clear', {method: 'POST', body: JSON.stringify({through_version: throughVersion, ...target})}),
+    clearPending: (throughVersion: number, target: PendingTarget, scope: {version?: number; expected_revision?: number} = {}) => call<{cleared_events: number; skipped_shot_ids: string[]; current_revision: number; pending_count: number; pending_document_count: number}>('/pending/clear', {method: 'POST', body: JSON.stringify({through_version: throughVersion, ...target, ...scope})}),
     setCategory: (v: number, category: ReasonCategory, expected: ReasonCategory | null) => call<unknown>(`/versions/${v}/category`, {method: 'PATCH', body: JSON.stringify({reason_category: category, expected_reason_category: expected})}),
     restore: (v: number, expectedRevision: number) => call<{revision?: number; version?: number}>(`/versions/${v}/restore`, {method: 'POST', body: JSON.stringify({expected_revision: expectedRevision, request_id: crypto.randomUUID()})}),
   };
