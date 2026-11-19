@@ -30,7 +30,7 @@ const applyLocal = (id: ThemeId) => (applyTheme as (id: ThemeId, options?: {sync
 const FINDER_NAMES: Record<string, string> = {Downloads: '下载', Desktop: '桌面', Documents: '文稿', Pictures: '图片', Movies: '影片', Music: '音乐'};
 const folderLabel = (p: string) => {const name = p.split('/').slice(-2, -1)[0] || '访达'; return FINDER_NAMES[name] || name;};
 
-/** A receipt for exactly one video: the window stays open for 打开目标文件夹 instead of closing itself. */
+/** A receipt for exactly one video: the countdown runs in the page so 打开目标文件夹 can stop it. */
 const oneVideo = (b: IntakeBatch) => b.version === 2 && b.items.length === 1 && (b.items[0].destination?.kind === 'video' || b.items[0].mediaKind === 'video');
 
 function readAttempt(id: string): ConfirmInput | null {
@@ -65,7 +65,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   // Project bar (whole batch), the per-file panel's position and the just-moved file's short highlight.
   const [projectOverride, setProjectOverride] = useState(''), [panelAt, setPanelAt] = useState<{top: number; left: number; maxHeight: number} | null>(null), [flash, setFlash] = useState('');
   const [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [unknown, setUnknown] = useState(false), [batch, setBatch] = useState<IntakeBatch | null>(null), [reload, setReload] = useState(0);
-  const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing'), [closeIn, setCloseIn] = useState(0);
+  const [receiptKind, setReceiptKind] = useState<'submitted' | 'existing' | 'other'>('existing'), [closeIn, setCloseIn] = useState(0), [selfClose, setSelfClose] = useState(false);
   // 打开目标文件夹 on a one-video receipt: idle → sending → done, or an error that keeps the window open.
   const [folderOpen, setFolderOpen] = useState<{state: 'idle' | 'sending' | 'done'; error?: string}>({state: 'idle'});
   const alive = useRef(true), sending = useRef(false), initialized = useRef(''), attempt = useRef<ConfirmInput | null>(null), accepted = useRef('');
@@ -85,8 +85,9 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     setBatch(value); setUnknown(false); remember(null);
     if (submitted && accepted.current !== value.id) {
       accepted.current = value.id; notifyFeedback({kind: 'success', source: '素材收纳', message: '收纳任务已接收，可在拾光顶栏“文件任务”查看真实进度。'});
-      // One video stays open so 打开目标文件夹 can be clicked; every other receipt closes on its own.
-      if (bridge() && !oneVideo(value)) {post('accepted'); setCloseIn(CLOSE_AFTER_SECONDS);}
+      // Every receipt closes on its own. One video counts down here, because the shell's timer could not be
+      // stopped when 打开目标文件夹 is clicked and fails.
+      if (bridge()) {setCloseIn(CLOSE_AFTER_SECONDS); if (oneVideo(value)) setSelfClose(true); else post('accepted');}
     }
   }
   useEffect(() => {if (!flash) return; const t = setTimeout(() => setFlash(''), 1200); return () => clearTimeout(t);}, [flash]);
@@ -96,12 +97,13 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const keys = (e: KeyboardEvent) => {if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.repeat) {e.preventDefault(); confirmRef.current();}};
     window.addEventListener('keydown', keys); return () => window.removeEventListener('keydown', keys);
   }, []);
-  // Countdown only mirrors the shell's own close timer so the summary stays readable.
+  // Countdown mirrors the shell's own close timer; for one video it is the timer.
   useEffect(() => {
     if (!closeIn) return;
     const timer = setTimeout(() => setCloseIn(n => Math.max(0, n - 1)), 1000);
     return () => clearTimeout(timer);
   }, [closeIn]);
+  useEffect(() => {if (selfClose && !closeIn) {setSelfClose(false); post('close');}}, [selfClose, closeIn]);
   useEffect(() => {
     let current = true; const controller = new AbortController(); setLoading(true); setError('');
     void (async () => {
@@ -243,7 +245,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   }
   async function openFolder() {
     if (!api || !batch || folderOpen.state === 'sending') return;
-    setFolderOpen({state: 'sending'});
+    setSelfClose(false); setCloseIn(0); setFolderOpen({state: 'sending'});
     try {
       const r = await api<{status?: string}>(INTAKE_API + '/batches/' + encoded(batch.id) + '/open-folder', {});
       if (!alive.current) return;
@@ -561,7 +563,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     <footer className="fi-foot">
       {batch ? oneVideoReceipt ? <>
         <span className="fi-foot-note">{folderOpen.error ? <span className="fi-error" role="alert">{folderOpen.error}</span>
-          : <span className="fi-muted" role="status">{folderOpen.state === 'done' ? '已请求访达打开目标文件夹' : '窗口不会自动关闭；文件收完才会出现在文件夹里'}</span>}</span>
+          : <span className="fi-muted" role="status">{folderOpen.state === 'done' ? '已请求访达打开目标文件夹' : (closeIn ? '窗口 ' + closeIn + ' 秒后自动关闭；' : '') + '文件收完才会出现在文件夹里'}</span>}</span>
         {native && <button onClick={() => post('close')}>关闭</button>}
         <button className="fi-primary" disabled={folderOpen.state === 'sending' || !api} onClick={() => void openFolder()}><FolderOpen size={15}/>{folderOpen.state === 'sending' ? '正在打开…' : '打开目标文件夹'}</button>
       </> : <>

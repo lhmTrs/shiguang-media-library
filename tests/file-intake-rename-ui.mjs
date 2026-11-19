@@ -205,12 +205,20 @@ try {
     assert.deepEqual(fx.confirmBodies[0].targets[0].destination, {kind: 'video', scope: 'project', projectId: P2, folderId: 'root'});
   });
 
+  await check('one video closes itself after the countdown, through the page timer', async () => {
+    await fresh(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    await expect(page.locator('.fi-foot-note')).toContainText(/窗口 \d 秒后自动关闭；文件收完才会出现在文件夹里/);
+    assert.deepEqual(await native(), []);
+    await expect.poll(native, {timeout: 5000}).toEqual(['close']); await pause(1200); assert.deepEqual(await native(), ['close']);
+    assert.deepEqual(fx.openBodies, []);
+  });
+
   await check('open-folder failures keep the window open and say what happened', async () => {
     await fresh(f => {f.open = ['changed', 'lost', 'unknown', 'unavailable', 'dispatched'];});
     await confirmButton().click(); await expect(accepted()).toBeVisible();
     const open = page.getByRole('button', {name: '打开目标文件夹', exact: true});
     await open.click(); await expect(page.locator('.fi-foot [role=alert]')).toContainText('目标文件夹已经不在原来的位置');
-    assert.deepEqual(await native(), []); await expect(open).toBeEnabled();
+    await pause(3400); assert.deepEqual(await native(), []); await expect(open).toBeEnabled(); // clicking stopped the countdown
     await open.click(); await expect(page.locator('.fi-foot [role=alert]')).toContainText('没能确认访达是否已经打开');
     await pause(400); assert.equal(fx.openBodies.length, 2); // no retry behind the user's back
     await open.click(); await expect.poll(() => fx.openBodies.length).toBe(3);
