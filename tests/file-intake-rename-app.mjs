@@ -1,5 +1,5 @@
 // 右键收纳联调：真实本地服务（临时库、合成视频、临时端口）+ 构建后的收纳窗口。不碰 4317 和真实素材库。
-// 覆盖：剧集命名与分段预览、收纳时才建文件夹、整文件夹连续编号、一个视频不自动关窗与打开目标文件夹、
+// 覆盖：剧集命名与分段预览、收纳时才建文件夹、整文件夹连续编号、一个视频倒计时关窗与打开目标文件夹、
 // 收完在访达中显示的派发记录、偏好记住、多个视频照旧关窗。需要先 npm run build；访达设为不可用（MEDIA_DISABLE_DESKTOP_NATIVE=1）。
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -85,7 +85,7 @@ try {
   const receipts = await new Receipts(dataDir).init();
   browser = await chromium.launch({headless: true, executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
 
-  await check('one video: series name preview, folder only named until 收纳, created once, window stays for 打开目标文件夹', async () => {
+  await check('one video: series name preview, folder only named until 收纳, created once, 打开目标文件夹 stops the countdown', async () => {
     const handoff = await receipts.handoff([await clip('穿越计第一集_dy0612.mp4', 'red')]);
     step('handoff ready'); await open(handoff); step('window open');
     await expect(place()).toContainText('穿越计›第2季›第1集');
@@ -105,7 +105,9 @@ try {
     await confirmButton().click();
     await expect(page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。', {exact: true})).toBeVisible();
     await expect(page.getByRole('region', {name: '收完以后', exact: true})).toContainText('穿越计S02E01_A_001.mp4');
-    await pause(400); assert.deepEqual(await native(), []); // one video: no automatic close
+    assert.deepEqual(await native(), []); // one video: the page counts down, the shell timer is not started
+    await page.getByRole('button', {name: '打开目标文件夹', exact: true}).click();
+    await expect(page.locator('.fi-foot [role=alert]')).toContainText('连不上访达');
     const batch = await done((await api('/file-intake/handoffs/' + handoff.id)).batchId);
     const item = batch.items[0];
     assert.equal(item.status, 'ready'); assert.equal(item.resultFileName, '穿越计S02E01_A_001.mp4');
@@ -119,9 +121,7 @@ try {
     assert.ok(reveal, 'reveal result recorded'); assert.notEqual(reveal.status, 'dispatched', 'native disabled: reveal must not claim it was dispatched');
     const folders = (await api('/file-intake/projects/' + episode.id + '/folders')).folders.map(f => f.relativePath).sort();
     assert.deepEqual(folders, ['', 'A', 'B']);
-    await page.getByRole('button', {name: '打开目标文件夹', exact: true}).click();
-    await expect(page.locator('.fi-foot [role=alert]')).toContainText('连不上访达');
-    assert.deepEqual(await native(), []); await shot('2-receipt-desktop-unavailable');
+    assert.deepEqual(await native(), []); await shot('2-receipt-desktop-unavailable'); // the failed click stopped the countdown
     await page.getByRole('button', {name: '关闭', exact: true}).click(); assert.deepEqual(await native(), ['close']);
   });
 
