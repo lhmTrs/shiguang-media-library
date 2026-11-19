@@ -14,30 +14,27 @@ export function tempDirectories(test, prefix) {
   test.after(async () => {
     const keepAll = process.env.SHIGUANG_KEEP_TEST_TMP === '1', kept = [];
     for (const dir of dirs) {
-      if (keepAll || results.get(dir.name) !== true || !await removeOwned(dir)) kept.push(dir.path);
+      if (keepAll || results.get(dir.name) !== true) {kept.push({path: dir.path, reason: keepAll ? 'keep-all' : 'not-passed'}); continue;}
+      const left = await removeOwned(dir);
+      if (left) kept.push(left);
     }
     console.log(JSON.stringify({tempDirectories: prefix, created: dirs.length, removed: dirs.length - kept.length, kept}));
   });
-  // 先改名到只有本进程知道的名字，再核对身份；身份不符就改回原名并保留，避免核对后被替换。
+  // 先改名到只有本进程知道的名字，再核对身份。改名之后无论核对失配还是删除失败，都留在隔离名下并报告真实位置，
+  // 不改回原名：原路径此时可能已被别的进程占用，改回去会覆盖它。返回 null 表示已删除，否则返回保留位置和原因。
   async function removeOwned(dir) {
     const moving = path.join(dir.parent, '.' + path.basename(dir.path) + '.removing-' + crypto.randomUUID());
     try {
       const now = await fs.lstat(dir.path);
-      if (!now.isDirectory() || now.isSymbolicLink() || now.dev !== dir.dev || now.ino !== dir.ino) return false;
+      if (!now.isDirectory() || now.isSymbolicLink() || now.dev !== dir.dev || now.ino !== dir.ino) return {path: dir.path, reason: 'identity-changed'};
       await fs.rename(dir.path, moving);
-    } catch { return false; }
+    } catch (e) { return {path: dir.path, reason: 'not-moved:' + (e.code || e.message)}; }
     try {
       const moved = await fs.lstat(moving);
-      if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== dir.dev || moved.ino !== dir.ino || await fs.realpath(path.dirname(moving)) !== dir.parent) {
-        await fs.rename(moving, dir.path).catch(() => {});
-        return false;
-      }
+      if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== dir.dev || moved.ino !== dir.ino || await fs.realpath(path.dirname(moving)) !== dir.parent) return {path: moving, reason: 'identity-changed-after-move'};
       await fs.rm(moving, {recursive: true, force: true});
-      return true;
-    } catch {
-      await fs.rename(moving, dir.path).catch(() => {});
-      return false;
-    }
+      return null;
+    } catch (e) { return {path: moving, reason: 'remove-failed:' + (e.code || e.message)}; }
   }
   /** 为用例 t 新建一个临时目录，返回真实路径。 */
   return async t => {
