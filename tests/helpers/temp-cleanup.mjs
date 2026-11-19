@@ -1,4 +1,5 @@
-// 本测试文件自己的临时目录：由这里 mkdtemp 创建并记下目录身份；用例通过才删，失败、取消或无法核验时保留作证据。
+// 本测试文件自己的临时目录：由这里 mkdtemp 创建并记下目录身份；用例最终通过才删，失败、取消或无法核验时保留作证据。
+// 是否通过在全部用例结束后按用例上下文读取，包括用例自己的 after 钩子和子用例的结果。
 // 设 SHIGUANG_KEEP_TEST_TMP=1 可全部保留。不扫描、不接受外部传入的路径，只处理自己创建的 os.tmpdir() 直接子目录。
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -7,14 +8,13 @@ import path from 'node:path';
 
 export function tempDirectories(test, prefix) {
   if (!/^[A-Za-z0-9][A-Za-z0-9-]*-$/.test(prefix)) throw Error('临时目录前缀无效');
-  const dirs = [], results = new Map();
+  const dirs = [];
   let parent;
   const root = async () => parent ??= await fs.realpath(os.tmpdir());
-  test.afterEach(t => results.set(t.name, t.passed));
   test.after(async () => {
     const keepAll = process.env.SHIGUANG_KEEP_TEST_TMP === '1', kept = [];
     for (const dir of dirs) {
-      if (keepAll || results.get(dir.name) !== true) {kept.push({path: dir.path, reason: keepAll ? 'keep-all' : 'not-passed'}); continue;}
+      if (keepAll || dir.test.passed !== true) {kept.push({path: dir.path, reason: keepAll ? 'keep-all' : 'not-passed'}); continue;}
       const left = await removeOwned(dir);
       if (left) kept.push(left);
     }
@@ -41,7 +41,7 @@ export function tempDirectories(test, prefix) {
     const base = await root(), made = await fs.realpath(await fs.mkdtemp(path.join(base, prefix)));
     const stat = await fs.lstat(made);
     if (path.dirname(made) !== base || !path.basename(made).startsWith(prefix) || !stat.isDirectory() || stat.isSymbolicLink()) throw Error('临时目录位置无法核验：' + made);
-    dirs.push({name: t.name, path: made, parent: base, dev: stat.dev, ino: stat.ino});
+    dirs.push({test: t, path: made, parent: base, dev: stat.dev, ino: stat.ino});
     return made;
   };
 }
