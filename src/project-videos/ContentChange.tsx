@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { Modal, ModalActions } from './Modal';
 import { actionPending, useDesktopAction, type DesktopReceipt } from './desktop-actions';
-import type { ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from './types';
+import { adoptedShotsText, unbindConfirmation } from './shot-binding-model.mjs';
+import type { AdoptedShot, ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from './types';
 
 /*
  * 合同 D（#52）：视频内容确实变化时，由用户预览后决定“继续使用”或“不再使用”。
@@ -18,7 +19,7 @@ import type { ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from '
  */
 const duration = (ms?: number) => !ms || !Number.isFinite(ms) ? '未知' : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const size = (n?: number) => !n ? '未知' : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
-const shots = (list?: { number: number | string }[]) => (list || []).map(s => `镜 ${s.number}`).join('、');
+const shots = (list?: AdoptedShot[]) => adoptedShotsText(list || []);
 // 按证据表述文件处理结果：kept 只说明本次没有移动文件，不断言文件仍在原位置
 const fileText = (f?: DesktopReceipt['file']) => f?.status === 'kept' ? '本次没有移动或删除文件'
   : f?.status === 'trashed' ? '已移到系统废纸篓'
@@ -105,7 +106,10 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
   }
   function remove() {
     const rp = removal.current; if (!video || !rp || !fileAction) return;
-    act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction });
+    const shots = rp.affectedAdoptedShots || [];
+    let confirmation = {};
+    try { if (shots.length) confirmation = unbindConfirmation(shots); } catch (e) { setNotice((e as Error).message); return; }
+    act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction, ...confirmation });
   }
   return {
     act, video, visible, setVisible, unresolved, unread, resultKey, markSeen, attention, recordRemoved, fileUnknown, notice, view, setView, playing, setPlaying, acceptOk, setAcceptOk, unbindOk, setUnbindOk,

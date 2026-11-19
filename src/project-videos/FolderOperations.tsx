@@ -3,6 +3,7 @@ import {Folder as FolderIcon, FolderPlus, Film, ArrowRight, AlertTriangle} from 
 import {notifyFeedback} from '../global-feedback';
 import {Modal, ModalActions} from './Modal';
 import {folderContains, folderTrail, uniqueShots} from './folders';
+import {adoptedShotsText, unbindConfirmation} from './shot-binding-model.mjs';
 import type {ConflictChoice, Folder, FolderOperation, OperationPlan, OperationReceipt, ProjectVideoRequest} from './types';
 
 const POLL_RETRIES = 6;
@@ -134,10 +135,12 @@ export function FolderOperations({action, active, folders, projectId, request, c
   }
   async function commit() {
     if (!plan?.ready || inFlight.current || unresolved || readOnly || affected.length && !confirmed) return;
+    let confirmation;
+    try { confirmation = unbindConfirmation(affected); } catch (e) { setError((e as Error).message); return; }
     inFlight.current = true; setBusy(true); setError('');
     const original = {requestId: plan.requestId, api: request}; mutation.current = original;
     // 批量移动执行严格校验：即使没有受影响镜号也要带 confirmUnbind:true 与 []；有影响时按最终预览的镜号、经用户勾选后提交
-    const body = batch ? {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: true, confirmedUnbindShotIds: affected.map(s => s.id)} : {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: confirmed};
+    const body = batch ? {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: true, ...confirmation} : {requestId: plan.requestId, previewHash: plan.previewHash, confirmUnbind: confirmed, ...(affected.length ? confirmation : {})};
     try { receive(await original.api<OperationReceipt>(base + '/operations', body, 'POST')); }
     catch (e) { setReceipt({requestId: plan.requestId, status: 'unknown', description: plan.description}); report(`结果尚未确认：${(e as Error).message}。保留原编号，请查询或恢复原操作。`); }
     finally { inFlight.current = false; setBusy(false); }
@@ -188,9 +191,9 @@ export function FolderOperations({action, active, folders, projectId, request, c
           {shown.kind === 'delete-folder' && <label className="pv-field">删除方式<select value={mode} onChange={e => {setMode(e.target.value as typeof mode); invalidate();}}><option value="contents-to-root">内容移到项目根目录，再删除空文件夹</option><option value="trash" disabled={!canTrash}>整个文件夹与全部内容移到废纸篓{!canTrash ? '（当前环境不可用）' : ''}</option></select></label>}
         </fieldset>
         {plan && <div className="pv-operation-plan"><h3>{plan.description}</h3><p>{plan.files} 个文件 · {plan.folders} 个文件夹</p>
-          {!!plan.conflicts.length && <><h3>同名冲突</h3><p>同名文件夹请选择改名或取消，不直接覆盖或合并目录。</p>{plan.conflicts.map(c => <label className="pv-field" key={c.key}>{c.sourceName || c.name} → {c.targetName}<small>覆盖会解除目标视频的采用：{c.adoptedShots.map(s => `镜 ${s.number}`).join('、') || '无'}</small><select aria-label={`冲突处理 ${c.name}`} value={choices[c.key] || ''} disabled={busy} onChange={e => {const value = e.target.value; setChoices(old => {const next = {...old}; if (value) next[c.key] = value as ConflictChoice; else delete next[c.key]; return next;}); setPlan(old => old ? {...old, ready: false} : old); setConfirmed(false);}}><option value="">请选择</option><option value="rename">保留双方，递增 _0 重命名</option><option value="overwrite" disabled={shown.kind === 'move-folder' || shown.kind === 'rename-folder'}>覆盖目标同名视频</option></select></label>)}<button type="button" disabled={busy || plan.conflicts.some(c => !choices[c.key])} onClick={() => void preview()}>按所选冲突方式重新预览</button></>}
+          {!!plan.conflicts.length && <><h3>同名冲突</h3><p>同名文件夹请选择改名或取消，不直接覆盖或合并目录。</p>{plan.conflicts.map(c => <label className="pv-field" key={c.key}>{c.sourceName || c.name} → {c.targetName}<small>覆盖会解除目标视频的采用：{adoptedShotsText(c.adoptedShots) || '无'}</small><select aria-label={`冲突处理 ${c.name}`} value={choices[c.key] || ''} disabled={busy} onChange={e => {const value = e.target.value; setChoices(old => {const next = {...old}; if (value) next[c.key] = value as ConflictChoice; else delete next[c.key]; return next;}); setPlan(old => old ? {...old, ready: false} : old); setConfirmed(false);}}><option value="">请选择</option><option value="rename">保留双方，递增 _0 重命名</option><option value="overwrite" disabled={shown.kind === 'move-folder' || shown.kind === 'rename-folder'}>覆盖目标同名视频</option></select></label>)}<button type="button" disabled={busy || plan.conflicts.some(c => !choices[c.key])} onClick={() => void preview()}>按所选冲突方式重新预览</button></>}
           <p className="pv-muted">如果这些视频已用在外部剪辑工程里，移动、重命名或删除可能使那边失去链接；取消不会改动原文件。</p>
-          <h3>本次将解除采用的精确镜号</h3><p>{affected.map(s => `镜 ${s.number}`).join('、') || '没有受影响的采用镜号'}</p>
+          <h3>本次将解除采用的精确镜号</h3><p>{adoptedShotsText(affected) || '没有受影响的采用镜号'}</p>
           {!!affected.length && <label className="pv-check"><input type="checkbox" checked={confirmed} disabled={busy} onChange={e => setConfirmed(e.target.checked)}/>我已核对上述镜号，确认解除这些采用关系</label>}
         </div>}
       </>}

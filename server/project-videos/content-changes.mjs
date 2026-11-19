@@ -1,3 +1,4 @@
+import {confirmUnbind} from '../storyboard-video-v2/confirmation.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {constants} from 'node:fs';
@@ -8,7 +9,7 @@ import {privateDirectory} from '../prompt-codex/media.mjs';
 import {fileStamp} from './verification.mjs';
 
 const same=(a,b)=>canonical(a)===canonical(b);
-const publicShot=s=>({id:s.id,number:s.number});
+const publicShot=s=>({...s});
 
 export class ProjectVideoContentChanges {
   constructor(catalog,journal){this.catalog=catalog;this.journal=journal;this.snapshots=new Map();}
@@ -55,6 +56,7 @@ export class ProjectVideoContentChanges {
     }finally{await output?.close();await c.media.release(opened.handle);}
   }
   invalid(adoption,sourceId,durationMs){
+    if(this.catalog.videos.bindingV2)return [];
     const state=adoption.current;if(!state)return [];
     const takes=new Map(state.takes.map(t=>[t.takeId,t]));
     return (adoption.shots.get(sourceId)||[]).flatMap(shot=>{
@@ -104,6 +106,7 @@ export class ProjectVideoContentChanges {
     c.verification.assertAuthority(p.context);return current;
   }
   history(id,sourceId,data,oldDuration,newDuration){
+    if(this.catalog.videos.bindingV2)return data.historicalTakeProofs??[];
     const prior=new Map((data.historicalTakeProofs||[]).map(p=>[p.id,p])),result=[];
     for(const row of this.catalog.db.prepare('SELECT * FROM storyboard_video_takes WHERE project_id=?').all(id)){
       const own=JSON.parse(row.data_json).segments.filter(s=>s.sourceId===sourceId);
@@ -125,10 +128,11 @@ export class ProjectVideoContentChanges {
   }
   accept(id,sourceId,input){
     this.catalog.assertRenderUnused(this.catalog.videos.source(id,sourceId));
-    if(input.confirmAcceptContent!==true||!Array.isArray(input.confirmedUnbindShotIds))fail('CONTENT_CONFIRMATION_REQUIRED','请确认采用当前内容和需要解除的镜号',409);
+    if(input.confirmAcceptContent!==true||(!this.catalog.videos.bindingV2&&!Array.isArray(input.confirmedUnbindShotIds)))fail('CONTENT_CONFIRMATION_REQUIRED','请确认采用当前内容和需要解除的镜号',409);
     return this.journal.start(id,'accept-change',{...input,sourceId},async s=>{
       const c=this.catalog,p=this.find(id,sourceId,input.contentToken,'changes-preview'),current=await this.checkCandidate(id,sourceId,input,p);
-      if(!same([...input.confirmedUnbindShotIds].sort(),[...p.invalidShotIds].sort()))fail('UNBIND_CONFIRMATION_REQUIRED','请精确确认因新时长失效的采用镜号',409);
+      if(c.videos.bindingV2)confirmUnbind(input,[],{invalidCode:'INVALID_INPUT'});
+      if(!c.videos.bindingV2&&!same([...input.confirmedUnbindShotIds].sort(),[...p.invalidShotIds].sort()))fail('UNBIND_CONFIRMATION_REQUIRED','请精确确认因新时长失效的采用镜号',409);
       c.assertRenderUnused(current.source);
       if(p.changeKind==='metadata_only')fail('CONTENT_UNCHANGED','视频内容一致，无需接受新内容；请刷新并沿用原视频',409);
       const kind=p.changeKind==='content_changed'?'user_accepted_change':'user_accepted_unverified_current';
@@ -177,6 +181,7 @@ export class ProjectVideoContentChanges {
     return this.journal.start(id,'remove',{...input,sourceId},async s=>{
       const c=this.catalog,p=this.find(id,sourceId,input.removalToken,'remove-preview'),current=this.expected(id,sourceId,input);c.assertRenderUnused(current.source);
       if(current.adoption.stamp!==p.adoptionStamp||input.adoptionStamp!==p.adoptionStamp||c.verification.authority(id,sourceId)!==p.context.authority)fail('VIDEO_CONFLICT','移除影响已变化，请重新核对',409);
+      if(c.videos.bindingV2)confirmUnbind(input,current.adoption.shots.get(sourceId)||[],{invalidCode:'INVALID_INPUT'});
       if(input.fileAction==='trash'){
         if(!p.file||!p.locationContext||this.otherReferences({...current.source,identity:p.file.identity}).length||!c.lib.trashBin&&!c.trashInjected)fail('TRASH_UNAVAILABLE','此文件不能移入废纸篓，请选择保留文件',409);
         // Release is a user step: never destroy an active stream or process.
@@ -191,7 +196,7 @@ export class ProjectVideoContentChanges {
       c.videos.tx(()=>{
         c.project(id,true);c.assertRenderUnused(current.source);
         if(c.adoption(id).stamp!==p.adoptionStamp||c.verification.authority(id,sourceId)!==p.context.authority)fail('VIDEO_CONFLICT','确认期间资料或采用关系变化',409);
-        this.unbindShots(id,unboundShotIds);c.record(id,sourceId,{...current.meta.data,removedAt:Date.now()},(current.meta.row?.revision||0)+1);
+        if(c.videos.bindingV2)c.detachSources(id,[sourceId]);else this.unbindShots(id,unboundShotIds);c.record(id,sourceId,{...current.meta.data,removedAt:Date.now()},(current.meta.row?.revision||0)+1);
         s.partial={record:result.record,file:result.file};s.result=result;s.status=input.fileAction==='keep'?'completed':'running';this.journal.save(s);
       });
       if(input.fileAction==='trash'){

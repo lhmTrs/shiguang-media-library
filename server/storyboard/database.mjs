@@ -99,7 +99,7 @@ export class StoryboardDatabase {
       shot_character_looks: shotCharacterLooks(p, resolver, characters),
     };
     p.revision=row.revision;
-    return this.history.attach({project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})});
+    return this.history.attach({...(this.videoBindingV2?{videoBindingMigration:this.videoBindingV2.migrationStatus()}:{}),project:p,hash:digest(row.document_json),revision:row.revision,project_id:row.project_id,storage:this.db.kind==='mysql'?'mysql':'sqlite',file:'数据库 · '+this.project(row.project_id).name,initialized_at:row.initialized_at,source_filename:row.source_filename,missing_assets:[],...referenceView,asset_stamp:digest({linked:linked.map(a=>[a.id,a.revision,a.name]),referenceView})});
   }
   read(projectId) {
     const load = () => this.readInTransaction(projectId);
@@ -359,7 +359,7 @@ export class StoryboardDatabase {
     for(const l of tables.storyboard_asset_links){const pair=l.document_id+'/'+l.asset_id;if(!docs.has(l.document_id)||!manifests.get(l.document_id).has(l.asset_id)||pairs.has(pair))throw fault('备份分镜清单关系无效');pairs.add(pair);}
     for(const [id,ids] of manifests) for(const asset of ids) if(!pairs.has(id+'/'+asset))throw fault('备份缺少清单保护关系');
     for(const r of tables.storyboard_import_requests){const d=docs.get(r.document_id);let result;try{result=JSON.parse(r.result_json);}catch{throw fault('备份回执无效');}if(!d||d.project_id!==r.project_id||!(/^[a-f0-9]{64}$/).test(r.request_hash)||!(/^[a-f0-9]{64}$/).test(r.source_hash)||result.request_id!==r.id||result.revision>d.revision)throw fault('备份初始化回执关联无效');}
-    if(Object.hasOwn(input,'video_preview')){if(!this.videos)throw fault('预览模块尚未就绪，未恢复备份');input.video_preview=this.videos.validateBackup(input.video_preview,input.tables.storyboard_documents,creative.projects);}
+    if(Object.hasOwn(input,'video_preview')){if(!this.videos)throw fault('预览模块尚未就绪，未恢复备份');input.video_preview=this.videos.validateBackup(input.video_preview,input.tables.storyboard_documents,creative.projects);if(input.video_preview.video_binding_v2)this.videoBindingV2.validateSnapshot(input.video_preview.video_binding_v2,{documents:input.tables.storyboard_documents,projects:creative.projects,sources:input.video_preview.storyboard_video_sources,history:input.change_history});}
     if(Object.hasOwn(input,'change_history'))this.history.validateSnapshot(input.change_history,input.tables.storyboard_documents);
     return {...input,creative};
   }

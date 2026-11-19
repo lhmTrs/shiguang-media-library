@@ -340,12 +340,8 @@
 .pv-operation-plan { display: grid; gap: 12px; margin: 20px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--c-f7f9fa); }
 .pv-check { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; }
 .pv-workspace input[type=checkbox] { width: 16px; height: 16px; flex: none; accent-color: var(--green); margin-top: 4px; }
-.pv-binding-picker { min-width: 0; }
-.pv-binding-picker .pv-folder-browser { grid-template-columns: minmax(135px, 26%) minmax(0, 1fr); }
-.pv-binding-picker .pv-folder-tree { max-height: 230px; }
-.pv-binding-picker .sbv-existing label { display: grid; gap: 5px; flex: 1; }
 @media (max-width: 600px) {
-  .pv-folder-browser, .pv-binding-picker .pv-folder-browser { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .pv-folder-browser { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .pv-folder-tree { max-height: 180px; }
   .pv-subfolders { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -428,3 +424,25 @@
 .pv-op-background p { flex: 1; min-width: 0; }
 .pv-op-background button { flex: none; }
 .pv-op-poll-note { color: var(--pv-warn); }
+
+/* 分镜视频绑定 v2：右键「对应到分镜镜头…」 */
+.pv-binding-modal { width: min(760px, 100%); }
+.pv-binding-now { display: grid; gap: 3px; margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.pv-binding-now h3 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 500; }
+.pv-binding-now p { margin: 0; overflow-wrap: anywhere; }
+.pv-binding-now small { color: var(--muted); }
+.pv-binding-review { color: var(--pv-warn); font-size: 12px; }
+.pv-binding-shots { min-width: 0; max-height: 300px; overflow: auto; margin: 12px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.pv-binding-shots legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+.pv-binding-shots h4 { margin: 8px 0 4px; font-size: 12px; font-weight: 550; }
+.pv-binding-shot { display: grid; grid-template-columns: 20px 52px 52px minmax(0, 1fr); align-items: baseline; gap: 8px; padding: 3px 0; }
+.pv-binding-shot small { color: var(--muted); }
+.pv-binding-shot span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.pv-workspace .pv-binding-diff { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin: 12px 0 0; }
+.pv-workspace .pv-binding-diff > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; min-width: 0; }
+.pv-binding-diff dt { color: var(--muted); }
+.pv-binding-diff dd { margin: 0; overflow-wrap: anywhere; }
+.pv-binding-confirm { display: grid; gap: 6px; margin-top: 12px; }
+.pv-workspace .pv-binding-affected { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.pv-binding-affected th, .pv-binding-affected td { padding: 4px 6px; border-top: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+.pv-binding-affected th { color: var(--muted); font-weight: 500; }

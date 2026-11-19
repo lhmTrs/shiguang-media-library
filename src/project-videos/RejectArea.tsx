@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, Archive, RefreshCw } from 'lucide-react';
 import { Modal, ModalActions } from './Modal';
 import { folderContains, folderTrail, uniqueShots } from './folders';
+import { adoptedShotsText, unbindConfirmation } from './shot-binding-model.mjs';
 import type { BatchReceipt, ConflictChoice, Folder, FolderRoles, ProjectVideoCollection, ProjectVideoRequest, RejectMovePlan, RejectRolePlan, RejectShot } from './types';
 
 /*
@@ -10,7 +11,7 @@ import type { BatchReceipt, ConflictChoice, Folder, FolderRoles, ProjectVideoCol
  * - 两个阶段可分别结清：先准备收纳处（/folders/reject/preview → /folders/reject），再移动视频
  *   （/operations/preview kind:'move-videos' unbindAdoptions:true → /operations）。
  * - 每次执行都用预览给出的固定 requestId；回应丢失或 202 之后读不到结果时只查询原请求（/operations/:requestId），不重发。
- * - 解除采用必须精确确认：confirmedUnbindShotIds 与预览的 affectedShots 完全一致（没有时传空数组）。
+ * - 解除采用必须精确确认：确认字段与预览的 affectedShots 完全一致（带集用 confirmedUnbindShotRefs，否则 confirmedUnbindShotIds，没有时传空数组）。
  * - 任务状态放在项目会话层：收起弹窗、切页、切项目都保留原请求；没看到的结果保留页面顶部入口。
  */
 export const MAX_REJECT = 50;
@@ -19,7 +20,7 @@ type Commit = { stage: Stage; requestId: string; receipt: BatchReceipt | null; b
 type Setup = { kind: 'create' } | { kind: 'existing'; folderId: string } | { kind: 'clear' };
 export type RejectTarget = { id: string; name: string };
 
-const shotText = (list: { number: number | string }[] = []) => list.map(s => `镜 ${s.number}`).join('、');
+const shotText = (list: { number: number | string; projectId?: string; projectName?: string }[] = []) => adoptedShotsText(list);
 const msg = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
 const httpStatus = (e: unknown) => (e as { status?: number }).status;
 const pendingStatus = (r: BatchReceipt | null) => !!r && r.status === 'running';
@@ -168,16 +169,21 @@ export function useRejectTask(projectId: string, request: ProjectVideoRequest, o
       else patch(requestId, { busy: false, unknown: true, error: `结果尚未确认${status ? `（${status}）` : ''}：${msg(e)}。原操作可能已经执行，请查询原请求，不会自动重发。` });
     }
   }
+  const confirmationFor = (shots: RejectShot[]) => {
+    try { return unbindConfirmation(shots); } catch (e) { setPreviewError((e as Error).message); return null; }
+  };
   function commitRole() {
     const p = rolePlan; if (!p?.ready || attention || !roleOk) return;
     const shots = uniqueShots(p.affectedShots || []); if (shots.length && !unbindOk) return;
+    const confirmation = confirmationFor(shots); if (!confirmation) return;
     void run('role', `${base}/folders/reject`, { requestId: p.requestId, previewHash: p.previewHash, confirmRoleChange: true,
-      ...(shots.length ? { confirmUnbind: true } : {}), confirmedUnbindShotIds: shots.map(s => s.id) });
+      ...(shots.length ? { confirmUnbind: true } : {}), ...confirmation });
   }
   function commitMove() {
     const p = movePlan; if (!p?.ready || attention || planStale) return;
     const shots = uniqueShots(p.affectedShots || []); if (shots.length && !unbindOk) return;
-    void run('move', `${base}/operations`, { requestId: p.requestId, previewHash: p.previewHash, confirmUnbind: true, confirmedUnbindShotIds: shots.map(s => s.id) });
+    const confirmation = confirmationFor(shots); if (!confirmation) return;
+    void run('move', `${base}/operations`, { requestId: p.requestId, previewHash: p.previewHash, confirmUnbind: true, ...confirmation });
   }
   /** 收纳处已准备好：读取新的角色信息后继续核对移动。 */
   function continueToMove() { if (attention) return; put(null); resetPlans(); setStage('move'); void previewMove(targets); }

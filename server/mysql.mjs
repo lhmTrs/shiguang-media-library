@@ -1,3 +1,4 @@
+import {V2_TABLES,v2ColumnType,v2Constraints} from './storyboard-video-v2/schema.mjs';
 import {HISTORY_TABLES,historyColumnType,historyConstraints} from './storyboard/history-schema.mjs';
 import { ATTRIBUTE_TABLES, attributeColumnType } from './project-attributes/schema.mjs';
 import { SERIES_TABLES, seriesMysqlColumnType, seriesConstraints } from './project-series/schema.mjs';
@@ -85,6 +86,7 @@ function checksum(rows, columns) {
 export function mysqlColumnType(table, col) {
   if (Object.hasOwn(SERIES_TABLES, table)) return seriesMysqlColumnType(table, col.name);
   if(Object.hasOwn(CONCIERGE_TABLES,table))return conciergeColumnType(table,col);
+  if(Object.hasOwn(V2_TABLES,table))return v2ColumnType(table,col);
   if(Object.hasOwn(VIDEO_TABLES,table))return videoColumnType(table,col);
   if(Object.hasOwn(SCRIPT_TABLES,table))return scriptColumnType(table,col);
   if (Object.hasOwn(ATTRIBUTE_TABLES, table)) return attributeColumnType(table, col);
@@ -303,6 +305,7 @@ export class MysqlStorage {
       for (const table of ["asset_subcategories", "category_hierarchy_meta", "duplicate_audio_reports", "media_projects", "project_assets", "metadata_batches", "project_timelines", "project_timeline_batches", "project_manual_assets", "project_renders", "asset_repair_journal", "asset_metadata_clock", "asset_metadata_fields"])
         if (this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) tables.push(table);
       for(const table of Object.keys(PROMPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(V2_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(VIDEO_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(SCRIPT_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for (const table of Object.keys(ATTRIBUTE_TABLES)) {
@@ -368,6 +371,7 @@ export class MysqlStorage {
           if(Object.hasOwn(GENERATION_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(V2_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(VIDEO_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if (Object.hasOwn(ATTRIBUTE_TABLES, t)) return `\`${col.name}\` ${type}${ATTRIBUTE_TABLES[t][col.name] === "optional_project" ? "" : " NOT NULL"}`;
           if (Object.hasOwn(SERIES_TABLES, t)) return `\`${col.name}\` ${type}${col.notnull ? " NOT NULL" : " NULL"}`;
@@ -380,6 +384,7 @@ export class MysqlStorage {
         if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
         if(Object.hasOwn(PROMPT_TABLES,t))defs.push(...promptConstraints(t));
         if(Object.hasOwn(CREATIVE_TABLES,t))defs.push(...creativeConstraints(t));
+        if(Object.hasOwn(V2_TABLES,t))defs.push(...v2Constraints(t));
         if(Object.hasOwn(HISTORY_TABLES,t))defs.push(...historyConstraints(t));
         if(Object.hasOwn(STORYBOARD_TABLES,t))defs.push(...storyboardConstraints(t));
         if(t === 'media_projects' && snapshot[t].columns.some(c=>c.name==='system_key')) defs.push('UNIQUE(system_key)', 'UNIQUE(name)');

@@ -1,5 +1,6 @@
 export type ProjectVideoStatus = 'available' | 'unsupported' | 'missing' | 'changed' | 'untrusted' | 'unchecked';
-export type AdoptedShot = { id: string; number: number | string };
+/** projectId/projectName：v2 的采用可能在同剧别集，用来分清是哪一集；旧后台不返回。 */
+export type AdoptedShot = { id: string; number: number | string; projectId?: string; projectName?: string };
 
 export interface ProjectVideo {
   id: string;
@@ -19,7 +20,8 @@ export interface ProjectVideo {
   mediaUrl: string;
   thumbnailUrl?: string | null;
   thumbUrl?: string;
-  adoptedShots: AdoptedShot[];
+  /** null：迁移未完成，采用关系未知，不等于没有采用。 */
+  adoptedShots: AdoptedShot[] | null;
   path: string;
   bytes: number;
   /** 合同 C：可选，旧后台不返回。metadataChanged 表示已证明只有无关元数据变化、内容一致。 */
@@ -57,7 +59,7 @@ export type PromptInput =
   | { mode: 'existing'; id: string };
 
 export type ReceiptStatus = 'waiting' | 'uploading' | 'duplicate' | 'ready' | 'failed' | 'running' | 'unknown' | 'cancelled';
-export type DuplicateCandidate = { id: string; name: string; reason: string; mediaUrl: string; adoptedShots: AdoptedShot[] };
+export type DuplicateCandidate = { id: string; name: string; reason: string; mediaUrl: string; adoptedShots: AdoptedShot[] | null };
 export interface Receipt {
   id: string;
   status: ReceiptStatus;
@@ -77,7 +79,10 @@ export interface ProjectVideoCollection {
   project: { id: string; name: string };
   videos: ProjectVideo[];
   prompts: ReferencePrompt[];
-  adoptionStamp: string;
+  /** null：迁移未完成，采用保护未知。 */
+  adoptionStamp: string | null;
+  /** 分镜视频绑定迁移状态，字段见合同 v1.3 的后端回执。 */
+  migration?: unknown;
   folders: Folder[];
   currentFolderId: FolderView;
   breadcrumbs: Folder[];
@@ -144,7 +149,7 @@ export type ProjectVideoRequest = <T = any>(url: string, body?: unknown, method?
 export interface ProjectVideoWorkspaceProps {
   active: boolean;
   projectId: string;
-  projects: { id: string; name: string; project_kind?: string }[];
+  projects: { id: string; name: string; project_kind?: string; series_id?: string | null; season_id?: string | null; episode_no?: number | null }[];
   /** Receives /project-videos/projects/:projectId followed by the contract suffix. */
   request: ProjectVideoRequest;
   onProject: (id: string) => void;

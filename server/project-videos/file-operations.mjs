@@ -1,3 +1,4 @@
+import {confirmUnbind} from '../storyboard-video-v2/confirmation.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {constants} from 'node:fs';
@@ -15,13 +16,13 @@ const exists=async file=>{try{return await fs.lstat(file);}catch(e){if(e.code===
 const shotUnion=(adoption,sourceIds)=>{
  const shots=new Map();
  for(const sourceId of sourceIds)for(const shot of adoption.shots.get(sourceId)||[]){
-  const item=shots.get(shot.id)||{id:shot.id,number:shot.number,sourceIds:[]};
+  const key=(shot.projectId??'')+':'+shot.id,item=shots.get(key)||{...shot,sourceIds:[]};
   if(!item.sourceIds.includes(sourceId))item.sourceIds.push(sourceId);
-  shots.set(shot.id,item);
+  shots.set(key,item);
  }
  return [...shots.values()];
 };
-const exactShotIds=(actual,shots)=>Array.isArray(actual)&&actual.length===shots.length&&new Set(actual).size===actual.length&&shots.every(s=>actual.includes(s.id));
+const exactShotIds=(actual,shots)=>Array.isArray(actual)&&canonical([...actual].sort())===canonical(shots.map(s=>s.id).sort());
 const abandonedCode = 'OPERATION_ABANDONED';
 const abandonedMessage = '已放下原移动请求，请重新核对';
 
@@ -174,7 +175,8 @@ export class ProjectVideoFileOperations {
   if (input.previewHash !== data.plan.previewHash || !data.plan.ready) {
    fail('PREVIEW_REQUIRED', '请先处理全部冲突并确认当前预览', 409);
   }
-  if (data.strictUnbind && (input.confirmUnbind !== true || !exactShotIds(input.confirmedUnbindShotIds, data.plan.affectedShots))) {
+  if(this.catalog.videos.bindingV2)confirmUnbind(input,data.plan.affectedShots,{invalidCode:'INVALID_INPUT',requireConfirmation:data.strictUnbind});
+  if (data.strictUnbind && !this.catalog.videos.bindingV2 && (input.confirmUnbind !== true || !exactShotIds(input.confirmedUnbindShotIds, data.plan.affectedShots))) {
    fail('UNBIND_CONFIRMATION_REQUIRED', '请完整确认本批视频及覆盖目标影响的全部镜号', 409);
   }
   if (data.plan.affectedShots.length && input.confirmUnbind !== true) {
