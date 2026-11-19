@@ -73,7 +73,8 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   useEffect(() => {applyLocal(readTheme()); syncAppearance(); alive.current = true; return () => {alive.current = false;};}, []);
   const native = !!bridge();
   const remember = (value: ConfirmInput | null) => {attempt.current = value; try {if (value) sessionStorage.setItem('shiguang.file-intake.' + handoffId, JSON.stringify(value)); else sessionStorage.removeItem('shiguang.file-intake.' + handoffId);} catch { /* Handoff binding remains authoritative if browser storage is unavailable. */ }};
-  function accept(value: IntakeBatch) {
+  // fromConfirm: this window's confirm POST just returned the receipt. A saved attempt alone only proves identity.
+  function accept(value: IntakeBatch, fromConfirm = false) {
     if (!value?.id || !Array.isArray(value.items)) throw Error('收纳回执格式不符，请核对原请求');
     const submitted = attempt.current;
     if (submitted && !sameTarget(value, submitted)) {
@@ -85,9 +86,12 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     setBatch(value); setUnknown(false); remember(null);
     if (submitted && accepted.current !== value.id) {
       accepted.current = value.id; notifyFeedback({kind: 'success', source: '素材收纳', message: '收纳任务已接收，可在拾光顶栏“文件任务”查看真实进度。'});
-      // Every receipt closes on its own. One video counts down here, because the shell's timer could not be
-      // stopped when 打开目标文件夹 is clicked and fails.
-      if (bridge()) {setCloseIn(CLOSE_AFTER_SECONDS); if (oneVideo(value)) setSelfClose(true); else post('accepted');}
+      // One video counts down here, because the shell's timer could not be stopped when 打开目标文件夹 is clicked
+      // and fails. It does so only after a real confirm: reading a receipt back must not close the window.
+      if (bridge()) {
+        if (!oneVideo(value)) {post('accepted'); setCloseIn(CLOSE_AFTER_SECONDS);}
+        else if (fromConfirm) {setCloseIn(CLOSE_AFTER_SECONDS); setSelfClose(true);}
+      }
     }
   }
   useEffect(() => {if (!flash) return; const t = setTimeout(() => setFlash(''), 1200); return () => clearTimeout(t);}, [flash]);
@@ -289,7 +293,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}), ...(hasPrompt ? {prompt: {text: promptText.trim()}} : {}),
       targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
     sending.current = true; remember(input); setBusy(true); setError('');
-    try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value);}
+    try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value, true);}
     catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + builtNote(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。')); adoptBuilt(e);}}
     finally {sending.current = false; if (alive.current) setBusy(false);}
   }

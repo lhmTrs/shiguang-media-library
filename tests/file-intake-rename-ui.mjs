@@ -72,6 +72,7 @@ async function routeApi(route) {
     if (fx.receipt === 'reveal-flipped') batch.revealWhenDone = !batch.revealWhenDone;
     if (fx.receipt === 'reveal-missing') delete batch.revealWhenDone; // older receipt shape: nothing to compare
     fx.handoff.batchId = batch.id; fx.batches.unshift(batch);
+    if (fx.lostConfirm) {fx.lostConfirm = false; return route.abort('failed');} // accepted by the service, answer lost
     return respond(batch);
   }
   const of = ep.match(/^\/batches\/([^/]+)\/open-folder$/);
@@ -211,6 +212,20 @@ try {
     assert.deepEqual(await native(), []);
     await expect.poll(native, {timeout: 5000}).toEqual(['close']); await pause(1200); assert.deepEqual(await native(), ['close']);
     assert.deepEqual(fx.openBodies, []);
+  });
+
+  await check('recovery: reading a receipt back never closes a one-video window', async () => {
+    const stillOpen = async () => {await pause(3500); assert.deepEqual(await native(), []); await expect(page.getByText(/秒后自动关闭/)).toHaveCount(0); assert.equal(fx.confirmBodies.length, 1);};
+    const check_ = () => page.getByRole('button', {name: '核对原提交结果', exact: true});
+    await fresh(f => {f.lostConfirm = true;}); await confirmButton().click(); await check_().click();
+    await expect(accepted()).toBeVisible(); await stillOpen();
+    await page.getByRole('button', {name: '关闭', exact: true}).click(); assert.deepEqual(await native(), ['close']);
+    await fresh(f => {f.lostConfirm = true;}); await confirmButton().click(); await expect(check_()).toBeVisible();
+    await page.reload(); await expect(accepted()).toBeVisible(); await stillOpen(); // saved request, read back after a refresh
+    await fresh(); await confirmButton().click(); await expect(accepted()).toBeVisible();
+    await page.reload(); await expect(page.getByText('这是此选择的既有回执，没有新建任务。', {exact: true})).toBeVisible(); await stillOpen();
+    await fresh(f => {f.receipt = 'reveal-flipped';}); await confirmButton().click();
+    await expect(page.getByText('此选择已由另一窗口接收，以下为原批次；本窗口未确认成功。', {exact: true})).toBeVisible(); await stillOpen();
   });
 
   await check('open-folder failures keep the window open and say what happened', async () => {
