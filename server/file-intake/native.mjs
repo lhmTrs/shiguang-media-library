@@ -6,10 +6,10 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash,randomUUID} from 'node:crypto';
 import {error,privateDirectory,same,stamp,uuid} from './files.mjs';
-import {runInProcessGroup} from '../native-compile.mjs';
+import {runNativeCompiler} from '../native-compile.mjs';
 const run=promisify(execFile);
-// swiftc 在自己的进程组里跑：超时或服务关闭时连 swift-frontend、链接器一起结束。
-const defaultRunner=(command,args,options)=>command.endsWith('/swiftc')?runInProcessGroup(command,args,options):run(command,args,options);
+// swiftc 走本机编译器运行：超时或服务关闭时连 swift-frontend 一起结束（见 native-compile.mjs）。
+const defaultRunner=(command,args,options)=>command.endsWith('/swiftc')?runNativeCompiler(command,args,options):run(command,args,options);
 const serviceTitle='收纳素材到拾光', legacyTitle='收纳视频到拾光';
 const mediaKinds=['photo','video','audio'], fileTypes=['public.image','public.movie','public.audio'];
 const owner='shiguang-file-intake-v1';

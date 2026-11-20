@@ -12,7 +12,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
-import { runInProcessGroup } from "./native-compile.mjs";
+import { runNativeCompiler } from "./native-compile.mjs";
 import { publicRepairCode, mergeAlias } from "./asset-repair.mjs";
 import { CloudUploadHost } from "./cloud-upload-host.mjs";
 import { CloudUploadTaskRuntime, runFileStatusMaintenance } from "./cloud-upload-task-runtime.mjs";
@@ -106,7 +106,7 @@ if (process.platform === "darwin") {
     const trashPartial = trashBin + ".partial";
     try {
       await fs.rm(trashPartial, { force: true });
-      await runInProcessGroup(
+      await runNativeCompiler(
         "swiftc",
         [path.join(project, "server/trash.swift"), "-o", trashPartial],
         { timeout: 90000 },
