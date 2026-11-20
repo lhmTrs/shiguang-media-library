@@ -178,3 +178,92 @@ test('the public CLI reports LIMITED and continues after an actually closed ordi
   assert.match(execution.stderr, /LIMITED/); assert.equal(await fs.readFile(sentinel, 'utf8'), 'OK');
   t.diagnostic(JSON.stringify({execution, results, sentinelRan:true}));
 });
+
+
+async function workerProgram(t, body) {
+  const root = await scene(t), file = path.join(root, 'worker.test.mjs');
+  await fs.writeFile(file, `import test from 'node:test';import assert from 'node:assert/strict';import {Worker} from 'node:worker_threads';import {once} from 'node:events';\n` + body);
+  const result = await runTestFile(file, {cwd:root, timeoutMs:3000, graceMs:300, output:()=>{}});
+  return {root, result};
+}
+function assertKnownWorker(result, count) {
+  assert.deepEqual(result.rawExit, {code:0, signal:null});
+  assert.equal(result.resourceObservation.state, 'KNOWN', JSON.stringify(result));
+  assert.equal(result.passed, true);assert.equal(result.resourceObservation.workers.length,count);
+  assert.equal(new Set(result.resourceObservation.processes.map(p=>p.pid)).size,result.resourceObservation.processes.length);
+  assert.ok(result.resourceObservation.workers.every(w=>w.proof));
+}
+
+test('normal and nested observed Worker threads are distinct from processes', async t => {
+  const inner = `const {parentPort}=require('node:worker_threads');parentPort.postMessage('ready');`;
+  const outer = `const {Worker,parentPort}=require('node:worker_threads');const w=new Worker(${JSON.stringify(inner)},{eval:true});w.on('exit',()=>parentPort.close());`;
+  const {result}=await workerProgram(t, `test('nested threads',async()=>{const w=new Worker(${JSON.stringify(outer)},{eval:true});assert.equal((await once(w,'exit'))[0],0);});`);
+  assertKnownWorker(result,2);
+  assert.equal(result.resourceObservation.observedChildren.length,1,'threads must not duplicate the CLI child process match');
+});
+
+test('unrefd observed worker may lack its own exit event but cannot outlive a proven process exit', async t => {
+  const body = `const {parentPort}=require('node:worker_threads');parentPort.postMessage('ready');setInterval(()=>{},1000);`;
+  const {result}=await workerProgram(t, `test('unref thread',async()=>{const w=new Worker(${JSON.stringify(body)},{eval:true});await once(w,'message');w.unref();});`);
+  assertKnownWorker(result,1);
+  assert.equal(result.resourceObservation.workers[0].proof,'owning-process-exit');
+  assert.equal(result.resourceObservation.workers[0].rawExit,null,'do not invent a graceful thread exit');
+});
+
+test('handled worker errors preserve original semantics and known process closure', async t => {
+  const {result}=await workerProgram(t, `test('expected worker error',async()=>{const w=new Worker("throw Error('expected owned error')",{eval:true});const error=new Promise(r=>w.once('error',r)),exit=new Promise(r=>w.once('exit',r));assert.equal((await error).message,'expected owned error');assert.equal(await exit,1);});`);
+  assertKnownWorker(result,1);
+});
+
+test('a worker which closes its observed Node child retains that separate process receipt', async t => {
+  const body=`const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',''],{stdio:'ignore'});c.on('close',()=>{});`;
+  const {result}=await workerProgram(t, `test('worker child close',async()=>{const w=new Worker(${JSON.stringify(body)},{eval:true});assert.equal((await once(w,'exit'))[0],0);});`);
+  assertKnownWorker(result,1);
+  assert.equal(result.resourceObservation.processes.length,3,'CLI, test process, separate worker-created child');
+  assert.equal(result.resourceObservation.observedChildren.length,2);
+});
+
+test('a deliberately unobserved Worker remains UNKNOWN even after its process exits', async t => {
+  const body=`const {parentPort}=require('node:worker_threads');parentPort.postMessage(process.env.SHIGUANG_TEST_RESOURCE_RUNS===undefined);`;
+  const {result}=await workerProgram(t, `test('isolated worker env untouched',async()=>{const w=new Worker(${JSON.stringify(body)},{eval:true,execArgv:[],env:{}});const exit=new Promise(r=>w.once('exit',r));assert.equal((await once(w,'message'))[0],true);assert.equal(await exit,0);});`);
+  assert.deepEqual(result.rawExit,{code:0,signal:null});assert.equal(result.passed,false);assert.equal(result.resourceObservation.state,'UNKNOWN');
+  assert.ok(result.resourceObservation.unknown.some(e=>e.reason==='WORKER_OBSERVER_MISSING'&&e.created===1&&e.observed===0));
+});
+
+for (const isolated of [false,true]) test('a worker cannot hide an escaped HTTP process; child isolated='+isolated, {skip:process.platform==='win32'}, async t => {
+  const fixture=await detachedScene(t,{isolated}),file=path.join(fixture.root,'worker-escape.test.mjs');
+  const program=new URL('data:text/javascript,'+encodeURIComponent(fixture.text)).href;
+  await fs.writeFile(file,`import test from 'node:test';import {Worker} from 'node:worker_threads';import {once} from 'node:events';test('worker launches owned external process',async()=>{await once(new Worker(new URL(${JSON.stringify(program)})),'exit');});`);
+  const result=await runTestFile(file,{cwd:fixture.root,timeoutMs:3000,graceMs:300,output:()=>{}}),state=await fixture.readState();
+  assert.deepEqual(result.rawExit,{code:0,signal:null});assert.equal(result.resourceObservation.workers.length,1);assert.ok(result.resourceObservation.workers[0].proof);
+  assert.equal(result.passed,false);assert.equal(result.observedResourcesClosed,false);assert.equal(result.resourceObservation.state,'UNKNOWN');
+  assert.ok(result.resourceObservation.unknown.some(e=>isolated?e.reason==='CHILD_OBSERVER_NOT_INHERITED':e.reason==='EXIT_RECEIPT_MISSING'&&e.pid===state.pid));
+  const response=await fetch(`http://127.0.0.1:${state.port}`);assert.equal(response.status,200);assert.equal(await response.text(),'OWNED_FIXTURE');
+});
+
+test('an incomplete Worker preload ledger remains UNKNOWN, never just ignored',async t=>{
+  const {root,result}=await workerProgram(t,`test('closed worker',async()=>{await once(new Worker('',{eval:true}),'exit');});`);assertKnownWorker(result,1);
+  const directory=path.join(root,'damaged-ledger');await fs.cp(result.resourceObservation.directory,directory,{recursive:true});
+  const worker=result.resourceObservation.workers[0],name=worker.nodeId+'.jsonl',bytes=await fs.readFile(path.join(directory,name),'utf8'),token=JSON.parse(bytes.split('\n')[0]).token;
+  await fs.writeFile(path.join(directory,name),bytes.slice(0,-1));
+  const {default:ledger}=await import('../../scripts/test-resource-ledger.cjs');const observation=await ledger.inspectObservation({directory,token},result.pid,{groupAbsent:result.groupAbsent});
+  assert.equal(observation.state,'UNKNOWN');assert.ok(observation.unknown.some(e=>e.reason==='LEDGER_INCOMPLETE'));
+});
+
+test('bounded public CLI continues from application shutdown through the next selected file',async t=>{
+  const env={...process.env};delete env.NODE_TEST_CONTEXT;
+  const execution=await exec(process.execPath,['scripts/test-suites.mjs','--file','application-shutdown.test.mjs','--file','font-scale.test.mjs','--timeout','15000'],{cwd:repo,env,maxBuffer:2*1024*1024,timeout:20000});
+  const results=execution.stdout.split('\n').filter(line=>line.startsWith('[test-file-result] ')).map(line=>JSON.parse(line.slice('[test-file-result] '.length)));
+  assert.equal(results.length,2);assert.equal(results[0].resourceObservation.workers.length,9);assert.ok(results.every(r=>r.passed&&r.resourcesKnown));
+});
+
+
+test('pre-hook and isolated workers cannot cancel each other by matching counts',async t=>{
+  const root=await scene(t),preload=path.join(root,'early-worker.cjs'),file=path.join(root,'mixed-worker.test.mjs');
+  await fs.writeFile(preload,`const {Worker,isMainThread}=require('node:worker_threads');if(isMainThread&&process.env.NODE_TEST_CONTEXT==='child-v8'){const w=new Worker('',{eval:true});global.__earlyWorkerExit=new Promise(r=>w.once('exit',r));}`);
+  await fs.writeFile(file,`import test from 'node:test';import assert from 'node:assert/strict';import {Worker} from 'node:worker_threads';test('worker identity mismatch',async()=>{const w=new Worker('',{eval:true,env:{},execArgv:[]});const late=new Promise(r=>w.once('exit',r));assert.equal(await global.__earlyWorkerExit,0);assert.equal(await late,0);});`);
+  const env={...process.env,NODE_OPTIONS:((process.env.NODE_OPTIONS||'')+' --require='+JSON.stringify(preload)).trim()};
+  const result=await runTestFile(file,{cwd:root,env,timeoutMs:3000,graceMs:300,output:()=>{}});
+  assert.deepEqual(result.rawExit,{code:0,signal:null});assert.equal(result.resourceObservation.workers.length,1);
+  assert.equal(result.passed,false);assert.equal(result.resourceObservation.state,'UNKNOWN');assert.ok(result.resourceObservation.unknown.some(e=>e.reason==='WORKER_BINDING_MISMATCH'));
+});
