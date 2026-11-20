@@ -7,7 +7,7 @@ const cp = require('node:child_process');
 const {randomUUID} = require('node:crypto');
 const {syncBuiltinESMExports} = require('node:module');
 const {createHook} = require('node:async_hooks');
-const {isMainThread} = require('node:worker_threads');
+const {isMainThread, threadId} = require('node:worker_threads');
 const {OBSERVATION_ENV, PARENT_ENV, PROTOCOL, parseRuns} = require('./test-resource-ledger.cjs');
 
 let scopes;
@@ -31,7 +31,7 @@ if (scopes.length) {
   };
   let parent = null;
   try { parent = JSON.parse(process.env[PARENT_ENV] ?? 'null'); } catch {}
-  emit('start', {pid:process.pid, ppid:process.ppid, mainThread:isMainThread, parent,
+  emit('start', {pid:process.pid, ppid:process.ppid, mainThread:isMainThread, threadId, parent,
     testRunner:process.execArgv.includes('--test') && !process.env.NODE_TEST_CONTEXT,
     testWorker:process.env.NODE_TEST_CONTEXT === 'child-v8'});
   const records = new WeakMap();
@@ -115,8 +115,20 @@ if (scopes.length) {
     };
   } catch { emit('unsupported', {reason:'SYNC_OBSERVER_UNAVAILABLE'}); }
   syncBuiltinESMExports();
-  createHook({init(_id, type) {
-    if (type === 'WORKER') emit('unsupported', {reason:'WORKER_THREAD_UNQUALIFIED'});
+  createHook({init(asyncId, type, _triggerId, resource) {
+    // Observation only: do not wrap Worker, alter ref/execArgv/env, or treat its
+    // exit as a process exit. The ledger also requires a thread preload record.
+    if (type === 'WORKER') {
+      emit('worker-created', {asyncId});
+      // Node 22 assigns the native handle's threadId during construction, after
+      // init(). Read it in the next microtask; missing/changed runtime support
+      // remains UNKNOWN in the ledger, never a reason to skip observation.
+      queueMicrotask(() => {
+        let id = null;
+        try { if (Number.isSafeInteger(resource.threadId) && resource.threadId > 0) id = resource.threadId; } catch {}
+        emit('worker-bound', {asyncId, threadId:id});
+      });
+    }
   }}).enable();
   process.on('beforeExit', code => emit('before-exit', {code}));
   process.on('exit', code => emit('exit', {code, signal:null}));

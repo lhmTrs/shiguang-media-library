@@ -52,14 +52,16 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
       if (!text.endsWith('\n')) throw Error('Incomplete ledger write');
       const events = text.trimEnd().split('\n').map(JSON.parse), first = events[0];
       if (first?.event !== 'start' || first.protocol !== PROTOCOL || first.token !== scope.token ||
-          !Number.isSafeInteger(first.pid) || first.pid < 1 || name !== `${first.nodeId}.jsonl` || nodes.has(first.nodeId)) throw Error('Invalid ledger header');
+          typeof first.mainThread !== 'boolean' || !Number.isSafeInteger(first.pid) || first.pid < 1 || name !== `${first.nodeId}.jsonl` || nodes.has(first.nodeId)) throw Error('Invalid ledger header');
       for (const [index, event] of events.entries()) {
         if (event.seq !== index + 1 || event.nodeId !== first.nodeId || event.healthy !== true) throw Error('Incomplete observation sequence');
       }
       nodes.set(first.nodeId, {start:first, events});
     } catch { problem('LEDGER_INCOMPLETE', {entry:name}); }
   }
-  const roots = [...nodes.values()].filter(node => node.start.pid === rootPid && node.start.mainThread);
+  const processNodes = [...nodes.values()].filter(node => node.start.mainThread === true);
+  const threadNodes = [...nodes.values()].filter(node => node.start.mainThread === false);
+  const roots = processNodes.filter(node => node.start.pid === rootPid);
   if (roots.length !== 1) problem('ROOT_OBSERVER_MISSING');
   const attempts = new Map();
   for (const node of nodes.values()) {
@@ -69,11 +71,10 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
     }
   }
   const processes = [];
-  for (const node of nodes.values()) {
+  for (const node of processNodes) {
     const start = node.start, parent = start.parent && attempts.get(start.parent.spawnId);
     const root = roots.includes(node);
     if (!root && (!parent || parent.parent.start.nodeId !== start.parent.nodeId)) problem('OBSERVER_PARENT_MISSING', {pid:start.pid});
-    if (!start.mainThread) problem('WORKER_THREAD_UNQUALIFIED', {pid:start.pid});
     const selfExit = node.events.findLast(e => e.event === 'exit');
     const parentClose = parent?.events.findLast(e => e.event === 'child-close' && e.pid === start.pid);
     const syncExit = parent?.events.findLast(e => e.event === 'sync-exit' && e.pid === start.pid);
@@ -102,13 +103,46 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
       detached:parent?.intent.detached ?? null, rawExit:receipt ? {code:receipt.code, signal:receipt.signal ?? null} : null,
       proof:selfExit ? 'self-exit-ledger' : parentClose ? 'observed-parent-close' : syncExit ? 'observed-sync-exit' : stoppedTestWorker ? 'aborted-test-worker-group-closed' : null});
   }
+  // Threads share one PID and cannot survive that actual process exit. Their
+  // preload records still matter: an unobserved thread could have spawned an
+  // escaping external process. Match each creation ID to a preload before qualifying
+  // a process; collect spawn attempts from ALL nodes, including these threads.
+  const workers = [];
+  for (const owner of processNodes) {
+    const pid = owner.start.pid, samePid = processNodes.filter(node => node.start.pid === pid);
+    if (samePid.length !== 1) { problem('PROCESS_OBSERVER_AMBIGUOUS', {pid}); continue; }
+    const contexts = [...nodes.values()].filter(node => node.start.pid === pid);
+    const creations = contexts.flatMap(node => node.events.filter(e => e.event === 'worker-created').map(created => {
+      const bound = node.events.filter(e => e.event === 'worker-bound' && e.asyncId === created.asyncId);
+      return bound.length === 1 && Number.isSafeInteger(created.asyncId) && created.asyncId > 0 ? bound[0].threadId : null;
+    }));
+    const threads = threadNodes.filter(node => node.start.pid === pid);
+    const identities = new Set(threads.map(node => node.start.threadId));
+    if (threads.length !== creations.length) problem('WORKER_OBSERVER_MISSING', {pid, created:creations.length, observed:threads.length});
+    // Counts alone can cancel: one thread created before the hook and one
+    // isolated thread created after it. Require the actual IDs to match too.
+    if (identities.size !== threads.length || new Set(creations).size !== creations.length || creations.some(id => !Number.isSafeInteger(id) || id < 1 || !identities.has(id)) || threads.some(node => !Number.isSafeInteger(node.start.threadId) || node.start.threadId < 1)) {
+      problem('WORKER_BINDING_MISMATCH', {pid});
+    }
+    const processReceipt = processes.find(node => node.nodeId === owner.start.nodeId);
+    for (const node of threads) {
+      const selfExit = node.events.findLast(e => e.event === 'exit');
+      // A thread's own exit is NOT evidence for its still-running process.
+      // Conversely, an actually observed process exit also ends unref'd threads.
+      if (!processReceipt?.rawExit) problem('WORKER_OWNER_EXIT_MISSING', {pid, threadId:node.start.threadId});
+      workers.push({pid, threadId:node.start.threadId, nodeId:node.start.nodeId, ownerNodeId:owner.start.nodeId,
+        rawExit:selfExit ? {code:selfExit.code, signal:selfExit.signal ?? null} : null,
+        proof:processReceipt?.rawExit ? selfExit ? 'thread-exit-and-owning-process-exit' : 'owning-process-exit' : null});
+    }
+  }
+  for (const node of threadNodes) if (!processNodes.some(owner => owner.start.pid === node.start.pid)) problem('WORKER_OWNER_MISSING', {pid:node.start.pid, threadId:node.start.threadId});
   const observedChildren = [];
   for (const [spawnId, attempt] of attempts) {
     const failed = attempt.events.some(e => (e.event === 'spawn-rejected' && !e.pid) || (e.event === 'child-error' && !e.pid) || (e.event === 'sync-exit' && e.errorCode && !e.pid));
     if (failed) continue; // Original spawn failed before creating a process.
     const spawned = attempt.events.find(e => e.event === 'child-spawn' || e.event === 'sync-exit');
     const exit = attempt.events.findLast(e => e.event === 'child-close' || e.event === 'sync-exit');
-    const observed = [...nodes.values()].filter(node => node.start.parent?.spawnId === spawnId && node.start.parent?.nodeId === attempt.parent.start.nodeId);
+    const observed = processNodes.filter(node => node.start.parent?.spawnId === spawnId && node.start.parent?.nodeId === attempt.parent.start.nodeId);
     observedChildren.push({pid:spawned?.pid ?? null, parentPid:attempt.parent.start.pid, executable:attempt.intent.executable,
       executableKind:attempt.intent.executableKind,
       sync:attempt.intent.sync === true, inherited:attempt.intent.inherited, nodeObserver:observed.length === 1,
@@ -132,7 +166,7 @@ async function inspectObservation(scope, rootPid, {groupAbsent = false, stopRequ
     }
   }
   return {protocol:PROTOCOL, state:unknown.length ? 'UNKNOWN' : limitations.length ? 'LIMITED' : 'KNOWN',
-    directory:scope.directory, processes, observedChildren, limitations, unknown};
+    directory:scope.directory, processes, workers, observedChildren, limitations, unknown};
 }
 
 module.exports = {OBSERVATION_ENV, PARENT_ENV, PROTOCOL, parseRuns, createObservation, inspectObservation, inheritTestObservation};
