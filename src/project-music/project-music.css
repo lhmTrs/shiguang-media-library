@@ -28,7 +28,7 @@
   --sg-accent-strong: var(--sg-accent);
 }
 .sg-music[data-sg-palette="paper"] {
-  --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #8c7e6a;
+  --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #6f6250;
   --sg-accent: #b5653d; --sg-accent-soft: #f1dccb; --sg-wave: #d2c2a8; --sg-on-accent: #fffaf3; --sg-danger: #a8483a; --sg-warn: #9a6d1f;
   --sg-accent-strong: #934c2a;
   color-scheme: light;
@@ -39,7 +39,7 @@
   color-scheme: dark;
 }
 .sg-music[data-sg-palette="gallery"] {
-  --sg-surface: #ffffff; --sg-sidebar: #ffffff; --sg-surface-raised: #f5f5f7; --sg-text: #1d1d1f; --sg-text-muted: #86868b;
+  --sg-surface: #ffffff; --sg-sidebar: #ffffff; --sg-surface-raised: #f5f5f7; --sg-text: #1d1d1f; --sg-text-muted: #6a6a6f;
   --sg-accent: #2f6b55; --sg-accent-soft: #e3efea; --sg-wave: #c9ced3; --sg-on-accent: #ffffff; --sg-danger: #b3413a; --sg-warn: #8a6516;
   color-scheme: light;
 }
