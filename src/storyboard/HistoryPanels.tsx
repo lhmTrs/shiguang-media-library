@@ -140,7 +140,9 @@ const nextVersion = (list: number[], previous: number | null) => previous === nu
 export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {api: HistoryApi; refreshKey: unknown; onLocate: (shotId: string) => void; onCount: (n: number) => void; shotNumber?: (shotId: string) => string | undefined}) {
   const [data, setData] = useState<PendingList | null>(null), [error, setError] = useState<unknown>(null), [busy, setBusy] = useState(false), [mode, setMode] = useState<'version' | 'all'>('version'), [selected, setSelected] = useState<number | null>(null), [notice, setNotice] = useState(''), [detail, setDetail] = useState<number | null>(null), [foldOpen, setFoldOpen] = useState(false);
   const latest = useRef(0);
-  const load = useCallback(async () => { const ticket = ++latest.current; try { const d = await api.pending(); if (ticket !== latest.current) return; setData(d); setError(null); setSelected(old => nextVersion(d.pending_versions.map(v => v.version), old)); onCount(pendingBadge(d)); } catch (e) { if (ticket === latest.current) setError(e); } }, [api, onCount]);
+  // onCount 放进 ref：父组件每次渲染传进来的新函数不应让面板重新读待看。
+  const onCountRef = useRef(onCount); onCountRef.current = onCount;
+  const load = useCallback(async () => { const ticket = ++latest.current; try { const d = await api.pending(); if (ticket !== latest.current) return; setData(d); setError(null); setSelected(old => nextVersion(d.pending_versions.map(v => v.version), old)); onCountRef.current(pendingBadge(d)); } catch (e) { if (ticket === latest.current) setError(e); } }, [api]);
   useEffect(() => { setData(null); setSelected(null); setMode('version'); setNotice(''); setDetail(null); setFoldOpen(false); }, [api]);
   useEffect(() => { void load(); }, [load, refreshKey]);
   const clear = async (target: PendingTarget, version?: number, guarded = true) => {
