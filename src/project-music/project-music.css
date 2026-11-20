@@ -312,3 +312,16 @@
   .sgm-compare-pick { grid-template-columns: 1fr; }
   .sgm-compare-track { flex-wrap: wrap; }
 }
+
+/* PR4：「歌曲｜文件」标签。两个标签各占满整个画面，标签本身不用边框，靠底色区分。 */
+.sgm-tabs { display: inline-flex; gap: 4px; padding: 4px; margin: -8px 0 22px; border-radius: 999px; background: var(--sg-sunken); }
+.sg-music .sgm-tabs button { display: inline-flex; align-items: baseline; gap: 8px; border: 0; border-radius: 999px; padding: 6px 18px; min-height: 36px;
+  background: transparent; color: var(--sg-text-muted); font: inherit; font-size: 16px; font-weight: 500; cursor: pointer; }
+.sg-music .sgm-tabs button small { font-size: 12px; font-weight: 400; color: var(--sg-text-muted); }
+.sg-music .sgm-tabs button[aria-selected="true"] { background: var(--sg-surface-raised); color: var(--sg-text); box-shadow: var(--sg-shadow); }
+.sg-music .sgm-tabs button:focus-visible { outline: 2px solid var(--sg-focus); outline-offset: 1px; }
+.sgm-files { display: grid; gap: 14px; }
+.sgm-play.is-static { background: var(--sg-sunken); color: var(--sg-text-muted); cursor: default; }
+.sgm-files-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sgm-files-list li { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px; background: var(--sg-sunken); }
+.sgf-row.is-current .sgm-play { background: var(--sg-accent-strong); color: var(--sg-on-accent); }

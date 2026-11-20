@@ -1,0 +1,70 @@
+/* 共用「文件夹浏览」模板 · 新画风（SPEC 第九、十三节）
+   - 只用 --sg-* 变量，由宿主页面提供（项目音乐在 .sg-music 上定义）；不改 --c-* 变量和其他页面。
+   - 不用边框和分隔线划分区域，靠底色深浅和留白；圆角统一；字号只用全库档位。
+   - rows：一行一个文件（播放键 + 名字 + 真实波形）；grid：缩略图卡片（给生成视频以后换用）。 */
+
+.sgf { display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); gap: 20px; align-items: start; }
+
+.sgf-tree { position: sticky; top: 12px; display: grid; gap: 2px; padding: 10px; border-radius: var(--sg-radius); background: var(--sg-sidebar); max-height: calc(100vh - 140px); overflow: auto; }
+.sgf-tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; display: grid; gap: 2px; background: none; border: 0; box-shadow: none; }
+.sgf-tree li { background: none; border: 0; box-shadow: none; padding: 0; margin: 0; }
+.sgf-tree > ul { padding-left: 0; }
+.sgf-tree button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 10px; border: 0; border-radius: var(--sg-radius-small);
+  background: transparent; color: var(--sg-text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.sgf-tree button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 侧栏底色比卡片深一点，次要文字往正文色靠一些，纸张配色下也够 4.5:1。 */
+.sgf-tree button small { color: color-mix(in srgb, var(--sg-text-muted) 75%, var(--sg-text)); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sgf-tree button:hover { background: var(--sg-hover); }
+.sgf-tree button[aria-current="page"] { background: var(--sg-accent-soft); color: var(--sg-accent-strong); font-weight: 500; }
+.sgf-tree button:focus-visible, .sgf-crumbs button:focus-visible, .sgf-folder-card:focus-visible { outline: 2px solid var(--sg-focus); outline-offset: 1px; }
+.sgf-tree .sgf-special { margin-bottom: 6px; background: var(--sg-surface-raised); }
+.sgf-tree .sgf-special small { white-space: nowrap; }
+
+.sgf-main { min-width: 0; display: grid; gap: 14px; }
+.sgf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+.sgf-crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; color: var(--sg-text-muted); }
+.sgf-crumbs button { border: 0; background: transparent; color: var(--sg-text-muted); font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px; cursor: pointer; }
+.sgf-crumbs button:hover { background: var(--sg-hover); color: var(--sg-text); }
+.sgf-crumbs button[aria-current="page"] { color: var(--sg-text); font-weight: 500; }
+.sgf-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.sgf-subfolders { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+.sgf-folder-card { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; padding: 12px 14px;
+  border: 0; border-radius: var(--sg-radius); background: var(--sg-surface-raised); box-shadow: var(--sg-shadow); color: var(--sg-text); font: inherit; text-align: left; cursor: pointer; }
+.sgf-folder-card svg { grid-row: span 2; color: var(--sg-accent); }
+.sgf-folder-card:hover { background: color-mix(in srgb, var(--sg-accent) 6%, var(--sg-surface-raised)); }
+.sgf-folder-name { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgf-folder-card small { color: var(--sg-text-muted); font-size: 12px; }
+
+.sgf-empty { color: var(--sg-text-muted); font-size: 14px; padding: 28px 6px; }
+
+.sgf-rows { display: grid; gap: 6px; padding: 8px; border-radius: var(--sg-radius); background: var(--sg-surface-raised); box-shadow: var(--sg-shadow); }
+.sgf-row { display: grid; grid-template-columns: auto auto minmax(140px, 240px) minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px; padding: 8px 10px; border-radius: 12px; }
+.sgf-row:not(:has(.sgf-check)) { grid-template-columns: auto minmax(140px, 240px) minmax(0, 1fr) auto auto; }
+.sgf-row:hover { background: var(--sg-hover); }
+.sgf-row.is-current { background: var(--sg-accent-soft); }
+.sgf-row.is-selected { background: color-mix(in srgb, var(--sg-accent) 10%, transparent); }
+.sgf-row-text { display: grid; min-width: 0; }
+.sgf-row-text strong, .sgf-card strong { font-weight: 500; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgf-row-text small, .sgf-card small { color: var(--sg-text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgf-row-visual { min-width: 0; }
+.sgf-badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.sgf-actions { display: flex; gap: 2px; }
+.sgf-row-details { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding-left: 76px; color: var(--sg-text-muted); font-size: 12px; }
+.sgf-check { width: 16px; height: 16px; accent-color: var(--sg-accent); margin: 0; }
+
+.sgf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.sgf-card { display: grid; gap: 6px; padding: 10px; border-radius: var(--sg-radius); background: var(--sg-surface-raised); box-shadow: var(--sg-shadow); min-width: 0; }
+.sgf-card.is-selected { background: color-mix(in srgb, var(--sg-accent) 10%, var(--sg-surface-raised)); }
+.sgf-card-visual { position: relative; }
+.sgf-card-visual .sgf-check { position: absolute; top: 8px; left: 8px; }
+.sgf-thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--sg-radius-small); background: var(--sg-sunken); }
+.sgf-thumb.is-empty { display: grid; place-items: center; color: var(--sg-text-muted); }
+
+@media (max-width: 900px) {
+  .sgf { grid-template-columns: minmax(0, 1fr); }
+  .sgf-tree { position: static; max-height: 260px; }
+  .sgf-row, .sgf-row:not(:has(.sgf-check)) { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+  .sgf-row-visual { grid-column: 1 / -1; order: 5; }
+  .sgf-badges { order: 6; grid-column: 1 / -1; justify-content: flex-start; }
+}

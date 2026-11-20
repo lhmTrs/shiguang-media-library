@@ -58,6 +58,7 @@ import {ProjectVideos} from './project-videos/store.mjs';
 import {projectVideoRouter} from './project-videos/router.mjs';
 import {ProjectMusic} from './project-music/store.mjs';
 import {projectMusicRouter} from './project-music/router.mjs';
+import {MusicFolders} from './project-music/folders.mjs';
 import {FileIntake} from './file-intake/store.mjs';
 import {ManagedIntakeCatalog} from './file-intake/media-catalog.mjs';
 import {IntakePreferences} from './file-intake/preferences.mjs';
@@ -366,6 +367,7 @@ const intakePreferences=await new IntakePreferences({dataDir,libraryId:mysqlStor
 if(process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1')void projectVideos.prepareDesktop();
 const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
 const projectMusic=new ProjectMusic({lib,projects,dataDir,directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),'music'),metadata:metadataBatches,onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)}).init();
+const projectMusicFolders=new MusicFolders(projectMusic,{dataDir,native:process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1'?projectVideos.desktopNative:null});
 const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
 const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
@@ -525,7 +527,7 @@ const updreamProgress = new UpdreamProgress({dataDir,queueDir:process.env.MEDIA_
 app.use('/api/updream-progress',updreamProgressRouter(updreamProgress,{withActivity:fn=>uploadHost.track(fn)}));
 app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,rememberTarget:target=>intakePreferences.remember([target]),withActivity:fn=>uploadHost.track(fn)}));
-app.use("/api/project-music",projectMusicRouter(projectMusic,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
+app.use("/api/project-music",projectMusicRouter(projectMusic,{sendMedia,withActivity:fn=>uploadHost.track(fn),folders:projectMusicFolders}));
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
 app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{desktop:projectAssetDesktop,headBox:projectAssetHeadBox,rememberTarget:target=>intakePreferences.remember([target])}));

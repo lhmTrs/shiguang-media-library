@@ -12,7 +12,7 @@ const pageOnly = req => {
   if (!fromPage(req)) fail('PAGE_ONLY', '这项只能由你在网页上操作：AI 不能改提示词确认和你的听感原文；AI 改版本状态请走 agent-notes 的 decisions，并附上用户原话', 403);
 };
 
-export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()} = {}) {
+export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn(), folders = null} = {}) {
   const router = express.Router();
   router.use(express.json({limit: '256kb'}));
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -62,6 +62,39 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   };
   route('get', P + '/versions/:versionId/media', media);
   route('head', P + '/versions/:versionId/media', media);
+
+  // ---------- 「文件」区（SPEC 第十三节）：位置用相对项目音乐文件夹的路径（path / folder），不暴露本机路径 ----------
+  if (folders) {
+    const F = P + '/files';
+    route('get', F, async (req, res) => res.json(await folders.list(req.params.projectId, req.query.folder ?? '')));
+    route('post', F + '/folders', async (req, res) => res.json(await folders.createFolder(req.params.projectId, req.body ?? {})));
+    route('post', F + '/folders/rename', async (req, res) => res.json(await folders.renameFolder(req.params.projectId, req.body ?? {})));
+    route('get', F + '/peaks', async (req, res) => res.json(await folders.peaks(req.params.projectId, req.query.path)));
+    const fileMedia = async (req, res) => {
+      const opened = await folders.openFile(req.params.projectId, req.query.path);
+      try {
+        if (req.query.download === '1') {
+          const ascii = opened.downloadName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+          res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(opened.downloadName)}`);
+        }
+        await sendMedia(req, res, opened.path, opened.handle);
+      } catch (e) {
+        await opened.handle.close().catch(() => {});
+        throw e;
+      }
+    };
+    route('get', F + '/media', fileMedia);
+    route('head', F + '/media', fileMedia);
+    route('post', F + '/imports', (req, res) => res.json(folders.startImport(req.params.projectId, req.body ?? {}, actor(req))));
+    route('put', F + '/imports/:requestId/content', async (req, res) => res.json(await folders.upload(req.params.projectId, req.params.requestId, req)));
+    route('get', F + '/imports/:requestId', (req, res) => res.json(folders.receipt(req.params.projectId, req.params.requestId)));
+    route('post', F + '/imports/:requestId/resolve', async (req, res) => res.json(await folders.resolve(req.params.projectId, req.params.requestId, req.body ?? {})));
+    route('post', F + '/add-to-song', async (req, res) => res.json(await folders.addToSong(req.params.projectId, req.body ?? {}, actor(req))));
+    route('get', F + '/desktop', async (req, res) => res.json(await folders.capabilities(req.params.projectId)));
+    // 复制到剪贴板、打开访达会动用户的桌面：只能由用户在网页上点。
+    route('post', F + '/clipboard', async (req, res) => { pageOnly(req); res.json(await folders.clipboard(req.params.projectId, req.body ?? {})); });
+    route('post', F + '/reveal', async (req, res) => { pageOnly(req); res.json(await folders.reveal(req.params.projectId, req.body ?? {})); });
+  }
 
   router.use((_req, res) => res.status(404).json({error: '项目音乐接口不存在', code: 'MUSIC_ROUTE_NOT_FOUND'}));
   router.use((e, _req, res, next) => {

@@ -473,12 +473,14 @@ export class ProjectMusic {
 
   // ---------- 上传：登记 → 传内容 → 确认（同生成视频的三步） ----------
 
-  importRow(projectId, requestId) {
+  // 回执表里同时放歌曲上传和「文件」区上传（kind: 'file'），按 kind 分开，不串用。
+  importRow(projectId, requestId, kind = 'song') {
     this.project(projectId);
     const id = M.requestId(requestId);
     const row = this.db.prepare('SELECT * FROM project_music_imports WHERE id=? AND project_id=?').get(id, projectId);
-    if (!row) fail('IMPORT_NOT_FOUND', '没有找到这次上传记录', 404);
-    return JSON.parse(row.data_json);
+    const s = row && JSON.parse(row.data_json);
+    if (!s || (s.kind ?? 'song') !== kind) fail('IMPORT_NOT_FOUND', '没有找到这次上传记录', 404);
+    return s;
   }
 
   persistImport(s) {
