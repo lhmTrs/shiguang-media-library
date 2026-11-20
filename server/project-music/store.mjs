@@ -161,6 +161,9 @@ export class ProjectMusic {
     return {
       inLibrary: !!a && !a.trashed, assetId: d.assetId, reused: !!d.reused, name: a?.name ?? null, category: a?.category ?? '', sub: a?.sub ?? '',
       missing: !a || !!a.trashed, offline: !!a && !a.online, moved: !!a && !!expected && a.path !== expected,
+      // 音乐库里该不该有「未选用（项目名）」：同一项目里共用这份文件的版本全都淘汰了才打（和标签同步同一条规则）。
+      unusedTagged: !!a && this.db.prepare('SELECT data_json FROM project_music_versions WHERE project_id=? AND data_json LIKE ?').all(v.project_id, `%"assetId":"${d.assetId}"%`)
+        .map(r => JSON.parse(r.data_json)).filter(x => x.assetId === d.assetId).every(x => x.status === 'rejected'),
       tagSync: d.tagSync?.pending ? 'pending' : d.tagSync?.error ? 'failed' : d.syncedTags ? 'done' : 'pending', tagError: d.tagSync?.error ?? null,
     };
   }
@@ -631,7 +634,7 @@ export class ProjectMusic {
     } else {
       const root = await this.prepareRoot();
       const folder = `${await this.songLibraryFolder(s.projectId, s.songId, project)}/${roundFolder(round.round_no)}`;
-      const placed = await this.files.publish(s.stage, folder, this.fileStem(song, round, label), s.ext);
+      const placed = await this.placeFile(s.stage, folder, this.fileStem(song, round, label), s.ext, s.sha256);
       const file = await this.files.resolve(placed.rel), fst = await fs.lstat(file);
       try {
         this.db.transaction(() => {
@@ -642,13 +645,26 @@ export class ProjectMusic {
         })();
         fresh = true;
       } catch (e) {
-        await fs.rm(file, {force: true}).catch(() => {});
+        if (!placed.adopted) await fs.rm(file, {force: true}).catch(() => {});
         throw e;
       }
     }
     if (fresh) this.lib.enqueue?.(assetId);
     this.queueTags(assetId);
     return this.importDTO(s);
+  }
+
+  // 已经有版本在用的落位（相对音乐目录）：认领中断留下的文件时不能抢别人的。
+  usedPlacements(folderRel) {
+    return new Set(this.db.prepare('SELECT data_json FROM project_music_versions').all().map(r => JSON.parse(r.data_json).relativePath)
+      .filter(rel => typeof rel === 'string' && rel.startsWith(folderRel + '/')));
+  }
+
+  // 落位：先认领上次中断留下的同内容文件，没有再硬链接/复制进去。
+  async placeFile(stage, folder, stem, ext, sha256) {
+    const adopted = await this.files.adopt(folder, stem, ext, sha256, this.usedPlacements(folder));
+    if (adopted) { await fs.rm(stage, {force: true}); return {...adopted, adopted: true}; }
+    return this.files.publish(stage, folder, stem, ext);
   }
 
   insertVersion(id, s, round, data, at) {
@@ -822,7 +838,7 @@ export class ProjectMusic {
   async syncAssetTags(assetId) {
     const versions = this.assetVersions(assetId);
     if (!versions.length) return;
-    const asset = this.db.prepare('SELECT id,trashed FROM assets WHERE id=?').get(assetId);
+    const asset = this.db.prepare('SELECT id,trashed,tags FROM assets WHERE id=?').get(assetId);
     if (!asset || asset.trashed) throw Object.assign(Error('音乐库里的记录已删除，没有写标签'), {permanent: true});
     const desired = [];
     for (const v of versions) {
@@ -838,13 +854,16 @@ export class ProjectMusic {
     }
     const synced = [...new Set(versions.flatMap(v => v.data.syncedTags ?? []))];
     const want = new Set(desired.map(d => d.tag));
+    // 记录上已经有、但不是项目音乐加的同名标签，算你的（比如复用了你先收好的那条）：不加、也不记进 syncedTags，以后不会被删。
+    const current = new Set(JSON.parse(asset.tags || '[]'));
+    const fresh = d => !synced.includes(d.tag) && !current.has(d.tag);
     const first = versions.every(v => !v.data.syncedTags);
     const v0 = versions[0], s0 = parse(this.db.prepare('SELECT * FROM project_music_songs WHERE id=?').get(v0.song_id)), r0 = parse(this.db.prepare('SELECT * FROM project_music_rounds WHERE id=?').get(v0.round_id));
     const groups = [
-      {basis: 'metadata', addTags: desired.filter(d => d.basis === 'metadata' && !synced.includes(d.tag)).map(d => d.tag), removeTags: synced.filter(t => !want.has(t)),
+      {basis: 'metadata', addTags: desired.filter(d => d.basis === 'metadata' && fresh(d)).map(d => d.tag), removeTags: synced.filter(t => !want.has(t)),
         note: first && s0 && r0 && !v0.data.reused ? {mode: 'ifEmpty', text: `项目音乐 · ${this.projectName(v0.project_id)} › ${s0.data.title} › 第${r0.round_no}轮 ${v0.data.label}`} : null,
         reason: '项目音乐：系统标签（AI生成、项目、歌名、轮次）、按提示词拆的标签、未选用'},
-      {basis: 'listened', addTags: desired.filter(d => d.basis === 'listened' && !synced.includes(d.tag)).map(d => d.tag), removeTags: [],
+      {basis: 'listened', addTags: desired.filter(d => d.basis === 'listened' && fresh(d)).map(d => d.tag), removeTags: [],
         note: null, reason: '项目音乐：AI 测量的标签（方法记在项目音乐页的版本上）'},
     ];
     for (const g of groups) {
@@ -855,7 +874,9 @@ export class ProjectMusic {
       const done = await this.batches().apply(plan);
       if (done.skipped?.length) throw Error(done.skipped[0].reason);
     }
-    for (const v of this.assetVersions(assetId)) this.saveInternal('project_music_versions', v, {syncedTags: [...want], tagSync: {pending: false, error: null, at: M.now()}});
+    // syncedTags 只记项目音乐自己加上去的：之前加过、现在还要的，加上这次真加上去的。
+    const owned = [...new Set([...synced.filter(t => want.has(t)), ...groups.flatMap(g => g.addTags)])];
+    for (const v of this.assetVersions(assetId)) this.saveInternal('project_music_versions', v, {syncedTags: owned, tagSync: {pending: false, error: null, at: M.now()}});
   }
 
   // ---------- 定稿：只在项目里标记，并加入本项目候选（SPEC 11.5） ----------
@@ -1009,7 +1030,7 @@ export class ProjectMusic {
           if (got.sha256 !== v.sha256) { await fs.rm(stage, {force: true}); fail('MUSIC_FILE_CHANGED', '从旧位置复制出来的内容和记录不一致，没有搬迁', 409); }
           root = await this.prepareRoot();
           const folder = `${await this.songLibraryFolder(v.project_id, v.song_id, project)}/${roundFolder(round.round_no)}`;
-          placed = await this.files.publish(stage, folder, this.fileStem(song, round, v.data.label), path.extname(v.data.fileName || '') || '.' + v.data.format);
+          placed = await this.placeFile(stage, folder, this.fileStem(song, round, v.data.label), path.extname(v.data.fileName || '') || '.' + v.data.format, v.sha256);
           file = await this.files.resolve(placed.rel);
         }
       } finally { await opened.handle.close(); }
@@ -1026,7 +1047,7 @@ export class ProjectMusic {
           });
         })();
       } catch (e) {
-        if (file) await fs.rm(file, {force: true}).catch(() => {});
+        if (file && !placed?.adopted) await fs.rm(file, {force: true}).catch(() => {});
         throw e;
       }
       if (!reuse) this.lib.enqueue?.(assetId);
