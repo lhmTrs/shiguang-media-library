@@ -1,7 +1,7 @@
 import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
 import {confirmStoryboardLeave, hasStoryboardLeaveGuard} from './storyboard/leave-guard';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
-import { Users } from "lucide-react";
+import { Users, ListMusic } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { KeywordSearch, KeywordTokens, type SearchMode } from "./KeywordSearch";
@@ -109,6 +109,7 @@ import { PaginationControls } from "./PaginationControls";
 import type {GenerationFocus,GenerationTask} from './storyboard/generation-types';
 import {ProjectVideoWorkspace} from "./project-videos/ProjectVideoWorkspace";
 import {prefixForProject} from "./project-videos/display-name.mjs";
+import {ProjectMusicWorkspace} from "./project-music/ProjectMusicWorkspace";
 import {FileIntakeWindow,FileTaskEntry} from "./file-intake";
 import { StoryboardWorkspace } from "./StoryboardWorkspace";
 import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemplateWorkspace";
@@ -123,7 +124,7 @@ import { clearProjectLocations, emptyProjectLocation, readProjectLocation, recen
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
-  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"] },
+  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"] },
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
 
@@ -1226,7 +1227,7 @@ function App() {
   const facetQuery = assetParams(1).toString();
   useEffect(() => {
     let live = true;
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
     const timer = setTimeout(() => {
       void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
         if (live) setFilterTags(result.items);
@@ -1259,7 +1260,7 @@ function App() {
    */
   async function refresh(opts: { silent?: boolean; stats?: boolean } = {}) {
     if(opts.stats!==false)void globalStats.refresh();
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
     if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
     browseRead.current?.abort();
     const controller = new AbortController(); browseRead.current = controller;
@@ -1545,7 +1546,7 @@ function App() {
       setCaptureUnknown(saved?.captureUnknown || false);
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
+    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
     if (v !== "projectAssets") setSeasonSettingsFocus(undefined);
     viewRef.current = v;
     setView(v);
@@ -1643,7 +1644,7 @@ function App() {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > length + 0.01 || end - start < 0.05) return;
     setInPoint(start); setOutPoint(Math.min(length, end));
   }
-  const libraryView = !["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
+  const libraryView = !["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
   const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
@@ -1824,7 +1825,7 @@ function App() {
   }
   const currentProject = projects.find(project => project.id === activeProject);
   const title =
-    view === "projectVideos" ? "生成视频" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectMusic" ? "项目音乐" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
@@ -1857,6 +1858,7 @@ function App() {
     ["projectUsage", "素材使用", Layers],
     ["projectAssets", "项目资产", Users],
     ["projectVideos", "生成视频", Film],
+    ["projectMusic", "项目音乐", ListMusic],
     ["storyboard", "分镜设计", Clapperboard],
     ["promptTemplates", "提示词模板", Sparkles],
     ["favorites", "收藏", Star],
@@ -1958,7 +1960,7 @@ function App() {
                   className={view === value ? "nav-item selected" : "nav-item"} onClick={() => navigate(value)}>
                   <Icon size={19} aria-hidden="true"/>
                   <span>{itemLabel}</span>
-                  {!["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
+                  {!["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
                 </button>)}
               </div>
             </section>;
@@ -2023,7 +2025,7 @@ function App() {
             onClick={() => setMobileNav(!mobileNav)}
           />
           <div className="breadcrumb">
-            {["projects", "projectUsage", "projectAssets", "projectVideos", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
+            {["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
           </div>
           <BackgroundReadStatus/>
@@ -2073,8 +2075,9 @@ function App() {
         <ProjectAssetWorkspace focusProject={projectAssetFocus} openSeasonSettings={seasonSettingsFocus?.projectId === activeProject ? seasonSettingsFocus : undefined} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} onTaskViewing={codexTasks.viewed}/>
         <ProjectVideoWorkspace namePrefixFor={namePrefixFor} focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
+        <ProjectMusicWorkspace active={view==="projectMusic"} projectId={activeProject} projects={projects} request={api}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
-        {["storyboard", "promptTemplates", "projectAssets", "projectVideos"].includes(view) ? null : view === "projects" ? <>
+        {["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
           {projectDirectory ? <ProjectFolders {...projectFolderSeasonActions} projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
