@@ -4,7 +4,7 @@
 // 的组发信号都够不到 frontend。driver 收到 SIGINT 时会自己结束 frontend（SIGTERM、SIGHUP 不会）。
 // 所以这里：
 // 1. 先对 driver 发 SIGINT，让它自己收拾；
-// 2. 同时记下 driver 当时的全部子孙进程（含启动时间），一段时间后还活着的用 SIGKILL 兜底，
+// 2. 编译期间每 200 毫秒、以及停止时，记下 driver 的全部子孙进程（含启动时间），一段时间后还活着的用 SIGKILL 兜底，
 //    driver 先退出、子孙被系统收养时也照样补；发信号前核对启动时间，不误伤复用了进程号的别的进程。
 // 编译留在服务自己的进程组里（不 detached），对服务整组发的信号 driver 也能收到。
 //
@@ -16,6 +16,9 @@ import {promisify} from 'node:util';
 const execFileAsync = promisify(execFile);
 const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'];
 const GRACE_MS = 1500;
+// 编译期间定时记一次子孙：对服务整组发 SIGTERM 时 driver 会先被杀死、frontend 立刻被收养，
+// 到那时再拍快照就找不到它了。
+const WATCH_MS = 200;
 const active = new Set();
 let hooked = false;
 
@@ -99,7 +102,7 @@ export function runNativeCompiler(program, args = [], {timeout = 0, maxBuffer = 
     let child;
     try { child = spawn(program, args, {stdio: ['ignore', 'pipe', 'pipe'], cwd, env}); }
     catch (e) { reject(e); return; }
-    const job = {child, tree: new Map(), grace: null};
+    const job = {child, tree: new Map(), grace: null, watch: null};
     const out = [], err = [];
     let bytes = 0, reason = null, timer;
     const stop = (why, graceful) => { if (reason) return; reason = why; stopJob(job, graceful); };
@@ -113,9 +116,9 @@ export function runNativeCompiler(program, args = [], {timeout = 0, maxBuffer = 
     const onAbort = () => stop('abort', false);
     signal?.addEventListener('abort', onAbort, {once: true});
     if (timeout > 0) timer = setTimeout(() => stop('timeout', true), timeout);
-    if (child.pid) { active.add(job); hook(); }
+    if (child.pid) { active.add(job); hook(); job.watch = setInterval(() => remember(job), WATCH_MS); job.watch.unref(); }
     const finish = () => {
-      clearTimeout(timer);
+      clearTimeout(timer); clearInterval(job.watch);
       signal?.removeEventListener('abort', onAbort);
       // 被结束的编译：driver 已退出、管道已关，再兜底一次，不留被收养的子孙。
       if (reason) { clearTimeout(job.grace); sweep(job); }

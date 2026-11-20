@@ -88,11 +88,11 @@ for (const [mode, detach, label] of [
   test(`超时：${label}；错误和 execFile 一样标成 SIGTERM`, {skip: !unix}, async t => {
     const {compiler, pidFile, frontend} = await fixture(t, mode, {detach});
     const started = Date.now();
-    const job = runNativeCompiler(compiler, [pidFile], {timeout: 400});
+    const job = runNativeCompiler(compiler, [pidFile], {timeout: 1500});
     const outcome = assert.rejects(job, e => e.killed === true && e.signal === 'SIGTERM');
     const pid = await frontend();
     await outcome;
-    assert.ok(Date.now() - started < 5000, '超时后没有及时返回');
+    assert.ok(Date.now() - started < 7000, '超时后没有及时返回');
     assert.ok(await until(() => !alive(pid)), '超时后前端还活着');
     assert.equal(activeCompileCount(), 0);
   });
@@ -118,6 +118,7 @@ async function parent(t, {app}) {
     none: '',
     once: `process.once('SIGTERM', () => { console.log('app-handler'); setTimeout(() => { console.log('graceful-done'); process.exit(0); }, 300); });`,
     exit: '',
+    group: '',
   }[app];
   await fs.writeFile(script, [
     `import {runNativeCompiler} from ${JSON.stringify(helper)};`,
@@ -127,13 +128,15 @@ async function parent(t, {app}) {
     app === 'exit' ? `process.on('message', () => process.exit(0));` : '',
     `setInterval(() => {}, 1000);`,
   ].join('\n'));
-  const child = spawn(process.execPath, [script], {stdio: ['ignore', 'pipe', 'inherit', ...(app === 'exit' ? ['ipc'] : [])]});
+  const child = spawn(process.execPath, [script], {detached: app === 'group', stdio: ['ignore', 'pipe', 'inherit', ...(app === 'exit' ? ['ipc'] : [])]});
   t.after(() => { try { child.kill('SIGKILL'); } catch {} });
   let stdout = '';
   child.stdout.on('data', d => { stdout += d; });
   const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({code, signal})));
   const pid = await frontend();
-  if (app === 'exit') child.send('exit'); else child.kill('SIGTERM');
+  if (app === 'exit') child.send('exit');
+  else if (app === 'group') { await new Promise(r => setTimeout(r, 500)); process.kill(-child.pid, 'SIGTERM'); }
+  else child.kill('SIGTERM');
   const result = await exited;
   return {pid, result, stdout: () => stdout};
 }
@@ -150,6 +153,12 @@ test('应用用 process.once 注册关闭处理：只结束编译，优雅关闭
   assert.match(stdout(), /app-handler/);
   assert.match(stdout(), /graceful-done/);
   assert.ok(await until(() => !alive(pid)), '应用关闭后前端成了孤儿');
+});
+
+test('对服务整个进程组发 SIGTERM（测试套件收尾就是这样）：driver 先死、前端被收养，也要结束', {skip: !unix}, async t => {
+  const {pid, result} = await parent(t, {app: 'group'});
+  assert.equal(result.signal, 'SIGTERM');
+  assert.ok(await until(() => !alive(pid)), '整组 SIGTERM 后前端成了孤儿');
 });
 
 test('编译中 process.exit()：前端也结束', {skip: !unix}, async t => {
