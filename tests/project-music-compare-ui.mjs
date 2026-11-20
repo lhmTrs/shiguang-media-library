@@ -178,7 +178,7 @@ test('对比页：默认当前最好对最新、空格切换停在同一位置�
       await page.mouse.move(2, 2);
       await page.waitForTimeout(300);
       assert.equal(await cmp.locator('[role=radio][aria-checked=true]').count(), 1);
-      const bad = await lowContrast(page, '.sgm-compare .sgm-choice, .sg-music .sgm-btn.primary, .sg-music .sgm-pill.accent, .sgm-marker-jump, .sgm-compare-badge, .sgm-compare-track.is-active .sgm-version-time', 4.5);
+      const bad = await lowContrast(page, '.sgm-compare .sgm-choice, .sg-music .sgm-btn.primary, .sg-music .sgm-pill.accent, .sgm-marker-jump, .sgm-compare-badge, .sgm-compare-track.is-active .sgm-version-time, .sgm-compare-track.is-active .sgm-compare-side small', 4.5);
       assert.deepEqual(bad, [], `${palette}/${theme}${blindMode ? ' 盲听' : ''} 选中或实心按钮看不清`);
     }
     await cmp.getByRole('button', {name: '返回'}).click();

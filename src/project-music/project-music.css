@@ -89,7 +89,8 @@
   font-size: 12px; line-height: 20px; white-space: nowrap; font-weight: 400; }
 .sgm-pill.accent { background: var(--sg-accent-soft); color: var(--sg-accent-strong); }
 .sgm-pill.warn { background: color-mix(in srgb, var(--sg-warn) 16%, transparent); color: var(--sg-warn-text); }
-.sgm-pill.muted { opacity: .75; }
+/* 「放弃」等弱化标签不再整体降透明度：文字要保持 4.5 以上，靠字面区分 */
+.sgm-pill.muted { opacity: 1; }
 
 /* 播放键 */
 .sg-music .sgm-play { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; border: 0; border-radius: 50%;
@@ -97,7 +98,9 @@
 .sg-music .sgm-play:hover { background: var(--sg-accent-soft); color: var(--sg-accent); }
 .sg-music .sgm-play.is-large { width: 44px; height: 44px; background: var(--sg-accent-strong); color: var(--sg-on-accent); }
 .sgm-version.is-current .sgm-play { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
-.sgm-version.is-current .sgm-version-time, .sgm-compare-track.is-active .sgm-version-time { color: var(--sg-text); }
+/* 强调浅底上的次要文字改用正文色：次要色在强调浅底上达不到 4.5（纸张 4.48、工作室 3.93） */
+.sgm-version.is-current .sgm-version-time, .sgm-compare-track.is-active .sgm-version-time,
+.sgm-compare-track.is-active .sgm-compare-side small, .sgm-files li.is-ready .sgm-file-state { color: var(--sg-text); }
 
 /* 波形 */
 .sgm-wave { position: relative; height: 40px; min-width: 60px; flex: 1; display: flex; align-items: center; border-radius: 8px; }
@@ -166,7 +169,8 @@
 .sgm-version { display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 12px; }
 .sgm-version:hover { background: var(--sg-hover); }
 .sgm-version.is-current { background: var(--sg-accent-soft); }
-.sgm-version.is-rejected { opacity: .72; }
+/* 淘汰区的版本只淡化波形和播放键，文字不淡化，保持可读 */
+.sgm-version.is-rejected .sgm-wave, .sgm-version.is-rejected .sgm-play { opacity: .55; }
 .sgm-version-label { min-width: 26px; font-weight: 500; font-size: 15px; text-align: center; }
 .sgm-version-time { color: var(--sg-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
 .sgm-version-badges { display: flex; gap: 6px; flex: none; }
