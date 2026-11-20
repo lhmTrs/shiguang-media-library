@@ -19,6 +19,7 @@ import {nameKey} from '../project-videos/folders.mjs';
 import {within} from '../fs-identity.mjs';
 import {SONGS_FOLDER, stamp} from './files.mjs';
 import * as M from './model.mjs';
+import {splitSunoPrompt} from './shared/prompt-split.mjs';
 
 const {fail} = M;
 const KEYS = ['kind', 'scope', 'projectId', 'fileName', 'musicFolder', 'songId', 'newSongTitle', 'roundId', 'newRound', 'roundPrompt'];
@@ -77,6 +78,14 @@ export class ProjectMusicIntake {
     return d;
   }
 
+  // 放进歌曲只收 mp3、wav、m4a、flac；确认收纳时就说清楚，不等到后台处理才失败。
+  checkFile(value, file) {
+    const d = this.destination(value);
+    if (d.musicFolder !== undefined) return;
+    if (!M.FORMATS.has(path.extname(file.name).toLowerCase())) fail('UNSUPPORTED_FORMAT', `「${file.name}」：${M.SONG_FORMAT_MESSAGE}；也可以先放进「文件」`, 400);
+    if (file.bytes > M.MAX_BYTES) fail('FILE_TOO_LARGE', `「${file.name}」超过 200MB，不能放进歌曲`, 413);
+  }
+
   groupKey(d) { return d.songId ? `${d.projectId}:${d.songId}` : `${d.projectId}:new:${nameKey(d.newSongTitle)}`; }
 
   // 确认收纳时：同一首歌的「新开一轮」整批只开一轮（一次收进的多个文件是同一轮的多个版本，SPEC 12.5），新歌只建一首。
@@ -95,7 +104,9 @@ export class ProjectMusicIntake {
       let songId = d.songId;
       if (!songId) songId = this.store.createSong(d.projectId, {requestId: derivedId(batchId, 'song', key), title: d.newSongTitle, notes: ''}, author).id;
       const roundId = derivedId(batchId, 'round', key);
-      this.store.createRound(d.projectId, songId, {requestId: roundId, prompt: {style: d.roundPrompt ?? ''}}, author, {fromIntake: true});
+      // 粘进来的往往是整段 Suno 提示词：拆成风格和歌词，只有风格会拆成音乐库标签（验收 PR5 P3-1）。
+      const p = splitSunoPrompt(d.roundPrompt ?? '');
+      this.store.createRound(d.projectId, songId, {requestId: roundId, prompt: {style: p.style, lyrics: p.lyrics, params: p.params}}, author, {fromIntake: true});
       out.set(key, {songId, roundId});
     }
     return {resolve: d => d.newRound ? out.get(this.groupKey(d)) : {songId: d.songId, roundId: d.roundId}};
@@ -164,10 +175,12 @@ export class ProjectMusicIntake {
 
   // ---------- 处理时的适配器 ----------
 
+  // 收纳端读：status、published（是否可能已经落盘）、instance、reused。
+  // 落位前会把目标记进回执（placing）：没记过就一定没落盘，中断后判为失败、可以重试；记过的由重启收尾认领登记。
   rawReceipt(bound, s) {
-    // 收纳端读：status、published（是否可能已经落盘）、instance、reused。
     const interrupted = s.status === 'uploading' && s.instance !== this.store.instance;
-    return {...s, status: s.status === 'cancelled' ? 'failed' : s.status, published: s.status === 'ready' || s.status === 'uploading', reused: !!s.reused, interrupted};
+    const placed = s.status === 'ready' || (s.status === 'uploading' && !!s.placing);
+    return {...s, status: s.status === 'cancelled' || (interrupted && !s.placing) ? 'failed' : s.status, published: placed, reused: !!s.reused, interrupted};
   }
 
   receiptDTO(bound, s) {
@@ -179,14 +192,14 @@ export class ProjectMusicIntake {
       fileName = d?.fileName ?? null; assetId = d?.assetId ?? null;
     }
     const interrupted = s.status === 'uploading' && s.instance !== this.store.instance;
-    const status = s.status === 'cancelled' ? 'failed' : interrupted ? 'unknown' : s.status === 'uploading' ? 'waiting' : s.status;
+    const status = s.status === 'cancelled' || (interrupted && !s.placing) ? 'failed' : interrupted ? 'unknown' : s.status === 'uploading' ? 'waiting' : s.status;
     const base = `/api/project-music/projects/${bound.projectId}`;
     const candidates = s.status !== 'duplicate' ? [] : song
       ? (s.duplicates ?? []).map(d => ({id: d.versionId, name: `「${d.songTitle}」第 ${d.roundNo} 轮 ${d.label}${d.status === 'rejected' ? '（淘汰区）' : ''}`, reason: '项目里已经收过同样内容', adoptedShots: [], mediaUrl: `${base}/versions/${d.versionId}/media`}))
       : (s.duplicates ?? []).map(name => ({id: name, name, reason: '这个文件夹里已经有同样内容', adoptedShots: [], mediaUrl: `${base}/files/media?path=${encodeURIComponent([s.folder, name].filter(Boolean).join('/'))}`}));
     return {
       status, fileName, assetId, published: s.status === 'ready' || s.status === 'uploading', reused: !!s.reused, candidates,
-      error: s.status === 'cancelled' ? '已取消本次操作' : interrupted ? '上次收纳被中断，结果待核对；没有自动重发' : s.status === 'duplicate' ? '已经收过了：可以「仍然保留」或「取消」' : s.error ?? null,
+      error: s.status === 'cancelled' ? '已取消本次操作' : interrupted && !s.placing ? '上次收纳在落盘前被中断，没有收进去；可以重试' : interrupted ? '上次收纳被中断，正在核对是否已落盘；没有自动重发' : s.status === 'duplicate' ? '已经收过了：可以「仍然保留」或「取消」' : s.error ?? null,
     };
   }
 

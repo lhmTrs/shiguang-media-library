@@ -42,6 +42,9 @@
   - 一次收进的几个文件是同一轮的几个版本，Suno 按 A、B、C 往下排；整批只开一轮、新歌只建一首（按批次编号固定，重试不会多开）。
   - 从访达开新一轮**不要求上一轮的记录先写完**：上一轮标成「待 AI 补写」，页面上显示在这一轮的标题旁。页面上开新一轮的规矩不变，仍然先补上一轮。
   - 收进来的版本作者记成「你」，标「访达收纳」。版本文件按「歌名-第几轮-版本」命名，「按项目改名」对音乐不生效。
+- **粘贴的整段 Suno 提示词会拆开**（`server/project-music/shared/prompt-split.mjs`，前后端同一份）：带「Style of Music:/风格：」「Lyrics:/歌词：」标题的按标题拆；带 [Intro] [Verse] [Chorus] [Bridge]、【副歌】等段落标记的，第一个标记之前像风格的一两行是风格，从标记起是歌词；没有标记时，空行前那段像风格就是风格。拆不准时整段放进歌词。只有风格会拆成音乐库标签，带方括号的词一律不当标签。窗口里会显示拆分结果。
+- **格式**：放进「歌曲」（收纳或「加入歌曲」）只收 mp3、wav、m4a、flac，格式不对时确认收纳就挡下：「这个格式不能放进歌曲对比，请先转成 mp3/wav/m4a/flac」。「文件」区是存储和传递用的，收全部音频格式。
+- **中途被打断**：落位前先把目标位置记进回执。重启时项目音乐先收尾：记过落位、目标位置有同名且 SHA 一致、没人引用的文件，就直接认领登记，不再生成 -2；没落盘的标成失败，在「文件任务」里核对后可以重试；`.incoming` 里不属于进行中回执的 `.partial` 清掉。
 - **已经收过了**：同一项目里已有同样内容（放进歌曲时）或同一个文件夹里已有同样内容（放进文件时），任务停在「等待重名处理」，只有「仍然保留」和「取消此项」，不提供复用和覆盖。
 - **移动模式**：核对音乐库里的那一份和原件的 SHA-256 一致后，才把原件送进废纸篓；复用了音乐库已有记录的（比如「仍然保留」同内容），原件保留。
 - **「待补写」清单**：`GET /api/project-music/pending-notes`（可加 `?projectId=`）。AI 开始做项目音乐相关的工作时先看这里，补完一条就自动消失；依据只用用户原话、自己测的结果和两轮提示词的差别，实在没有依据时由负责这首歌的会话问用户一句。限制：一段时间没有 AI 碰这个项目的音乐，记录就一直停在「待补」。
@@ -131,7 +134,8 @@ npm run build && node --test tests/project-music-ui.mjs   # 真实应用界面�
 node --test tests/project-music-compare-ui.mjs   # 对比页：切换同位置、音量对齐、盲听、打点、歌词跳转、记结果
 node --test tests/project-music-files.test.mjs   # 文件区：建文件夹、上传、同内容先问、波形、改名后记录跟着走、加入歌曲、桌面操作
 node --test tests/project-music-files-ui.mjs   # 文件标签界面：切换并记住、树和波形、播放、新建改名、上传、加入歌曲、深色和三套配色可读
-node --test tests/project-music-intake.test.mjs   # 访达收纳：放进文件夹、认歌、整批一轮、待补写、重名只有保留或取消、移动模式
+node --test tests/project-music-intake.test.mjs   # 访达收纳：放进文件夹、认歌、整批一轮、待补写、重名只有保留或取消、移动模式、提示词拆分、格式、三个时间点真杀进程后恢复
+node --test tests/project-music-prompt-split.test.mjs   # Suno 提示词拆分的各种格式
 node --test tests/project-music-intake-ui.mjs   # 收纳窗口界面：认出歌、附本轮提示词、改放进文件夹、下次默认回到那个文件夹
 PROJECT_MUSIC_MYSQLD=/path/to/mysqld node tests/project-music-mysql.mjs   # SQLite 与临时 mysqld 跑同一场景并对比，再验证一次性迁移
 ```

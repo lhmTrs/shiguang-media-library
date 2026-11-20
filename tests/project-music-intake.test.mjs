@@ -16,6 +16,9 @@ import {ProjectMusic} from '../server/project-music/store.mjs';
 import {MusicFolders} from '../server/project-music/folders.mjs';
 import {ProjectMusicIntake, songKey} from '../server/project-music/intake.mjs';
 import {synth} from './helpers/project-music-server.mjs';
+import {openIntakeFixture, intakeSettled, recovered} from './helpers/project-music-intake-fixture.mjs';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
 
 const sha = buf => createHash('sha256').update(buf).digest('hex');
 
@@ -177,3 +180,69 @@ test('项目音乐收纳：默认放进「文件」下的文件夹；放进歌�
   assert.ok(placed);
   assert.equal(sha(await fs.readFile(path.join(f.dir, 'personal_item', 'music', `合成收纳项目--${pid}`, '剪辑稿.wav'))), sha(await fs.readFile(f.trashed.length ? (await fs.readdir(f.dir)).map(n => path.join(f.dir, n)).find(p => p.includes('.Trash-') && p.endsWith('.wav')) : e)));
 });
+
+test('项目音乐收纳：粘进整段 Suno 提示词，拆成风格和歌词，歌词和段落标记不进音乐库标签（验收 PR5 P3-1）', async t => {
+  const f = await fixture(t);
+  const pid = f.project.id;
+  const a = await synth(f.audio, '雨巷.mp3', {freq: 360});
+  const prompt = '中国风, 女声\n[Verse]\n雨巷里的油纸伞\n[Chorus]\n丁香一样的姑娘';
+  const r = await confirm(f, [a], [{kind: 'music', scope: 'project', projectId: pid, newSongTitle: '雨巷', newRound: true, roundPrompt: prompt}]);
+  assert.equal(r.batch.items[0].status, 'ready', JSON.stringify(r.batch.items));
+  let song = f.store.list(pid).songs[0];
+  assert.equal(song.rounds[0].prompt.style, '中国风, 女声');
+  assert.equal(song.rounds[0].prompt.lyrics, '[Verse]\n雨巷里的油纸伞\n[Chorus]\n丁香一样的姑娘');
+  for (let i = 0; i < 400 && (f.store.tagQueue.size || f.store.tagRunning || f.store.tagTimer); i++) await new Promise(r => setTimeout(r, 10));
+  const tags = f.lib.asset(song.rounds[0].versions[0].library.assetId).tags;
+  assert.ok(tags.includes('中国风') && tags.includes('女声'), String(tags));
+  for (const bad of ['[Verse]', '[Chorus]', '雨巷里的油纸伞', '丁香一样的姑娘']) assert.ok(!tags.includes(bad), bad + ' 变成了标签：' + tags);
+});
+
+test('项目音乐收纳：放进歌曲只收 mp3、wav、m4a、flac，格式不对时确认就挡下并说清；放进「文件」照收', async t => {
+  const f = await fixture(t);
+  const pid = f.project.id;
+  const ogg = path.join(f.audio, '小样.ogg');
+  await fs.copyFile(await synth(f.audio, '小样.wav', {freq: 420}), ogg);
+  await assert.rejects(() => confirm(f, [ogg], [{kind: 'music', scope: 'project', projectId: pid, newSongTitle: '小样', newRound: true}]),
+    e => e.code === 'UNSUPPORTED_FORMAT' && /这个格式不能放进歌曲对比，请先转成 mp3\/wav\/m4a\/flac/.test(e.message));
+  assert.equal(f.store.list(pid).songs.length, 0, '被拒的那批没有建歌');
+  const r = await confirm(f, [ogg], [{kind: 'music', scope: 'project', projectId: pid, musicFolder: ''}]);
+  assert.equal(r.batch.items[0].status, 'ready', JSON.stringify(r.batch.items));
+});
+
+// 在第 2 个文件的某一步真把子进程杀掉，重启后核对、重试，应该全部收好、没有 -2、没有残留的 .partial（验收 PR5 P3-2）。
+for (const target of ['song', 'files']) for (const stage of ['before-publish', 'after-publish', 'after-register']) {
+  test(`项目音乐收纳中途被杀：${target === 'song' ? '放进歌曲' : '放进文件'} · ${stage}，重启后能恢复`, async t => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sg-pm-intake-crash-')));
+    t.after(() => fs.rm(dir, {recursive: true, force: true}));
+    const child = spawn(process.execPath, [path.join(import.meta.dirname, 'fixtures', 'project-music-intake-crash.mjs'), dir, stage, target], {stdio: ['ignore', 'pipe', 'pipe']});
+    let err = ''; child.stderr.on('data', b => { err += b; }); child.stdout.on('data', () => {});
+    const [code, signal] = await once(child, 'exit');
+    assert.equal(signal, 'SIGKILL', `子进程应在 ${stage} 被杀：code=${code} ${err}`);
+    const state = JSON.parse(await fs.readFile(path.join(dir, 'state.json'), 'utf8'));
+    const f = await openIntakeFixture(dir);
+    t.after(() => f.close());
+    await recovered(f.store);
+    let batch = await f.intake.reconcile(state.batchId);
+    assert.deepEqual(batch.items.map(i => i.status).filter(s => s === 'unknown'), [], '核对后不应停在「待核对」：' + JSON.stringify(batch.items.map(i => [i.name, i.status, i.error])));
+    for (const i of batch.items) if (i.status === 'failed') batch = await f.intake.retry(state.batchId, i.id);
+    await intakeSettled(f.intake);
+    batch = f.intake.dto(f.intake.batch(state.batchId));
+    assert.deepEqual(batch.items.map(i => i.status), ['ready', 'ready', 'ready'], JSON.stringify(batch.items.map(i => [i.name, i.status, i.error])));
+    const projectDir = path.join(dir, 'personal_item', 'music', `合成中断项目--${state.projectId}`);
+    let names;
+    if (target === 'song') {
+      const song = f.store.list(state.projectId).songs[0];
+      assert.equal(song.rounds.length, 1, '重试不会多开一轮');
+      assert.deepEqual(song.rounds[0].versions.map(v => v.label).sort(), ['A', 'B', 'C']);
+      names = (await fs.readdir(path.join(projectDir, '歌曲', '中断歌', '第01轮'))).sort();
+      assert.equal(names.length, 3, '没有没人引用的多余文件：' + names);
+    } else {
+      names = (await fs.readdir(path.join(projectDir, 'Suno下载'))).sort();
+      assert.deepEqual(names, ['一.mp3', '三.mp3', '二.mp3'].sort());
+      for (const n of names) assert.ok(f.lib.db.prepare('SELECT id FROM assets WHERE path=?').get(path.join(await fs.realpath(projectDir), 'Suno下载', n)), n + ' 已登记');
+    }
+    assert.ok(names.every(n => !/-2\./.test(n)), '没有 -2 副本：' + names);
+    const incoming = await fs.readdir(path.join(dir, 'personal_item', 'music', '.incoming')).catch(() => []);
+    assert.deepEqual(incoming.filter(n => n.endsWith('.partial')), [], '.incoming 里没有残留');
+  });
+}

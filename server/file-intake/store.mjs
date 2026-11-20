@@ -408,7 +408,7 @@ export class FileIntake {
     // 项目音乐：同一首歌的「新开一轮」整批只开一轮、新歌只建一首；其余目标先逐个核对，有问题就整批不开轮。
     const musicTargets=ids.map(id=>targets.get(id).destination).filter(isProjectMusic);
     let musicPlan=null;
-    if(musicTargets.length){const music=this.requireMusic();for(const d of musicTargets)music.destination(d);for(const d of musicTargets)if(!d.newRound)await music.previewTarget(d);musicPlan=music.plan(musicTargets,input.requestId);}
+    if(musicTargets.length){const music=this.requireMusic();for(const id of ids)if(isProjectMusic(targets.get(id).destination))music.checkFile(targets.get(id).destination,files.get(id));for(const d of musicTargets)music.destination(d);for(const d of musicTargets)if(!d.newRound)await music.previewTarget(d);musicPlan=music.plan(musicTargets,input.requestId);}
     for(const id of ids){
       const f=files.get(id),{destination}=structuredClone(targets.get(id));
       // 「按项目改名」对音乐不生效：项目音乐一律保留原名（歌曲版本由项目音乐按版本号命名）。

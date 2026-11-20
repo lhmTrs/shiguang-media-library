@@ -3,6 +3,11 @@ import {Image,Film,Music,RefreshCw} from 'lucide-react';
 import {imageNamePreset} from '../import-presets.mjs';
 import {guessPersonLook, matchSong, songDestination} from './routing.mjs';
 import {PromptField} from './VideoForm';
+import {splitSunoPrompt} from '../../server/project-music/shared/prompt-split.mjs';
+
+// 歌曲（采用和对比）只收这四种；「文件」区收全部音频格式。
+const SONG_EXT=['.mp3','.wav','.m4a','.flac'];
+const songOK=(name:string)=>SONG_EXT.includes((name.match(/\.[^.]+$/)?.[0]||'').toLowerCase());
 import {INTAKE_API,kindLabel,encoded,errorMessage,type IntakeDestination,type IntakeFile,type IntakeFolder,type IntakeRequest,type MediaKind,type ImageProposal,type RoutingProject} from './types';
 
 type Proposal=ImageProposal;
@@ -102,6 +107,17 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
  * 新开一轮可以附本轮提示词（「粘贴提示词」读一次剪贴板）。歌曲版本按「歌名-第几轮-版本」命名，不改文件名。
  */
 const NEW_SONG='__new_song__',NEW_ROUND='__new_round__';
+/** 粘进来的整段 Suno 提示词会拆成风格和歌词：只有风格拆成音乐库标签。拆不准时整段算歌词。让你看到拆分结果。 */
+function PromptSplitPreview({text}:{text:string}){
+  if(!text.trim())return null;
+  const p=splitSunoPrompt(text),lines=p.lyrics?p.lyrics.split('\n').filter(l=>l.trim()).length:0;
+  return <p className="fi-muted fi-prompt-split" role="status" aria-label="提示词拆分结果">
+    <span>风格：{p.style?`「${p.style}」（会拆成音乐库标签）`:'没认出风格'}</span>
+    {lines>0&&<span> · 歌词 {lines} 行（不做标签）</span>}
+    {p.params&&<span> · 其他参数：「{p.params}」</span>}
+    {p.how==='unsure'&&<span> · 拆不准，整段放进了歌词；风格可以之后在项目音乐里补</span>}
+  </p>;
+}
 function MusicTarget({file,value,locked,projects,routing,onChange}:{file:IntakeFile;value:DestinationDraft;locked:boolean;projects:{id:string;name:string}[];routing:RoutingProject[];onChange:(v:DestinationDraft,manual?:boolean)=>void}){
   const project=value.projectId||'',music=routing.find(p=>p.id===project)?.music;
   const toSong=!!(value.songId||value.newSongTitle!==undefined);
@@ -118,8 +134,9 @@ function MusicTarget({file,value,locked,projects,routing,onChange}:{file:IntakeF
       <option value="">请选择项目</option>{projects.filter(p=>routing.some(r=>r.id===p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
     {project&&<div className="fi-field"><span>放进</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'项目音乐里的位置 '+file.id}>
       <button type="button" disabled={locked} aria-pressed={!toSong} onClick={()=>toSong&&toFiles()}>文件</button>
-      <button type="button" disabled={locked} aria-pressed={toSong} onClick={()=>!toSong&&firstSong()}>歌曲</button>
+      <button type="button" disabled={locked||!songOK(file.name)} title={songOK(file.name)?undefined:'这个格式不能放进歌曲对比，请先转成 mp3/wav/m4a/flac'} aria-pressed={toSong} onClick={()=>!toSong&&firstSong()}>歌曲</button>
     </span></div>}
+    {project&&!songOK(file.name)&&<small className="fi-field-hint">这个格式不能放进歌曲对比，请先转成 mp3/wav/m4a/flac；放进「文件」可以。</small>}
     {project&&!toSong&&<><label><span>文件夹</span><select aria-label={'项目音乐文件夹 '+file.id} value={value.musicFolder||''} disabled={locked} onChange={e=>onChange({...base,musicFolder:e.target.value,...(value.fileName?{fileName:value.fileName}:{})})}>
       {(music?.folders||[{id:'',name:'项目音乐文件夹',relativePath:''}]).map(f=><option key={f.id||'root'} value={f.id}>{f.relativePath||'项目音乐文件夹'}</option>)}</select></label>
       <small className="fi-field-hint">存放和传递用，没有轮次。要比较或定稿的，之后在项目音乐里「加入歌曲」。</small>
@@ -132,6 +149,7 @@ function MusicTarget({file,value,locked,projects,routing,onChange}:{file:IntakeF
         {[...(song?.rounds||[])].reverse().map(r=><option key={r.id} value={r.id}>第 {r.roundNo} 轮{r.versionCount?`（已有 ${r.versionCount} 个版本）`:'（还没有版本）'}</option>)}
         <option value={NEW_ROUND}>新开一轮{song?` · 第 ${(song.rounds.at(-1)?.roundNo||0)+1} 轮`:' · 第 1 轮'}</option></select></label>
       {value.newRound&&<><div className="fi-field"><span>本轮提示词</span><PromptField value={value.roundPrompt||''} locked={locked} onChange={text=>onChange({...value,roundPrompt:text})}/></div>
+        <PromptSplitPreview text={value.roundPrompt||''}/>
         {song&&!song.rounds.at(-1)?.complete&&<small className="fi-field-hint">上一轮的记录还没写完也可以开：上一轮会标成「待 AI 补写」，由 AI 补上。</small>}</>}
       <small className="fi-field-hint">一次收进的几个文件是同一轮的几个版本，按「歌名-第几轮-版本」命名。</small>
     </>}

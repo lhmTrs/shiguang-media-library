@@ -112,7 +112,7 @@ export function FilesPanel({active, projectId, request, player, songs, onJumpSon
         onSeek={f => current ? player.seek(f) : player.play(playable(it), f)} label={`${it.name} 的波形`}/> : null,
 
       actions: <>
-        {it.addable && <button type="button" className="sgm-icon" title="加入歌曲" aria-label={`把 ${it.name} 加入歌曲`} disabled={busy} onClick={() => setDialog({kind: 'add', item: it})}><ListPlus size={16}/></button>}
+        {it.audio && <button type="button" className="sgm-icon" title={it.addable ? '加入歌曲' : '这个格式不能加入歌曲对比，请先转成 mp3/wav/m4a/flac'} aria-label={`把 ${it.name} 加入歌曲`} disabled={busy || !it.addable} onClick={() => setDialog({kind: 'add', item: it})}><ListPlus size={16}/></button>}
         <a className="sgm-icon" href={it.downloadUrl} download={it.name} title="下载" aria-label={`下载 ${it.name}`}><Download size={16}/></a>
       </>,
       // 「已加入」和标签放在下面一行小字里，各行的波形保持一样宽、对齐。

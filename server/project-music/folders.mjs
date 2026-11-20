@@ -36,6 +36,8 @@ export class MusicFolders {
     this.cacheDir = path.join(dataDir ?? store.lib.dataDir, 'project-music-cache', 'peaks');
     this.desktop = new Map();
     this.peakWork = Promise.resolve();
+    // 让 store 重启时能替「文件」区收尾中断的上传。
+    store.fileImports = this;
   }
 
   get db() { return this.store.db; }
@@ -347,13 +349,16 @@ export class MusicFolders {
     const here = await this.folderAt(dir, s.folder);
     const root = await store.prepareRoot();
     const stem = path.basename(s.fileName, path.extname(s.fileName));
-    const placed = await this.files.publish(s.stage, posixJoin(rel, here.rel), stem, s.ext);
+    // 落位前记下目标：中断后重启时认领，不判成「结果不明」（验收 PR5 P3-2）。
+    s.placing = {folderRel: posixJoin(rel, here.rel), folder: here.rel, stem};
+    store.persistImport(s);
+    const placed = await this.files.publish(s.stage, s.placing.folderRel, stem, s.ext);
     const file = await this.files.resolve(placed.rel), fst = await fs.lstat(file);
     let assetId;
     try {
       this.db.transaction(() => {
         assetId = store.indexAsset(root, file, s.sha256, fst);
-        s.status = 'ready'; s.path = posixJoin(here.rel, placed.fileName); s.name = placed.fileName; s.assetId = assetId; s.error = null; delete s.stage;
+        s.status = 'ready'; s.path = posixJoin(here.rel, placed.fileName); s.name = placed.fileName; s.assetId = assetId; s.error = null; delete s.stage; delete s.placing;
         store.persistImport(s);
       })();
     } catch (e) {
@@ -362,6 +367,28 @@ export class MusicFolders {
     }
     store.lib.enqueue?.(assetId);
     return this.receiptDTO(s);
+  }
+
+  // 重启收尾：记过落位、目标文件夹里有同名（含 -2…）且 SHA 一致、不是别的回执已经登记的那份，就认领登记；否则判为没落盘、可以重试。
+  async recover(s) {
+    const store = this.store;
+    let placed = null;
+    if (s.placing && /^[a-f0-9]{64}$/.test(s.sha256 || '')) {
+      const taken = new Set(this.db.prepare('SELECT data_json FROM project_music_imports WHERE project_id=?').all(s.projectId).map(r => JSON.parse(r.data_json))
+        .filter(x => x.kind === 'file' && x.status === 'ready' && x.id !== s.id && x.path).map(x => `${s.placing.folderRel.split('/')[0]}/${x.path}`));
+      placed = await this.files.adopt(s.placing.folderRel, s.placing.stem, s.ext, s.sha256, taken).catch(() => null);
+    }
+    if (!placed) return store.failUnplaced(s);
+    const file = await this.files.resolve(placed.rel), fst = await fs.lstat(file), root = await store.prepareRoot();
+    let assetId;
+    this.db.transaction(() => {
+      assetId = store.indexAsset(root, file, s.sha256, fst);
+      s.status = 'ready'; s.path = posixJoin(s.placing.folder, placed.fileName); s.name = placed.fileName; s.assetId = assetId; s.error = null; s.recovered = true; delete s.placing;
+      store.persistImport(s);
+    })();
+    if (s.stage) await fs.rm(s.stage, {force: true}).catch(() => {});
+    delete s.stage; store.persistImport(s);
+    store.lib.enqueue?.(assetId);
   }
 
   // ---------- 加入歌曲：把「文件」里的一个音频变成某首歌某一轮的一个版本（文件不挪，版本复用这条音乐库记录） ----------
@@ -378,7 +405,7 @@ export class MusicFolders {
       if (song.data.status !== 'active') fail('SONG_NOT_ACTIVE', '这首歌不在进行中，不能再加版本', 409);
       const {file, st} = await this.fileAt(projectId, input.path, {allowSongs: false});
       const ext = '.' + extOf(file);
-      if (!M.FORMATS.has(ext)) fail('UNSUPPORTED_FORMAT', '加入歌曲只支持 mp3、wav、m4a、flac', 400);
+      if (!M.FORMATS.has(ext)) fail('UNSUPPORTED_FORMAT', `${M.SONG_FORMAT_MESSAGE}（「文件」区可以放全部音频格式，加入歌曲对比只收这四种）`, 400);
       if (st.size > M.MAX_BYTES) fail('FILE_TOO_LARGE', '单个文件不能超过 200MB', 413);
       const sha256 = await this.hash(file);
       const opened = await this.files.openPath(file, {identity: null, sha256});

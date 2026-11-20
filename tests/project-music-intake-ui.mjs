@@ -56,9 +56,13 @@ test('收纳窗口 · 项目音乐：文件名认出歌就放进这首歌（默�
   assert.equal(await panel.getByLabel('目标轮次 ' + fNamed.id).inputValue(), '__new_round__');
   // 附本轮提示词（没有原生剪贴板时是空框，⌘V 粘贴）
   await panel.getByRole('button', {name: '粘贴提示词'}).click();
-  await panel.getByLabel('提示词').fill('中国风流行 女声 中速');
-  await panel.getByLabel('提示词').blur(); // 点别处收起，和视频收纳的提示词框一样
+  await panel.getByLabel('提示词', {exact: true}).fill('中国风流行, 女声, 中速\n[Verse]\n麦浪一层一层\n[Chorus]\n回家的路');
+  await panel.getByLabel('提示词', {exact: true}).blur(); // 点别处收起，和视频收纳的提示词框一样
   await panel.getByText('上一轮的记录还没写完也可以开').waitFor();
+  // 窗口里看得到拆分结果：只有风格拆成标签，歌词不做标签（验收 PR5 P3-1）
+  const split = panel.getByRole('status', {name: '提示词拆分结果'});
+  await split.getByText('风格：「中国风流行, 女声, 中速」（会拆成音乐库标签）').waitFor();
+  await split.getByText(/歌词 4 行（不做标签）/).waitFor();
   await panel.getByRole('button', {name: '完成', exact: true}).click();
 
   // 第二个文件：默认进音乐库；改成项目音乐 › 文件 › Suno下载
@@ -76,7 +80,7 @@ test('收纳窗口 · 项目音乐：文件名认出歌就放进这首歌（默�
   await page.getByText('任务已接收，请在网页顶栏“文件任务”查看后续进度。').waitFor();
   assert.equal(posts.length, 1);
   const targets = posts[0].targets.map(t => t.destination);
-  assert.deepEqual(targets[0], {kind: 'music', scope: 'project', projectId: pid, songId: song.id, newRound: true, roundPrompt: '中国风流行 女声 中速'});
+  assert.deepEqual(targets[0], {kind: 'music', scope: 'project', projectId: pid, songId: song.id, newRound: true, roundPrompt: '中国风流行, 女声, 中速\n[Verse]\n麦浪一层一层\n[Chorus]\n回家的路'});
   assert.deepEqual(targets[1], {kind: 'music', scope: 'project', projectId: pid, musicFolder: 'Suno下载'});
   assert.ok(posts[0].targets.every(t => t.nameMode === undefined), '「按项目改名」对音乐不生效');
   let batch;
@@ -86,7 +90,8 @@ test('收纳窗口 · 项目音乐：文件名认出歌就放进这首歌（默�
   // 结果：第 2 轮 A（提示词照填），第 1 轮标「待 AI 补写」；散曲在「文件 › Suno下载」
   song = (await s.call('GET', M + `/songs/${song.id}`)).body;
   assert.equal(song.rounds.length, 2);
-  assert.equal(song.rounds[1].prompt.style, '中国风流行 女声 中速');
+  assert.equal(song.rounds[1].prompt.style, '中国风流行, 女声, 中速');
+  assert.equal(song.rounds[1].prompt.lyrics, '[Verse]\n麦浪一层一层\n[Chorus]\n回家的路');
   assert.deepEqual(song.rounds[1].versions.map(v => v.label), ['A']);
   assert.ok(song.rounds[0].pendingAgentNotes);
   const pending = (await s.call('GET', '/project-music/pending-notes')).body.items;
