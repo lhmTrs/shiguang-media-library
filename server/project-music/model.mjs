@@ -141,12 +141,27 @@ export function changes(input) {
   return {text: text(input.text, '改了什么', 4000, {required: true}).trim(), count: input.count ?? null};
 }
 
-// 「先补上一轮」：上一轮的问题整理和下一轮方向都要有内容，才可以开新一轮。
+// 「先补上一轮」：上一轮的问题整理和下一轮方向都不为空，才可以开新一轮。
+// AI 写的条目或你自己写的一句话，任一有内容就算填了，不要求条目格式（SPEC 第十节）。
 export function roundMissing(data) {
   const missing = [];
-  if (!data?.issues?.items?.length) missing.push('issues');
-  if (!data?.nextDirection?.text?.trim()) missing.push('nextDirection');
+  if (!data?.issues?.items?.length && !data?.userIssues?.text?.trim()) missing.push('issues');
+  if (!data?.nextDirection?.text?.trim() && !data?.userDirection?.text?.trim()) missing.push('nextDirection');
   return missing;
+}
+
+// 你自己写的问题整理、下一轮方向：一段文字即可，作者记为「你」，和 AI 写的分开存放和显示。
+export function userNote(value, label) {
+  if (value === null) return null;
+  const body = text(value, label, 4000).trim();
+  return body ? body : null;
+}
+
+// 原话时间：北京时间，格式 YYYY-MM-DD HH:mm，与页面上其他时间一致。
+export function saidAt(value) {
+  const v = text(value ?? '', '原话时间', 16).trim();
+  if (v && !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(v)) fail('INVALID_INPUT', '原话时间请写北京时间，格式 YYYY-MM-DD HH:mm；查不到就不写');
+  return v;
 }
 
 export const MISSING_LABEL = {issues: '问题整理', nextDirection: '下一轮方向'};

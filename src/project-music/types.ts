@@ -23,6 +23,9 @@ export type Round = {
   issues: {items: IssueItem[]; author: Author} | null;
   checks: {items: CheckItem[]; author: Author} | null;
   nextDirection: {text: string; promptDraft: PromptDraft | null; author: Author} | null;
+  /** 你自己写的问题整理和下一轮方向：一段文字，和 AI 写的分开存放和显示。 */
+  userIssues: {text: string; author: Author} | null;
+  userDirection: {text: string; author: Author} | null;
   comparisonNote: unknown;
   promptDiffFromPrevious: string[] | null; complete: boolean; missing: ('issues' | 'nextDirection')[];
   createdBy: Author; createdAt: number; updatedAt: number; versions: Version[];

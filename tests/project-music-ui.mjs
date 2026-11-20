@@ -25,7 +25,8 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
 
   const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
   t.after(() => browser.close());
-  const context = await browser.newContext({viewport: {width: 1360, height: 900}});
+  // 浏览器放在美国西部时区：页面上的时间仍应按北京时间显示。
+  const context = await browser.newContext({viewport: {width: 1360, height: 900}, timezoneId: 'America/Los_Angeles'});
   await context.addInitScript(([lib, project]) => {
     if (!localStorage.getItem('sg-test-seeded')) {
       localStorage.setItem('shiguang.projectLocation.v1:' + lib, JSON.stringify({projectId: project, recent: [project], lastInContainer: {}}));
@@ -68,14 +69,17 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
   await page.getByRole('button', {name: '知道了'}).click();
   assert.ok(await round1.getByText(/开新一轮前，先补上这一轮/).isVisible());
 
-  // 自己补上问题整理和下一轮方向
-  await round1.locator('.sgm-block', {hasText: '问题整理'}).getByRole('button', {name: '自己填写'}).click();
-  await round1.getByLabel('第 1 个问题', {exact: true}).fill('副歌有点闷');
-  await round1.getByLabel('第 1 个问题的原因猜测').fill('可能是混响太重');
+  // 自己各写一句就算补上（不要求条目格式），作者记为「你」，时间按北京时间显示
+  await round1.locator('.sgm-block', {hasText: '问题整理'}).getByRole('button', {name: '自己写一句'}).click();
+  await round1.getByLabel('你写的问题整理（一句话也行）').fill('副歌有点闷');
   await round1.locator('.sgm-block', {hasText: '问题整理'}).getByRole('button', {name: '保存'}).click();
-  await round1.getByText('猜测：可能是混响太重').waitFor();
-  await round1.locator('.sgm-block', {hasText: '下一轮方向'}).getByRole('button', {name: '自己填写'}).click();
-  await round1.getByLabel('下一轮打算怎么改').fill('只把慢板改成中速');
+  await round1.getByText('副歌有点闷').waitFor();
+  const stamp = await round1.locator('.sgm-part.is-user .sgm-author').first().innerText();
+  const bj = ms => { const p = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false}).formatToParts(new Date(ms)).map(x => [x.type, x.value])); return `${p.year}-${p.month}-${p.day} ${p.hour}:`; };
+  assert.match(stamp, /^你 · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, stamp);
+  assert.ok([Date.now(), Date.now() - 120000].map(bj).some(x => stamp.includes(x)), `浏览器在美国西部时区，页面仍应显示北京时间：${stamp}`);
+  await round1.locator('.sgm-block', {hasText: '下一轮方向'}).getByRole('button', {name: '自己写一句'}).click();
+  await round1.getByLabel('你写的下一轮方向（一句话也行）').fill('只把慢板改成中速');
   await round1.locator('.sgm-block', {hasText: '下一轮方向'}).getByRole('button', {name: '保存'}).click();
   await round1.getByText('只把慢板改成中速').waitFor();
   await root.getByRole('button', {name: '上传新一轮'}).click();

@@ -14,8 +14,10 @@ export const AGENT_SCHEMA = {
       'issues.items[].source 必填：user_words（来自用户原话）或 objective_check（来自客观检查）。原因写进 causeGuess，页面会标为「猜测」，不要写成定论。',
       'checks.items[] 每项都要写 method（怎么检查的）；没检查的项不要写，页面会显示「未检查」。',
       'nextDirection 页面标为「建议」；promptDraft 只是草稿，用户开新一轮时确认后才生效。',
-      'listeningTranscripts 只用于把用户在对话里说的听感逐字转录进来：verbatim 必须为 true，text 一字不改；saidAt 写用户说这句话的时间（北京时间，查得到才写）。页面会注明是哪个会话、什么时间转录的。',
+      'listeningTranscripts 只用于把用户在对话里说的听感逐字转录进来：verbatim 必须为 true，text 一字不改；saidAt 写用户说这句话的北京时间，格式 YYYY-MM-DD HH:mm，查不到就不写。页面会注明是哪个会话、什么时间转录的。',
+      'userIssues、userDirection 是用户自己写的问题整理和下一轮方向，AI 不能写；「先补上一轮」只看问题整理和下一轮方向是否为空，AI 写的或用户写的任一有内容即可。',
       'AI 不能删除版本，不能改版本状态（淘汰、当前最好、定稿），也不能改用户的听感原文。',
+      '只能由用户在网页上做的操作（PATCH …/rounds/<id>、PATCH …/versions/<id>、PATCH …/songs/<id>、定稿与撤回定稿）要求浏览器自带的 Sec-Fetch-Site: same-origin。AI 不得伪造这个请求头，也不得调用这些接口；这条限制是防误用约定，不是技术上的安全边界。',
     ],
     example: {
       expectedRevision: 3,

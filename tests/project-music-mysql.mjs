@@ -14,6 +14,7 @@ import {randomUUID} from 'node:crypto';
 import mysql from 'mysql2/promise';
 import {Library} from '../server/library.mjs';
 import {MysqlDatabase} from '../server/mysql-db.mjs';
+import {MysqlStorage} from '../server/mysql.mjs';
 import {Projects} from '../server/projects.mjs';
 import {ProjectMusic} from '../server/project-music/store.mjs';
 
@@ -70,14 +71,18 @@ async function scenario(lib, dataDir) {
   out.openBytes = (await opened.handle.stat()).size === (await fs.stat(fileA)).size;
   await opened.handle.close();
   out.songRevision = song.revision;
-  return out;
+  return {out, projectId: p.id, projects, dataDir};
 }
 
 const result = {sqlite: null, mysql: null, mysqlRun: false, version: null};
 let server, connection, mysqlDb, sqliteLib, passed = false, logs = '';
 try {
-  sqliteLib = await new Library(path.join(base, 'sqlite-app'), {directoryClassification: true}).init();
-  result.sqlite = await scenario(sqliteLib, path.join(base, 'sqlite-app'));
+  const sqliteApp = path.join(base, 'sqlite-app');
+  const storage = await new MysqlStorage(sqliteApp).init();
+  sqliteLib = await new Library(sqliteApp, {directoryClassification: true}).init();
+  storage.attach(sqliteLib);
+  const sqliteRun = await scenario(sqliteLib, sqliteApp);
+  result.sqlite = sqliteRun.out;
   console.log('SQLite', JSON.stringify(result.sqlite));
   const binary = process.env.PROJECT_MUSIC_MYSQLD || process.env.CREATIVE_MYSQLD;
   if (!binary) {
@@ -97,7 +102,7 @@ try {
     await connection.query('CREATE DATABASE project_music_check CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');
     mysqlDb = new MysqlDatabase({...config, database: 'project_music_check'});
     const appDir = path.join(base, 'mysql-app'); await fs.mkdir(appDir);
-    result.mysql = await scenario({db: mysqlDb, dataDir: appDir, asset: () => { throw Error('素材不存在'); }, roots: () => []}, appDir);
+    result.mysql = (await scenario({db: mysqlDb, dataDir: appDir, asset: () => { throw Error('素材不存在'); }, roots: () => []}, appDir)).out;
     result.mysqlRun = true;
     console.log('MySQL ' + result.version, JSON.stringify(result.mysql));
     const [cols] = await connection.query("SELECT TABLE_NAME t, COLUMN_NAME c, COLUMN_TYPE ty FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='project_music_check' AND TABLE_NAME LIKE 'project_music_%' AND COLUMN_NAME IN ('id','sha256','data_json','round_no')");
@@ -106,6 +111,18 @@ try {
     result.mysqlIndexes = idx.map(r => `${r.t}.${r.i}`).sort();
     console.log(JSON.stringify({columns: result.mysqlColumns, indexes: result.mysqlIndexes}));
     assert.deepEqual(result.mysql, result.sqlite, 'SQLite 与 MySQL 的行为不一致');
+    // 一次性迁移（server/mysql.mjs）：SQLite 里的项目音乐原样进 MySQL，读出来和迁移前一致。
+    const before = new ProjectMusic({lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp}).init().list(sqliteRun.projectId);
+    await storage.activate({...config, database: 'project_music_migration'});
+    assert.equal(sqliteLib.db.kind, 'mysql');
+    const after = new ProjectMusic({lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp}).init().list(sqliteRun.projectId);
+    assert.deepEqual(after, before, '迁移到 MySQL 后项目音乐数据不一致');
+    const [migrated] = await connection.query("SELECT TABLE_NAME t FROM information_schema.TABLES WHERE TABLE_SCHEMA='project_music_migration' AND TABLE_NAME LIKE 'project_music_%'");
+    result.migratedTables = migrated.map(r => r.t).sort();
+    assert.equal(result.migratedTables.length, 5, '五张项目音乐表都迁移了');
+    const [uniq] = await connection.query("SELECT INDEX_NAME i FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='project_music_migration' AND TABLE_NAME='project_music_rounds' AND NON_UNIQUE=0 AND COLUMN_NAME='round_no'");
+    assert.ok(uniq.length, '迁移后的轮次表保留唯一约束');
+    result.migration = 'OK';
     assert.ok(result.mysqlColumns.includes('project_music_versions.sha256=char(64)'));
     assert.ok(result.mysqlColumns.includes('project_music_songs.data_json=longtext'));
   }
@@ -119,11 +136,12 @@ try {
   passed = true;
 } finally {
   if (mysqlDb) { const done = mysqlDb.worker.threadId === -1 ? Promise.resolve() : once(mysqlDb.worker, 'exit'); mysqlDb.close(); await bounded(done, 10000, 'MySQL worker 未退出').catch(() => {}); }
-  if (sqliteLib?.db?.open) sqliteLib.db.close();
+  if (sqliteLib?.db?.kind === 'mysql') { const done = sqliteLib.db.worker.threadId === -1 ? Promise.resolve() : once(sqliteLib.db.worker, 'exit'); sqliteLib.db.close(); await bounded(done, 10000, 'MySQL worker 未退出').catch(() => {}); }
+  else if (sqliteLib?.db?.open) sqliteLib.db.close();
   await connection?.end().catch(() => {});
   if (server && server.exitCode === null) { const done = once(server, 'exit'); server.kill('SIGTERM'); await bounded(done, 20000, 'mysqld 未退出'); }
   const known = !server || server.exitCode !== null || server.signalCode !== null;
-  console.log(JSON.stringify({passed, mysqlRun: result.mysqlRun, mysqlVersion: result.version, mysqldStopped: known, tempRemoved: passed && known, ...(passed && known ? {} : {retained: base})}));
+  console.log(JSON.stringify({passed, mysqlRun: result.mysqlRun, migration: result.migration ?? 'not-run', mysqlVersion: result.version, mysqldStopped: known, tempRemoved: passed && known, ...(passed && known ? {} : {retained: base})}));
   if (passed && known) await fs.rm(base, {recursive: true, force: true});
   // 3 = SQLite 一半通过但 MySQL 没跑，不能当作「两库一致」。
   process.exitCode = passed ? (result.mysqlRun ? 0 : 3) : 1;

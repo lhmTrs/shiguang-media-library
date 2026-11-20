@@ -41,6 +41,11 @@ export function musicConstraints(table) {
   return UNIQUE[table] ?? [];
 }
 
+// MySQL 的普通索引随建表一起声明（不支持 CREATE INDEX IF NOT EXISTS）；一次性迁移也用这一份。
+export function musicMysqlIndexes(table) {
+  return (INDEXES[table] ?? []).map(([name, cols]) => `INDEX ${name} (${cols})`);
+}
+
 export function musicColumnType(table, column) {
   const name = typeof column === 'string' ? column : column?.name;
   const type = MUSIC_TABLES[table]?.[name]?.[1];
@@ -55,11 +60,8 @@ export function ensureMusicSchema(db) {
       const type = types[mysql ? 1 : 0];
       return column === 'id' ? `id ${type} NOT NULL PRIMARY KEY` : `${column} ${type} NOT NULL`;
     });
-    const indexes = INDEXES[table] ?? [];
-    // MySQL 不支持 CREATE INDEX IF NOT EXISTS，索引随建表一起声明；SQLite 另建。
-    const inline = mysql ? indexes.map(([name, cols]) => `INDEX ${name} (${cols})`) : [];
-    const definition = [...fields, ...musicConstraints(table), ...inline].join(',');
+    const definition = [...fields, ...musicConstraints(table), ...(mysql ? musicMysqlIndexes(table) : [])].join(',');
     db.exec(`CREATE TABLE IF NOT EXISTS ${table} (${definition})${mysql ? ' ENGINE=InnoDB' : ''}`);
-    if (!mysql) for (const [name, cols] of indexes) db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${cols})`);
+    if (!mysql) for (const [name, cols] of INDEXES[table] ?? []) db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${cols})`);
   }
 }

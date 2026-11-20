@@ -175,6 +175,9 @@
 .sgm-block h4 { font-size: 14px; display: flex; align-items: center; gap: 8px; }
 .sgm-author { color: var(--sg-text-muted); font-size: 12px; }
 .sgm-block-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.sgm-part { display: grid; gap: 6px; }
+.sgm-part.is-user { padding: 10px 12px; border-radius: 8px; background: var(--sg-surface-raised); }
+.sgm-part-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sgm-prompt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 14px; }
 .sgm-prompt dt { color: var(--sg-text-muted); font-size: 13px; }
 .sgm-prompt dd { margin: 0; color: var(--sg-text); overflow-wrap: anywhere; }

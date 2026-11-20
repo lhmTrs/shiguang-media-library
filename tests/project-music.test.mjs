@@ -292,6 +292,24 @@ test('项目音乐：并发同号轮次与中断回执', async t => {
   const rounds = (await s.call('GET', M + `/songs/${song.id}`)).body.rounds;
   assert.ok(results.every(r => [200, 409].includes(r.status)), results.map(r => r.text).join('\n'));
   assert.equal(new Set(rounds.map(r => r.roundNo)).size, rounds.length, '轮次编号不重复');
+  // 用户自己各写一句就算补上上一轮；AI 不能写用户的这两项；原话时间必须是北京时间格式
+  let r1 = rounds[0];
+  assert.equal((await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {}}, {asPage: true})).body.code, 'PREVIOUS_ROUND_INCOMPLETE');
+  const agentUser = await s.call('PATCH', M + `/rounds/${r1.id}/agent-notes`, {expectedRevision: r1.revision, session: '合成会话', userIssues: '冒充用户'});
+  assert.equal(agentUser.status, 403);
+  assert.equal(agentUser.body.code, 'AGENT_FIELD_FORBIDDEN');
+  assert.equal((await s.call('PATCH', M + `/rounds/${r1.id}/agent-notes`, {expectedRevision: r1.revision, session: '合成会话', listeningTranscripts: {verbatim: true, entries: [{text: '原话', saidAt: '11月20日上午'}]}})).status, 400);
+  let after = await s.call('PATCH', M + `/rounds/${r1.id}`, {expectedRevision: r1.revision, userIssues: '副歌有点闷'}, {asPage: true});
+  r1 = after.body.rounds[0];
+  assert.equal(r1.userIssues.author.kind, 'user');
+  assert.deepEqual(r1.missing, ['nextDirection']);
+  after = await s.call('PATCH', M + `/rounds/${r1.id}`, {expectedRevision: r1.revision, userDirection: '下一轮只改速度'}, {asPage: true});
+  assert.equal(after.body.rounds[0].complete, true);
+  assert.equal(after.body.rounds[0].issues, null, '你写的和 AI 写的分开存放');
+  const second = await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {style: '合成二'}}, {asPage: true});
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.body.rounds.length, rounds.length + 1);
+
   // 登记后未传内容的回执可以查询，状态仍是 waiting，不会自动重发
   const requestId = uuid();
   await s.call('POST', M + '/imports', {requestId, roundId: rounds[0].id, fileName: '合成.mp3', bytes: 1000}, {asPage: true});

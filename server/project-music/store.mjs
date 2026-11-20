@@ -12,6 +12,7 @@ const AGENT_FIELDS = ['expectedRevision', 'session', 'changes', 'issues', 'check
 const USER_ONLY = {
   prompt: '提示词由你粘贴或确认', sunoTier: 'Suno 会员档位由你填写', listening: '「你的听感」只能是你的原话；转录请用 listeningTranscripts',
   status: '版本取舍由你决定', bestVersionId: '当前最好由你决定', finalVersionId: '定稿由你决定',
+  userIssues: '这是你自己写的问题整理；AI 请写 issues', userDirection: '这是你自己写的下一轮方向；AI 请写 nextDirection',
 };
 
 export class ProjectMusic {
@@ -123,7 +124,7 @@ export class ProjectMusic {
       id: round.id, songId: round.song_id, roundNo: round.round_no, revision: round.revision,
       prompt: d.prompt, promptConfirmed: d.promptConfirmed ?? null, promptDraftedBy: d.promptDraftedBy ?? null,
       changes: d.changes ?? null, listening: d.listening ?? [], issues: d.issues ?? null, checks: d.checks ?? null,
-      nextDirection: d.nextDirection ?? null, comparisonNote: d.comparisonNote ?? null,
+      nextDirection: d.nextDirection ?? null, userIssues: d.userIssues ?? null, userDirection: d.userDirection ?? null, comparisonNote: d.comparisonNote ?? null,
       promptDiffFromPrevious: previous ? diff : null, complete: missing.length === 0, missing,
       createdBy: d.createdBy, createdAt: round.created_at, updatedAt: round.updated_at,
       versions: versions.filter(v => v.round_id === round.id).map(v => this.versionDTO(song, round, v)),
@@ -224,7 +225,7 @@ export class ProjectMusic {
     const at = M.now(), byUser = author.kind === 'user';
     const data = {
       prompt, promptConfirmed: byUser ? author : null, promptDraftedBy: byUser ? null : author,
-      changes: null, listening: [], issues: null, checks: null, nextDirection: null, comparisonNote: null,
+      changes: null, listening: [], issues: null, checks: null, nextDirection: null, userIssues: null, userDirection: null, comparisonNote: null,
       createdBy: author, args,
     };
     const roundNo = (last?.round_no ?? 0) + 1;
@@ -237,9 +238,9 @@ export class ProjectMusic {
     return this.song(projectId, song.id);
   }
 
-  // 页面（用户）改一轮：提示词、确认 AI 起草的提示词、你的听感原文；也可以自己补问题整理和下一轮方向。
+  // 页面（用户）改一轮：提示词、确认 AI 起草的提示词、你的听感原文；也可以自己写问题整理和下一轮方向（与 AI 写的分开存）。
   updateRound(projectId, roundId, input) {
-    M.onlyKeys(input, ['expectedRevision', 'prompt', 'confirmPrompt', 'listening', 'issues', 'nextDirection']);
+    M.onlyKeys(input, ['expectedRevision', 'prompt', 'confirmPrompt', 'listening', 'userIssues', 'userDirection']);
     const round = this.roundRow(projectId, roundId);
     M.revision(input.expectedRevision);
     if (input.expectedRevision !== round.revision) this.conflict('project_music_rounds', round.id);
@@ -247,8 +248,8 @@ export class ProjectMusic {
     if (input.prompt !== undefined) { d.prompt = M.prompt(input.prompt, d.prompt); d.promptConfirmed = user; }
     if (input.confirmPrompt === true) d.promptConfirmed = user;
     if (input.listening !== undefined) d.listening = this.mergeListening(d.listening ?? [], input.listening, user);
-    if (input.issues !== undefined) d.issues = input.issues === null ? null : {...M.issues(input.issues), author: user};
-    if (input.nextDirection !== undefined) d.nextDirection = input.nextDirection === null ? null : {...M.nextDirection(input.nextDirection), author: user};
+    if (input.userIssues !== undefined) { const t = M.userNote(input.userIssues, '你写的问题整理'); d.userIssues = t ? {text: t, author: user} : null; }
+    if (input.userDirection !== undefined) { const t = M.userNote(input.userDirection, '你写的下一轮方向'); d.userDirection = t ? {text: t, author: user} : null; }
     this.saveRow('project_music_rounds', round, d, input.expectedRevision);
     return this.song(projectId, round.song_id);
   }
@@ -287,7 +288,7 @@ export class ProjectMusic {
       if (!Array.isArray(t.entries) || !t.entries.length || t.entries.length > 20) fail('INVALID_INPUT', 'entries 需要 1–20 条');
       d.listening = [...(d.listening ?? []), ...t.entries.map((e, i) => {
         M.onlyKeys(e, ['text', 'saidAt'], 'INVALID_INPUT', `第 ${i + 1} 条转录含不支持的字段`);
-        return {id: M.newId(), text: M.text(e.text, `第 ${i + 1} 条转录`, 4000, {required: true}), kind: 'transcript', saidAt: M.text(e.saidAt ?? '', '原话时间', 60).trim(), author};
+        return {id: M.newId(), text: M.text(e.text, `第 ${i + 1} 条转录`, 4000, {required: true}), kind: 'transcript', saidAt: M.saidAt(e.saidAt), author};
       })];
     }
     this.saveRow('project_music_rounds', round, d, input.expectedRevision);

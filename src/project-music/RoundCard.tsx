@@ -2,14 +2,14 @@ import React, {useState} from 'react';
 import {Archive, ChevronDown, ChevronRight, Download, Pause, Pencil, Play, Plus, RotateCcw, Star, Trash2, Upload} from 'lucide-react';
 import {Waveform} from './Waveform';
 import {clock, type PlayerState} from './Player';
-import type {Author, IssueItem, PromptDraft, Request, Round, Song, Version} from './types';
+import type {Author, Request, Round, Song, Version} from './types';
+import {beijingTime} from './time';
 import {CHECK_LABEL, PROMPT_FIELD_LABEL, TIER_LABEL} from './types';
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
-const when = (ms: number) => new Date(ms).toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
 export function AuthorLine({author, prefix = ''}: {author: Author | null | undefined; prefix?: string}) {
   if (!author) return null;
-  return <span className="sgm-author">{prefix}{author.kind === 'agent' ? `AI · ${author.session}` : '你'} · {when(author.at)}</span>;
+  return <span className="sgm-author">{prefix}{author.kind === 'agent' ? `AI · ${author.session}` : '你'} · {beijingTime(author.at)}</span>;
 }
 
 export type VersionActions = {
@@ -126,15 +126,19 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
           {round.changes && <p>{round.changes.text}{round.changes.count != null && round.changes.count > 1 && <span className="sgm-pill warn">改了 {round.changes.count} 处</span>}</p>}
         </Block>
 
-        <Block title="问题整理" author={round.issues?.author}>
-          {editing === 'issues' ? <IssuesEditor round={round} saving={saving} onCancel={() => setEditing('')} onSave={issues => patch({issues})}/> : <>
-            {round.issues?.items.length ? <ol className="sgm-issues">{round.issues.items.map((it, i) => <li key={i}>
+        <Block title="问题整理">
+          {round.issues?.items.length ? <div className="sgm-part">
+            <AuthorLine author={round.issues.author}/>
+            <ol className="sgm-issues">{round.issues.items.map((it, i) => <li key={i}>
               <span>{it.text}</span>
               <span className="sgm-pill">{it.source === 'user_words' ? '来自你的原话' : '来自客观检查'}</span>
               {it.causeGuess && <span className="sgm-guess">猜测：{it.causeGuess}</span>}
-            </li>)}</ol> : <p className="sgm-empty">还没有整理。</p>}
-            <div className="sgm-block-actions"><button type="button" className="sgm-btn small ghost" onClick={() => setEditing('issues')}><Pencil size={13}/>{round.issues ? '改' : '自己填写'}</button></div>
-          </>}
+            </li>)}</ol>
+          </div> : null}
+          {editing === 'issues' ? <NoteEditor label="你写的问题整理（一句话也行）" initial={round.userIssues?.text ?? ''} saving={saving} onCancel={() => setEditing('')} onSave={userIssues => patch({userIssues})}/>
+            : round.userIssues ? <div className="sgm-part is-user"><AuthorLine author={round.userIssues.author}/><p>{round.userIssues.text}</p></div> : null}
+          {!round.issues?.items.length && !round.userIssues && editing !== 'issues' && <p className="sgm-empty">还没有整理。</p>}
+          {editing !== 'issues' && <div className="sgm-block-actions"><button type="button" className="sgm-btn small ghost" onClick={() => setEditing('issues')}><Pencil size={13}/>{round.userIssues ? '改我写的' : '自己写一句'}</button></div>}
         </Block>
 
         <Block title="客观检查" author={round.checks?.author}>
@@ -146,18 +150,20 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
           </ul>
         </Block>
 
-        <Block title="下一轮方向" tag="建议" author={round.nextDirection?.author}>
-          {editing === 'direction' ? <DirectionEditor round={round} saving={saving} onCancel={() => setEditing('')} onSave={nextDirection => patch({nextDirection})}/> : <>
-            {round.nextDirection ? <>
-              <p>{round.nextDirection.text}</p>
-              {round.nextDirection.promptDraft && (round.nextDirection.promptDraft.style || round.nextDirection.promptDraft.lyrics || round.nextDirection.promptDraft.params) && <dl className="sgm-prompt is-draft">
-                {round.nextDirection.promptDraft.style && <><dt>风格草稿</dt><dd>{round.nextDirection.promptDraft.style}</dd></>}
-                {round.nextDirection.promptDraft.lyrics && <><dt>歌词草稿</dt><dd className="sgm-lyrics">{round.nextDirection.promptDraft.lyrics}</dd></>}
-                {round.nextDirection.promptDraft.params && <><dt>参数草稿</dt><dd>{round.nextDirection.promptDraft.params}</dd></>}
-              </dl>}
-            </> : <p className="sgm-empty">还没有方向。</p>}
-            <div className="sgm-block-actions"><button type="button" className="sgm-btn small ghost" onClick={() => setEditing('direction')}><Pencil size={13}/>{round.nextDirection ? '改' : '自己填写'}</button></div>
-          </>}
+        <Block title="下一轮方向">
+          {round.nextDirection ? <div className="sgm-part">
+            <span className="sgm-part-head"><span className="sgm-pill">建议</span><AuthorLine author={round.nextDirection.author}/></span>
+            <p>{round.nextDirection.text}</p>
+            {round.nextDirection.promptDraft && (round.nextDirection.promptDraft.style || round.nextDirection.promptDraft.lyrics || round.nextDirection.promptDraft.params) && <dl className="sgm-prompt is-draft">
+              {round.nextDirection.promptDraft.style && <><dt>风格草稿</dt><dd>{round.nextDirection.promptDraft.style}</dd></>}
+              {round.nextDirection.promptDraft.lyrics && <><dt>歌词草稿</dt><dd className="sgm-lyrics">{round.nextDirection.promptDraft.lyrics}</dd></>}
+              {round.nextDirection.promptDraft.params && <><dt>参数草稿</dt><dd>{round.nextDirection.promptDraft.params}</dd></>}
+            </dl>}
+          </div> : null}
+          {editing === 'direction' ? <NoteEditor label="你写的下一轮方向（一句话也行）" placeholder="尽量一次只改一处" initial={round.userDirection?.text ?? ''} saving={saving} onCancel={() => setEditing('')} onSave={userDirection => patch({userDirection})}/>
+            : round.userDirection ? <div className="sgm-part is-user"><AuthorLine author={round.userDirection.author}/><p>{round.userDirection.text}</p></div> : null}
+          {!round.nextDirection && !round.userDirection && editing !== 'direction' && <p className="sgm-empty">还没有方向。</p>}
+          {editing !== 'direction' && <div className="sgm-block-actions"><button type="button" className="sgm-btn small ghost" onClick={() => setEditing('direction')}><Pencil size={13}/>{round.userDirection ? '改我写的' : '自己写一句'}</button></div>}
         </Block>
       </div>
       {error && <p className="sgm-error" role="alert">{error}</p>}
@@ -197,28 +203,11 @@ function ListeningEditor({round, saving, onSave, onCancel}: {round: Round; savin
   </div>;
 }
 
-function IssuesEditor({round, saving, onSave, onCancel}: {round: Round; saving: boolean; onSave: (v: {items: IssueItem[]} | null) => void; onCancel: () => void}) {
-  const [items, setItems] = useState<IssueItem[]>(round.issues?.items ?? [{text: '', source: 'user_words', causeGuess: ''}]);
-  const set = (i: number, patch: Partial<IssueItem>) => setItems(l => l.map((x, j) => j === i ? {...x, ...patch} : x));
+function NoteEditor({label, initial, placeholder, saving, onSave, onCancel}: {label: string; initial: string; placeholder?: string; saving: boolean; onSave: (v: string | null) => void; onCancel: () => void}) {
+  const [text, setText] = useState(initial);
   return <div className="sgm-editor">
-    {items.map((it, i) => <div key={i} className="sgm-issue-edit">
-      <input aria-label={`第 ${i + 1} 个问题`} value={it.text} placeholder="问题" onChange={e => set(i, {text: e.target.value})}/>
-      <select aria-label={`第 ${i + 1} 个问题的来源`} value={it.source} onChange={e => set(i, {source: e.target.value as IssueItem['source']})}>
-        <option value="user_words">来自你的原话</option><option value="objective_check">来自客观检查</option>
-      </select>
-      <input aria-label={`第 ${i + 1} 个问题的原因猜测`} value={it.causeGuess} placeholder="原因（猜测，选填）" onChange={e => set(i, {causeGuess: e.target.value})}/>
-      <button type="button" className="sgm-icon" aria-label={`删除第 ${i + 1} 个问题`} onClick={() => setItems(l => l.filter((_, j) => j !== i))}><Trash2 size={15}/></button>
-    </div>)}
-    <button type="button" className="sgm-btn small ghost" onClick={() => setItems(l => [...l, {text: '', source: 'user_words', causeGuess: ''}])}><Plus size={13}/>加一条</button>
-    <EditorButtons saving={saving} onCancel={onCancel} onSave={() => { const kept = items.filter(x => x.text.trim()); onSave(kept.length ? {items: kept} : null); }}/>
-  </div>;
-}
-
-function DirectionEditor({round, saving, onSave, onCancel}: {round: Round; saving: boolean; onSave: (v: {text: string; promptDraft: PromptDraft | null} | null) => void; onCancel: () => void}) {
-  const [text, setText] = useState(round.nextDirection?.text ?? '');
-  return <div className="sgm-editor">
-    <label className="sgm-field">下一轮打算怎么改<textarea rows={3} value={text} onChange={e => setText(e.target.value)} placeholder="尽量一次只改一处"/></label>
-    <EditorButtons saving={saving} onCancel={onCancel} onSave={() => onSave(text.trim() ? {text, promptDraft: round.nextDirection?.promptDraft ?? null} : null)}/>
+    <label className="sgm-field">{label}<textarea rows={3} value={text} placeholder={placeholder} onChange={e => setText(e.target.value)}/></label>
+    <EditorButtons saving={saving} onCancel={onCancel} onSave={() => onSave(text.trim() ? text : null)}/>
   </div>;
 }
 
