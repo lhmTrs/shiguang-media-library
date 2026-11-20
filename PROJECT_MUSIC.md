@@ -12,6 +12,18 @@
 - **候选版不进音乐库**：只有定稿的那一版复制进 `personal_item/system_music/<分类>`。定稿走现有的音乐收纳流程（重名或同内容时可选另存、沿用已有或取消），再用 `project_assets` 加入本项目候选。撤回定稿时，音乐库里的文件和项目候选都保留。
 - **先补上一轮**：上一轮的「问题整理」和「下一轮方向」都不为空，才能开新一轮。AI 写的条目和你自己写的一句话，任一有内容就算填了，不要求条目格式。页面和接口都会拦。
 
+## A/B 对比（第 2 期）
+
+歌曲标题旁的「对比」，或某个版本行上的「和当前最好对比」，会打开对比页。
+
+- **默认对比**：当前最好对最新版本；没有当前最好时，比最新的两个。左右两边都可以改选任意版本，包括淘汰区里的。
+- **同步播放**：两版同时走，只放出一版，另一版静音跟着走（偏差超过 40ms 才悄悄对齐）。空格切换，两版停在同一位置；K 播放或暂停。
+- **音量对齐**：按上传时算出的响度估计，把较响的一版调低，只在浏览器里调，不改原文件。有一版没有响度估计时不对齐，并在页面上说明。
+- **盲听**：随机决定哪版是「1 号」，只显示 1 号、2 号，并收起版本选择；点「揭晓」或保存结果后公布对应关系。
+- **段落标记**：手动打点、改名，点标记两版一起跳过去。
+- **歌词跳转**：如果 AI 用 `/agent-notes` 的 `lyricTimes` 给两个版本都提供了每句的开始时间，点某句歌词，两版各跳到自己的那一句。之后切换时，保持这个时间差。
+- **结果**：可以只写一句话，也可以选整体哪版更好，或按段落各记一条。结果存进较新那个版本所在的轮次（`project_music_comparisons`），显示在该轮记录的「对比结果」里。只有用户能记，AI 只能读。保存后如果选出的版本不是当前最好，可以一键设为当前最好。
+
 ## 每一轮记什么、谁能写
 
 | 字段 | 页面（用户） | AI（`/agent-notes`） |
@@ -21,6 +33,8 @@
 | 改了什么、客观检查 | — | 写 |
 | 问题整理、下一轮方向 | 可以自己写一段（`userIssues`、`userDirection`），作者记为「你」，和 AI 写的分开存放、分开显示 | 写 `issues`、`nextDirection`；问题必须标来源，原因只能写成「猜测」；不能写用户那两项 |
 | 版本取舍（淘汰、当前最好、定稿） | 写 | 不能 |
+| 对比结果 | 写 | 只能读 |
+| 歌词每句时间（`lyricTimes`，按版本） | — | 写，必须注明方法 |
 
 AI 写的每一段都记录会话名和服务端时间。写入要带 `expectedRevision`，版本号过期时返回 409 `REVISION_CONFLICT`。越权字段会让整次请求被拒绝（403 `AGENT_FIELD_FORBIDDEN`），不会部分写入。
 
@@ -45,12 +59,13 @@ AI 不得伪造这个请求头，也不得调用这些页面专用接口（项�
 | AI 写一轮 | `PATCH …/rounds/:roundId/agent-notes` |
 | 页面写一轮、版本、歌曲 | `PATCH …/rounds/:id`、`PATCH …/versions/:id`、`PATCH …/songs/:id` |
 | 定稿、撤回定稿 | `POST …/songs/:id/finalize`、`POST …/songs/:id/finalize/:requestId/resolve`、`POST …/songs/:id/unfinalize` |
+| 记对比结果（页面专用） | `POST …/songs/:id/comparisons` |
 
 上传只接受 mp3、wav、m4a、flac，单个文件不超过 200MB。同内容重复上传（项目内 SHA-256 相同）时会提示，由用户选择仍然保存或取消，不会悄悄复用已有文件。响应丢失时用原请求编号查回执，不要重发字节。
 
 ## 数据与文件
 
-- **新表**（SQLite、MySQL 共用一份定义，见 `server/project-music/schema.mjs`）：`project_music_songs`、`project_music_rounds`、`project_music_versions`、`project_music_comparisons`（对比，第 2 期使用）、`project_music_imports`（上传回执）。时间一律为 UTC 毫秒，业务字段存在 `data_json` 里。
+- **新表**（SQLite、MySQL 共用一份定义，见 `server/project-music/schema.mjs`）：`project_music_songs`、`project_music_rounds`、`project_music_versions`、`project_music_comparisons`（对比结果）、`project_music_imports`（上传回执）。时间一律为 UTC 毫秒，业务字段存在 `data_json` 里。
 - **托管目录**：`<数据目录>/project-music/<项目>--<id>/<歌名>--<id前8位>/第NN轮/<标签>.<扩展名>`，权限 0700。这个目录不登记为素材根，页面不显示本机路径。
 - **原始文件名**：只记在数据库里，下载时使用规范文件名 `歌名-第N轮-标签.扩展名`。
 - **文件身份**：每个版本保存 dev、ino、大小、修改时间和 SHA-256。播放或下载前先核对；内容变了返回 409 `MUSIC_FILE_CHANGED`，不播放、不下载。只有时间戳变而内容不变时，更新记录的身份信息。
@@ -71,6 +86,7 @@ AI 不得伪造这个请求头，也不得调用这些页面专用接口（项�
 ```sh
 node --test tests/project-music.test.mjs   # 真实服务：上传、重复、先补上一轮、AI 越权、版本保护、淘汰区、下载、身份核验、定稿
 npm run build && node --test tests/project-music-ui.mjs   # 真实应用界面，需要系统 Chrome
+node --test tests/project-music-compare-ui.mjs   # 对比页：切换同位置、音量对齐、盲听、打点、歌词跳转、记结果
 PROJECT_MUSIC_MYSQLD=/path/to/mysqld node tests/project-music-mysql.mjs   # SQLite 与临时 mysqld 跑同一场景并对比，再验证一次性迁移
 ```
 
@@ -78,6 +94,5 @@ PROJECT_MUSIC_MYSQLD=/path/to/mysqld node tests/project-music-mysql.mjs   # SQLi
 
 ## 尚未包含
 
-- A/B 对比页（第 2 期，对比表已建好）。
 - 歌词逐句对齐，以及在页面上展示客观检查结果（第 3 期）。
 - 删除项目时还不检查项目音乐。

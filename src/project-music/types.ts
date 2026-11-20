@@ -13,6 +13,14 @@ export type Version = {
   durationMs: number | null; peaks: number[] | null; loudnessDb: number | null;
   status: 'candidate' | 'rejected'; isBest: boolean; isFinal: boolean; note: string;
   uploadedBy: Author; rejectedAt: number | null; createdAt: number; mediaUrl: string; downloadUrl: string;
+  lyricTimes: {lines: {text: string; startMs: number}[]; method: string; author: Author} | null;
+};
+
+export type Side = 'left' | 'right' | 'same';
+export type Comparison = {
+  id: string; roundId: string; blind: boolean; summary: string; winner: Side | null; author: Author; createdAt: number;
+  left: {versionId: string; roundNo: number | null; label: string}; right: {versionId: string; roundNo: number | null; label: string};
+  markers: {label: string; ms: number}[]; segments: {label: string; winner: Side; note: string}[]; loudness: {matched: boolean; gainDb: number} | null;
 };
 
 export type Round = {
@@ -28,7 +36,7 @@ export type Round = {
   userDirection: {text: string; author: Author} | null;
   comparisonNote: unknown;
   promptDiffFromPrevious: string[] | null; complete: boolean; missing: ('issues' | 'nextDirection')[];
-  createdBy: Author; createdAt: number; updatedAt: number; versions: Version[];
+  createdBy: Author; createdAt: number; updatedAt: number; versions: Version[]; comparisons: Comparison[];
 };
 
 export type Finalization = {

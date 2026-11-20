@@ -8,7 +8,7 @@ import * as M from './model.mjs';
 const {fail} = M;
 const parse = row => row && ({...row, revision: Number(row.revision ?? 0), round_no: row.round_no === undefined ? undefined : Number(row.round_no), data: JSON.parse(row.data_json)});
 const PROMPT_FIELDS = ['tool', 'style', 'lyrics', 'params'];
-const AGENT_FIELDS = ['expectedRevision', 'session', 'changes', 'issues', 'checks', 'nextDirection', 'listeningTranscripts'];
+const AGENT_FIELDS = ['expectedRevision', 'session', 'changes', 'issues', 'checks', 'nextDirection', 'listeningTranscripts', 'lyricTimes'];
 const USER_ONLY = {
   prompt: '提示词由你粘贴或确认', sunoTier: 'Suno 会员档位由你填写', listening: '「你的听感」只能是你的原话；转录请用 listeningTranscripts',
   status: '版本取舍由你决定', bestVersionId: '当前最好由你决定', finalVersionId: '定稿由你决定',
@@ -93,6 +93,10 @@ export class ProjectMusic {
     return this.db.prepare('SELECT * FROM project_music_versions WHERE song_id=? ORDER BY created_at,id').all(songId).map(parse);
   }
 
+  comparisons(songId) {
+    return this.db.prepare('SELECT * FROM project_music_comparisons WHERE song_id=? ORDER BY created_at,id').all(songId).map(parse);
+  }
+
   list(projectId) {
     const p = this.project(projectId);
     const songs = this.db.prepare('SELECT * FROM project_music_songs WHERE project_id=? ORDER BY created_at DESC,id').all(projectId).map(parse);
@@ -113,11 +117,23 @@ export class ProjectMusic {
       format: d.format, bytes: d.bytes, sha256: v.sha256, durationMs: d.durationMs, peaks: d.peaks, loudnessDb: d.loudnessDb,
       status: d.status, isBest: song.data.bestVersionId === v.id, isFinal: song.data.finalVersionId === v.id,
       note: d.note, uploadedBy: d.uploadedBy, rejectedAt: d.rejectedAt ?? null, createdAt: v.created_at,
+      lyricTimes: round.data.lyricTimes?.[v.id] ?? null,
       mediaUrl: base + '/media', downloadUrl: base + '/media?download=1',
     };
   }
 
-  roundDTO(song, round, versions, previous) {
+  comparisonDTO(c, versions, rounds) {
+    const d = c.data, side = id => {
+      const v = versions.find(x => x.id === id), r = v && rounds.find(x => x.id === v.round_id);
+      return v ? {versionId: v.id, roundNo: r?.round_no ?? null, label: v.data.label} : {versionId: id, roundNo: null, label: '（版本不存在）'};
+    };
+    return {
+      id: c.id, roundId: c.round_id, left: side(d.leftVersionId), right: side(d.rightVersionId), blind: d.blind,
+      markers: d.markers, segments: d.segments, summary: d.summary, winner: d.winner, loudness: d.loudness, author: d.author, createdAt: c.created_at,
+    };
+  }
+
+  roundDTO(song, round, versions, previous, comparisons = [], rounds = []) {
     const d = round.data, missing = M.roundMissing(d);
     const diff = previous ? PROMPT_FIELDS.filter(k => (previous.data.prompt?.[k] ?? '') !== (d.prompt?.[k] ?? '')) : [];
     return {
@@ -128,17 +144,18 @@ export class ProjectMusic {
       promptDiffFromPrevious: previous ? diff : null, complete: missing.length === 0, missing,
       createdBy: d.createdBy, createdAt: round.created_at, updatedAt: round.updated_at,
       versions: versions.filter(v => v.round_id === round.id).map(v => this.versionDTO(song, round, v)),
+      comparisons: comparisons.filter(c => c.round_id === round.id).map(c => this.comparisonDTO(c, versions, rounds)),
     };
   }
 
   songDTO(song) {
-    const rounds = this.rounds(song.id), versions = this.versions(song.id), d = song.data;
+    const rounds = this.rounds(song.id), versions = this.versions(song.id), comparisons = this.comparisons(song.id), d = song.data;
     return {
       id: song.id, projectId: song.project_id, revision: song.revision, title: d.title, notes: d.notes, status: d.status,
       bestVersionId: d.bestVersionId ?? null, finalVersionId: d.finalVersionId ?? null,
       final: d.final ?? null, finalHistory: d.finalHistory ?? [], finalization: this.finalizationDTO(d.finalization),
       createdBy: d.createdBy, createdAt: song.created_at, updatedAt: song.updated_at,
-      rounds: rounds.map((r, i) => this.roundDTO(song, r, versions, rounds[i - 1])),
+      rounds: rounds.map((r, i) => this.roundDTO(song, r, versions, rounds[i - 1], comparisons, rounds)),
     };
   }
 
@@ -291,8 +308,38 @@ export class ProjectMusic {
         return {id: M.newId(), text: M.text(e.text, `第 ${i + 1} 条转录`, 4000, {required: true}), kind: 'transcript', saidAt: M.saidAt(e.saidAt), author};
       })];
     }
+    if (input.lyricTimes !== undefined) {
+      const inRound = new Set(this.db.prepare('SELECT id FROM project_music_versions WHERE round_id=?').all(round.id).map(r => r.id));
+      const next = {...(d.lyricTimes ?? {})};
+      for (const v of M.lyricTimes(input.lyricTimes)) {
+        if (!inRound.has(v.versionId)) fail('VERSION_NOT_IN_ROUND', '歌词时间只能写给这一轮的版本', 409);
+        next[v.versionId] = {lines: v.lines, method: v.method, author};
+      }
+      d.lyricTimes = next;
+    }
     this.saveRow('project_music_rounds', round, d, input.expectedRevision);
     return this.song(projectId, round.song_id);
+  }
+
+  // ---------- 对比结果（只限用户）：存进较新那个版本所在的轮次 ----------
+
+  createComparison(projectId, songId, input) {
+    const song = this.songRow(projectId, songId);
+    const id = M.requestId(input?.requestId);
+    const data = M.comparison(input);
+    const existing = parse(this.db.prepare('SELECT * FROM project_music_comparisons WHERE id=?').get(id));
+    const args = M.digest(data);
+    if (existing) {
+      if (existing.project_id !== projectId || existing.data.args !== args) fail('REQUEST_ID_CONFLICT', '请求编号已用于其他内容', 409);
+      return this.song(projectId, song.id);
+    }
+    const [a, b] = [data.leftVersionId, data.rightVersionId].map(v => this.versionRow(projectId, v));
+    if (a.song_id !== song.id || b.song_id !== song.id) fail('VERSION_NOT_IN_SONG', '只能对比同一首歌的版本', 409);
+    const newer = a.created_at > b.created_at || (a.created_at === b.created_at && a.id > b.id) ? a : b;
+    const at = M.now();
+    this.db.prepare('INSERT INTO project_music_comparisons(id,project_id,song_id,round_id,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(id, projectId, song.id, newer.round_id, M.canonical({...data, author: M.userAuthor(), args}), 1, at, at);
+    return this.song(projectId, song.id);
   }
 
   // ---------- 写入：版本取舍（只限用户） ----------

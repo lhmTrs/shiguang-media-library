@@ -1,12 +1,13 @@
 // 项目音乐页：新画风试点。只用 --sg-* 变量，不改现有 --c-* 和其他页面。
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {Check, Ellipsis, Music2, Plus, Star, Upload} from 'lucide-react';
+import {Check, Ellipsis, GitCompare, Music2, Plus, Star, Upload} from 'lucide-react';
 import './project-music.css';
 import {usePalette, PALETTES} from './palette';
 import {PlayerBar, usePlayer} from './Player';
 import {Waveform} from './Waveform';
 import {FinalizeDialog, Modal, RoundDialog, SongDialog} from './dialogs';
 import {RoundCard, VersionRow, type VersionActions} from './RoundCard';
+import {ComparePanel, defaultPair} from './Compare';
 import type {MusicCollection, ProjectMusicWorkspaceProps, Round, Song, Version} from './types';
 import {STATUS_LABEL} from './types';
 
@@ -25,6 +26,7 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
   const [dialog, setDialog] = useState<DialogState>(null);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [compare, setCompare] = useState<[string, string] | null>(null);
   const player = usePlayer(active);
   const ticket = useRef(0);
   const root = useRef<HTMLElement>(null);
@@ -45,7 +47,8 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
   }, [base, projectId, request]);
 
   useEffect(() => { if (active) void load(); }, [active, load]);
-  useEffect(() => { player.close(); setMenu(false); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { player.close(); setMenu(false); setCompare(null); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const openCompare = (pair: [string, string] | null) => { if (!pair) return; player.pause(); setMenu(false); setCompare(pair); };
 
   // 进行中的排前面，其次定稿，放弃的放最后；同一状态里新建的在前。
   const songs = useMemo(() => {
@@ -74,6 +77,7 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
   const actions: VersionActions = useMemo(() => ({
     setBest: v => song && act(() => request<Song>(`${base}/songs/${song.id}`, {expectedRevision: song.revision, bestVersionId: v.id}, 'PATCH')),
     restore: v => act(() => request<Song>(`${base}/versions/${v.id}`, {expectedRevision: v.revision, status: 'candidate'}, 'PATCH')),
+    compareWithBest: v => song?.bestVersionId && song.bestVersionId !== v.id ? openCompare([song.bestVersionId, v.id]) : openCompare(song ? defaultPair(song) : null),
     reject: v => {
       const go = (clearBest = false) => act(() => request<Song>(`${base}/versions/${v.id}`, {expectedRevision: v.revision, status: 'rejected', ...(clearBest ? {clearBest} : {})}, 'PATCH'));
       if (v.isBest) setDialog({kind: 'confirm', title: '淘汰当前最好？', text: `第 ${v.roundNo} 轮 ${v.label} 是当前最好。淘汰后「当前最好」会空出来；文件不删，可以从淘汰区恢复。`, action: () => go(true)});
@@ -89,14 +93,14 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
   useEffect(() => {
     if (!active) return;
     const key = (e: KeyboardEvent) => {
-      if (e.key !== ' ' || !player.current || dialog) return;
+      if (e.key !== ' ' || !player.current || dialog || compare) return;
       const t = e.target as HTMLElement;
       if (t.closest('input,textarea,select,button,a,[contenteditable="true"],[role="slider"]')) return;
       e.preventDefault(); player.toggle();
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [active, player, dialog]);
+  }, [active, player, dialog, compare]);
 
   const latest = song?.rounds.at(-1);
   const blocked = latest && !latest.complete ? {roundNo: latest.roundNo, missing: latest.missing.map(k => k === 'issues' ? '问题整理' : '下一轮方向')} : null;
@@ -155,6 +159,7 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
             </p>
             <div className="sgm-song-actions">
               {song.status === 'active' && <button type="button" className="sgm-btn primary" onClick={() => setDialog({kind: 'round'})}><Upload size={16}/>上传新一轮</button>}
+              {defaultPair(song) && !compare && <button type="button" className="sgm-btn" onClick={() => openCompare(defaultPair(song))}><GitCompare size={16}/>对比</button>}
               {song.status === 'active' && song.rounds.some(r => r.versions.some(v => v.status !== 'rejected')) && <button type="button" className="sgm-btn" onClick={() => setDialog({kind: 'finalize'})}><Check size={16}/>定稿</button>}
               <div className="sgm-menu-wrap">
                 <button type="button" className="sgm-icon" aria-label="更多操作" aria-expanded={menu} onClick={() => setMenu(m => !m)}><Ellipsis size={18}/></button>
@@ -175,7 +180,8 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
           {!song.rounds.length && <div className="sgm-hero is-inline"><p>还没有轮次。上传第一轮：贴上提示词，选好 Suno 或本地模型生成的文件。</p>
             {song.status === 'active' && <button type="button" className="sgm-btn primary" onClick={() => setDialog({kind: 'round'})}><Upload size={16}/>上传第一轮</button>}</div>}
 
-          <div className="sgm-rounds">
+          {compare && <ComparePanel key={compare.join(':')} song={song} projectId={projectId} request={request} initial={compare} onChanged={replaceSong} onClose={() => setCompare(null)}/>}
+          {!compare && <><div className="sgm-rounds">
             {[...song.rounds].reverse().map((r, i, list) => <RoundCard key={r.id} song={song} round={r} previous={list[i + 1]} latest={i === 0}
               open={openRounds.has(r.id)} onToggle={() => setOpenRounds(set => { const n = new Set(set); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })}
               player={player} actions={actions} busy={busy} projectId={projectId} request={request} onChanged={replaceSong} onUpload={round => setDialog({kind: 'round', round})}/>)}
@@ -186,6 +192,7 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
             <p className="sgm-hint">淘汰的版本不删文件，随时可以恢复。</p>
             <div className="sgm-versions">{rejected.map(v => <VersionRow key={v.id} version={v} player={player} actions={actions} busy={busy} compact/>)}</div>
           </details>}
+          </>}
         </main>}
       </div>}
 
