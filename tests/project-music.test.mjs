@@ -367,3 +367,61 @@ test('项目音乐：并发同号轮次与中断回执', async t => {
   assert.equal((await s.call('GET', M + `/imports/${requestId}`)).body.status, 'waiting');
   assert.equal((await s.call('GET', M + `/imports/${uuid()}`)).status, 404);
 });
+
+test('项目音乐 · 对比：只由用户记录、存进较新版本所在的轮次；AI 歌词时间只写本轮版本', async t => {
+  const base = await makeTemp(t);
+  const audio = path.join(base, 'audio');
+  await fs.mkdir(audio);
+  const a = await synth(audio, '对比-甲.mp3', {freq: 330}), b = await synth(audio, '对比-乙.mp3', {freq: 440, volume: 0.5}), c = await synth(audio, '对比-丙.mp3', {freq: 550});
+  const s = await startServer(t, base);
+  const pid = (await s.call('POST', '/projects', {name: '合成对比项目'})).body.id;
+  const M = `/project-music/projects/${pid}`;
+  let song = (await s.call('POST', M + '/songs', {requestId: uuid(), title: '合成对比歌'}, {asPage: true})).body;
+  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {tool: 'Suno', style: '合成'}}, {asPage: true})).body;
+  const r1 = song.rounds[0];
+  const vA = (await upload(s, pid, r1.id, a)).put.body.versionId, vB = (await upload(s, pid, r1.id, b)).put.body.versionId;
+  song = (await s.call('PATCH', M + `/rounds/${r1.id}`, {expectedRevision: r1.revision, userIssues: '副歌闷', userDirection: '提速'}, {asPage: true})).body;
+  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {style: '合成二'}}, {asPage: true})).body;
+  const r2 = song.rounds[1];
+  const vC = (await upload(s, pid, r2.id, c)).put.body.versionId;
+  song = (await s.call('GET', M + `/songs/${song.id}`)).body;
+  const [A, B] = song.rounds[0].versions;
+  assert.ok(A.loudnessDb > B.loudnessDb + 3, '合成的乙版本更轻，响度估算应能看出来');
+
+  // AI 的歌词时间
+  let round1 = song.rounds[0];
+  const lines = [{text: '第一句', startMs: 200}, {text: '第二句', startMs: 1100}];
+  assert.equal((await s.call('PATCH', M + `/rounds/${round1.id}/agent-notes`, {expectedRevision: round1.revision, session: '合成会话', lyricTimes: [{versionId: vC, method: '人工听写', lines}]})).body.code, 'VERSION_NOT_IN_ROUND');
+  assert.equal((await s.call('PATCH', M + `/rounds/${round1.id}/agent-notes`, {expectedRevision: round1.revision, session: '合成会话', lyricTimes: [{versionId: vA, method: '人工听写', lines: [{text: '一', startMs: 900}, {text: '二', startMs: 100}]}]})).status, 400);
+  assert.equal((await s.call('PATCH', M + `/rounds/${round1.id}/agent-notes`, {expectedRevision: round1.revision, session: '合成会话', lyricTimes: [{versionId: vA, lines}]})).status, 400, '必须写得出方法');
+  song = (await s.call('PATCH', M + `/rounds/${round1.id}/agent-notes`, {expectedRevision: round1.revision, session: '合成会话', lyricTimes: [{versionId: vA, method: '人工听写', lines}, {versionId: vB, method: '人工听写', lines: [{text: '第一句', startMs: 350}, {text: '第二句', startMs: 1300}]}]})).body;
+  assert.equal(song.rounds[0].versions[0].lyricTimes.lines[1].startMs, 1100);
+  assert.equal(song.rounds[0].versions[0].lyricTimes.author.session, '合成会话');
+
+  // 对比结果：只由用户记录
+  const C = M + `/songs/${song.id}/comparisons`;
+  const body = {requestId: uuid(), leftVersionId: vA, rightVersionId: vC, blind: true, markers: [{label: '副歌', ms: 900}], segments: [{label: '副歌', winner: 'right'}], summary: '副歌 2 号好', winner: 'right', loudness: {matched: true, gainDb: 1.4}};
+  assert.equal((await s.call('POST', C, body)).body.code, 'PAGE_ONLY', 'AI 不能代你记对比结果');
+  assert.equal((await s.call('POST', C, {...body, requestId: uuid(), summary: '', segments: [], winner: null}, {asPage: true})).body.code, 'COMPARISON_EMPTY');
+  assert.equal((await s.call('POST', C, {...body, requestId: uuid(), rightVersionId: vA}, {asPage: true})).status, 400);
+  const other = (await s.call('POST', M + '/songs', {requestId: uuid(), title: '另一首合成歌'}, {asPage: true})).body;
+  assert.equal((await s.call('POST', M + `/songs/${other.id}/comparisons`, {...body, requestId: uuid()}, {asPage: true})).body.code, 'VERSION_NOT_IN_SONG');
+  const saved = await s.call('POST', C, body, {asPage: true});
+  assert.equal(saved.status, 200, saved.text);
+  const where = saved.body.rounds.find(r => r.comparisons.length);
+  assert.equal(where.roundNo, 2, '存进较新版本所在的轮次');
+  const cmp = where.comparisons[0];
+  assert.deepEqual([cmp.left.label, cmp.left.roundNo, cmp.right.label, cmp.right.roundNo], ['A', 1, 'A', 2]);
+  assert.equal(cmp.blind, true);
+  assert.equal(cmp.author.kind, 'user');
+  assert.deepEqual(cmp.markers, [{label: '副歌', ms: 900}]);
+  // 同一请求重放不会多存一条；同号不同内容拒绝
+  assert.equal((await s.call('POST', C, body, {asPage: true})).body.rounds.flatMap(r => r.comparisons).length, 1);
+  assert.equal((await s.call('POST', C, {...body, summary: '改了'}, {asPage: true})).body.code, 'REQUEST_ID_CONFLICT');
+  // 只写一句话也可以
+  const short = await s.call('POST', C, {requestId: uuid(), leftVersionId: vA, rightVersionId: vB, summary: '差不多'}, {asPage: true});
+  assert.equal(short.status, 200, short.text);
+  assert.equal(short.body.rounds[0].comparisons[0].summary, '差不多');
+  // AI 能读到对比结果
+  assert.equal((await s.call('GET', M)).body.songs.find(x => x.id === song.id).rounds[1].comparisons[0].summary, '副歌 2 号好');
+});

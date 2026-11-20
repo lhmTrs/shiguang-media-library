@@ -23,7 +23,7 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
   const pid = (await s.call('POST', '/projects', {name: '合成界面项目'})).body.id;
   const instance = (await (await fetch(s.origin + '/api/session')).json()).instanceId;
 
-  const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
+  const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, timeout: 30000});
   t.after(() => browser.close());
   // 浏览器放在美国西部时区：页面上的时间仍应按北京时间显示。
   const context = await browser.newContext({viewport: {width: 1360, height: 900}, timezoneId: 'America/Los_Angeles'});
@@ -33,6 +33,7 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
       localStorage.setItem('sg-test-seeded', '1');
     }
   }, [instance, pid]);
+  context.setDefaultTimeout(20000); // 卡住时尽快报出是哪一步，不等到整条用例超时
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));

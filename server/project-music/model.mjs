@@ -165,3 +165,59 @@ export function saidAt(value) {
 }
 
 export const MISSING_LABEL = {issues: '问题整理', nextDirection: '下一轮方向'};
+
+// ---------- 对比（SPEC 3.4）：只能由用户记录；可以只写一句话，不强制按段落填 ----------
+const SIDES = ['left', 'right', 'same'];
+export function comparison(input) {
+  onlyKeys(input, ['requestId', 'leftVersionId', 'rightVersionId', 'blind', 'markers', 'segments', 'summary', 'winner', 'loudness']);
+  const left = String(input.leftVersionId ?? '').toLowerCase(), right = String(input.rightVersionId ?? '').toLowerCase();
+  if (!idOK(left) || !idOK(right)) fail('INVALID_INPUT', '请选择两个要对比的版本');
+  if (left === right) fail('INVALID_INPUT', '请选择两个不同的版本');
+  if (typeof (input.blind ?? false) !== 'boolean') fail('INVALID_INPUT', 'blind 应为 true 或 false');
+  const markers = input.markers ?? [];
+  if (!Array.isArray(markers) || markers.length > 50) fail('INVALID_INPUT', '段落标记最多 50 个');
+  const segments = input.segments ?? [];
+  if (!Array.isArray(segments) || segments.length > 30) fail('INVALID_INPUT', '段落结果最多 30 条');
+  if (input.winner != null && !SIDES.includes(input.winner)) fail('INVALID_INPUT', '整体结果只能是 left、right 或 same');
+  const out = {
+    leftVersionId: left, rightVersionId: right, blind: input.blind === true,
+    markers: markers.map((m, i) => {
+      onlyKeys(m, ['label', 'ms'], 'INVALID_INPUT', `第 ${i + 1} 个标记含不支持的字段`);
+      if (!Number.isSafeInteger(m.ms) || m.ms < 0 || m.ms > 86400000) fail('INVALID_INPUT', `第 ${i + 1} 个标记的时间无效`);
+      return {label: text(m.label ?? '', `第 ${i + 1} 个标记名`, 40).trim() || `标记 ${i + 1}`, ms: m.ms};
+    }).sort((a, b) => a.ms - b.ms),
+    segments: segments.map((s, i) => {
+      onlyKeys(s, ['label', 'winner', 'note'], 'INVALID_INPUT', `第 ${i + 1} 条段落结果含不支持的字段`);
+      if (!SIDES.includes(s.winner)) fail('INVALID_INPUT', `第 ${i + 1} 条段落结果请选哪一版更好，或差不多`);
+      return {label: text(s.label, `第 ${i + 1} 条段落名`, 40, {required: true}).trim(), winner: s.winner, note: text(s.note ?? '', `第 ${i + 1} 条备注`, 500).trim()};
+    }),
+    summary: text(input.summary ?? '', '对比结果', 2000).trim(),
+    winner: input.winner ?? null,
+    loudness: null,
+  };
+  if (input.loudness != null) {
+    onlyKeys(input.loudness, ['matched', 'gainDb'], 'INVALID_INPUT', 'loudness 只接受 matched 与 gainDb');
+    if (typeof input.loudness.matched !== 'boolean' || typeof input.loudness.gainDb !== 'number' || !Number.isFinite(input.loudness.gainDb) || Math.abs(input.loudness.gainDb) > 60) fail('INVALID_INPUT', '响度对齐信息无效');
+    out.loudness = {matched: input.loudness.matched, gainDb: Math.round(input.loudness.gainDb * 10) / 10};
+  }
+  if (!out.summary && !out.segments.length && !out.winner) fail('COMPARISON_EMPTY', '写一句结果，或选出哪一版更好，再保存');
+  return out;
+}
+
+// AI 提供的歌词每句时间：按版本分别给，对比页点某句歌词时两版各跳到自己的那一句。
+export function lyricTimes(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 20) fail('INVALID_INPUT', 'lyricTimes 需要 1–20 个版本');
+  return input.map((v, i) => {
+    onlyKeys(v, ['versionId', 'lines', 'method'], 'INVALID_INPUT', `lyricTimes 第 ${i + 1} 项含不支持的字段`);
+    if (!idOK(v.versionId)) fail('INVALID_INPUT', `lyricTimes 第 ${i + 1} 项的 versionId 无效`);
+    if (!Array.isArray(v.lines) || !v.lines.length || v.lines.length > 300) fail('INVALID_INPUT', '每个版本 1–300 句');
+    let prev = -1;
+    const lines = v.lines.map((l, j) => {
+      onlyKeys(l, ['text', 'startMs'], 'INVALID_INPUT', `第 ${j + 1} 句含不支持的字段`);
+      if (!Number.isSafeInteger(l.startMs) || l.startMs < 0 || l.startMs > 86400000 || l.startMs < prev) fail('INVALID_INPUT', `第 ${j + 1} 句的 startMs 无效或早于上一句`);
+      prev = l.startMs;
+      return {text: text(l.text, `第 ${j + 1} 句歌词`, 300, {required: true}).trim(), startMs: l.startMs};
+    });
+    return {versionId: v.versionId.toLowerCase(), lines, method: text(v.method, '歌词时间的得出方法', 500, {required: true}).trim()};
+  });
+}

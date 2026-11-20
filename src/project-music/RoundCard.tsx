@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {Archive, ChevronDown, ChevronRight, Download, Pause, Pencil, Play, Plus, RotateCcw, Star, Trash2, Upload} from 'lucide-react';
+import {Archive, ChevronDown, ChevronRight, Download, GitCompare, Pause, Pencil, Play, Plus, RotateCcw, Star, Trash2, Upload} from 'lucide-react';
 import {Waveform} from './Waveform';
 import {clock, type PlayerState} from './Player';
 import type {Author, Request, Round, Song, Version} from './types';
@@ -16,6 +16,7 @@ export type VersionActions = {
   setBest: (v: Version) => void;
   reject: (v: Version) => void;
   restore: (v: Version) => void;
+  compareWithBest: (v: Version) => void;
 };
 
 export function VersionRow({version, player, actions, busy, compact = false}: {version: Version; player: PlayerState; actions: VersionActions; busy: boolean; compact?: boolean}) {
@@ -39,6 +40,7 @@ export function VersionRow({version, player, actions, busy, compact = false}: {v
     </span>
     <span className="sgm-version-actions">
       {!rejected && !version.isBest && <button type="button" className="sgm-icon" title="设为当前最好" aria-label={`把第 ${version.roundNo} 轮 ${version.label} 设为当前最好`} disabled={busy} onClick={() => actions.setBest(version)}><Star size={16}/></button>}
+      {!rejected && !version.isBest && <button type="button" className="sgm-icon" title="和当前最好对比" aria-label={`第 ${version.roundNo} 轮 ${version.label} 和当前最好对比`} onClick={() => actions.compareWithBest(version)}><GitCompare size={16}/></button>}
       <a className="sgm-icon" href={version.downloadUrl} download={version.downloadName} title="下载" aria-label={`下载第 ${version.roundNo} 轮 ${version.label}`}><Download size={16}/></a>
       {rejected
         ? <button type="button" className="sgm-icon" title="从淘汰区恢复" aria-label={`恢复第 ${version.roundNo} 轮 ${version.label}`} disabled={busy} onClick={() => actions.restore(version)}><RotateCcw size={16}/></button>
@@ -165,6 +167,18 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
           {!round.nextDirection && !round.userDirection && editing !== 'direction' && <p className="sgm-empty">还没有方向。</p>}
           {editing !== 'direction' && <div className="sgm-block-actions"><button type="button" className="sgm-btn small ghost" onClick={() => setEditing('direction')}><Pencil size={13}/>{round.userDirection ? '改我写的' : '自己写一句'}</button></div>}
         </Block>
+        {round.comparisons.length > 0 && <Block title="对比结果">
+          <ul className="sgm-comparisons">{round.comparisons.map(c => {
+            const nm = (side: 'left' | 'right') => `第 ${c[side].roundNo} 轮 ${c[side].label}`;
+            const verdict = (w: string | null) => w === 'same' ? '差不多' : w === 'left' ? `${nm('left')} 更好` : w === 'right' ? `${nm('right')} 更好` : '';
+            return <li key={c.id}>
+              <span className="sgm-part-head"><strong>{nm('left')} ↔ {nm('right')}</strong>{c.blind && <span className="sgm-pill">盲听</span>}{c.loudness?.matched && <span className="sgm-pill">音量已对齐</span>}<AuthorLine author={c.author}/></span>
+              {c.winner && <p>整体：{verdict(c.winner)}</p>}
+              {c.segments.length > 0 && <p>{c.segments.map(sg => `${sg.label} ${verdict(sg.winner)}`).join('；')}</p>}
+              {c.summary && <p>{c.summary}</p>}
+            </li>;
+          })}</ul>
+        </Block>}
       </div>
       {error && <p className="sgm-error" role="alert">{error}</p>}
     </>}

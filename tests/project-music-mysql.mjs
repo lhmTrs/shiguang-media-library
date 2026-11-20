@@ -70,6 +70,15 @@ async function scenario(lib, dataDir) {
   const opened = await store.openVersion(p.id, A.id);
   out.openBytes = (await opened.handle.stat()).size === (await fs.stat(fileA)).size;
   await opened.handle.close();
+  // PR2：AI 歌词时间与对比结果
+  let rr = store.song(p.id, song.id).rounds[0];
+  const [va, vb] = rr.versions;
+  store.agentNotes(p.id, rr.id, {expectedRevision: rr.revision, session: '合成会话', lyricTimes: [{versionId: va.id, method: '合成', lines: [{text: '一', startMs: 100}, {text: '二', startMs: 900}]}]});
+  song = store.createComparison(p.id, song.id, {requestId: randomUUID(), leftVersionId: va.id, rightVersionId: vb.id, blind: true, summary: '副歌 2 号好', winner: 'right', markers: [{label: '副歌', ms: 800}], segments: [{label: '副歌', winner: 'right'}]});
+  const cmp = song.rounds[0].comparisons[0];
+  out.comparison = [cmp.left.label, cmp.right.label, cmp.blind, cmp.winner, cmp.summary, cmp.markers.length, cmp.segments[0].winner];
+  out.lyric = song.rounds[0].versions[0].lyricTimes?.lines.map(l => l.startMs);
+  out.comparisonEmpty = await code(() => store.createComparison(p.id, song.id, {requestId: randomUUID(), leftVersionId: va.id, rightVersionId: vb.id}));
   out.songRevision = song.revision;
   return {out, projectId: p.id, projects, dataDir};
 }

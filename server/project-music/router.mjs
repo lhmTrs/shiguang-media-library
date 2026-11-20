@@ -30,6 +30,7 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   route('patch', P + '/rounds/:roundId/agent-notes', (req, res) => res.json(store.agentNotes(req.params.projectId, req.params.roundId, req.body ?? {})));
   route('patch', P + '/rounds/:roundId', (req, res) => { pageOnly(req); res.json(store.updateRound(req.params.projectId, req.params.roundId, req.body ?? {})); });
   route('patch', P + '/versions/:versionId', (req, res) => { pageOnly(req); res.json(store.updateVersion(req.params.projectId, req.params.versionId, req.body ?? {})); });
+  route('post', P + '/songs/:songId/comparisons', (req, res) => { pageOnly(req); res.json(store.createComparison(req.params.projectId, req.params.songId, req.body ?? {})); });
 
   route('post', P + '/imports', (req, res) => res.json(store.startImport(req.params.projectId, req.body ?? {}, actor(req))));
   route('put', P + '/imports/:requestId/content', async (req, res) => res.json(await store.upload(req.params.projectId, req.params.requestId, req)));

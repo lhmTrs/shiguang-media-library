@@ -24,10 +24,13 @@
   --sg-focus: color-mix(in srgb, var(--sg-accent) 55%, transparent);
   /* 提醒色当文字用时向正文色靠一些，浅底、深底都看得清 */
   --sg-warn-text: color-mix(in srgb, var(--sg-warn) 60%, var(--sg-text));
+  /* 实心按钮底色、浅强调底上的强调字：多数配色直接用强调色；纸张的强调色配浅字只有 4.1:1，单独加深 */
+  --sg-accent-strong: var(--sg-accent);
 }
 .sg-music[data-sg-palette="paper"] {
-  --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #8c7e6a;
+  --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #6f6250;
   --sg-accent: #b5653d; --sg-accent-soft: #f1dccb; --sg-wave: #d2c2a8; --sg-on-accent: #fffaf3; --sg-danger: #a8483a; --sg-warn: #9a6d1f;
+  --sg-accent-strong: #934c2a;
   color-scheme: light;
 }
 .sg-music[data-sg-palette="studio"] {
@@ -36,7 +39,7 @@
   color-scheme: dark;
 }
 .sg-music[data-sg-palette="gallery"] {
-  --sg-surface: #ffffff; --sg-sidebar: #ffffff; --sg-surface-raised: #f5f5f7; --sg-text: #1d1d1f; --sg-text-muted: #86868b;
+  --sg-surface: #ffffff; --sg-sidebar: #ffffff; --sg-surface-raised: #f5f5f7; --sg-text: #1d1d1f; --sg-text-muted: #6a6a6f;
   --sg-accent: #2f6b55; --sg-accent-soft: #e3efea; --sg-wave: #c9ced3; --sg-on-accent: #ffffff; --sg-danger: #b3413a; --sg-warn: #8a6516;
   color-scheme: light;
 }
@@ -72,8 +75,8 @@
 .sg-music .sgm-btn { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 999px; padding: 8px 16px; min-height: 36px;
   background: var(--sg-sunken); color: var(--sg-text); font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; white-space: nowrap; }
 .sg-music .sgm-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-text) 9%, var(--sg-surface-raised)); }
-.sg-music .sgm-btn.primary { background: var(--sg-accent); color: var(--sg-on-accent); }
-.sg-music .sgm-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-accent) 88%, var(--sg-text)); }
+.sg-music .sgm-btn.primary { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sg-music .sgm-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-accent-strong) 88%, var(--sg-text)); }
 .sg-music .sgm-btn.ghost { background: transparent; color: var(--sg-text-muted); }
 .sg-music .sgm-btn.ghost:hover:not(:disabled) { background: var(--sg-hover); color: var(--sg-text); }
 .sg-music .sgm-btn.small { padding: 4px 12px; min-height: 30px; font-size: 13px; }
@@ -84,16 +87,20 @@
 .sg-music .sgm-icon:disabled { opacity: .35; cursor: not-allowed; }
 .sgm-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 10px; border-radius: 999px; background: var(--sg-sunken); color: var(--sg-text-muted);
   font-size: 12px; line-height: 20px; white-space: nowrap; font-weight: 400; }
-.sgm-pill.accent { background: var(--sg-accent-soft); color: var(--sg-accent); }
+.sgm-pill.accent { background: var(--sg-accent-soft); color: var(--sg-accent-strong); }
 .sgm-pill.warn { background: color-mix(in srgb, var(--sg-warn) 16%, transparent); color: var(--sg-warn-text); }
-.sgm-pill.muted { opacity: .75; }
+/* 「放弃」等弱化标签不再整体降透明度：文字要保持 4.5 以上，靠字面区分 */
+.sgm-pill.muted { opacity: 1; }
 
 /* 播放键 */
 .sg-music .sgm-play { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; border: 0; border-radius: 50%;
   background: var(--sg-sunken); color: var(--sg-text); cursor: pointer; }
 .sg-music .sgm-play:hover { background: var(--sg-accent-soft); color: var(--sg-accent); }
-.sg-music .sgm-play.is-large { width: 44px; height: 44px; background: var(--sg-accent); color: var(--sg-on-accent); }
-.sgm-version.is-current .sgm-play { background: var(--sg-accent); color: var(--sg-on-accent); }
+.sg-music .sgm-play.is-large { width: 44px; height: 44px; background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sgm-version.is-current .sgm-play { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+/* 强调浅底上的次要文字改用正文色：次要色在强调浅底上达不到 4.5（纸张 4.48、工作室 3.93） */
+.sgm-version.is-current .sgm-version-time, .sgm-compare-track.is-active .sgm-version-time,
+.sgm-compare-track.is-active .sgm-compare-side small, .sgm-files li.is-ready .sgm-file-state { color: var(--sg-text); }
 
 /* 波形 */
 .sgm-wave { position: relative; height: 40px; min-width: 60px; flex: 1; display: flex; align-items: center; border-radius: 8px; }
@@ -162,7 +169,8 @@
 .sgm-version { display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 12px; }
 .sgm-version:hover { background: var(--sg-hover); }
 .sgm-version.is-current { background: var(--sg-accent-soft); }
-.sgm-version.is-rejected { opacity: .72; }
+/* 淘汰区的版本只淡化波形和播放键，文字不淡化，保持可读 */
+.sgm-version.is-rejected .sgm-wave, .sgm-version.is-rejected .sgm-play { opacity: .55; }
 .sgm-version-label { min-width: 26px; font-weight: 500; font-size: 15px; text-align: center; }
 .sgm-version-time { color: var(--sg-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
 .sgm-version-badges { display: flex; gap: 6px; flex: none; }
@@ -255,4 +263,46 @@
   .sgm-row2, .sgm-issue-edit { grid-template-columns: 1fr; }
   .sgm-version { flex-wrap: wrap; }
   .sgm-player-title { max-width: none; flex: 1; }
+}
+
+/* A/B 对比页（PR 2） */
+.sgm-compare { display: grid; gap: 16px; padding: 20px; border-radius: var(--sg-radius); background: var(--sg-surface-raised); box-shadow: var(--sg-shadow); }
+.sgm-compare-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sgm-compare-head h2 { font-size: 18px; flex: 1; min-width: 160px; }
+.sgm-compare-toggles { display: flex; gap: 6px; flex-wrap: wrap; }
+.sgm-compare-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sgm-compare-tracks { display: grid; gap: 8px; }
+.sgm-compare-track { display: flex; align-items: center; gap: 14px; padding: 10px 14px 10px 10px; border-radius: 14px; background: var(--sg-sunken); }
+.sgm-compare-track.is-active { background: var(--sg-accent-soft); }
+.sg-music .sgm-compare-side { display: flex; align-items: center; gap: 10px; min-width: 170px; border: 0; background: transparent; color: var(--sg-text); text-align: left; cursor: pointer; padding: 0; }
+.sgm-compare-side strong { display: block; font-weight: 500; }
+.sgm-compare-side small { color: var(--sg-text-muted); font-size: 12px; }
+.sgm-compare-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--sg-surface-raised); font-weight: 500; font-size: 16px; flex: none; }
+.sgm-compare-track.is-active .sgm-compare-badge { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+/* 选项按钮（哪一版更好、音量对齐、盲听）：选中＝实心强调底＋对勾，不靠颜色渐变，任何配色下都看得清 */
+.sg-music .sgm-choice { transition: none; }
+.sg-music .sgm-choice[aria-checked="true"], .sg-music .sgm-choice[aria-pressed="true"] { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sg-music .sgm-choice[aria-checked="true"]:hover, .sg-music .sgm-choice[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--sg-accent-strong) 88%, var(--sg-text)); }
+/* 盲听时的中性进度条：两版一样，不露出时长和波形 */
+.sgm-neutral-bar { position: relative; flex: 1; min-width: 60px; height: 10px; border-radius: 999px; background: var(--sg-wave); cursor: pointer; }
+.sgm-neutral-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--sg-text-muted); }
+.sgm-compare-track.is-active .sgm-neutral-bar > span { background: var(--sg-accent-strong); }
+.sgm-compare-transport { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sgm-markers { display: flex; gap: 8px; flex-wrap: wrap; }
+.sgm-marker { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 4px; border-radius: 999px; background: var(--sg-sunken); }
+.sg-music .sgm-marker-jump { border: 0; border-radius: 999px; padding: 2px 10px; background: var(--sg-accent-soft); color: var(--sg-accent-strong); font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.sg-music .sgm-marker input { width: 96px; padding: 3px 8px; background: transparent; font-size: 13px; }
+.sgm-compare-lyrics ol { margin: 6px 0 0; padding-left: 22px; display: grid; gap: 2px; max-height: 220px; overflow: auto; }
+.sg-music .sgm-compare-lyrics button { border: 0; background: transparent; color: var(--sg-text); padding: 2px 6px; border-radius: 6px; cursor: pointer; text-align: left; }
+.sg-music .sgm-compare-lyrics button:hover { background: var(--sg-hover); }
+.sgm-compare-result { display: grid; gap: 10px; padding: 16px; border-radius: var(--sg-radius-small); background: var(--sg-sunken); }
+.sgm-compare-result h3 { font-size: 15px; }
+.sgm-compare-winner { display: flex; gap: 6px; flex-wrap: wrap; }
+.sgm-segment-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; }
+.sgm-comparisons { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.sgm-comparisons li { display: grid; gap: 4px; }
+.sgm-comparisons strong { font-weight: 500; }
+@media (max-width: 900px) {
+  .sgm-compare-pick { grid-template-columns: 1fr; }
+  .sgm-compare-track { flex-wrap: wrap; }
 }
