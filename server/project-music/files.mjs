@@ -58,6 +58,12 @@ export class MusicFiles {
     return canonical;
   }
 
+  // 音乐目录的真实路径（不创建）：还没解析过时同步解析一次，目录不存在返回 null。
+  baseSync() {
+    if (this.base) return this.base;
+    try { return fsSync.realpathSync(this.configured); } catch { return null; }
+  }
+
   // 只用于展示和比较的位置（不创建目录）。
   expectedPath(rel) {
     if (!validRel(rel)) return null;
