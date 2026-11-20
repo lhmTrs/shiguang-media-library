@@ -18,6 +18,8 @@ export type Version = {
 export type Round = {
   id: string; songId: string; roundNo: number; revision: number;
   prompt: Prompt; promptConfirmed: Author | null; promptDraftedBy: Author | null;
+  /** AI 开新一轮时带的 Suno 链接：页面标「AI 填」；你改过就为 null。 */
+  sunoLinkBy: Author | null;
   changes: {text: string; count: number | null; author: Author} | null;
   listening: ListeningEntry[];
   issues: {items: IssueItem[]; author: Author} | null;

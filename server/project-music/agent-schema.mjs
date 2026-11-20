@@ -33,10 +33,12 @@ export const AGENT_SCHEMA = {
     },
   },
   newRound: {
-    request: 'POST /api/project-music/projects/<projectId>/songs/<songId>/rounds，body {requestId: 新UUID, session, prompt:{tool, style, lyrics, params}}',
+    request: 'POST /api/project-music/projects/<projectId>/songs/<songId>/rounds，body {requestId: 新UUID, session, prompt:{tool, style, lyrics, params, sunoLink?}}',
     rules: [
       '上一轮的「问题整理」(issues) 和「下一轮方向」(nextDirection) 没填时返回 409 PREVIOUS_ROUND_INCOMPLETE（先补上一轮）。',
       'AI 开的新一轮，提示词显示为「AI 起草，待你确认」，用户确认后才算数。',
+      'prompt 里不能带 sunoTier（Suno 会员档位）：带了整次 403 AGENT_FIELD_FORBIDDEN。AI 开的轮次档位留空，由用户在页面上填。',
+      'prompt.sunoLink 可以由 AI 带，页面会标「AI 填」。',
     ],
   },
   upload: {

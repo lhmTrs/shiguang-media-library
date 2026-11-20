@@ -122,7 +122,7 @@ export class ProjectMusic {
     const diff = previous ? PROMPT_FIELDS.filter(k => (previous.data.prompt?.[k] ?? '') !== (d.prompt?.[k] ?? '')) : [];
     return {
       id: round.id, songId: round.song_id, roundNo: round.round_no, revision: round.revision,
-      prompt: d.prompt, promptConfirmed: d.promptConfirmed ?? null, promptDraftedBy: d.promptDraftedBy ?? null,
+      prompt: d.prompt, promptConfirmed: d.promptConfirmed ?? null, promptDraftedBy: d.promptDraftedBy ?? null, sunoLinkBy: d.sunoLinkBy ?? null,
       changes: d.changes ?? null, listening: d.listening ?? [], issues: d.issues ?? null, checks: d.checks ?? null,
       nextDirection: d.nextDirection ?? null, userIssues: d.userIssues ?? null, userDirection: d.userDirection ?? null, comparisonNote: d.comparisonNote ?? null,
       promptDiffFromPrevious: previous ? diff : null, complete: missing.length === 0, missing,
@@ -211,7 +211,11 @@ export class ProjectMusic {
     const id = M.requestId(input.requestId);
     const existing = parse(this.db.prepare('SELECT * FROM project_music_rounds WHERE id=?').get(id));
     const rounds = this.rounds(song.id), last = rounds.at(-1);
-    const prompt = M.prompt(input.prompt ?? {}, last?.data.prompt);
+    const byUser = author.kind === 'user';
+    // Suno 会员档位只能由用户填（SPEC 第十节）：AI 开新一轮时带档位一律拒绝；AI 开的轮次也不沿用上一轮的档位，
+    // 留空等用户在自己的界面里填，「确认这份提示词」因此不会带出任何档位。
+    if (!byUser && input.prompt && Object.hasOwn(input.prompt, 'sunoTier')) fail('AGENT_FIELD_FORBIDDEN', 'AI 不能填 Suno 会员档位：档位决定能不能商用，只能由你在页面上填', 403, {fields: ['prompt.sunoTier']});
+    const prompt = M.prompt(input.prompt ?? {}, byUser ? last?.data.prompt : {...last?.data.prompt, sunoTier: ''});
     const args = M.digest({songId: song.id, prompt});
     if (existing) {
       if (existing.project_id !== projectId || existing.data.args !== args) fail('REQUEST_ID_CONFLICT', '请求编号已用于其他内容', 409);
@@ -222,9 +226,10 @@ export class ProjectMusic {
       const missing = M.roundMissing(last.data);
       if (missing.length) fail('PREVIOUS_ROUND_INCOMPLETE', `先补上一轮：第 ${last.round_no} 轮还缺「${missing.map(k => M.MISSING_LABEL[k]).join('」「')}」`, 409, {roundId: last.id, roundNo: last.round_no, missing});
     }
-    const at = M.now(), byUser = author.kind === 'user';
+    const at = M.now();
     const data = {
       prompt, promptConfirmed: byUser ? author : null, promptDraftedBy: byUser ? null : author,
+      sunoLinkBy: !byUser && prompt.sunoLink ? author : null,
       changes: null, listening: [], issues: null, checks: null, nextDirection: null, userIssues: null, userDirection: null, comparisonNote: null,
       createdBy: author, args,
     };
@@ -245,7 +250,12 @@ export class ProjectMusic {
     M.revision(input.expectedRevision);
     if (input.expectedRevision !== round.revision) this.conflict('project_music_rounds', round.id);
     const d = structuredClone(round.data), user = M.userAuthor();
-    if (input.prompt !== undefined) { d.prompt = M.prompt(input.prompt, d.prompt); d.promptConfirmed = user; }
+    if (input.prompt !== undefined) {
+      const next = M.prompt(input.prompt, d.prompt);
+      // AI 填的 Suno 链接：你没改它就仍标「AI 填」；改了就算你填的。
+      if (next.sunoLink !== d.prompt?.sunoLink) d.sunoLinkBy = null;
+      d.prompt = next; d.promptConfirmed = user;
+    }
     if (input.confirmPrompt === true) d.promptConfirmed = user;
     if (input.listening !== undefined) d.listening = this.mergeListening(d.listening ?? [], input.listening, user);
     if (input.userIssues !== undefined) { const t = M.userNote(input.userIssues, '你写的问题整理'); d.userIssues = t ? {text: t, author: user} : null; }
