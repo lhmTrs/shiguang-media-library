@@ -644,7 +644,14 @@ test('项目音乐 · PR3 搬迁：旧位置的歌先复制、核对、登记，
   const trashDir = path.join(base, '.Trash');
   await fs.mkdir(trashDir);
   const trashed = [];
-  const store = new ProjectMusic({lib, projects, dataDir: app, directory, trash: async f => { const to = path.join(trashDir, path.basename(f)); await fs.rename(f, to); trashed.push(f); return to; }}).init();
+  const store = new ProjectMusic({lib, projects, dataDir: app, directory, trash: async (f, expected) => {
+    // 交给废纸篓助手的是双参数：刚核对过内容的那个文件的身份、所在文件夹的身份、SHA-256。
+    const st = await fs.lstat(f), parent = await fs.lstat(path.dirname(f));
+    assert.deepEqual(expected.identity, {dev: String(st.dev), ino: String(st.ino), size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs});
+    assert.deepEqual(expected.parent, {dev: String(parent.dev), ino: String(parent.ino)});
+    assert.equal(expected.sha256, sha(await fs.readFile(f)));
+    const to = path.join(trashDir, path.basename(f)); await fs.rename(f, to); trashed.push(f); return to;
+  }}).init();
   t.after(() => store.close());
   for (let i = 0; i < 400 && !store.migration; i++) await new Promise(r => setTimeout(r, 10));
   await store.migration;
@@ -652,7 +659,7 @@ test('项目音乐 · PR3 搬迁：旧位置的歌先复制、核对、登记，
 
   let list = store.list(p.id);
   const vs = Object.fromEntries(list.songs[0].rounds[0].versions.map(v => [v.label, v]));
-  assert.equal(vs.A.library.inLibrary, true);
+  assert.equal(vs.A.library.inLibrary, true, JSON.stringify(vs.A.library));
   assert.equal(vs.A.library.reused, false);
   const newA = path.join(directory, `合成项目乙--${p.id}`, '歌曲', '合成旧歌', '第01轮', '合成旧歌-第01轮-A.mp3');
   assert.equal(sha(await fs.readFile(newA)), sha(await fs.readFile(a)), '复制后核对一致');
@@ -719,4 +726,90 @@ test('项目音乐 · 标签：复用你的记录时，你原来就有的同名�
   song = await tagsSettled(s, M, song.id);
   tags = (await s.call('GET', `/assets/${mineAsset.id}`)).body.tags;
   assert.ok(tags.includes('合成夜曲二') && !tags.includes('合成夜曲') && tags.includes('钢琴'), String(tags));
+});
+
+async function storeFixture(t, name) {
+  const {Library} = await import('../server/library.mjs');
+  const {MysqlStorage} = await import('../server/mysql.mjs');
+  const {Projects} = await import('../server/projects.mjs');
+  const {ProjectMusic} = await import('../server/project-music/store.mjs');
+  const base = await fs.realpath(await makeTemp(t));
+  const app = path.join(base, 'app');
+  await fs.mkdir(app, {recursive: true});
+  const storage = await new MysqlStorage(app).init();
+  const lib = await new Library(app, {directoryClassification: true}).init();
+  storage.attach(lib);
+  t.after(() => lib.db.close());
+  const projects = new Projects(lib).init();
+  const p = projects.save(null, {name});
+  const directory = path.join(base, 'personal_item', 'music');
+  return {base, app, lib, projects, p, directory, ProjectMusic};
+}
+
+test('项目音乐 · 旧副本进废纸篓用双参数核对：核对完、真正移动前文件被换掉，就不移（验收 info-3）', async t => {
+  const swiftc = (await import('node:child_process')).spawnSync('xcrun', ['--find', 'swiftc'], {encoding: 'utf8'});
+  if (swiftc.status !== 0) { t.skip('本机没有 swiftc，编译不了废纸篓助手'); return; }
+  const f = await storeFixture(t, '合成废纸篓项目');
+  const helper = path.join(f.base, 'trash-helper');
+  const built = (await import('node:child_process')).spawnSync('xcrun', ['swiftc', path.join(process.cwd(), 'server', 'trash.swift'), '-o', helper], {encoding: 'utf8', timeout: 180000});
+  assert.equal(built.status, 0, built.stderr);
+  f.lib.trashBin = helper;
+  const page = {kind: 'user', at: 1};
+  const first = new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory, autoMigrate: false}).init();
+  let song = first.createSong(f.p.id, {requestId: uuid(), title: '合成旧歌'}, page);
+  song = first.createRound(f.p.id, song.id, {requestId: uuid(), prompt: {tool: 'Suno', style: '合成'}}, page);
+  await first.close();
+  const legacyDir = path.join(f.app, 'project-music', `合成废纸篓项目--${f.p.id}`, `合成旧歌--${song.id.slice(0, 8)}`, '第01轮');
+  await fs.mkdir(legacyDir, {recursive: true});
+  const file = await synth(legacyDir, 'A.mp3', {freq: 333});
+  const bytes = await fs.readFile(file), st = await fs.lstat(file), id = uuid();
+  const data = {label: 'A', originalName: 'A.mp3', fileName: 'A.mp3', relativePath: `合成废纸篓项目--${f.p.id}/合成旧歌--${song.id.slice(0, 8)}/第01轮/A.mp3`, format: 'mp3', bytes: bytes.length,
+    identity: {dev: String(st.dev), ino: String(st.ino), size: st.size, mtimeMs: Math.round(st.mtimeMs), ctimeMs: Math.round(st.ctimeMs)}, durationMs: 2000, peaks: null, loudnessDb: null,
+    status: 'candidate', note: '', rejectedAt: null, uploadedBy: page, importRequestId: uuid()};
+  f.lib.db.prepare('INSERT INTO project_music_versions(id,project_id,song_id,round_id,sha256,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(id, f.p.id, song.id, song.rounds[0].id, sha(bytes), JSON.stringify(data), 1, Date.now(), Date.now());
+  const store = new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory}).init();
+  t.after(() => store.close());
+  for (let i = 0; i < 400 && !store.migration; i++) await new Promise(r => setTimeout(r, 10));
+  await store.migration;
+  assert.equal(store.list(f.p.id).legacy.copies, 1, '已搬好，旧副本还在');
+  // 在 JS 核对完、交给助手之前，把旧副本换成另一份内容（同名）
+  const realTrash = store.trash.bind(store);
+  store.trash = async (target, expected) => {
+    await fs.rm(target);
+    await fs.writeFile(target, Buffer.concat([bytes.subarray(0, bytes.length - 1), Buffer.from([bytes.at(-1) ^ 0xff])]));
+    return realTrash(target, expected);
+  };
+  const out = await store.trashLegacy(f.p.id, {confirm: true});
+  assert.equal(out.trashed, 0);
+  assert.equal(out.skipped.length, 1);
+  assert.match(out.skipped[0].reason, /没有移动/);
+  await fs.access(file);
+  assert.equal(out.project.legacy.copies, 1, '没移的那份仍记作旧副本');
+  assert.equal((await fs.readdir(legacyDir)).filter(n => n.startsWith('.shiguang-intake-')).length, 0, '助手没有留下暂存目录');
+});
+
+test('项目音乐 · 「AI生成」显示名：登记根目录之后、改名之前中断，重启后补上，而且幂等（验收 info-4）', async t => {
+  const f = await storeFixture(t, '合成根目录项目');
+  const page = {kind: 'user', at: 1};
+  const first = new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory, autoMigrate: false}).init();
+  // 模拟中断：登记好根目录，改名那一步没做成
+  const realUpdate = f.lib.updateRoot.bind(f.lib);
+  f.lib.updateRoot = () => { throw Error('模拟中断：改名前进程被杀'); };
+  await assert.rejects(() => first.prepareRoot(), /模拟中断/);
+  f.lib.updateRoot = realUpdate;
+  await first.close();
+  const dir = await fs.realpath(f.directory);
+  assert.equal(f.lib.roots().find(r => r.path === dir).name, 'music', '中断后停在默认名');
+  const second = new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory, autoMigrate: false}).init();
+  assert.equal(f.lib.roots().find(r => r.path === dir).name, 'AI生成', '重启时补上');
+  let calls = 0;
+  f.lib.updateRoot = (...args) => { calls++; return realUpdate(...args); };
+  new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory, autoMigrate: false}).init();
+  await second.prepareRoot();
+  assert.equal(calls, 0, '名字已对就不再改');
+  f.lib.updateRoot = realUpdate;
+  assert.equal(f.lib.roots().filter(r => r.path === dir).length, 1, '没有重复登记');
+  await second.close();
+  assert.ok(page);
 });

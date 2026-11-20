@@ -52,6 +52,7 @@ export class ProjectMusic {
 
   init() {
     ensureMusicSchema(this.db);
+    try { this.fixRootName(); } catch (e) { console.warn('[project-music] 没能补改「AI生成」显示名：', e.message); }
     // 上次没写完的音乐库标签：重新排队。旧位置的歌：后台搬迁（先复制、核对、登记，旧副本保留）。
     for (const r of this.db.prepare('SELECT id,data_json FROM project_music_versions').all()) {
       const d = JSON.parse(r.data_json);
@@ -720,6 +721,7 @@ export class ProjectMusic {
     const roots = this.lib.allRoots();
     if (roots.some(r => r.retired && (within(r.path, dir) || within(dir, r.path)))) fail('MUSIC_ROOT_RETIRED', `「${M.LIBRARY_ROOT_NAME}」音乐目录已注销，请先在素材目录里恢复管理`, 409);
     let root = roots.find(r => !r.retired && within(r.path, dir));
+    if (root) this.fixRootName(root);
     if (!root) {
       try { root = await this.lib.addRoot(dir, 'music'); }
       catch (e) { fail('MUSIC_ROOT_CONFLICT', `没能把音乐目录登记进音乐库：${e.message}`, 409); }
@@ -728,6 +730,15 @@ export class ProjectMusic {
       await this.onRootAdded();
     }
     return root;
+  }
+
+  // 「AI生成」显示名要幂等地补上：上次在登记根目录之后、改名之前中断，名字会停在默认的「music」。启动时和每次登记前都核一次。
+  fixRootName(root = null) {
+    const dir = this.files.baseSync();
+    const r = root ?? (dir && this.lib.allRoots().find(x => !x.retired && x.path === dir));
+    if (!r || r.path !== dir || r.name === M.LIBRARY_ROOT_NAME) return false;
+    this.lib.updateRoot(r.id, {name: M.LIBRARY_ROOT_NAME});
+    return true;
   }
 
   indexAsset(root, file, sha256, st) {
@@ -1109,10 +1120,18 @@ export class ProjectMusic {
     return this.list(projectId);
   }
 
-  async trash(file) {
-    if (this.trashFile) return this.trashFile(file);
+  // 用 trash-helper 的双参数模式（和收纳模块同一种）：助手自己按目录句柄领取原件，再按身份和 SHA-256 核对一遍才送进废纸篓，
+  // 没有「JS 核对完到真正移动」之间的空当。核对不通过就不移，原件留在原处。
+  async trash(file, expected) {
+    if (this.trashFile) return this.trashFile(file, expected);
     if (!this.lib.trashBin) fail('TRASH_UNAVAILABLE', '系统废纸篓不可用，旧副本没有删除', 409);
-    const {stdout} = await run(this.lib.trashBin, [file], {timeout: 30000});
+    let stdout;
+    try { ({stdout} = await run(this.lib.trashBin, [file, JSON.stringify(expected)], {timeout: 60000})); }
+    catch (e) {
+      const why = String(e.stderr || e.message || '').trim().slice(0, 400);
+      if (/UNKNOWN/.test(why)) fail('TRASH_UNSETTLED', '废纸篓结果待核对，请到废纸篓看一下：' + why, 409);
+      fail('TRASH_REFUSED', '移动前再核对一遍没通过，旧副本没有移动：' + why, 409);
+    }
     const target = JSON.parse(stdout);
     if (typeof target !== 'string' || !path.isAbsolute(target) || !/(^|\/)\.Trash(es)?\//.test(target)) fail('TRASH_UNSETTLED', '废纸篓结果尚未核清，请到废纸篓核对', 409);
     return target;
@@ -1130,14 +1149,21 @@ export class ProjectMusic {
       for (const v of rows) {
         try { const o = await this.openVersion(projectId, v.id); await o.handle.close(); }
         catch (e) { out.skipped.push({versionId: v.id, reason: `音乐库里的这一份核对没通过：${e.message}`}); continue; }
-        let file = null;
-        try { const o = await this.files.openLegacy(v.data.legacy.relativePath, {identity: v.data.legacy.identity, sha256: v.sha256}); file = o.path; await o.handle.close(); }
-        catch (e) {
+        let file = null, expected = null;
+        try {
+          const o = await this.files.openLegacy(v.data.legacy.relativePath, {identity: v.data.legacy.identity, sha256: v.sha256});
+          try {
+            // 身份取自刚核对过内容的那个打开着的文件，交给助手再核一遍。
+            const st = await o.handle.stat(), parent = await fs.lstat(path.dirname(o.path));
+            file = o.path;
+            expected = {identity: {dev: String(st.dev), ino: String(st.ino), size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs}, parent: {dev: String(parent.dev), ino: String(parent.ino)}, sha256: v.sha256};
+          } finally { await o.handle.close(); }
+        } catch (e) {
           if (e.code !== 'MUSIC_FILE_MISSING') { out.skipped.push({versionId: v.id, reason: `旧副本核对没通过：${e.message}`}); continue; }
         }
         let target = null;
         if (file) {
-          try { target = await this.trash(file); }
+          try { target = await this.trash(file, expected); }
           catch (e) { out.skipped.push({versionId: v.id, reason: e.message}); if (e.code === 'TRASH_UNAVAILABLE') break; continue; }
           dirs.add(path.dirname(file));
         }
