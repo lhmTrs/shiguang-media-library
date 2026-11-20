@@ -43,7 +43,8 @@ async function fixture(t, mode = 'cooperative', {detach = false} = {}) {
   ].join('\n'), {mode: 0o700});
   const pidFile = path.join(dir, 'frontend.pid');
   const frontend = async () => {
-    assert.ok(await until(async () => (await fs.readFile(pidFile, 'utf8').catch(() => '')).trim() !== ''), '假前端没有启动');
+    // 新写入的脚本第一次执行时系统可能要先检查一下，等久一点。
+    assert.ok(await until(async () => (await fs.readFile(pidFile, 'utf8').catch(() => '')).trim() !== '', 15000), '假前端没有启动');
     const pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
     pids.push(pid);
     return pid;
@@ -56,10 +57,11 @@ test('假编译器像真 driver：前端在自己的进程组里', {skip: !unix}
   const abort = new AbortController();
   const job = runNativeCompiler(compiler, [pidFile], {signal: abort.signal});
   const outcome = assert.rejects(job);
-  const pid = await frontend();
-  assert.equal(pgid(pid), pid, '前端应当是自己进程组的组长');
-  assert.notEqual(pgid(pid), pgid(process.pid));
-  abort.abort(); await outcome;
+  try {
+    const pid = await frontend();
+    assert.equal(pgid(pid), pid, '前端应当是自己进程组的组长');
+    assert.notEqual(pgid(pid), pgid(process.pid));
+  } finally { abort.abort(); await outcome; }
 });
 
 test('成功时返回输出，并且不留下信号监听', {skip: !unix}, async t => {
