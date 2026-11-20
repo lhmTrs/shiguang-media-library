@@ -17,6 +17,7 @@ import {MysqlDatabase} from '../server/mysql-db.mjs';
 import {MysqlStorage} from '../server/mysql.mjs';
 import {Projects} from '../server/projects.mjs';
 import {ProjectMusic} from '../server/project-music/store.mjs';
+import {projectFolderName as projectFolder} from '../server/prompt-codex/pictures.mjs';
 
 process.env.MEDIA_SKIP_IMPORT = '1'; process.env.MEDIA_SKIP_RECONCILE = '1'; process.env.MEDIA_NO_WATCH = '1'; process.env.SHIGUANG_AUDIO_ANALYSIS = '0';
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sg-project-music-mysql-')));
@@ -28,10 +29,13 @@ const audio = path.join(base, 'audio'); await fs.mkdir(audio);
 const synth = (name, freq) => { const f = path.join(audio, name); execFileSync('ffmpeg', ['-v', 'error', '-nostdin', '-f', 'lavfi', '-i', `sine=frequency=${freq}:duration=2`, '-c:a', 'libmp3lame', '-b:a', '64k', '-y', f]); return f; };
 const fileA = synth('甲.mp3', 330), fileB = synth('乙.mp3', 440);
 
+const settled = async store => { for (let i = 0; i < 1000 && (store.tagQueue.size || store.tagRunning || store.tagTimer); i++) await new Promise(r => setTimeout(r, 10)); };
+
 async function scenario(lib, dataDir) {
   const projects = new Projects(lib).init();
-  const store = new ProjectMusic({lib, projects, dataDir}).init();
-  new ProjectMusic({lib, projects, dataDir}).init(); // 建表可重复执行
+  const directory = path.join(dataDir + '-personal', 'music');
+  const store = new ProjectMusic({lib, projects, dataDir, directory}).init();
+  new ProjectMusic({lib, projects, dataDir, directory, autoMigrate: false}).init(); // 建表可重复执行
   const p = projects.save(null, {name: '合成项目' + randomUUID().slice(0, 6)});
   const out = {};
   let song = store.createSong(p.id, {requestId: randomUUID(), title: '合成歌曲'}, page);
@@ -48,6 +52,14 @@ async function scenario(lib, dataDir) {
   out.keep = (await store.resolveImport(p.id, dup.id, {choice: 'keep'})).label;
   song = store.song(p.id, song.id);
   out.labels = song.rounds[0].versions.map(v => v.label);
+  // PR3：全部进音乐库「AI生成」，主类是项目、子类是歌曲；「仍然保留」复用同一条记录；标签写进音乐库
+  await settled(store);
+  song = store.song(p.id, song.id);
+  const vs = song.rounds[0].versions;
+  out.library = vs.map(v => [v.library.inLibrary, v.library.reused, v.library.sub, v.library.category === projectFolder(p), v.library.tagSync]);
+  out.sharedAsset = vs[0].library.assetId === vs[2].library.assetId;
+  out.root = lib.roots().filter(r => r.name === 'AI生成').map(r => r.kind);
+  out.tags = lib.asset(vs[0].library.assetId).tags.filter(t => t !== p.name).sort(); // 项目名每次随机，不参与两库对比
   out.peaks = song.rounds[0].versions.every(v => v.peaks?.length === 300);
   out.gate = await code(() => store.createRound(p.id, song.id, {requestId: randomUUID(), prompt: {}}, page));
   let round = song.rounds[0];
@@ -67,6 +79,20 @@ async function scenario(lib, dataDir) {
   out.afterReject = [song.bestVersionId, song.rounds[0].versions.find(v => v.id === A.id).status];
   song = store.updateVersion(p.id, A.id, {expectedRevision: A.revision + 1, status: 'candidate'});
   out.restored = song.rounds[0].versions.find(v => v.id === A.id).status;
+  // 淘汰 B（不共用文件）：音乐库标「未选用」；AI 按原话改当前最好，再一键改回
+  const B0 = song.rounds[0].versions.find(v => v.label === 'B');
+  song = store.updateVersion(p.id, B0.id, {expectedRevision: B0.revision, status: 'rejected'});
+  await settled(store);
+  out.unused = lib.asset(B0.library.assetId).tags.filter(t => t === `未选用（${p.name}）`).length;
+  let rd = store.song(p.id, song.id).rounds[0];
+  song = store.agentNotes(p.id, rd.id, {expectedRevision: rd.revision, session: '合成会话', decisions: [{versionId: A.id, action: 'best', userWords: '甲最好'}],
+    measurements: [{versionId: A.id, bpm: 100, method: '合成'}]});
+  const decision = song.decisions.at(-1);
+  out.decision = [song.bestVersionId === A.id, decision.action, decision.userWords, decision.canUndo];
+  song = store.undoDecision(p.id, song.id, decision.id, {expectedRevision: song.revision});
+  out.undone = [song.bestVersionId, !!song.decisions.at(-1).undone];
+  await settled(store);
+  out.measuredTag = lib.asset(A.library.assetId).tags.includes('100 BPM');
   const opened = await store.openVersion(p.id, A.id);
   out.openBytes = (await opened.handle.stat()).size === (await fs.stat(fileA)).size;
   await opened.handle.close();
@@ -79,7 +105,11 @@ async function scenario(lib, dataDir) {
   out.comparison = [cmp.left.label, cmp.right.label, cmp.blind, cmp.winner, cmp.summary, cmp.markers.length, cmp.segments[0].winner];
   out.lyric = song.rounds[0].versions[0].lyricTimes?.lines.map(l => l.startMs);
   out.comparisonEmpty = await code(() => store.createComparison(p.id, song.id, {requestId: randomUUID(), leftVersionId: va.id, rightVersionId: vb.id}));
+  // 定稿：只做标记，加入项目候选
+  song = store.finalize(p.id, song.id, {requestId: randomUUID(), expectedRevision: song.revision, versionId: va.id});
+  out.final = [song.status, song.final.assetId === va.library.assetId, lib.db.prepare('SELECT status FROM project_assets WHERE project_id=? AND asset_id=?').get(p.id, song.final.assetId)?.status];
   out.songRevision = song.revision;
+  await store.close();
   return {out, projectId: p.id, projects, dataDir};
 }
 
@@ -108,10 +138,15 @@ try {
     for (let i = 0; i < 150 && !connection; i++) { try { connection = await mysql.createConnection({...config, connectTimeout: 500}); } catch { if (server.exitCode !== null) throw Error('mysqld 已退出\n' + logs); await new Promise(r => setTimeout(r, 150)); } }
     assert.ok(connection, 'mysqld 没有就绪');
     result.version = (await connection.query('SELECT VERSION() v'))[0][0].v;
-    await connection.query('CREATE DATABASE project_music_check CHARACTER SET utf8mb4 COLLATE utf8mb4_bin');
-    mysqlDb = new MysqlDatabase({...config, database: 'project_music_check'});
+    // 和正式环境一样：先起一个全新的 SQLite 库，再切到 MySQL（建出 assets、roots 等全部表），然后跑同一场景。
     const appDir = path.join(base, 'mysql-app'); await fs.mkdir(appDir);
-    result.mysql = (await scenario({db: mysqlDb, dataDir: appDir, asset: () => { throw Error('素材不存在'); }, roots: () => []}, appDir)).out;
+    const mysqlStorage = await new MysqlStorage(appDir).init();
+    const mysqlLib = await new Library(appDir, {directoryClassification: true}).init();
+    mysqlStorage.attach(mysqlLib);
+    await mysqlStorage.activate({...config, database: 'project_music_check'});
+    assert.equal(mysqlLib.db.kind, 'mysql');
+    mysqlDb = mysqlLib.db;
+    result.mysql = (await scenario(mysqlLib, appDir)).out;
     result.mysqlRun = true;
     console.log('MySQL ' + result.version, JSON.stringify(result.mysql));
     const [cols] = await connection.query("SELECT TABLE_NAME t, COLUMN_NAME c, COLUMN_TYPE ty FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='project_music_check' AND TABLE_NAME LIKE 'project_music_%' AND COLUMN_NAME IN ('id','sha256','data_json','round_no')");
@@ -121,10 +156,11 @@ try {
     console.log(JSON.stringify({columns: result.mysqlColumns, indexes: result.mysqlIndexes}));
     assert.deepEqual(result.mysql, result.sqlite, 'SQLite 与 MySQL 的行为不一致');
     // 一次性迁移（server/mysql.mjs）：SQLite 里的项目音乐原样进 MySQL，读出来和迁移前一致。
-    const before = new ProjectMusic({lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp}).init().list(sqliteRun.projectId);
+    const opts = {lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp, directory: path.join(sqliteApp + '-personal', 'music'), autoMigrate: false};
+    const before = new ProjectMusic(opts).init().list(sqliteRun.projectId);
     await storage.activate({...config, database: 'project_music_migration'});
     assert.equal(sqliteLib.db.kind, 'mysql');
-    const after = new ProjectMusic({lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp}).init().list(sqliteRun.projectId);
+    const after = new ProjectMusic(opts).init().list(sqliteRun.projectId);
     assert.deepEqual(after, before, '迁移到 MySQL 后项目音乐数据不一致');
     const [migrated] = await connection.query("SELECT TABLE_NAME t FROM information_schema.TABLES WHERE TABLE_SCHEMA='project_music_migration' AND TABLE_NAME LIKE 'project_music_%'");
     result.migratedTables = migrated.map(r => r.t).sort();
@@ -142,6 +178,15 @@ try {
   assert.equal(result.sqlite.stale, 'REVISION_CONFLICT');
   assert.equal(result.sqlite.rejectBest, 'VERSION_IS_BEST');
   assert.equal(result.sqlite.uniqueRoundNo, 'rejected', '同一首歌的轮次编号必须唯一');
+  assert.ok(result.sqlite.library.every(([inLib, , sub, cat, tags]) => inLib && sub === '歌曲' && cat && tags === 'done'), JSON.stringify(result.sqlite.library));
+  assert.equal(result.sqlite.sharedAsset, true);
+  assert.deepEqual(result.sqlite.root, ['music']);
+  assert.ok(['AI生成', '合成歌曲', '第1轮', '合成风格'].every(t => result.sqlite.tags.includes(t)), result.sqlite.tags.join(','));
+  assert.equal(result.sqlite.unused, 1);
+  assert.deepEqual(result.sqlite.decision, [true, 'best', '甲最好', true]);
+  assert.deepEqual(result.sqlite.undone, [null, true]);
+  assert.equal(result.sqlite.measuredTag, true);
+  assert.deepEqual(result.sqlite.final, ['final', true, 'candidate']);
   passed = true;
 } finally {
   if (mysqlDb) { const done = mysqlDb.worker.threadId === -1 ? Promise.resolve() : once(mysqlDb.worker, 'exit'); mysqlDb.close(); await bounded(done, 10000, 'MySQL worker 未退出').catch(() => {}); }

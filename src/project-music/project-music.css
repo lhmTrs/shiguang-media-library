@@ -166,7 +166,13 @@
 
 .sgm-versions { display: grid; gap: 6px; margin: 14px 0 4px; }
 .sgm-versions.is-compact { margin-top: 10px; gap: 2px; }
-.sgm-version { display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 12px; }
+.sgm-version { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; row-gap: 4px; padding: 8px 10px 8px 8px; border-radius: 12px; }
+/* PR3：版本下面的小字——音乐库里的位置、按提示词和测量的标签；AI 按你原话改的状态和「改回」。 */
+.sgm-version-meta, .sgm-version-decision { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; padding-left: 86px;
+  color: var(--sg-text-muted); font-size: 12px; line-height: 1.5; }
+.sgm-version-decision { gap: 4px 10px; color: var(--sg-text); font-size: 13px; }
+.sgm-versions.is-compact .sgm-version-meta, .sgm-versions.is-compact .sgm-version-decision { padding-left: 74px; }
+.sgm-meta-warn { color: var(--sg-warn-text); }
 .sgm-version:hover { background: var(--sg-hover); }
 .sgm-version.is-current { background: var(--sg-accent-soft); }
 /* 淘汰区的版本只淡化波形和播放键，文字不淡化，保持可读 */

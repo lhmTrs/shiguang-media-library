@@ -12,7 +12,7 @@ import {lowContrast} from './helpers/contrast.mjs';
 
 const makeTemp = tempDirectories(test, 'sg-project-music-ui-');
 
-test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放、当前最好、淘汰区、配色开关、定稿', async t => {
+test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放、当前最好、淘汰区、配色开关、音乐库信息、AI 改的与改回、定稿', async t => {
   await fs.access(path.join(repo, 'dist', 'index.html')).catch(() => assert.fail('请先 npm run build'));
   const base = await makeTemp(t);
   const audio = path.join(base, 'audio');
@@ -110,6 +110,14 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
   await page.getByRole('dialog', {name: '淘汰当前最好？'}).getByRole('button', {name: '确定'}).click();
   await root.getByText('淘汰区 · 1 个版本').waitFor();
   assert.equal(await root.getByText('还没有选「当前最好」').count(), 1);
+  // PR3：音乐库里的位置和标签来源；淘汰的在音乐库里标「未选用」
+  const rejectedArea = root.locator('details.sgm-rejected');
+  await rejectedArea.locator('summary').click();
+  await rejectedArea.getByText('音乐库：未选用').waitFor();
+  await rejectedArea.getByText(/音乐库里照样能找到，标着「未选用（合成界面项目）」/).waitFor();
+  assert.ok(await round1.getByText(`音乐库：合成界面项目--${pid} / 歌曲`).first().isVisible(), '显示在音乐库里的分类');
+  assert.ok(await round1.getByText('按提示词：合成风格、女声、慢板').first().isVisible());
+  assert.ok(!(await root.innerText()).includes(s.personal), '页面不显示本机路径');
 
   // 配色开关只记在本浏览器
   await root.getByRole('radio', {name: '工作室'}).click();
@@ -131,13 +139,33 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
     assert.ok(overflow <= 1, `宽 ${width} 时页面横向溢出 ${overflow}px`);
   }
 
-  // 定稿：默认版本、默认「待确认」分类
+  // AI 按你的原话设了当前最好：页面标「AI 改的」和原话，一键改回
   await page.setViewportSize({width: 1360, height: 900});
+  const M = `/project-music/projects/${pid}`;
+  let song = (await s.call('GET', M)).body.songs[0];
+  const r1 = song.rounds[0], vB = r1.versions.find(v => v.label === 'B');
+  const decided = await s.call('PATCH', M + `/rounds/${r1.id}/agent-notes`, {expectedRevision: r1.revision, session: '合成会话', decisions: [{versionId: vB.id, action: 'best', userWords: '乙这版好听', saidAt: '2026-11-20 20:30'}]});
+  assert.equal(decided.status, 200, decided.text);
+  await page.reload();
+  await round1.waitFor();
+  if (await round1.locator('.sgm-round-toggle').getAttribute('aria-expanded') !== 'true') await round1.locator('.sgm-round-toggle').click();
+  const decision = round1.locator('.sgm-version-decision');
+  await decision.getByText('AI 改的').waitFor();
+  assert.match(await decision.innerText(), /设为当前最好，依据你说的「乙这版好听」（2026-11-20 20:30）[\s\S]*AI · 合成会话/);
+  await root.getByText('当前最好：第 1 轮 B').waitFor();
+  await decision.getByRole('button', {name: '改回第 1 轮 B 的 AI 改动'}).click();
+  await root.getByText('还没有选「当前最好」').waitFor();
+  assert.equal(await round1.locator('.sgm-version-decision').count(), 0);
+
+  // 定稿：只在项目里标记并加入本项目候选，不再复制进音乐库
   await root.getByRole('button', {name: '定稿'}).click();
   const fin = page.getByRole('dialog', {name: '定稿'});
-  await fin.getByLabel('音乐库里的文件名').fill('合成歌曲定稿');
+  await fin.getByText(/所有版本本来就在音乐库「AI生成」里，不会再复制一份/).waitFor();
   await fin.getByRole('button', {name: '定稿'}).click();
-  await root.getByText(/已定稿：第 1 轮 B，已复制进音乐库「待确认」，文件名 合成歌曲定稿\.wav/).waitFor({timeout: 30000});
-  await fs.access(path.join(s.personal, 'system_music', '合成歌曲定稿.wav'));
+  await root.getByText('已定稿：第 1 轮 B，已加入本项目候选。').waitFor({timeout: 30000});
+  assert.equal(await fs.stat(path.join(s.personal, 'system_music')).then(() => true, () => false), false);
+  await fs.access(path.join(s.personal, 'music', `合成界面项目--${pid}`, '歌曲', '合成歌曲', '第01轮', '合成歌曲-第01轮-B.wav'));
+  song = (await s.call('GET', M)).body.songs[0];
+  assert.ok((await s.call('GET', `/projects/${pid}/items`)).body.items.some(i => i.asset_id === song.final.assetId));
   assert.deepEqual(errors, []);
 });

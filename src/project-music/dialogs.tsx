@@ -183,11 +183,11 @@ export function RoundDialog({projectId, song, round, request, blocked, onChanged
           <FileAudio size={16} aria-hidden="true"/>
           <span className="sgm-file-name" title={t.file.name}>{t.file.name}</span>
           {t.state === 'pending' ? <input className="sgm-file-label" aria-label={`${t.file.name} 的版本名`} value={t.label} maxLength={40} placeholder={suno ? '自动 A/B' : '版本名'} onChange={e => update(t.key, {label: e.target.value})}/>
-            : <span className="sgm-file-state">{{uploading: '正在上传…', ready: `已保存 · ${t.receipt?.label ?? ''}`, duplicate: '内容重复', failed: '没有保存', cancelled: '已跳过', pending: ''}[t.state]}</span>}
+            : <span className="sgm-file-state">{{uploading: '正在上传…', ready: `已保存 · ${t.receipt?.label ?? ''}${t.receipt?.reused ? `（音乐库里已有「${t.receipt.reused.name}」，直接用它，没有另存）` : ''}`, duplicate: '内容重复', failed: '没有保存', cancelled: '已跳过', pending: ''}[t.state]}</span>}
           {t.state === 'pending' && <button type="button" className="sgm-icon" aria-label={`移除 ${t.file.name}`} onClick={() => setTasks(list => list.filter(x => x.key !== t.key))}><X size={15}/></button>}
           {t.state === 'duplicate' && <div className="sgm-dup">
             <span>项目里已有同样内容：{t.receipt?.duplicates.map(d => `「${d.songTitle}」第 ${d.roundNo} 轮 ${d.label}${d.status === 'rejected' ? '（淘汰区）' : ''}`).join('、')}</span>
-            <button type="button" className="sgm-btn small" disabled={busy} onClick={() => resolve(t, 'keep')}>仍然保存一份</button>
+            <button type="button" className="sgm-btn small" disabled={busy} onClick={() => resolve(t, 'keep')}>仍然保留</button>
             <button type="button" className="sgm-btn small ghost" disabled={busy} onClick={() => resolve(t, 'cancel')}>跳过</button>
           </div>}
           {t.error && <span className="sgm-error">{t.error}</span>}
@@ -204,83 +204,35 @@ export function RoundDialog({projectId, song, round, request, blocked, onChanged
   </Modal>;
 }
 
-type Folder = {id: string; name: string; relativePath: string};
-
+// PR3：定稿只在项目里标记，并加入本项目候选。所有版本本来就在音乐库「AI生成」里，不再另外复制。
 export function FinalizeDialog({projectId, song, request, onChanged, onClose}: {projectId: string; song: Song; request: Request; onChanged: (s: Song) => void; onClose: () => void}) {
   const versions = song.rounds.flatMap(r => r.versions).filter(v => v.status !== 'rejected');
   const fallback = versions.find(v => v.isBest) ?? versions.at(-1);
   const [versionId, setVersionId] = useState(fallback?.id ?? '');
-  const [folders, setFolders] = useState<Folder[] | null>(null);
-  const [directory, setDirectory] = useState('');
-  const [newFolder, setNewFolder] = useState('');
-  const [fileName, setFileName] = useState(song.title);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [current, setCurrent] = useState<Song>(song);
-  const [renameTo, setRenameTo] = useState(`${song.title} 2`);
-  // 上次停在「重名待选择」时，接着处理原来的那次定稿，不另起一次。
-  const requestId = useRef(song.finalization?.status === 'duplicate' ? song.finalization.requestId : uuid());
-  const f = current.finalization?.requestId === requestId.current ? current.finalization : null;
-
-  useEffect(() => {
-    request<{folders: Folder[]}>('/file-intake/categories/music').then(r => setFolders(r.folders)).catch(e => { setFolders([]); setError('读不到音乐分类：' + message(e)); });
-  }, [request]);
-
-  const createFolder = async () => {
-    if (!newFolder.trim()) return;
-    setBusy(true); setError('');
-    try {
-      const made = await request<Folder>('/file-intake/categories/music', {directory: '', name: newFolder.trim()});
-      setFolders(list => [...(list ?? []), made].sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'zh-CN')));
-      setDirectory(made.id); setNewFolder('');
-    } catch (e) { setError(message(e)); } finally { setBusy(false); }
-  };
+  const requestId = useRef(uuid());
+  const chosen = versions.find(v => v.id === versionId);
+  const notInLibrary = !!chosen && !chosen.library.inLibrary;
   const submit = async () => {
     setBusy(true); setError('');
     try {
-      const s = await request<Song>(`/project-music/projects/${projectId}/songs/${song.id}/finalize`, {requestId: requestId.current, expectedRevision: song.revision, versionId, directory, fileName});
-      setCurrent(s); onChanged(s);
+      const s = await request<Song>(`/project-music/projects/${projectId}/songs/${song.id}/finalize`, {requestId: requestId.current, expectedRevision: song.revision, versionId});
+      onChanged(s);
       if (s.status === 'final') onClose();
-    } catch (e) { setError(message(e)); } finally { setBusy(false); }
-  };
-  const resolve = async (choice: 'rename' | 'reuse' | 'cancel', candidateId?: string) => {
-    setBusy(true); setError('');
-    try {
-      const ext = (versions.find(v => v.id === versionId)?.format) ?? '';
-      const s = await request<Song>(`/project-music/projects/${projectId}/songs/${song.id}/finalize/${requestId.current}/resolve`,
-        {choice, ...(choice === 'rename' ? {fileName: `${renameTo.trim()}.${ext}`} : {}), ...(candidateId ? {candidateId} : {})});
-      setCurrent(s); onChanged(s);
-      if (s.status === 'final' || s.finalization?.status === 'cancelled') onClose();
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   };
   const label = (v: Version) => `第 ${v.roundNo} 轮 ${v.label}${v.isBest ? '（当前最好）' : ''}`;
 
   return <Modal title="定稿" onClose={onClose} busy={busy}>
     <div className="sgm-form">
-      <p className="sgm-hint">定稿会把所选版本复制一份进音乐库，并加入本项目的候选素材。候选版本不进音乐库。以后可以撤回定稿，已进音乐库的文件不会自动删。</p>
-      {!f || f.status === 'failed' ? <>
-        <label className="sgm-field">定稿版本<select value={versionId} onChange={e => setVersionId(e.target.value)}>
-          {versions.map(v => <option key={v.id} value={v.id}>{label(v)}</option>)}
-        </select></label>
-        <label className="sgm-field">放进音乐分类<select value={directory} disabled={!folders} onChange={e => setDirectory(e.target.value)}>
-          {(folders ?? [{id: '', name: '待确认', relativePath: ''}]).map(x => <option key={x.id} value={x.id}>{x.id ? x.name : '待确认（稍后再分类）'}</option>)}
-        </select></label>
-        <div className="sgm-inline">
-          <input aria-label="新分类名" placeholder="或新建一个分类" value={newFolder} maxLength={60} onChange={e => setNewFolder(e.target.value)}/>
-          <button type="button" className="sgm-btn small" disabled={busy || !newFolder.trim()} onClick={createFolder}>新建分类</button>
-        </div>
-        <label className="sgm-field">音乐库里的文件名<input value={fileName} maxLength={200} onChange={e => setFileName(e.target.value)}/></label>
-        {f?.status === 'failed' && <p className="sgm-error">{f.error}</p>}
-        <footer><button type="button" className="sgm-btn" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="sgm-btn primary" disabled={busy || !versionId || !fileName.trim() || !folders} onClick={submit}><Check size={16}/>{busy ? '正在复制…' : '定稿'}</button></footer>
-      </> : f.status === 'duplicate' ? <>
-        <p className="sgm-gate">这个分类里已有同名或同内容的文件：{f.candidates.map(c => `「${c.name}」（${c.reason}）`).join('、')}。请选择怎么处理。</p>
-        <label className="sgm-field">另存为新文件名<input value={renameTo} maxLength={180} onChange={e => setRenameTo(e.target.value)}/></label>
-        <footer>
-          <button type="button" className="sgm-btn ghost" disabled={busy} onClick={() => resolve('cancel')}>取消定稿</button>
-          {f.candidates.map(c => <button key={c.id} type="button" className="sgm-btn" disabled={busy} onClick={() => resolve('reuse', c.id)}>沿用「{c.name}」</button>)}
-          <button type="button" className="sgm-btn primary" disabled={busy || !renameTo.trim()} onClick={() => resolve('rename')}>另存</button>
-        </footer>
-      </> : <p className="sgm-hint">定稿进行中…</p>}
+      <p className="sgm-hint">定稿只在项目里标记这一版，并把它加入本项目的候选素材。这首歌的所有版本本来就在音乐库「AI生成」里，不会再复制一份。以后可以撤回定稿，项目候选保留。</p>
+      <label className="sgm-field">定稿版本<select value={versionId} onChange={e => setVersionId(e.target.value)}>
+        {versions.map(v => <option key={v.id} value={v.id}>{label(v)}</option>)}
+      </select></label>
+      {notInLibrary && <p className="sgm-gate">这一版还在从旧位置搬进音乐库，搬好后才能定稿。</p>}
+      {song.finalization?.status === 'failed' && <p className="sgm-hint">{song.finalization.error}</p>}
+      <footer><button type="button" className="sgm-btn" onClick={onClose} disabled={busy}>取消</button>
+        <button type="button" className="sgm-btn primary" disabled={busy || !versionId || notInLibrary} onClick={submit}><Check size={16}/>{busy ? '正在定稿…' : '定稿'}</button></footer>
       {error && <p className="sgm-error" role="alert">{error}</p>}
     </div>
   </Modal>;
