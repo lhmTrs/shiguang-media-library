@@ -71,28 +71,46 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
   }, [active, levels]);
 
   // 两版一起走：只核对静音的那一版，偏差超过 40ms 才悄悄对齐，不打断正在听的那版。
+  // 两版共同能走到的终点（左边时间轴上）：任意一版播完，两版一起停。盲听时这也让播放只走到较短那一版的长度，不露出谁更长。
+  const endOnLeft = useCallback(() => {
+    const l = audio.current.left, r = audio.current.right;
+    const dl = l && Number.isFinite(l.duration) ? l.duration : Infinity, dr = r && Number.isFinite(r.duration) ? r.duration : Infinity;
+    return Math.max(0, Math.min(dl, dr - offset.current));
+  }, []);
+  const stopAtEnd = useCallback(() => {
+    const l = audio.current.left, r = audio.current.right;
+    if (!l || !r) return;
+    l.pause(); r.pause();
+    const end = endOnLeft();
+    if (Number.isFinite(end)) { l.currentTime = end; r.currentTime = Math.max(0, end + offset.current); }
+    setPos({left: l.currentTime, right: r.currentTime});
+    setPlaying(false);
+  }, [endOnLeft]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       const l = audio.current.left, r = audio.current.right;
       if (!l || !r) return;
       setPos({left: l.currentTime, right: r.currentTime});
       if (!playing) return;
-      const lead = active === 'left' ? l : r, follow = active === 'left' ? r : l;
+      if (l.ended || r.ended || l.currentTime >= endOnLeft() - 0.05) { stopAtEnd(); return; }
+      const follow = active === 'left' ? r : l;
       const target = active === 'left' ? l.currentTime + offset.current : r.currentTime - offset.current;
       if (Number.isFinite(follow.duration) && target < follow.duration && Math.abs(follow.currentTime - target) > 0.04) follow.currentTime = Math.max(0, target);
-      if (lead.ended) setPlaying(false);
-    }, 250);
+    }, 100);
     return () => window.clearInterval(timer);
-  }, [playing, active]);
+  }, [playing, active, endOnLeft, stopAtEnd]);
 
   useEffect(() => () => { audio.current.left?.pause(); audio.current.right?.pause(); }, []);
 
   const playBoth = useCallback(() => {
     const l = audio.current.left, r = audio.current.right;
     if (!l || !r) return;
+    // 已经走到共同终点：两版一起从头开始；否则从当前位置一起开始。
+    if (l.currentTime >= endOnLeft() - 0.05) { offset.current = 0; l.currentTime = 0; }
     r.currentTime = Math.max(0, l.currentTime + offset.current);
     Promise.all([l.play(), r.play()]).then(() => setPlaying(true)).catch(e => { if (e?.name !== 'AbortError') setError('浏览器没有开始播放，请再点一次'); });
-  }, []);
+  }, [endOnLeft]);
   const pauseBoth = useCallback(() => { audio.current.left?.pause(); audio.current.right?.pause(); setPlaying(false); }, []);
   const seekTo = (seconds: number) => {
     const l = audio.current.left, r = audio.current.right;
@@ -176,14 +194,15 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
     </div>}
     <p className="sgm-hint">
       空格切换两版，停在同一位置；K 播放或暂停。
-      {gain == null ? ' 有一版没有响度估算，音量没有对齐。' : matched ? ` 已对齐音量：${Math.abs(gain) < 0.1 ? '两版差不多响' : `${name(gain > 0 ? 'left' : 'right')} 调低 ${Math.abs(gain).toFixed(1)} dB`}（只在浏览器里调，不改原文件）。` : ' 音量未对齐，较响的一版会听起来更好，比较时请留意。'}
+      {gain == null ? ' 有一版没有响度估算，音量没有对齐。' : matched && hidden ? ' 已对齐音量（只在浏览器里调，不改原文件；揭晓后显示调了哪一版、调了多少）。' : matched ? ` 已对齐音量：${Math.abs(gain) < 0.1 ? '两版差不多响' : `${name(gain > 0 ? 'left' : 'right')} 调低 ${Math.abs(gain).toFixed(1)} dB`}（只在浏览器里调，不改原文件）。` : ' 音量未对齐，较响的一版会听起来更好，比较时请留意。'}
     </p>
 
     <div className="sgm-compare-tracks">
       {order.map(s => {
         const ver = v[s], length = len[s] || (ver?.durationMs ?? 0) / 1000, ended = !hidden && playing && length > 0 && pos[s] >= length - 0.05;
         // 盲听时不露出时长和波形：两版用同一时间刻度的中性进度条，只显示当前位置。
-        const common = Math.max(len.left || (v.left?.durationMs ?? 0) / 1000, len.right || (v.right?.durationMs ?? 0) / 1000);
+        // 盲听进度条的刻度取两版中较短的长度：播放到这里两版一起停，两条进度条同时走满。
+        const common = Math.min(len.left || (v.left?.durationMs ?? 0) / 1000, len.right || (v.right?.durationMs ?? 0) / 1000);
         return <div key={s} className={`sgm-compare-track ${active === s ? 'is-active' : ''}`}>
           <button type="button" className="sgm-compare-side" aria-pressed={active === s} aria-label={`听 ${name(s)}`} onClick={() => setActive(s)}>
             <span className="sgm-compare-badge">{hidden ? slotNo(s) : ver?.label ?? '?'}</span>
@@ -197,7 +216,7 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
             : <Waveform peaks={ver?.peaks ?? null} bars={140} progress={length ? Math.min(1, pos[s] / length) : 0} active={active === s}
                 onSeek={f => seekTo(f * length)} label={`${name(s)} 波形`}/>}
           <span className="sgm-version-time">{hidden ? clock(pos[s] * 1000) : `${clock(pos[s] * 1000)} / ${clock(length * 1000)}`}</span>
-          {ver && <audio ref={el => { audio.current[s] = el; }} src={ver.mediaUrl} preload="auto"
+          {ver && <audio ref={el => { audio.current[s] = el; }} src={ver.mediaUrl} preload="auto" onEnded={() => { if (playing) stopAtEnd(); }}
             onLoadedMetadata={e => { const d = e.currentTarget.duration; setLen(x => ({...x, [s]: Number.isFinite(d) ? d : 0})); }}/>}
         </div>;
       })}

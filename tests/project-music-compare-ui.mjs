@@ -19,7 +19,7 @@ test('对比页：默认当前最好对最新、空格切换停在同一位置�
   const audio = path.join(base, 'audio');
   await fs.mkdir(audio);
   const loud = await synth(audio, '合成-响.mp3', {freq: 330, seconds: 8});
-  const soft = await synth(audio, '合成-轻.mp3', {freq: 440, seconds: 8, volume: 0.4});
+  const soft = await synth(audio, '合成-轻.mp3', {freq: 440, seconds: 6, volume: 0.4}); // 比 A 短，用来测「任意一版播完两版一起停」
   const s = await startServer(t, base);
   const pid = (await s.call('POST', '/projects', {name: '合成对比界面项目'})).body.id;
   const M = `/project-music/projects/${pid}`;
@@ -123,6 +123,47 @@ test('对比页：默认当前最好对最新、空格切换停在同一位置�
   const saved = (await s.call('GET', M + `/songs/${song.id}`)).body;
   assert.equal(saved.rounds[0].comparisons[0].winner, oneIsB ? 'right' : 'left', '盲听的 1 号按实际版本存');
   assert.equal(saved.bestVersionId, oneIsB ? vB : vA);
+
+  // 独验 P3-1：出声的那一版先播完，两版一起停；按钮显示已暂停；空格只切换不出声；再播放两版从同一位置一起开始
+  await root.getByRole('button', {name: '对比', exact: true}).click();
+  const p2 = root.getByRole('region', {name: 'A/B 对比'});
+  await p2.getByLabel('左边版本').selectOption(vA);
+  await p2.getByLabel('右边版本').selectOption(vB);
+  await p2.getByRole('button', {name: /听 第 1 轮 B/}).click(); // B 是较短的 6 秒那版
+  await p2.getByRole('button', {name: '第二句'}).click(); // A 跳到 4.0 秒，B 跳到 5.0 秒
+  await p2.getByRole('button', {name: '播放两版'}).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.sgm-compare audio')].every(a => a.paused), null, {timeout: 6000});
+  assert.ok(await p2.getByRole('button', {name: '播放两版'}).isVisible(), '按钮显示已暂停');
+  const stopped = await page.$$eval('.sgm-compare audio', list => list.map(a => ({paused: a.paused, t: a.currentTime})));
+  assert.ok(stopped.every(x => x.paused), '两版都停了，没有一版在静音地继续走');
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(400);
+  assert.ok((await page.$$eval('.sgm-compare audio', list => list.map(a => a.paused))).every(Boolean), '空格只切换，不会让静音的那版出声');
+  await p2.getByRole('button', {name: '播放两版'}).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.sgm-compare audio')].every(a => !a.paused && a.currentTime > 0.3), null, {timeout: 6000});
+  const restarted = await page.$$eval('.sgm-compare audio', list => list.map(a => a.currentTime));
+  assert.ok(Math.abs(restarted[0] - restarted[1]) < 0.3 && restarted[0] < 2, `两版从同一位置一起开始：${restarted}`);
+  await p2.getByRole('button', {name: '暂停两版'}).click();
+
+  // 独验 P3-2：盲听时只说「已对齐音量」，不说调了哪一号、调了多少；揭晓后才显示
+  await p2.getByRole('button', {name: '盲听'}).click();
+  const blindHint = await p2.locator('.sgm-hint').first().innerText();
+  assert.match(blindHint, /已对齐音量/);
+  assert.doesNotMatch(blindHint, /dB|调低|[12] 号/, `盲听提示不露出谁更响：${blindHint}`);
+
+  // 独验 info：盲听时播放只走到较短那一版的长度，到点两版一起停，两条进度条同时走满、时间相同
+  const bar = p2.locator('.sgm-neutral-bar').first(), box = await bar.boundingBox();
+  await page.mouse.click(box.x + box.width * 0.93, box.y + box.height / 2);
+  await p2.getByRole('button', {name: '播放两版'}).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.sgm-compare audio')].every(a => a.paused), null, {timeout: 6000});
+  const ends = await page.$$eval('.sgm-compare audio', list => list.map(a => a.currentTime));
+  assert.ok(Math.abs(ends[0] - ends[1]) < 0.05 && Math.abs(ends[0] - 6) < 0.3, `盲听停在较短那版的长度、两版同一位置：${ends}`);
+  const times = await p2.locator('.sgm-compare-track .sgm-version-time').allInnerTexts();
+  assert.equal(times[0], times[1], `盲听时两版显示同样的时间：${times}`);
+  assert.deepEqual(await p2.locator('.sgm-neutral-bar > span').evaluateAll(list => list.map(el => el.style.width)), ['100%', '100%']);
+  await p2.getByRole('button', {name: '揭晓'}).click();
+  assert.match(await p2.locator('.sgm-hint').first().innerText(), /调低 \d+\.\d dB/, '揭晓后显示具体数字');
+  await p2.getByRole('button', {name: '返回'}).click();
 
   // 选中状态与实心按钮：四种配色加深色主题，在悬停过渡结束后对比度都要 ≥ 4.5
   for (const [palette, theme] of [['follow', 'forest'], ['paper', 'forest'], ['studio', 'forest'], ['gallery', 'forest'], ['follow', 'dark']]) {
