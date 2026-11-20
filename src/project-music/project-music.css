@@ -136,7 +136,7 @@
 .sg-music .sgm-song-card:hover { background: var(--sg-hover); }
 .sg-music .sgm-song-card.is-on { background: var(--sg-surface-raised); box-shadow: var(--sg-shadow); }
 .sgm-song-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.sgm-song-card-title strong { font-weight: 500; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgm-song-card-title strong { font-weight: 500; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgm-song-card-meta { color: var(--sg-text-muted); font-size: 12px; }
 
 .sgm-song { min-width: 0; }
@@ -171,7 +171,7 @@
 .sgm-version.is-current { background: var(--sg-accent-soft); }
 /* 淘汰区的版本只淡化波形和播放键，文字不淡化，保持可读 */
 .sgm-version.is-rejected .sgm-wave, .sgm-version.is-rejected .sgm-play { opacity: .55; }
-.sgm-version-label { min-width: 26px; font-weight: 500; font-size: 15px; text-align: center; }
+.sgm-version-label { min-width: 26px; font-weight: 500; font-size: 16px; text-align: center; }
 .sgm-version-time { color: var(--sg-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
 .sgm-version-badges { display: flex; gap: 6px; flex: none; }
 .sgm-version-actions { display: flex; gap: 2px; flex: none; }
@@ -296,7 +296,7 @@
 .sg-music .sgm-compare-lyrics button { border: 0; background: transparent; color: var(--sg-text); padding: 2px 6px; border-radius: 6px; cursor: pointer; text-align: left; }
 .sg-music .sgm-compare-lyrics button:hover { background: var(--sg-hover); }
 .sgm-compare-result { display: grid; gap: 10px; padding: 16px; border-radius: var(--sg-radius-small); background: var(--sg-sunken); }
-.sgm-compare-result h3 { font-size: 15px; }
+.sgm-compare-result h3 { font-size: 16px; }
 .sgm-compare-winner { display: flex; gap: 6px; flex-wrap: wrap; }
 .sgm-segment-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; }
 .sgm-comparisons { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
