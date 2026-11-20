@@ -34,7 +34,8 @@ function LibraryLine({version}: {version: Version}) {
       : <>
         <span title={l.name ?? undefined}>音乐库：{l.reused ? `复用已有的「${l.name}」` : [l.category, l.sub].filter(Boolean).join(' / ') || '待确认'}</span>
         {l.missing && <span className="sgm-meta-warn">音乐库里的记录已删除，文件读不到</span>}
-        {l.moved && !l.missing && <span className="sgm-meta-warn">位置变了，需要核对</span>}
+        {l.offline && !l.missing && <span className="sgm-meta-warn">文件不在原位置（离线）{l.place ? `：原来在「${l.place}」` : ''}。在访达里把它放回原处（同一个文件夹、同一个名字）就能恢复；如果已经清空了废纸篓，这个版本就听不了了</span>}
+        {l.moved && !l.missing && !l.offline && <span className="sgm-meta-warn">位置变了，需要核对</span>}
         {l.tagSync === 'failed' && <span className="sgm-meta-warn">标签没写进音乐库：{l.tagError}</span>}
         {prompt.length > 0 && <span>按提示词：{prompt.join('、')}</span>}
         {measured.length > 0 && <span title={measured[0].method}>测量：{measured.map(t => t.tag).join('、')}</span>}

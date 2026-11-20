@@ -2,6 +2,7 @@
 // PR3（SPEC 第十一节）：全部版本都放进 personal_item/music（音乐库根目录「AI生成」）并登记进全库索引；
 // 定稿只在项目里标记并加入本项目候选，不再复制进 system_music。同内容复用音乐库已有记录，不另存一份。
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -160,12 +161,21 @@ export class ProjectMusic {
     const expected = d.relativePath && !d.reused ? this.files.expectedPath(d.relativePath) : null;
     return {
       inLibrary: !!a && !a.trashed, assetId: d.assetId, reused: !!d.reused, name: a?.name ?? null, category: a?.category ?? '', sub: a?.sub ?? '',
-      missing: !a || !!a.trashed, offline: !!a && !a.online, moved: !!a && !!expected && a.path !== expected,
+      missing: !a || !!a.trashed, moved: !!a && !!expected && a.path !== expected,
+      // 文件不在原位置：音乐库对账标了离线，或者还没对账但文件已经不在了（比如在访达里删了所在的文件夹）。
+      offline: !!a && !a.trashed && (!a.online || !fsSync.existsSync(a.path)), place: a ? this.placeLabel(a) : null,
       // 音乐库里该不该有「未选用（项目名）」：同一项目里共用这份文件的版本全都淘汰了才打（和标签同步同一条规则）。
       unusedTagged: !!a && this.db.prepare('SELECT data_json FROM project_music_versions WHERE project_id=? AND data_json LIKE ?').all(v.project_id, `%"assetId":"${d.assetId}"%`)
         .map(r => JSON.parse(r.data_json)).filter(x => x.assetId === d.assetId).every(x => x.status === 'rejected'),
       tagSync: d.tagSync?.pending ? 'pending' : d.tagSync?.error ? 'failed' : d.syncedTags ? 'done' : 'pending', tagError: d.tagSync?.error ?? null,
     };
+  }
+
+  // 给页面看的位置（不含本机路径）：在项目音乐文件夹里就写「项目音乐 › 文件夹 / 文件名」，否则写音乐库里的分类和文件名。
+  placeLabel(a) {
+    const base = this.files.baseSync();
+    if (base && within(base, a.path)) return '项目音乐 › ' + path.relative(base, a.path).split(path.sep).slice(1).join(' / ');
+    return '音乐库 › ' + [a.category || '待确认', a.sub, a.name].filter(Boolean).join(' / ');
   }
 
   versionDTO(song, round, v) {
