@@ -50,17 +50,25 @@ export function validateConfig(input, previous = {}) {
     password: input.password ?? (sameUser ? previous.password : "") ?? "",
   };
 }
-export function safeError(e) {
-  return (
+export function safeError(e, migrationStep) {
+  const message = (
     {
       ER_ACCESS_DENIED_ERROR: "MySQL 账户或密码错误",
       ER_DBACCESS_DENIED_ERROR: "MySQL 数据库访问权限不足",
       ER_TABLEACCESS_DENIED_ERROR: "MySQL 建表或写入权限不足",
       ECONNREFUSED: "无法连接本机 MySQL，请检查服务和端口",
       ETIMEDOUT: "连接本机 MySQL 超时",
+      ER_PRIMARY_CANT_HAVE_NULL: "MySQL 主键不能允许空值，请检查迁移表结构",
+      ER_BAD_NULL_ERROR: "MySQL 字段不允许空值，请检查待迁移数据",
+      ER_DUP_ENTRY: "MySQL 唯一约束冲突，请检查待迁移数据",
     }[e.code] ||
     (e.localMessage ? e.message : "MySQL 操作失败，请检查连接和数据库权限")
   );
+  const phases = {schema: "建表", copy: "复制", verify: "校验"};
+  const phase = Object.hasOwn(phases, migrationStep?.phase) ? phases[migrationStep.phase] : null;
+  // Only our migration phase and a source table identifier, never SQL/driver details.
+  return phase && /^[a-z][a-z0-9_]{0,63}$/.test(migrationStep?.table ?? "")
+    ? `${message}（迁移${phase}：${migrationStep.table}）` : message;
 }
 function error(message) {
   const e = Error(message);
@@ -247,7 +255,7 @@ export class MysqlStorage {
     this.lib.migrating = true;
     this.state.status = "syncing";
     this.state.error = "";
-    let conn, newDb;
+    let conn, newDb, migrationStep;
     try {
       while (this.lib.workers) await new Promise((r) => setTimeout(r, 50));
       conn = await this.connect(c);
@@ -369,8 +377,12 @@ export class MysqlStorage {
       )
         throw error("目标数据库属于其他素材库，未覆盖任何数据");
       for (const t of tables) {
+        migrationStep = {phase: "schema", table: t};
         const defs = snapshot[t].columns.map((col) => {
           const type = mysqlColumnType(t, col);
+          // SQLite TEXT PRIMARY KEY can report notnull=0; MySQL primary keys
+          // (including table-level/composite keys) must always be NOT NULL.
+          if (col.pk || /\bPRIMARY KEY\b/.test(type)) col = {...col, notnull: 1};
           if(Object.hasOwn(GENERATION_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t)||Object.hasOwn(MUSIC_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
@@ -382,7 +394,7 @@ export class MysqlStorage {
           if(Object.hasOwn(CREATIVE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${t==='creative_assets'&&col.name==='archived_at'?" DEFAULT 0":""}`;
           if(Object.hasOwn(STORYBOARD_TABLES,t)||Object.hasOwn(HISTORY_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(UPLOAD_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}${col.dflt_value!==null?" DEFAULT "+col.dflt_value:""}`;
-          return `\`${col.name}\` ${type}${/PRIMARY KEY/.test(type) ? " NOT NULL" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
+          return `\`${col.name}\` ${type}${col.pk || /PRIMARY KEY/.test(type) ? " NOT NULL" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
         if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
         if(Object.hasOwn(PROMPT_TABLES,t))defs.push(...promptConstraints(t));
@@ -436,6 +448,7 @@ export class MysqlStorage {
       }
       await conn.beginTransaction();
       for (const t of tables) {
+        migrationStep = {phase: "copy", table: t};
         const columns = snapshot[t].columns.map((col) => col.name);
         for (let i = 0; i < snapshot[t].rows.length; i += 50) {
           const rows = snapshot[t].rows.slice(i, i + 50);
@@ -444,6 +457,7 @@ export class MysqlStorage {
             rows.flatMap((row) => columns.map((c) => row[c])),
           );
         }
+        migrationStep = {phase: "verify", table: t};
         const [copied] = await conn.query(
           `SELECT ${columns.map((c) => "`" + c + "`").join(",")} FROM ${t} ORDER BY ${migrationOrder(t)}`,
         );
@@ -455,6 +469,7 @@ export class MysqlStorage {
         if (checksum(copied, columns) !== checksum(source, columns))
           throw error("迁移校验未通过，未切换数据库");
       }
+      migrationStep = null;
       await conn.commit();
       newDb = new MysqlDatabase(c);
       const counts = Object.fromEntries(
@@ -482,7 +497,7 @@ export class MysqlStorage {
       await conn?.rollback().catch(() => {});
       newDb?.close();
       this.state.status = "error";
-      this.state.error = safeError(e);
+      this.state.error = safeError(e, migrationStep);
       throw error(this.state.error);
     } finally {
       await conn?.end();
