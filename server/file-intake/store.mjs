@@ -11,6 +11,7 @@ import {IntakeNames,checkChoice,wantsStandard} from './names.mjs';
 import {folderName,nameKey,sameFolder} from '../project-videos/folders.mjs';
 
 const stable = value => JSON.stringify(value);
+const isProjectMusic = d => !!d && d.kind==='music' && d.scope==='project';
 const pending = new Set(['queued','copying','duplicate','unknown']);
 const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
 const unavailableVideoFolder = new Set(['ENOENT','ENOTDIR','FOLDER_NOT_FOUND','TARGET_CHANGED']);
@@ -27,8 +28,9 @@ const publicItem = i => ({id:i.id,name:i.name,bytes:i.bytes,copiedBytes:i.copied
   managedProjectName:i.managedProjectName,destination:i.destination,resolvedFolder:i.resolvedFolder,reveal:i.reveal,nameMode:i.nameMode,plannedFileName:i.plannedFileName,resultFileName:i.resultFileName,destinationLabel:i.destinationLabel,creativeAssetId:i.creativeAssetId,lookId:i.lookId,bindingId:i.bindingId,mediaKind:i.mediaKind,adoptionStamp:i.adoptionStamp,candidates:i.candidates});
 
 export class FileIntake {
-  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir,generic,preferences,desktop=catalog.desktopNative}) {
-    this.desktop=desktop;this.receiptSessions=new Map();this.folderDispatches=new Map();this.liveReveal=new Set();
+  constructor({dataDir,catalog,projects,withActivity=fn=>fn(),trash,libraryId=dataDir,generic,preferences,desktop=catalog.desktopNative,music=null}) {
+    // music：项目音乐的收纳适配器（server/project-music/intake.mjs）；没有时项目音乐目标一律拒绝。
+    this.music=music;this.desktop=desktop;this.receiptSessions=new Map();this.folderDispatches=new Map();this.liveReveal=new Set();
     this.generic=generic;this.preferences=preferences;this.receipts=new Receipts(dataDir);this.catalog=catalog;this.projects=projects;
     this.withActivity=withActivity;this.trash=trash||((file,expected)=>this.boundTrash(file,expected));
     this.canTrash=!!(trash||catalog.lib.trashBin);this.batches=new Map();this.foreignIds=new Set();this.closing=false;this.finalizing=new Set();
@@ -157,7 +159,7 @@ export class FileIntake {
       const series=this.projectSeries(id);
       projects.push({id,name,...(series?{series}:{}),videoFolders,assets:assets.all(id).map(({default_look_id,...a})=>({
         ...a,defaultLookId:default_look_id??null,looks:byAsset.get(a.id)??[],
-      }))});
+      })),...(this.music?{music:await this.music.routing(id).catch(()=>({folders:[],songs:[]}))}:{})});
     }
     return {projects,photoCategories};
   }
@@ -190,6 +192,7 @@ export class FileIntake {
     }};
   }
   async previewNameTarget(destination,options) {
+    if(isProjectMusic(destination))return this.requireMusic().previewTarget(destination);
     if(destination.scope==='library'){
       const state=await this.generic.previewLibraryTarget(destination);
       return {directory:state.target,verify:state.verify};
@@ -317,10 +320,12 @@ export class FileIntake {
       items:h.files.filter(f=>ids.includes(f.id)).map(f=>({...f,status:'queued',requestId:randomUUID(),attempts:[],copiedBytes:0}))};
     await this.receipts.write('batches',b.id,b,{exclusive:true});this.batches.set(b.id,b);await this.rememberTargets([{kind:'video',scope:'project',projectId:b.projectId,folderId:b.folderId}],{mode:b.mode});this.kick();return this.dto(b);
   });}
+  requireMusic(){if(!this.music)throw error('INTAKE_INVALID_INPUT','项目音乐收纳暂不可用',503);return this.music;}
   async rememberTargets(targets,options){try{await this.preferences?.remember(targets,options);}catch{this.preferenceWarning='目标偏好未能保存，下次请重新选择；任务已接收';}}
   context(b,i){
     if(b.version!==2)return {catalog:this.catalog,projectId:b.projectId,target:b.target,folderId:b.folderId};
     const d=i.destination;
+    if(isProjectMusic(d))return {catalog:this.requireMusic().bind(d,i.target),projectId:d.projectId,target:i.target,folderId:'root'};
     return {catalog:d.scope==='project'&&d.kind==='video'?this.catalog:this.generic.bind(d,i.target),projectId:d.projectId||'',target:i.target,folderId:i.resolvedFolder?.id??d.folderId??'root'};
   }
   confirmPrompt(value,targets) {
@@ -400,8 +405,14 @@ export class FileIntake {
       finalResults.set(ctx.project.id,result);resolvedFolders.push({...result.folder,projectId:ctx.project.id,outcome:result.outcome});
     }
     const finalPlanner=preflight.size?this.namePlanner():planner;
+    // 项目音乐：同一首歌的「新开一轮」整批只开一轮、新歌只建一首；其余目标先逐个核对，有问题就整批不开轮。
+    const musicTargets=ids.map(id=>targets.get(id).destination).filter(isProjectMusic);
+    let musicPlan=null;
+    if(musicTargets.length){const music=this.requireMusic();for(const d of musicTargets)music.destination(d);for(const d of musicTargets)if(!d.newRound)await music.previewTarget(d);musicPlan=music.plan(musicTargets,input.requestId);}
     for(const id of ids){
-      const f=files.get(id),{destination,nameMode}=structuredClone(targets.get(id));
+      const f=files.get(id),{destination}=structuredClone(targets.get(id));
+      // 「按项目改名」对音乐不生效：项目音乐一律保留原名（歌曲版本由项目音乐按版本号命名）。
+      const nameMode=isProjectMusic(destination)?'keep':targets.get(id).nameMode;
       let target,label,ctx,resolvedFolder;
       if(destination.scope==='project'&&destination.kind==='video'){
         const project=this.catalog.project(destination.projectId,true);
@@ -413,6 +424,10 @@ export class FileIntake {
         const folder=target.row;
         label=project.name+' / '+(folder?.relativePath||'项目根目录');
         ctx={project,series:this.projectSeries(project.id),folder,verify:()=>this.catalog.current(project.id,target)};
+      }else if(isProjectMusic(destination)){
+        target=await this.music.prepare(destination,musicPlan);
+        label=target.label;
+        ctx={verify:()=>this.music.current(target)};
       }else{
         target=await this.generic.prepare(destination,{sharedImages,requestGroupId:input.requestId});
         label=target.label||({photo:'摄影照片',video:'视频素材',music:'音乐',sfx:'音效'}[destination.kind]+' / '+(destination.directory||'待确认'));

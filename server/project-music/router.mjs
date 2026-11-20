@@ -22,6 +22,8 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn(),
   const P = '/projects/:projectId';
 
   route('get', '/schema', (_req, res) => res.json(AGENT_SCHEMA));
+  // 「待补写」清单：全部项目，或 ?projectId= 只看一个项目。
+  route('get', '/pending-notes', (req, res) => res.json(store.pendingNotes(req.query.projectId || null)));
   route('get', P, (req, res) => res.json(store.list(req.params.projectId)));
   route('get', P + '/songs/:songId', (req, res) => res.json(store.song(req.params.projectId, req.params.songId)));
   route('post', P + '/songs', (req, res) => res.json(store.createSong(req.params.projectId, req.body ?? {}, actor(req))));

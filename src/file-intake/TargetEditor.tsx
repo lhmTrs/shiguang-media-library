@@ -1,7 +1,8 @@
 import {useEffect,useRef,useState} from 'react';
 import {Image,Film,Music,RefreshCw} from 'lucide-react';
 import {imageNamePreset} from '../import-presets.mjs';
-import {guessPersonLook} from './routing.mjs';
+import {guessPersonLook, matchSong, songDestination} from './routing.mjs';
+import {PromptField} from './VideoForm';
 import {INTAKE_API,kindLabel,encoded,errorMessage,type IntakeDestination,type IntakeFile,type IntakeFolder,type IntakeRequest,type MediaKind,type ImageProposal,type RoutingProject} from './types';
 
 type Proposal=ImageProposal;
@@ -38,7 +39,7 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
   // user picks another project or changes the destination themselves; it never turns into a person target.
   const pickAsset=(projectId:string)=>{if(!value)return;const a=assetsIn(projectId)[0];onChange({...value,scope:'project',projectId,assetKind:a?a.kind as 'scene'|'prop':value.assetKind||'scene',assetId:a?.id,assetRevision:a?.revision,imageProposal:undefined});};
   useEffect(()=>{
-    if(locked||!value||scope==='project'&&kind==='photo'){setFolders([]);setReading(false);setError('');return;}
+    if(locked||!value||scope==='project'&&(kind==='photo'||kind==='music')){setFolders([]);setReading(false);setError('');return;}
     const c=new AbortController();let current=true;setReading(true);setError('');
     const url=scope==='project'?INTAKE_API+'/projects/'+encoded(project)+'/folders':INTAKE_API+'/categories/'+kind;
     if(scope==='project'&&!project){setReading(false);setFolders([]);return;}
@@ -55,7 +56,8 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
   },[api,kind,proposalKey,refresh,locked]);
   const selected=value?.scope==='project'?(value.folderRole?FINAL_ROLE:value.folderId||'root'):value?.directory||'';
   const finalMissing=value?.scope==='project'&&value.kind==='video'&&!folders.some(f=>f.role==='final');
-  const ready=!locked&&!!value&&!reading&&!checking&&!creating&&!error&&(scope==='project'?!!project&&(kind==='photo'?proposalRef.current===proposalKey&&!!proposal:folders.some(f=>f.id===selected)):folders.some(f=>f.id===selected));
+  const musicReady=!!value&&kind==='music'&&scope==='project'&&!!project&&(value.songId||value.newSongTitle?!!(value.newRound||value.roundId)&&(!value.newSongTitle||!!value.newSongTitle.trim()):!!assetProjects?.find(p=>p.id===project)?.music?.folders.some(f=>f.id===(value.musicFolder||'')));
+  const ready=!locked&&!!value&&!reading&&!checking&&!creating&&!error&&(kind==='music'&&scope==='project'?musicReady:scope==='project'?!!project&&(kind==='photo'?proposalRef.current===proposalKey&&!!proposal:folders.some(f=>f.id===selected)):folders.some(f=>f.id===selected));
   useEffect(()=>{onReady(ready);return()=>onReady(false);},[ready]);
   async function createFolder(){if(locked||!value||!newFolder.trim()||creating)return;const version=location.current.version;setCreating(true);setError('');try{const r=await api<{relativePath:string}>(INTAKE_API+'/categories/'+value.kind,{directory:value.directory||'',name:newFolder});if(!mounted.current)return;const current=valueRef.current;if(!lockedRef.current&&current&&location.current.version===version)onChange({...current,directory:r.relativePath});setNewFolder('');setRefresh(n=>n+1);}catch(e){if(mounted.current&&!lockedRef.current&&location.current.version===version)setError(errorMessage(e));}finally{if(mounted.current)setCreating(false);}}
   const updateFilename=(text:string)=>{if(!value)return;const next=guessPersonLook(text.replace(/\.[^.]+$/,'')),change:Partial<DestinationDraft>={fileName:text};if(!value.characterNameManual)change.characterName=next.name;if(!value.lookNameManual)change.lookName=next.lookName;onChange({...value,...change});};
@@ -63,7 +65,11 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
     {showPreview&&file.mediaKind==='photo'&&(previewReady?(previewError===previewSrc?<p className="fi-error" role="alert">图片预览未能显示；原文件仍保留，可在访达中打开。<button onClick={()=>setPreviewAttempt(n=>n+1)}><RefreshCw size={13}/>重新读取</button></p>:<img key={previewSrc} src={previewSrc} width="160" height="100" alt={file.name} onError={()=>setPreviewError(previewSrc)}/>):<p role="status">正在准备图片预览…</p>)}
     <strong>{file.mediaKind==='photo'?<Image size={15}/>:file.mediaKind==='audio'?<Music size={15}/>:<Film size={15}/>} {file.name}</strong>
     {file.mediaKind==='audio'&&<label><span>类型</span><select aria-label={'素材类型 '+file.id} value={value?.kind||''} disabled={locked} onChange={e=>onChange({kind:e.target.value as MediaKind,scope:'library',directory:''})}><option value="" disabled>请选择音乐或音效</option><option value="music">音乐</option><option value="sfx">音效</option></select></label>}
-    {value&&<>
+    {value&&value.kind==='music'&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'音乐去处 '+file.id}>
+      <button type="button" disabled={locked||!assetProjects?.length} aria-pressed={value.scope==='project'} onClick={()=>{if(value.scope==='project')return;const hit=assetProjects&&matchSong(file,{projects:assetProjects,photoCategories:[]});const p=hit?.project.id||assetProjects?.[0]?.id||'';onChange(hit?songDestination(hit.project.id,hit.song):{kind:'music',scope:'project',projectId:p,musicFolder:''});}}>项目音乐</button>
+      <button type="button" disabled={locked} aria-pressed={value.scope==='library'} onClick={()=>value.scope!=='library'&&onChange({kind:'music',scope:'library',directory:''})}>音乐库</button>
+    </span></div>}
+    {value&&value.kind==='music'&&value.scope==='project'?<MusicTarget file={file} value={value} locked={locked} projects={projects} routing={assetProjects||[]} onChange={onChange}/>:value&&<>
       {value.kind==='video'&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'收纳范围 '+file.id}>{(['project','library'] as const).map(scope=><button key={scope} type="button" disabled={locked} aria-pressed={value.scope===scope} onClick={()=>value.scope!==scope&&patch({scope,imageProposal:undefined})}>{scope==='project'?'项目':kindLabel[value.kind]}</button>)}</span></div>}
       {value.kind==='photo'&&<div className="fi-field"><span>去处</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'收纳范围 '+file.id}>
         <button type="button" disabled={locked} aria-pressed={value.scope==='project'&&!value.assetKind} onClick={()=>(value.scope!=='project'||value.assetKind)&&patch({scope:'project',imageProposal:undefined})}>人物</button>
@@ -91,10 +97,57 @@ export function TargetEditor({file,handoffId,api,projects,assetProjects,value,lo
   </section>;
 }
 
+/**
+ * 项目音乐去处（SPEC 第十二、十三节）：默认放进「文件」下的某个文件夹；选「歌曲」或文件名认出了歌，才出现选轮次。
+ * 新开一轮可以附本轮提示词（「粘贴提示词」读一次剪贴板）。歌曲版本按「歌名-第几轮-版本」命名，不改文件名。
+ */
+const NEW_SONG='__new_song__',NEW_ROUND='__new_round__';
+function MusicTarget({file,value,locked,projects,routing,onChange}:{file:IntakeFile;value:DestinationDraft;locked:boolean;projects:{id:string;name:string}[];routing:RoutingProject[];onChange:(v:DestinationDraft,manual?:boolean)=>void}){
+  const project=value.projectId||'',music=routing.find(p=>p.id===project)?.music;
+  const toSong=!!(value.songId||value.newSongTitle!==undefined);
+  const song=music?.songs.find(s=>s.id===value.songId);
+  const base={kind:'music' as const,scope:'project' as const,projectId:project};
+  const toFiles=(projectId=project)=>onChange({kind:'music',scope:'project',projectId,musicFolder:''});
+  const pickSong=(id:string)=>{
+    if(id===NEW_SONG)return onChange({...base,newSongTitle:file.name.replace(/\.[^.]+$/,'').replace(/[（(]\s*\d+\s*[)）]/g,'').trim(),newRound:true});
+    const s=music?.songs.find(x=>x.id===id);if(s)onChange(songDestination(project,s));
+  };
+  const firstSong=()=>{const s=music?.songs[0];s?onChange(songDestination(project,s)):pickSong(NEW_SONG);};
+  return <>
+    <label><span>项目</span><select aria-label={'目标项目 '+file.id} value={project} disabled={locked} onChange={e=>toFiles(e.target.value)}>
+      <option value="">请选择项目</option>{projects.filter(p=>routing.some(r=>r.id===p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    {project&&<div className="fi-field"><span>放进</span><span className="fi-seg fi-seg-wide" role="group" aria-label={'项目音乐里的位置 '+file.id}>
+      <button type="button" disabled={locked} aria-pressed={!toSong} onClick={()=>toSong&&toFiles()}>文件</button>
+      <button type="button" disabled={locked} aria-pressed={toSong} onClick={()=>!toSong&&firstSong()}>歌曲</button>
+    </span></div>}
+    {project&&!toSong&&<><label><span>文件夹</span><select aria-label={'项目音乐文件夹 '+file.id} value={value.musicFolder||''} disabled={locked} onChange={e=>onChange({...base,musicFolder:e.target.value,...(value.fileName?{fileName:value.fileName}:{})})}>
+      {(music?.folders||[{id:'',name:'项目音乐文件夹',relativePath:''}]).map(f=><option key={f.id||'root'} value={f.id}>{f.relativePath||'项目音乐文件夹'}</option>)}</select></label>
+      <small className="fi-field-hint">存放和传递用，没有轮次。要比较或定稿的，之后在项目音乐里「加入歌曲」。</small>
+      <label><span>文件名</span><input className="fi-button" aria-label={'副本名称 '+file.id} value={value.fileName||file.name} disabled={locked} onChange={e=>onChange({...value,fileName:e.target.value})}/></label></>}
+    {project&&toSong&&<>
+      <label><span>歌</span><select aria-label={'目标歌曲 '+file.id} value={value.newSongTitle!==undefined?NEW_SONG:value.songId||''} disabled={locked} onChange={e=>pickSong(e.target.value)}>
+        {music?.songs.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}<option value={NEW_SONG}>＋ 新建一首…</option></select></label>
+      {value.newSongTitle!==undefined&&<label><span>新歌名</span><input className="fi-button" aria-label={'新歌名 '+file.id} value={value.newSongTitle} maxLength={80} disabled={locked} onChange={e=>onChange({...value,newSongTitle:e.target.value})}/></label>}
+      <label><span>轮次</span><select aria-label={'目标轮次 '+file.id} value={value.newRound?NEW_ROUND:value.roundId||''} disabled={locked||value.newSongTitle!==undefined} onChange={e=>onChange(e.target.value===NEW_ROUND?{...base,...(value.songId?{songId:value.songId}:{newSongTitle:value.newSongTitle}),newRound:true}:{...base,songId:value.songId,roundId:e.target.value})}>
+        {[...(song?.rounds||[])].reverse().map(r=><option key={r.id} value={r.id}>第 {r.roundNo} 轮{r.versionCount?`（已有 ${r.versionCount} 个版本）`:'（还没有版本）'}</option>)}
+        <option value={NEW_ROUND}>新开一轮{song?` · 第 ${(song.rounds.at(-1)?.roundNo||0)+1} 轮`:' · 第 1 轮'}</option></select></label>
+      {value.newRound&&<><div className="fi-field"><span>本轮提示词</span><PromptField value={value.roundPrompt||''} locked={locked} onChange={text=>onChange({...value,roundPrompt:text})}/></div>
+        {song&&!song.rounds.at(-1)?.complete&&<small className="fi-field-hint">上一轮的记录还没写完也可以开：上一轮会标成「待 AI 补写」，由 AI 补上。</small>}</>}
+      <small className="fi-field-hint">一次收进的几个文件是同一轮的几个版本，按「歌名-第几轮-版本」命名。</small>
+    </>}
+  </>;
+}
+
 /** 下拉里「成片」逻辑目标的取值（不是真实文件夹 id）。 */
 const FINAL_ROLE='__final__';
 
 export function submittedDestination(v:DestinationDraft):IntakeDestination {
+  if(v.kind==='music'&&v.scope==='project'){
+    const base={kind:'music' as const,scope:'project' as const,projectId:v.projectId};
+    if(v.songId||v.newSongTitle!==undefined)return {...base,...(v.songId?{songId:v.songId}:{newSongTitle:(v.newSongTitle||'').trim()}),
+      ...(v.newRound||v.newSongTitle!==undefined?{newRound:true,...(v.roundPrompt?.trim()?{roundPrompt:v.roundPrompt.trim()}:{})}:{roundId:v.roundId})};
+    return {...base,musicFolder:v.musicFolder||'',...(v.fileName?{fileName:v.fileName}:{})};
+  }
   if(v.scope==='library')return {kind:v.kind,scope:'library',directory:v.directory||'',...(v.fileName?{fileName:v.fileName}:{})};
   // 「成片」逻辑目标原样提交（与 folderId/newFolder 互斥），由后台在确认时建好或接管；不能退化成根目录
   if(v.kind==='video'&&v.folderRole)return {kind:'video',scope:'project',projectId:v.projectId,folderRole:v.folderRole,...(v.fileName?{fileName:v.fileName}:{})};

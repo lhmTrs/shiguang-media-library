@@ -134,7 +134,27 @@ export class ProjectMusic {
   list(projectId) {
     const p = this.project(projectId);
     const songs = this.db.prepare('SELECT * FROM project_music_songs WHERE project_id=? ORDER BY created_at DESC,id').all(projectId).map(parse);
-    return {projectId, projectName: p.name, libraryRootName: M.LIBRARY_ROOT_NAME, songs: songs.map(s => this.songDTO(s)), legacy: this.legacySummary(projectId)};
+    return {projectId, projectName: p.name, libraryRootName: M.LIBRARY_ROOT_NAME, songs: songs.map(s => this.songDTO(s)), legacy: this.legacySummary(projectId), pendingNotes: this.pendingNotes(projectId).items.length};
+  }
+
+  // 「待补写」清单（SPEC 第十二节第 4 条）：从访达开新一轮时，上一轮还缺问题整理或下一轮方向的。AI 开始做项目音乐时先看这里。
+  pendingNotes(projectId = null) {
+    if (projectId) this.project(projectId);
+    const rows = this.db.prepare('SELECT * FROM project_music_rounds' + (projectId ? ' WHERE project_id=?' : '') + ' ORDER BY created_at,id').all(...(projectId ? [projectId] : [])).map(parse);
+    const out = [];
+    for (const r of rows) {
+      const missing = M.roundMissing(r.data);
+      if (!r.data.pendingAgentNotes || !missing.length) continue;
+      const song = parse(this.db.prepare('SELECT * FROM project_music_songs WHERE id=?').get(r.song_id));
+      const project = this.db.prepare('SELECT id,name,project_kind FROM media_projects WHERE id=?').get(r.project_id);
+      if (!song || !project || (project.project_kind && project.project_kind !== 'normal')) continue;
+      out.push({
+        projectId: r.project_id, projectName: project.name, songId: r.song_id, songTitle: song.data.title, roundId: r.id, roundNo: r.round_no, revision: r.revision,
+        missing, since: r.data.pendingAgentNotes.at, reason: r.data.pendingAgentNotes.reason,
+        hint: '依据只用三种：用户在对话里说过的原话（照录并注明出处）、你自己听过或测过的结果（标测量或推测）、这一轮和下一轮提示词的差别。实在没有依据，由负责这首歌的会话问用户一句，不要替用户编。',
+      });
+    }
+    return {items: out};
   }
 
   // 旧位置（PR1、PR2）的搬迁情况：还没搬的、搬失败的、搬好了但旧副本还在的。
@@ -201,6 +221,8 @@ export class ProjectMusic {
       changes: d.changes ?? null, listening: d.listening ?? [], issues: d.issues ?? null, checks: d.checks ?? null,
       nextDirection: d.nextDirection ?? null, userIssues: d.userIssues ?? null, userDirection: d.userDirection ?? null, comparisonNote: d.comparisonNote ?? null,
       promptDiffFromPrevious: previous ? diff : null, complete: missing.length === 0, missing,
+      // 待 AI 补写：从访达开新一轮时这一轮的记录还没写完；补完就自动不再显示。
+      pendingAgentNotes: d.pendingAgentNotes && missing.length ? d.pendingAgentNotes : null,
       createdBy: d.createdBy, createdAt: round.created_at, updatedAt: round.updated_at,
       versions: versions.filter(v => v.round_id === round.id).map(v => this.versionDTO(song, round, v)),
       comparisons: comparisons.filter(c => c.round_id === round.id).map(c => this.comparisonDTO(c, versions, rounds)),
@@ -283,7 +305,9 @@ export class ProjectMusic {
 
   // ---------- 写入：轮次 ----------
 
-  createRound(projectId, songId, input, author) {
+  // fromIntake：从访达收纳开新一轮（SPEC 第十二节第 3 条）。不要求上一轮的记录先写完，上一轮标成「待 AI 补写」；
+  // 只有真带了提示词时才算你确认过提示词。
+  createRound(projectId, songId, input, author, {fromIntake = false} = {}) {
     M.onlyKeys(input, ['requestId', 'prompt', 'session']);
     const song = this.songRow(projectId, songId);
     const id = M.requestId(input.requestId);
@@ -300,20 +324,26 @@ export class ProjectMusic {
       return this.song(projectId, song.id);
     }
     if (song.data.status !== 'active') fail('SONG_NOT_ACTIVE', song.data.status === 'final' ? '这首歌已定稿，撤回定稿后才能开新一轮' : '这首歌已放弃，恢复为进行中后才能开新一轮', 409);
+    let pending = null;
     if (last) {
       const missing = M.roundMissing(last.data);
-      if (missing.length) fail('PREVIOUS_ROUND_INCOMPLETE', `先补上一轮：第 ${last.round_no} 轮还缺「${missing.map(k => M.MISSING_LABEL[k]).join('」「')}」`, 409, {roundId: last.id, roundNo: last.round_no, missing});
+      if (missing.length && !fromIntake) fail('PREVIOUS_ROUND_INCOMPLETE', `先补上一轮：第 ${last.round_no} 轮还缺「${missing.map(k => M.MISSING_LABEL[k]).join('」「')}」`, 409, {roundId: last.id, roundNo: last.round_no, missing});
+      if (missing.length) pending = {last, missing};
     }
     const at = M.now();
+    const hasPrompt = !!(prompt.style.trim() || prompt.lyrics.trim() || prompt.params.trim());
     const data = {
-      prompt, promptConfirmed: byUser ? author : null, promptDraftedBy: byUser ? null : author,
+      prompt, promptConfirmed: byUser && (!fromIntake || hasPrompt) ? author : null, promptDraftedBy: byUser ? null : author,
       sunoLinkBy: !byUser && prompt.sunoLink ? author : null,
       changes: null, listening: [], issues: null, checks: null, nextDirection: null, userIssues: null, userDirection: null, comparisonNote: null,
       createdBy: author, args,
     };
     const roundNo = (last?.round_no ?? 0) + 1;
     try {
-      this.db.prepare('INSERT INTO project_music_rounds(id,project_id,song_id,round_no,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(id, projectId, song.id, roundNo, M.canonical(data), 1, at, at);
+      this.db.transaction(() => {
+        this.db.prepare('INSERT INTO project_music_rounds(id,project_id,song_id,round_no,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(id, projectId, song.id, roundNo, M.canonical(data), 1, at, at);
+        if (pending) this.saveRow('project_music_rounds', pending.last, {...pending.last.data, pendingAgentNotes: {at, missing: pending.missing, reason: '从访达收纳开了第 ' + roundNo + ' 轮'}});
+      })();
     } catch (e) {
       if (/UNIQUE|Duplicate/i.test(String(e.message))) fail('REVISION_CONFLICT', '同时有另一轮刚被创建，请刷新后再试', 409);
       throw e;

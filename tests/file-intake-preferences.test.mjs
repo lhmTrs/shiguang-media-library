@@ -23,7 +23,7 @@ test('v1 routing migrates; accepted library choices preserve project history and
   const restored=await open();
   assert.equal(restored.themeId,'midnight');
   assert.deepEqual(restored.snapshot(projects,(_p,id)=>id===folderB).routingPreferences,{
-    lastProjectId:{photo:b,video:b},lastVideoFolderByProject:{[a]:'root',[b]:folderB},
+    lastProjectId:{photo:b,video:b,music:null},lastVideoFolderByProject:{[a]:'root',[b]:folderB},lastMusicFolderByProject:{},
     lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},lastAudioKind:'sfx',mode:'move',standardNames:true,standardNamesChosen:true,revealWhenDone:false,
   });
   assert.equal(restored.snapshot([{id:b,archived:true}]).routingPreferences.lastProjectId.video,null);
@@ -41,7 +41,7 @@ test('standard naming defaults on until an explicit confirmed boolean choice sur
     version:2,libraryId,themeId:'midnight',
     targets:{video:{kind:'video',scope:'project',projectId,folderId}},
     routingPreferences:{
-      lastProjectId:{photo:projectId,video:projectId},lastVideoFolderByProject:{[projectId]:folderId},
+      lastProjectId:{photo:projectId,video:projectId,music:null},lastVideoFolderByProject:{[projectId]:folderId},lastMusicFolderByProject:{},
       lastLibraryDirectory:{photo:'照片',video:'外景',music:'配乐',sfx:'脚步'},
       lastAudioKind:'sfx',mode:'move',standardNames:false,revealWhenDone:true,
     },

@@ -128,8 +128,19 @@ export function suggest(file, ctx) {
     // `follows`: the project this photo was checked against without its name saying so ('' = none).
     return own ? r : {...r, follows: project ? project.id : ''};
   }
-  return suggestAudio(file, prefs, libDir);
+  return suggestAudio(file, prefs, libDir, options);
 }
+
+// 项目音乐（SPEC 第十二、十三节）：文件名去掉「(1)」、扩展名和空白后和某首进行中的歌完全相同，就放进这首歌（默认轮次）；
+// 认不出不猜。和服务端 server/project-music/intake.mjs 的 songKey 同一规则。
+export const songKey = name => String(name).normalize('NFKC').replace(/\.[^.]+$/, '').replace(/[（(]\s*\d+\s*[)）]/g, '').replace(/\s+/g, '').toLowerCase();
+export function matchSong(file, options, preferProjectId) {
+  const key = songKey(file.name), hits = [];
+  for (const p of options.projects || []) for (const s of p.music?.songs || []) if (s.key === key) hits.push({project: p, song: s});
+  if (!hits.length) return null;
+  return hits.find(h => h.project.id === preferProjectId) || (hits.length === 1 ? hits[0] : null);
+}
+export const songDestination = (projectId, song) => ({kind: 'music', scope: 'project', projectId, songId: song.id, ...song.defaultRound});
 
 function suggestPhoto(file, options, s, project, text, hint) {
   const found = project && matchInProject(project, text);
@@ -154,10 +165,24 @@ function suggestPhoto(file, options, s, project, text, hint) {
   return {destination: {kind: 'photo', scope: 'library', directory: '', ...guess}, group: 'library:photo:', reason: '名字认不出', hint};
 }
 
-function suggestAudio(file, prefs, libDir) {
-  // Audio stays in the general music/sfx library; only the kind is preset.
+function suggestAudio(file, prefs, libDir, options = {projects: []}) {
+  // 认出是项目里某首歌：直接放进这首歌（不看时长）。
+  const lastMusic = validProject(options, prefs.lastProjectId?.music);
+  const hit = matchSong(file, options, lastMusic?.id);
+  if (hit) {
+    const d = songDestination(hit.project.id, hit.song), round = 'roundId' in hit.song.defaultRound ? '第 ' + hit.song.rounds.find(r => r.id === hit.song.defaultRound.roundId)?.roundNo + ' 轮' : '新开一轮';
+    return {destination: d, group: 'music:' + hit.project.id + ':song:' + hit.song.id, reason: '按文件名认出歌曲「' + hit.song.title + '」 · ' + round};
+  }
+  // Audio otherwise stays in the general music/sfx library; only the kind is preset.
   const preset = audioKindFor(file.durationSec, prefs.lastAudioKind);
   if (!preset) return {destination: null, group: 'decide', decision: 'audio-kind', reason: file.durationSec === undefined ? '正在读取时长' : '没读到音频时长'};
+  // 上次音乐放进了项目音乐的「文件」：这次也默认放回那个文件夹（和收视频一样）。
+  if (preset.kind === 'music' && lastMusic) {
+    const remembered = prefs.lastMusicFolderByProject?.[lastMusic.id] ?? '';
+    const folder = (lastMusic.music?.folders || []).some(f => f.id === remembered) ? remembered : '';
+    return {destination: {kind: 'music', scope: 'project', projectId: lastMusic.id, musicFolder: folder}, group: 'music:' + lastMusic.id + ':files:' + folder,
+      reason: formatDuration(file.durationSec) + ' · 沿用上次的项目音乐文件夹'};
+  }
   const dir = libDir(preset.kind);
   return {destination: {kind: preset.kind, scope: 'library', directory: dir}, group: 'library:' + preset.kind + ':' + dir, reason: formatDuration(file.durationSec) + ' · ' + preset.reason};
 }

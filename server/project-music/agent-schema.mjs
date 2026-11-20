@@ -1,6 +1,6 @@
 // GET /api/project-music/schema：给 AI 看的字段规则（SPEC 3.3、3.5）。项目使用说明只放三行入口，细节在这里。
 export const AGENT_SCHEMA = {
-  version: '2026-11-20.4',
+  version: '2026-11-20.5',
   library: '每个版本都在音乐库里（根目录「AI生成」，主类是项目，子类是「歌曲」），versions[].library.assetId 是全库素材 ID。标签由服务端写：AI生成、项目名、歌名、第N轮、按提示词从风格拆出的词、测量结果，被淘汰的标「未选用（项目名）」。AI 不要自己调批量标注去改这些标签；不要打听感类标签（比如情绪），除非是用户原话。',
   comparisons: '对比结果在每轮的 comparisons 里（只读）：left/right 是两个版本，winner 和 segments[].winner 取 left、right、same；blind 表示当时是盲听。对比结果只能由用户在页面上记录。',
   read: {
@@ -47,6 +47,15 @@ export const AGENT_SCHEMA = {
       'AI 开的新一轮，提示词显示为「AI 起草，待你确认」，用户确认后才算数。',
       'prompt 里不能带 sunoTier（Suno 会员档位）：带了整次 403 AGENT_FIELD_FORBIDDEN。AI 开的轮次档位留空，由用户在页面上填。',
       'prompt.sunoLink 可以由 AI 带，页面会标「AI 填」。',
+    ],
+  },
+  pendingNotes: {
+    request: 'GET /api/project-music/pending-notes（全部项目）或 ?projectId=<项目>：「待补写」清单。开始做项目音乐相关的工作时先看这里',
+    why: '用户从访达右键把新生成的歌收进某首歌时，可以直接开新一轮，不用等上一轮的记录写完；上一轮会标成「待 AI 补写」。分工是用户只管上传，每轮的记录由 AI 写。',
+    rules: [
+      '照 items[] 逐条补：用 PATCH …/rounds/<roundId>/agent-notes 写 issues 和 nextDirection（带该条的 revision 作为 expectedRevision）。补完这一条就自动从清单里消失。',
+      '依据只用三种：用户在对话里说过的话（原话照录，注明出处，听感用 listeningTranscripts）；你自己听过、测过的结果（标 objective_check，或在 causeGuess 里写成猜测）；两轮提示词之间的差别。',
+      '实在没有依据时，由负责这首歌的 AI 会话问用户一句，不替用户编。',
     ],
   },
   files: {

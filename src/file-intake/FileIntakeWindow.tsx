@@ -40,8 +40,10 @@ const proposalKey = (d: DestinationDraft) => [d.projectId, d.characterName, d.lo
 // Where a previewed standard name was computed for; a stale preview is never shown under a new destination.
 const nameKey = (d: DestinationDraft) => [d.kind, d.scope, d.projectId, d.folderRole ? 'role:' + d.folderRole : d.folderId, d.newFolder?.name, d.assetId, d.characterName, d.lookName].join('|');
 const isCharacter = (d: DestinationDraft | null): d is DestinationDraft => !!d && d.kind === 'photo' && d.scope === 'project' && !d.assetKind;
+const isProjectMusic = (d?: DestinationDraft | null) => !!d && d.kind === 'music' && d.scope === 'project';
 const groupKey = (d: DestinationDraft | null, pending: boolean) => pending || !d ? 'decide'
   : d.scope === 'library' ? 'library:' + d.kind + ':' + (d.directory || '')
+  : isProjectMusic(d) ? 'music:' + d.projectId + ':' + (d.songId || d.newSongTitle !== undefined ? 'song:' + (d.songId || 'new:' + d.newSongTitle) + ':' + (d.newRound ? 'new' : d.roundId) : 'files:' + (d.musicFolder || ''))
   : d.kind === 'video' ? 'video:' + d.projectId + ':' + (d.folderRole ? 'role:' + d.folderRole : (d.folderId || 'root') + (d.newFolder ? '+' + d.newFolder.name : ''))
   : d.assetKind ? 'asset:' + d.projectId : 'character:' + d.projectId;
 
@@ -181,11 +183,13 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
     const p = isCharacter(destination) && destination.projectId && destination.characterName && destination.lookName ? proposals[proposalKey(destination)] : undefined;
     const needsProposal = isCharacter(destination) && !decision;
     const assetMissing = !!destination?.assetKind && !destination.assetId;
-    const ready = !!destination && !decision && !assetMissing && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId) && !(destination.newFolder && newFolderProblem(destination.newFolder.name));
+    // 项目音乐：要选好项目；放进歌曲时要有歌（或新歌名）和轮次（或新开一轮）。
+    const musicProblem = isProjectMusic(destination) ? (!destination!.projectId ? '请选择项目' : destination!.newSongTitle !== undefined && !destination!.newSongTitle.trim() ? '请填新歌名' : destination!.songId && !destination!.newRound && !destination!.roundId ? '请选择轮次' : '') : '';
+    const ready = !!destination && !decision && !assetMissing && !musicProblem && (!needsProposal || p?.state === 'ready') && (destination.kind !== 'video' || destination.scope !== 'project' || !!destination.projectId) && !(destination.newFolder && newFolderProblem(destination.newFolder.name));
     const reason = draft?.manual ? '手动设置' : s?.reason || (fallback ? '沿用上次的选择' : '');
     return {file, name: named[i].name, destination: destination ? {...destination, ...(draft?.fileName ? {fileName: draft.fileName} : {}), ...(p?.proposal ? {imageProposal: p.proposal} : {})} : null,
       reason, hint: s?.hint, manual: !!draft?.manual, decision, alternative: decision ? s?.alternative : undefined, fallbackLook: decision ? s?.fallbackLook : undefined, ready, checking: needsProposal && p?.state === 'loading' ? '正在核对人物和造型…' : undefined,
-      problem: needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : destination?.newFolder && newFolderProblem(destination.newFolder.name) ? '新文件夹名字：' + newFolderProblem(destination.newFolder.name) : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
+      problem: musicProblem ? musicProblem : needsProposal && p?.state === 'error' ? p.error : assetMissing ? '这个项目没有场景或道具，请换项目或改去处' : !destination && !decision ? '请选择去处' : destination?.newFolder && newFolderProblem(destination.newFolder.name) ? '新文件夹名字：' + newFolderProblem(destination.newFolder.name) : undefined, newName: destination && names[file.id]?.for === nameKey(destination) ? names[file.id]!.proposedFileName ?? null : null};
   });
   // Character targets are checked against the project before confirmation. Each key is
   // fetched once; a late answer only fills its own key, so it cannot overwrite a newer choice.
@@ -204,7 +208,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   }, [api, locked, wanted.join('|')]);
   // Standard names are previewed read-only; the server allocates the real numbers on confirm.
   const renameable = rows.filter(r => r.destination && r.destination.scope === 'project' && !drafts[r.file.id]?.fileName);
-  const previewBody = standardNames && !locked ? JSON.stringify({targets: rows.filter(r => r.ready && r.destination!.scope === 'project').map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), nameMode: drafts[r.file.id]?.fileName ? 'keep' : 'standard'}))}) : '';
+  const previewBody = standardNames && !locked ? JSON.stringify({targets: rows.filter(r => r.ready && r.destination!.scope === 'project' && !isProjectMusic(r.destination)).map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), nameMode: drafts[r.file.id]?.fileName ? 'keep' : 'standard'}))}) : '';
   useEffect(() => {
     if (!api || !previewBody) {setNames({}); setNamesError(''); return;}
     const controller = new AbortController(); let current = true;
@@ -291,7 +295,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   async function confirm() {
     if (!api || !handoff || handoff.preparation!=='ready'||sending.current || attempt.current || unknown || handoff.batchId || batch || !canConfirm) return;
     const input: ConfirmInput = {version: 2, requestId: crypto.randomUUID(), mode, fileIds: rows.map(r => r.file.id), standardNames, ...(singleVideo ? {revealWhenDone: reveal} : {}), ...(hasPrompt ? {prompt: {text: promptText.trim()}} : {}),
-      targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
+      targets: rows.map(r => ({fileId: r.file.id, destination: submittedDestination(r.destination!), ...(standardNames && r.destination!.scope === 'project' && !isProjectMusic(r.destination) && !drafts[r.file.id]?.fileName ? {nameMode: 'standard' as const} : {})}))};
     sending.current = true; remember(input); setBusy(true); setError('');
     try {const value = await api<IntakeBatch>(INTAKE_API + '/handoffs/' + encoded(handoffId) + '/confirm', input); if (alive.current) accept(value, true);}
     catch (e) {if (alive.current) {if (knownRefusal(e, input.requestId)) remember(null); else setUnknown(true); setError(errorMessage(e) + builtNote(e) + (knownRefusal(e, input.requestId) ? '。选择已保留。' : '。原结果未确认，请只读核对，不会自动重发。')); adoptBuilt(e);}}
@@ -307,7 +311,11 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   };
   const folderPath = (pid?: string, fid?: string) => !fid || fid === 'root' ? '' : options?.projects.find(p => p.id === pid)?.videoFolders.find(f => f.id === fid)?.relativePath || '项目文件夹';
   const folderName = (pid?: string, fid?: string, created?: {name: string}) => created ? [folderPath(pid, fid), created.name].filter(Boolean).join('/') + '（收纳时新建）' : folderPath(pid, fid) || '项目根目录';
-  const destLabel = (d: DestinationDraft) => d.scope === 'library' ? libraryTitle(d.kind, d.directory || '')
+  const musicSong = (d: DestinationDraft) => options?.projects.find(p => p.id === d.projectId)?.music?.songs.find(s => s.id === d.songId);
+  const musicLabel = (d: DestinationDraft) => projectName(d.projectId) + ' › 项目音乐 › ' + (d.songId || d.newSongTitle !== undefined
+    ? '歌曲「' + (d.newSongTitle ?? musicSong(d)?.title ?? '') + '」' + (d.newSongTitle !== undefined ? '（新建）' : '') + ' › ' + (d.newRound ? '新开一轮' : '第 ' + (musicSong(d)?.rounds.find(r => r.id === d.roundId)?.roundNo ?? '?') + ' 轮')
+    : '文件 › ' + (d.musicFolder || '项目音乐文件夹'));
+  const destLabel = (d: DestinationDraft) => isProjectMusic(d) ? musicLabel(d) : d.scope === 'library' ? libraryTitle(d.kind, d.directory || '')
     : d.kind === 'video' ? projectTitle(d.projectId) + ' › ' + (d.folderRole === 'final' ? '成片（收纳时自动建好）' : folderName(d.projectId, d.folderId, d.newFolder))
     : d.assetKind ? projectName(d.projectId) + ' › ' + (options?.projects.find(p => p.id === d.projectId)?.assets.find(a => a.id === d.assetId)?.name || (d.assetKind === 'scene' ? '场景' : '道具'))
     : projectName(d.projectId) + ' › ' + d.characterName + ' › ' + d.lookName;
@@ -320,6 +328,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
         : key.startsWith('video:') ? {key, title: (options?.projects.find(p => p.id === d!.projectId)?.series ? projectTitle(d!.projectId) : '项目「' + projectName(d!.projectId) + '」') + ' › ' + (d!.folderRole === 'final' ? '成片（收纳时自动建好）' : folderName(d!.projectId, d!.folderId, d!.newFolder)), detail: r.reason, tone: 'video', rows: [], photos: false}
         : key.startsWith('character:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 人物照片', detail: '', tone: 'project', rows: [], photos: true}
         : key.startsWith('asset:') ? {key, title: '项目「' + projectName(d!.projectId) + '」 · 场景和道具', detail: '', tone: 'project', rows: [], photos: true}
+        : key.startsWith('music:') ? {key, title: musicLabel(d!), detail: d!.newRound ? '同一批放进这首歌的文件是新一轮的几个版本' : '', tone: 'audio', rows: [], photos: false}
         : {key, title: libraryTitle(d!.kind, d!.directory || ''), detail: d!.kind === 'photo' && !d!.directory ? '名字认不出，将进入摄影照片' : '', tone: d!.kind === 'music' || d!.kind === 'sfx' ? 'audio' : 'library', rows: [], photos: d!.kind === 'photo'};
       groups.push(g);
     }
@@ -331,7 +340,7 @@ export function FileIntakeWindow({handoffId}: {handoffId: string}) {
   const isOpen = (g: Group) => open[g.key] ?? (!crowded || g.key === 'decide' || g.key === 'library:photo:');
   const lastPhotoProject = rows.find(r => r.destination?.kind === 'photo' && r.destination.scope === 'project')?.destination?.projectId || prefs?.lastProjectId?.photo || undefined;
   // Character photos already named 人物_造型 keep their name, so the switch only shows when it changes something.
-  const willRename = rows.some(r => r.destination?.scope === 'project' && !(isCharacter(r.destination) && stem(r.name) === r.destination.characterName + '_' + r.destination.lookName));
+  const willRename = rows.some(r => r.destination?.scope === 'project' && !isProjectMusic(r.destination) && !(isCharacter(r.destination) && stem(r.name) === r.destination.characterName + '_' + r.destination.lookName));
 
   // One floating panel for the whole window: a row that changes group must not remount it.
   // It opens under the clicked file; the rest of the window dims; 完成 shows where the file went.
