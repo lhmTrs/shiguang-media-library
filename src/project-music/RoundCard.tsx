@@ -61,6 +61,7 @@ export function VersionRow({version, player, actions, busy, compact = false}: {v
       {version.isFinal && <span className="sgm-pill accent">定稿</span>}
       {version.isBest && <span className="sgm-pill accent"><Star size={12} fill="currentColor"/>当前最好</span>}
       {version.uploadedBy.kind === 'agent' && <span className="sgm-pill" title={`由 ${version.uploadedBy.session} 上传`}>AI 上传</span>}
+      {version.uploadedBy.kind === 'user' && version.uploadedBy.via === 'finder' && <span className="sgm-pill" title="从访达右键收纳进来">访达收纳</span>}
       {version.status === 'rejected' && 'unusedTagged' in version.library && version.library.unusedTagged && <span className="sgm-pill" title="音乐库里打了「未选用」标签，不隐藏">音乐库：未选用</span>}
     </span>
     <span className="sgm-version-actions">
@@ -116,7 +117,8 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
       </button>
       <span className="sgm-pill">{p.tool || '未填工具'}</span>
       {p.sunoTier ? <span className="sgm-pill">{TIER_LABEL[p.sunoTier]}</span> : /suno/i.test(p.tool) && <span className="sgm-pill warn" title="Suno 会员档位只能由你填：在「改提示词」里选，拿不准就选「不确定」">档位未填</span>}
-      {!round.promptConfirmed && <span className="sgm-pill warn">提示词待你确认</span>}
+      {!round.promptConfirmed && <span className="sgm-pill warn">{round.prompt.style || round.prompt.lyrics ? '提示词待你确认' : '还没有提示词'}</span>}
+      {round.pendingAgentNotes && <span className="sgm-pill warn" title={`${round.pendingAgentNotes.reason}；记录由 AI 补写，你不用管`}>待 AI 补写</span>}
       {diff && <span className="sgm-round-diff">{diff.length ? `和上一轮比：改了${diff.map(k => PROMPT_FIELD_LABEL[k]).join('、')}` : '提示词和上一轮相同'}</span>}
       {!open && <span className="sgm-round-summary">{p.style || '（未填风格）'} · {versions.length} 个版本</span>}
       {open && canUpload && <button type="button" className="sgm-btn small ghost" onClick={() => onUpload(round)}><Upload size={14}/>上传到这一轮</button>}

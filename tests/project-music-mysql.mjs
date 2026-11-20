@@ -106,6 +106,9 @@ async function scenario(lib, dataDir) {
   out.comparison = [cmp.left.label, cmp.right.label, cmp.blind, cmp.winner, cmp.summary, cmp.markers.length, cmp.segments[0].winner];
   out.lyric = song.rounds[0].versions[0].lyricTimes?.lines.map(l => l.startMs);
   out.comparisonEmpty = await code(() => store.createComparison(p.id, song.id, {requestId: randomUUID(), leftVersionId: va.id, rightVersionId: vb.id}));
+  // PR5：从访达开新一轮，上一轮没写完也能开，上一轮进「待补写」清单
+  song = store.createRound(p.id, song.id, {requestId: randomUUID(), prompt: {style: '访达开的一轮'}}, {kind: 'user', at: 1, via: 'finder'}, {fromIntake: true});
+  out.pending = [song.rounds.length, store.pendingNotes(p.id).items.map(x => [x.roundNo, x.missing.join('+')]), !!song.rounds.at(-2).pendingAgentNotes];
   // PR4「文件」区：建文件夹、放文件、加入歌曲（登记进音乐库）、改名后音乐库记录路径跟着改（用到 LIKE … ESCAPE）
   const folders = new MusicFolders(store, {dataDir});
   await folders.createFolder(p.id, {parent: '', name: 'Suno_下载%'});
@@ -200,6 +203,7 @@ try {
   assert.equal(result.sqlite.measuredTag, true);
   assert.deepEqual(result.sqlite.final, ['final', true, 'candidate']);
   assert.deepEqual(result.sqlite.files, ['下载合集', [['乙副本.mp3', true, 1]], true, '下载合集']);
+  assert.deepEqual(result.sqlite.pending, [3, [[2, 'issues+nextDirection']], true]);
   passed = true;
 } finally {
   if (mysqlDb) { const done = mysqlDb.worker.threadId === -1 ? Promise.resolve() : once(mysqlDb.worker, 'exit'); mysqlDb.close(); await bounded(done, 10000, 'MySQL worker 未退出').catch(() => {}); }

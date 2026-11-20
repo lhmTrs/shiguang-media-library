@@ -349,8 +349,12 @@ test('项目音乐：上传四种格式、重复内容、先补上一轮、AI �
     const mine = await synth(own, '我先收好的.mp3', {freq: 660});
     const added = await s.call('POST', '/roots', {path: path.join(base, '我的音乐'), kind: 'music'});
     assert.equal(added.status, 200, added.text);
-    for (let i = 0; i < 200 && (await s.call('GET', '/jobs')).body.some?.(j => j.status === 'running'); i++) await new Promise(r => setTimeout(r, 25));
-    const mineAsset = (await s.call('GET', `/assets?root=${added.body.root.id}`)).body.items?.[0];
+    // 等扫描真的把这首登记出来（只看 /jobs 有没有在跑不可靠：扫描任务还没出现在列表里时会直接放行）
+    let mineAsset;
+    for (let i = 0; i < 400 && !mineAsset; i++) {
+      mineAsset = (await s.call('GET', `/assets?root=${added.body.root.id}`)).body.items?.find(a => a.name === '我先收好的.mp3');
+      if (!mineAsset) await new Promise(r => setTimeout(r, 25));
+    }
     assert.ok(mineAsset, '自己的音乐目录已扫描');
     const {put} = await upload(s, pid, r2.id, mine);
     assert.equal(put.body.status, 'ready', put.text);
@@ -747,12 +751,22 @@ async function storeFixture(t, name) {
 }
 
 test('项目音乐 · 旧副本进废纸篓用双参数核对：核对完、真正移动前文件被换掉，就不移（验收 info-3）', async t => {
-  const swiftc = (await import('node:child_process')).spawnSync('xcrun', ['--find', 'swiftc'], {encoding: 'utf8'});
-  if (swiftc.status !== 0) { t.skip('本机没有 swiftc，编译不了废纸篓助手'); return; }
   const f = await storeFixture(t, '合成废纸篓项目');
-  const helper = path.join(f.base, 'trash-helper');
-  const built = (await import('node:child_process')).spawnSync('xcrun', ['swiftc', path.join(process.cwd(), 'server', 'trash.swift'), '-o', helper], {encoding: 'utf8', timeout: 180000});
-  assert.equal(built.status, 0, built.stderr);
+  // 假的废纸篓助手：照 trash-helper 双参数协议核对身份、所在文件夹和 SHA-256，通过才挪进测试目录自己的 .Trash；绝不碰 ~/.Trash。
+  // 真实助手的双参数核对已由收纳模块的测试和验收在独立映像上覆盖，这里验证的是项目音乐交给助手的参数对不对、拒绝时怎么处理。
+  const helper = path.join(f.base, 'fake-trash-helper.mjs');
+  await fs.writeFile(helper, `#!/usr/bin/env node
+import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+const [file, raw] = process.argv.slice(2), e = JSON.parse(raw);
+const st = fs.lstatSync(file), p = fs.lstatSync(path.dirname(file));
+const ok = st.isFile() && String(st.dev) === e.identity.dev && String(st.ino) === e.identity.ino && st.size === e.identity.size &&
+  Math.abs(st.mtimeMs - e.identity.mtimeMs) < 0.001 && Math.abs(st.ctimeMs - e.identity.ctimeMs) < 0.001 &&
+  String(p.dev) === e.parent.dev && String(p.ino) === e.parent.ino &&
+  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === e.sha256;
+if (!ok) { process.stderr.write('原件已被替换，未移除'); process.exit(1); }
+const to = path.join(${JSON.stringify(f.base)}, '.Trash', path.basename(file));
+fs.mkdirSync(path.dirname(to), {recursive: true}); fs.renameSync(file, to); process.stdout.write(JSON.stringify(to));
+`, {mode: 0o755});
   f.lib.trashBin = helper;
   const page = {kind: 'user', at: 1};
   const first = new f.ProjectMusic({lib: f.lib, projects: f.projects, dataDir: f.app, directory: f.directory, autoMigrate: false}).init();
@@ -787,6 +801,13 @@ test('项目音乐 · 旧副本进废纸篓用双参数核对：核对完、真�
   await fs.access(file);
   assert.equal(out.project.legacy.copies, 1, '没移的那份仍记作旧副本');
   assert.equal((await fs.readdir(legacyDir)).filter(n => n.startsWith('.shiguang-intake-')).length, 0, '助手没有留下暂存目录');
+  // 放回原内容再确认：交给助手的身份（含毫秒以下的时间）和 SHA 都对，就挪进测试目录自己的 .Trash
+  store.trash = realTrash;
+  await fs.rm(file); await fs.writeFile(file, bytes);
+  const again = await store.trashLegacy(f.p.id, {confirm: true});
+  assert.equal(again.trashed, 1, JSON.stringify(again.skipped));
+  await fs.access(path.join(f.base, '.Trash', 'A.mp3'));
+  assert.equal(await fs.access(file).then(() => true, () => false), false);
 });
 
 test('项目音乐 · 「AI生成」显示名：登记根目录之后、改名之前中断，重启后补上，而且幂等（验收 info-4）', async t => {

@@ -13,3 +13,6 @@ export function defaultProject(files: readonly IntakeFile[], options: RoutingOpt
 export function suggestAll(files: readonly IntakeFile[], options: RoutingOptions, prefs?: Partial<RoutingPreferences>, forcedProjectId?: string): Record<string, RouteSuggestion>;
 export function barDefault(files: readonly IntakeFile[], options: RoutingOptions, suggestions: Record<string, RouteSuggestion>): {projectId: string | null; mixed: boolean};
 export function guessPersonLook(text: string): {name: string; lookName: string; structured: boolean; generated: boolean};
+export function songKey(name: string): string;
+export function matchSong(file: IntakeFile, options: RoutingOptions, preferProjectId?: string): {project: RoutingOptions['projects'][number]; song: import('./types').MusicRoutingSong} | null;
+export function songDestination(projectId: string, song: import('./types').MusicRoutingSong): IntakeDestination;

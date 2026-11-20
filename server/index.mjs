@@ -59,6 +59,7 @@ import {projectVideoRouter} from './project-videos/router.mjs';
 import {ProjectMusic} from './project-music/store.mjs';
 import {projectMusicRouter} from './project-music/router.mjs';
 import {MusicFolders} from './project-music/folders.mjs';
+import {ProjectMusicIntake} from './project-music/intake.mjs';
 import {FileIntake} from './file-intake/store.mjs';
 import {ManagedIntakeCatalog} from './file-intake/media-catalog.mjs';
 import {IntakePreferences} from './file-intake/preferences.mjs';
@@ -368,7 +369,8 @@ if(process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NAT
 const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets:projectAssets,dataDir,libraryId:mysqlStorage.sourceId,directory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),onRootAdded:async()=>{await reconcileWatcher?.refresh();}}).init();
 const projectMusic=new ProjectMusic({lib,projects,dataDir,directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),'music'),metadata:metadataBatches,onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)}).init();
 const projectMusicFolders=new MusicFolders(projectMusic,{dataDir,native:process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1'?projectVideos.desktopNative:null});
-const fileIntake=await new FileIntake({generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
+const projectMusicIntake=new ProjectMusicIntake(projectMusic,projectMusicFolders,{withActivity:fn=>uploadHost.track(fn)});
+const fileIntake=await new FileIntake({music:projectMusicIntake,generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
 const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
 const app = express();

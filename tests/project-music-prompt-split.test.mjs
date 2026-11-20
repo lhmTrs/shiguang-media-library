@@ -1,0 +1,52 @@
+// 粘贴的 Suno 提示词拆成风格和歌词（验收 PR5 P3-1）：只有风格拆成标签，歌词和段落标记绝不变成标签。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {splitSunoPrompt} from '../server/project-music/shared/prompt-split.mjs';
+import {promptTags} from '../server/project-music/model.mjs';
+
+// 验收 PR5 复验造的 14 段（前 9 段原来就对，后 5 段原来把歌词当成了风格），加上作者自己的几段。
+// 规则：没有段落标记也没有标题时，只有「一行、带分隔符」才算风格；段落标记之前也一样；拆不准整段算歌词。
+const L = '雨巷里的油纸伞\n丁香一样的姑娘';
+const cases = [
+  // ---- 验收 14 段 ----
+  ['验收 1：中英混排加 [Verse 1] [Chorus]', '国风 electronic, female vocal\n[Verse 1]\n月光照在 old street\n[Chorus]\nla la 啦啦', {style: '国风 electronic, female vocal', lyrics: '[Verse 1]\n月光照在 old street\n[Chorus]\nla la 啦啦'}],
+  ['验收 2：全角【主歌】【副歌】，风格用斜杠', '民谣/吉他/男声\n【主歌】\n风吹过麦田\n【副歌】\n我们回家', {style: '民谣/吉他/男声', lyrics: '【主歌】\n风吹过麦田\n【副歌】\n我们回家'}],
+  ['验收 3：风格带逗号斜杠，空一行接歌词（没有标记：多行一律算歌词）', '流行, 女声/钢琴\n\n' + L, {style: '', lyrics: '流行, 女声/钢琴\n\n' + L}],
+  ['验收 4：Style of Music / Lyrics 标题', 'Style of Music: lo-fi, piano, rain\nLyrics:\n[Verse]\n第一句\n第二句', {style: 'lo-fi, piano, rain', lyrics: '[Verse]\n第一句\n第二句'}],
+  ['验收 5：Style / Exclude styles / Lyrics 标题', 'Style: pop, piano\nExclude styles: rock, metal\nLyrics:\n[Verse]\nhello world', {style: 'pop, piano', lyrics: '[Verse]\nhello world', params: 'Exclude styles: rock, metal'}],
+  ['验收 6：歌词里出现「风格：」，有标记', '[Verse]\n风格：随风\n漂泊在远方\n[Chorus]\n回到故乡', {style: '', lyrics: '[Verse]\n风格：随风\n漂泊在远方\n[Chorus]\n回到故乡'}],
+  ['验收 7：歌词里出现「风格：」，没有标记', '风格：随风\n漂泊在远方\n回到故乡', {style: '', lyrics: '风格：随风\n漂泊在远方\n回到故乡'}],
+  ['验收 8：只有一行风格', '中国风流行, 女声, 慢板', {style: '中国风流行, 女声, 慢板', lyrics: ''}],
+  ['验收 9：只有段落标记和歌词', '[Verse]\n' + L.split('\n')[0] + '\n[Chorus]\n' + L.split('\n')[1], {style: '', lyrics: '[Verse]\n雨巷里的油纸伞\n[Chorus]\n丁香一样的姑娘'}],
+  ['验收 10：纯中文歌词带逗号，没有标记', '月光洒在窗前，我想起了你\n风吹过的街道，只剩下我', {style: '', lyrics: '月光洒在窗前，我想起了你\n风吹过的街道，只剩下我'}],
+  ['验收 11：同上，再空一行接第二段', '月光洒在窗前，我想起了你\n风吹过的街道，只剩下我\n\n星星落在海里，像你的眼睛', {style: '', lyrics: '月光洒在窗前，我想起了你\n风吹过的街道，只剩下我\n\n星星落在海里，像你的眼睛'}],
+  ['验收 12：英文歌词，空行分段', 'Walking down the empty road\nI hear you call my name\n\nAnd the night is long\nStars are falling down', {style: '', lyrics: 'Walking down the empty road\nI hear you call my name\n\nAnd the night is long\nStars are falling down'}],
+  ['验收 13：英文歌词两行', 'Hold me close tonight\nNever let me go', {style: '', lyrics: 'Hold me close tonight\nNever let me go'}],
+  ['验收 14：[Verse] 前面两行「Baby baby」「Oh oh oh」', 'Baby baby\nOh oh oh\n[Verse]\nI was waiting', {style: '', lyrics: 'Baby baby\nOh oh oh\n[Verse]\nI was waiting'}],
+  // ---- 作者自己的 ----
+  ['只有风格（英文，逗号分）', 'dreamy synth pop, female vocal, 90 bpm', {style: 'dreamy synth pop, female vocal, 90 bpm', lyrics: ''}],
+  ['只有一行但没有分隔符：不猜，算歌词', 'dreamy synth pop female vocal', {style: '', lyrics: 'dreamy synth pop female vocal'}],
+  ['带 [Intro] [Verse] [Chorus] [Bridge]', 'dreamy pop, piano\n[Intro]\n[Verse]\nwalking home alone\n[Chorus]\nla la la\n[Bridge]\nhold on', {style: 'dreamy pop, piano', lyrics: '[Intro]\n[Verse]\nwalking home alone\n[Chorus]\nla la la\n[Bridge]\nhold on'}],
+  ['中文标题', '风格：中国风，女声\n歌词：\n[主歌]\n雨巷', {style: '中国风，女声', lyrics: '[主歌]\n雨巷'}],
+  ['标题里的风格只有一个词', 'Style: lo-fi\nLyrics:\n[Verse]\nhello', {style: 'lo-fi', lyrics: '[Verse]\nhello'}],
+  ['一句歌词（句号结尾，带逗号）', '月光洒在窗前，我想起了你。', {style: '', lyrics: '月光洒在窗前，我想起了你。'}],
+];
+
+for (const [name, text, want] of cases) {
+  test('拆分 · ' + name, () => {
+    const got = splitSunoPrompt(text);
+    assert.equal(got.style, want.style);
+    assert.equal(got.lyrics, want.lyrics);
+    if (want.params !== undefined) assert.equal(got.params, want.params);
+    // 只拿风格拆标签：歌词里的句子和段落标记都不会出现
+    const tags = promptTags(got.style);
+    // 歌词里任何一行、任何一个词都不能变成标签（除非它本来就出现在风格里）
+    const styleWords = new Set(promptTags(want.style));
+    for (const word of promptTags(want.lyrics.replace(/\n/g, ' '))) if (!styleWords.has(word)) assert.ok(!tags.includes(word), `歌词里的「${word}」变成了标签：${tags}`);
+    assert.ok(tags.every(t => !/[[\]【】]/.test(t)), '段落标记变成了标签：' + tags);
+  });
+}
+
+test('拆标签的保险：风格里混进了段落标记，也不当标签', () => {
+  assert.deepEqual(promptTags('流行, [Verse], 女声'), ['流行', '女声']);
+});

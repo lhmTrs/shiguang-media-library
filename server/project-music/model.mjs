@@ -3,12 +3,15 @@
 // - AI 字段：改了什么、问题整理、客观检查、下一轮方向与提示词草稿、听感转录（只能追加原话）。
 import {randomUUID} from 'node:crypto';
 import {canonical, digest, fault, idOK} from '../project-assets/model.mjs';
+import {isMarkerToken} from './shared/prompt-split.mjs';
 
 export {canonical, digest, idOK};
 export const fail = (code, message, status = 400, details) => { throw fault(message, status, {code, ...(details ? {details} : {})}); };
 
 export const FORMATS = new Map([['.mp3', 'mp3'], ['.wav', 'wav'], ['.m4a', 'm4a'], ['.flac', 'flac']]);
 export const MAX_BYTES = 200 * 1024 * 1024;
+// 歌曲（采用和对比）只收这四种；「文件」区是存储和传递用的，收全部音频格式。
+export const SONG_FORMAT_MESSAGE = '这个格式不能放进歌曲对比，请先转成 mp3/wav/m4a/flac';
 export const SUNO_TIERS = {free: '免费版', pro: 'Pro', premier: 'Premier', unknown: '不确定', na: '不适用（非 Suno）'};
 export const SONG_STATUS = ['active', 'final', 'abandoned'];
 export const ISSUE_SOURCES = ['user_words', 'objective_check'];
@@ -54,7 +57,7 @@ export function fileName(value) {
   const name = text(value, '文件名', 240, {required: true}).normalize('NFC');
   if (/^[. ]|[<>:"/\\|?*\u0000-\u001f]|[. ]$/.test(name)) fail('INVALID_FILE', '文件名无效');
   const ext = (name.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
-  if (!FORMATS.has(ext)) fail('UNSUPPORTED_FORMAT', '只支持 mp3、wav、m4a、flac 音频');
+  if (!FORMATS.has(ext)) fail('UNSUPPORTED_FORMAT', SONG_FORMAT_MESSAGE);
   return {name, ext};
 }
 
@@ -229,12 +232,12 @@ export const LIBRARY_ROOT_NAME = 'AI生成';
 export const TAG_MAX = 60;
 const clip = (s, max = TAG_MAX) => [...String(s).normalize('NFC').trim()].slice(0, max).join('').trim();
 
-// 从风格字段拆标签：按逗号、顿号、斜杠、分号、空白分。只拆，不改写，不推断。
+// 从风格字段拆标签：按逗号、顿号、斜杠、分号、空白分。只拆，不改写，不推断。带方括号的段落标记（[Verse] 之类）一律不当标签。
 export function promptTags(style) {
   const out = [];
   for (const part of String(style ?? '').split(/[,，、/／;；\s]+/u)) {
     const t = clip(part.replace(/^[#＃]+/u, ''));
-    if (t && !/[\r\n\t]/.test(t) && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t);
+    if (t && !isMarkerToken(t) && !/[\r\n\t]/.test(t) && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t);
     if (out.length >= 16) break;
   }
   return out;

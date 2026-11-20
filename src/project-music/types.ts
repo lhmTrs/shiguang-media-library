@@ -1,5 +1,5 @@
 // 与 server/project-music 的响应一一对应。只描述页面用到的字段。
-export type Author = {kind: 'user'; at: number} | {kind: 'agent'; session: string; at: number};
+export type Author = {kind: 'user'; at: number; via?: 'finder'} | {kind: 'agent'; session: string; at: number};
 export type SongStatus = 'active' | 'final' | 'abandoned';
 export type Prompt = {tool: string; style: string; lyrics: string; params: string; sunoLink: string; sunoTier: '' | 'free' | 'pro' | 'premier' | 'unknown' | 'na'};
 export type PromptDraft = {style: string; lyrics: string; params: string};
@@ -53,6 +53,8 @@ export type Round = {
   userDirection: {text: string; author: Author} | null;
   comparisonNote: unknown;
   promptDiffFromPrevious: string[] | null; complete: boolean; missing: ('issues' | 'nextDirection')[];
+  /** 从访达收纳开了下一轮时，这一轮的记录还没写完：等 AI 补写（补完就为 null）。 */
+  pendingAgentNotes: {at: number; missing: string[]; reason: string} | null;
   createdBy: Author; createdAt: number; updatedAt: number; versions: Version[]; comparisons: Comparison[];
 };
 
@@ -68,7 +70,7 @@ export type Song = {
 };
 
 export type MusicCollection = {
-  projectId: string; projectName: string; libraryRootName: string; songs: Song[];
+  projectId: string; projectName: string; libraryRootName: string; songs: Song[]; pendingNotes?: number;
   /** 旧位置（PR1、PR2）的歌：还在搬的、没搬成的、搬好了但旧副本还在的。 */
   legacy: {waiting: number; failed: {versionId: string; error: string}[]; copies: number; running: boolean};
 };

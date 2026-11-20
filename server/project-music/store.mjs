@@ -59,11 +59,13 @@ export class ProjectMusic {
       if (d.assetId && (d.tagSync?.pending ?? !d.syncedTags)) this.tagQueue.add(d.assetId);
     }
     if (this.tagQueue.size) this.kickTags(200);
-    if (this.autoMigrate) {
-      const timer = setTimeout(() => { this.migration = this.migrateAll().catch(e => console.warn('[project-music] 搬迁没有完成：', e.message)); }, 0);
-      timer.unref?.();
-      this.migrationTimer = timer;
-    }
+    // 上次中断的上传/收纳先收尾（认领已落盘的、标出没落盘的、清掉没人要的 .partial），再搬旧歌。
+    const timer = setTimeout(() => {
+      this.recovery = this.recoverImports().catch(e => console.warn('[project-music] 上次中断的收纳没能收尾：', e.message));
+      if (this.autoMigrate) this.migration = this.recovery.then(() => this.migrateAll()).catch(e => console.warn('[project-music] 搬迁没有完成：', e.message));
+    }, 0);
+    timer.unref?.();
+    this.migrationTimer = timer;
     return this;
   }
 
@@ -85,7 +87,7 @@ export class ProjectMusic {
     this.closing = true;
     clearTimeout(this.migrationTimer);
     clearTimeout(this.tagTimer); this.tagTimer = null;
-    await Promise.allSettled([...this.inflight, this.migration, this.tagRunning]);
+    await Promise.allSettled([...this.inflight, this.recovery, this.migration, this.tagRunning]);
   }
 
   // ---------- 读取 ----------
@@ -136,7 +138,27 @@ export class ProjectMusic {
   list(projectId) {
     const p = this.project(projectId);
     const songs = this.db.prepare('SELECT * FROM project_music_songs WHERE project_id=? ORDER BY created_at DESC,id').all(projectId).map(parse);
-    return {projectId, projectName: p.name, libraryRootName: M.LIBRARY_ROOT_NAME, songs: songs.map(s => this.songDTO(s)), legacy: this.legacySummary(projectId)};
+    return {projectId, projectName: p.name, libraryRootName: M.LIBRARY_ROOT_NAME, songs: songs.map(s => this.songDTO(s)), legacy: this.legacySummary(projectId), pendingNotes: this.pendingNotes(projectId).items.length};
+  }
+
+  // 「待补写」清单（SPEC 第十二节第 4 条）：从访达开新一轮时，上一轮还缺问题整理或下一轮方向的。AI 开始做项目音乐时先看这里。
+  pendingNotes(projectId = null) {
+    if (projectId) this.project(projectId);
+    const rows = this.db.prepare('SELECT * FROM project_music_rounds' + (projectId ? ' WHERE project_id=?' : '') + ' ORDER BY created_at,id').all(...(projectId ? [projectId] : [])).map(parse);
+    const out = [];
+    for (const r of rows) {
+      const missing = M.roundMissing(r.data);
+      if (!r.data.pendingAgentNotes || !missing.length) continue;
+      const song = parse(this.db.prepare('SELECT * FROM project_music_songs WHERE id=?').get(r.song_id));
+      const project = this.db.prepare('SELECT id,name,project_kind FROM media_projects WHERE id=?').get(r.project_id);
+      if (!song || !project || (project.project_kind && project.project_kind !== 'normal')) continue;
+      out.push({
+        projectId: r.project_id, projectName: project.name, songId: r.song_id, songTitle: song.data.title, roundId: r.id, roundNo: r.round_no, revision: r.revision,
+        missing, since: r.data.pendingAgentNotes.at, reason: r.data.pendingAgentNotes.reason,
+        hint: '依据只用三种：用户在对话里说过的原话（照录并注明出处）、你自己听过或测过的结果（标测量或推测）、这一轮和下一轮提示词的差别。实在没有依据，由负责这首歌的会话问用户一句，不要替用户编。',
+      });
+    }
+    return {items: out};
   }
 
   // 旧位置（PR1、PR2）的搬迁情况：还没搬的、搬失败的、搬好了但旧副本还在的。
@@ -215,6 +237,8 @@ export class ProjectMusic {
       changes: d.changes ?? null, listening: d.listening ?? [], issues: d.issues ?? null, checks: d.checks ?? null,
       nextDirection: d.nextDirection ?? null, userIssues: d.userIssues ?? null, userDirection: d.userDirection ?? null, comparisonNote: d.comparisonNote ?? null,
       promptDiffFromPrevious: previous ? diff : null, complete: missing.length === 0, missing,
+      // 待 AI 补写：从访达开新一轮时这一轮的记录还没写完；补完就自动不再显示。
+      pendingAgentNotes: d.pendingAgentNotes && missing.length ? d.pendingAgentNotes : null,
       createdBy: d.createdBy, createdAt: round.created_at, updatedAt: round.updated_at,
       versions: versions.filter(v => v.round_id === round.id).map(v => this.versionDTO(song, round, v)),
       comparisons: comparisons.filter(c => c.round_id === round.id).map(c => this.comparisonDTO(c, versions, rounds)),
@@ -297,7 +321,9 @@ export class ProjectMusic {
 
   // ---------- 写入：轮次 ----------
 
-  createRound(projectId, songId, input, author) {
+  // fromIntake：从访达收纳开新一轮（SPEC 第十二节第 3 条）。不要求上一轮的记录先写完，上一轮标成「待 AI 补写」；
+  // 只有真带了提示词时才算你确认过提示词。
+  createRound(projectId, songId, input, author, {fromIntake = false} = {}) {
     M.onlyKeys(input, ['requestId', 'prompt', 'session']);
     const song = this.songRow(projectId, songId);
     const id = M.requestId(input.requestId);
@@ -314,20 +340,26 @@ export class ProjectMusic {
       return this.song(projectId, song.id);
     }
     if (song.data.status !== 'active') fail('SONG_NOT_ACTIVE', song.data.status === 'final' ? '这首歌已定稿，撤回定稿后才能开新一轮' : '这首歌已放弃，恢复为进行中后才能开新一轮', 409);
+    let pending = null;
     if (last) {
       const missing = M.roundMissing(last.data);
-      if (missing.length) fail('PREVIOUS_ROUND_INCOMPLETE', `先补上一轮：第 ${last.round_no} 轮还缺「${missing.map(k => M.MISSING_LABEL[k]).join('」「')}」`, 409, {roundId: last.id, roundNo: last.round_no, missing});
+      if (missing.length && !fromIntake) fail('PREVIOUS_ROUND_INCOMPLETE', `先补上一轮：第 ${last.round_no} 轮还缺「${missing.map(k => M.MISSING_LABEL[k]).join('」「')}」`, 409, {roundId: last.id, roundNo: last.round_no, missing});
+      if (missing.length) pending = {last, missing};
     }
     const at = M.now();
+    const hasPrompt = !!(prompt.style.trim() || prompt.lyrics.trim() || prompt.params.trim());
     const data = {
-      prompt, promptConfirmed: byUser ? author : null, promptDraftedBy: byUser ? null : author,
+      prompt, promptConfirmed: byUser && (!fromIntake || hasPrompt) ? author : null, promptDraftedBy: byUser ? null : author,
       sunoLinkBy: !byUser && prompt.sunoLink ? author : null,
       changes: null, listening: [], issues: null, checks: null, nextDirection: null, userIssues: null, userDirection: null, comparisonNote: null,
       createdBy: author, args,
     };
     const roundNo = (last?.round_no ?? 0) + 1;
     try {
-      this.db.prepare('INSERT INTO project_music_rounds(id,project_id,song_id,round_no,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(id, projectId, song.id, roundNo, M.canonical(data), 1, at, at);
+      this.db.transaction(() => {
+        this.db.prepare('INSERT INTO project_music_rounds(id,project_id,song_id,round_no,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(id, projectId, song.id, roundNo, M.canonical(data), 1, at, at);
+        if (pending) this.saveRow('project_music_rounds', pending.last, {...pending.last.data, pendingAgentNotes: {at, missing: pending.missing, reason: '从访达收纳开了第 ' + roundNo + ' 轮'}});
+      })();
     } catch (e) {
       if (/UNIQUE|Duplicate/i.test(String(e.message))) fail('REVISION_CONFLICT', '同时有另一轮刚被创建，请刷新后再试', 409);
       throw e;
@@ -577,6 +609,7 @@ export class ProjectMusic {
     s.status = 'failed';
     s.error = e.status ? e.message : ({ENOSPC: '磁盘空间不足', EACCES: '没有音乐目录的写入权限'}[e.code] || '上传失败') + '；没有生成新版本';
     if (s.stage) await fs.rm(s.stage, {force: true}).catch(() => {});
+    delete s.placing;
     try { this.persistImport(s); } catch { /* 原回执保留为 uploading，下次读取会显示为中断。 */ }
   }
 
@@ -624,11 +657,7 @@ export class ProjectMusic {
     }
     const analysis = await this.files.analyze(s.stage);
     const project = this.project(s.projectId);
-    const common = {
-      label, originalName: s.fileName, format: M.FORMATS.get(s.ext), bytes: s.bytes,
-      durationMs: analysis.durationMs, peaks: analysis.peaks, loudnessDb: analysis.loudnessDb,
-      status: 'candidate', note: '', rejectedAt: null, uploadedBy: s.uploadedBy, importRequestId: s.id, storage: 'library',
-    };
+    const common = this.versionCommon(s, label, analysis);
     const reuse = await this.reusableAsset(s.sha256, s.bytes);
     const at = M.now(), id = M.newId();
     let assetId, fresh = false;
@@ -645,13 +674,16 @@ export class ProjectMusic {
     } else {
       const root = await this.prepareRoot();
       const folder = `${await this.songLibraryFolder(s.projectId, s.songId, project)}/${roundFolder(round.round_no)}`;
-      const placed = await this.placeFile(s.stage, folder, this.fileStem(song, round, label), s.ext, s.sha256);
+      // 落位前先把目标记进回执：这之后中断，重启时能按位置和 SHA 认领，不会判成「结果不明」，也不会多出 -2（验收 PR5 P3-2）。
+      s.placing = {folder, stem: this.fileStem(song, round, label), label};
+      this.persistImport(s);
+      const placed = await this.placeFile(s.stage, folder, s.placing.stem, s.ext, s.sha256);
       const file = await this.files.resolve(placed.rel), fst = await fs.lstat(file);
       try {
         this.db.transaction(() => {
           assetId = this.indexAsset(root, file, s.sha256, fst);
           this.insertVersion(id, s, round, {...common, fileName: placed.fileName, relativePath: placed.rel, reused: false, identity: placed.identity, assetId}, at);
-          s.status = 'ready'; s.versionId = id; s.label = label; s.error = null; delete s.stage;
+          s.status = 'ready'; s.versionId = id; s.label = label; s.error = null; delete s.stage; delete s.placing;
           this.persistImport(s);
         })();
         fresh = true;
@@ -676,6 +708,77 @@ export class ProjectMusic {
     const adopted = await this.files.adopt(folder, stem, ext, sha256, this.usedPlacements(folder));
     if (adopted) { await fs.rm(stage, {force: true}); return {...adopted, adopted: true}; }
     return this.files.publish(stage, folder, stem, ext);
+  }
+
+  versionCommon(s, label, analysis) {
+    return {
+      label, originalName: s.fileName, format: M.FORMATS.get(s.ext), bytes: s.bytes,
+      durationMs: analysis.durationMs, peaks: analysis.peaks, loudnessDb: analysis.loudnessDb,
+      status: 'candidate', note: '', rejectedAt: null, uploadedBy: s.uploadedBy, importRequestId: s.id, storage: 'library',
+    };
+  }
+
+  // ---------- 上次中断的上传/收纳：重启时收尾（验收 PR5 P3-2） ----------
+
+  async recoverImports() {
+    const rows = this.db.prepare('SELECT data_json FROM project_music_imports').all().map(r => JSON.parse(r.data_json));
+    for (const s of rows) {
+      if (this.closing || s.status !== 'uploading' || s.instance === this.instance) continue;
+      try {
+        await this.serial(async () => {
+          const now = JSON.parse(this.db.prepare('SELECT data_json FROM project_music_imports WHERE id=?').get(s.id).data_json);
+          if (now.status !== 'uploading' || now.instance === this.instance) return;
+          if ((now.kind ?? 'song') === 'file') { if (this.fileImports) await this.fileImports.recover(now); return; }
+          await this.recoverSong(now);
+        });
+      } catch (e) { console.warn('[project-music] 中断的收纳没能收尾，回执保留待核对：', s.id, e.message); }
+    }
+    await this.cleanStages();
+  }
+
+  // 没落盘：标成失败（没收进去，可以重试）。
+  async failUnplaced(s, why = '上次收纳在落盘前被中断，没有收进去；可以重试') {
+    if (s.stage) await fs.rm(s.stage, {force: true}).catch(() => {});
+    s.status = 'failed'; s.error = why; s.interrupted = true; delete s.stage; delete s.placing;
+    this.persistImport(s);
+  }
+
+  async recoverSong(s) {
+    const placed = s.placing && /^[a-f0-9]{64}$/.test(s.sha256 || '') ? await this.files.adopt(s.placing.folder, s.placing.stem, s.ext, s.sha256, this.usedPlacements(s.placing.folder)) : null;
+    if (!placed) return this.failUnplaced(s);
+    const round = this.roundRow(s.projectId, s.roundId);
+    let label = s.placing.label;
+    if (this.labelTaken(round.id, label)) label = this.nextLetter(round.id);
+    const file = await this.files.resolve(placed.rel), fst = await fs.lstat(file);
+    const analysis = await this.files.analyze(file), root = await this.prepareRoot();
+    const id = M.newId(), at = M.now();
+    let assetId;
+    this.db.transaction(() => {
+      assetId = this.indexAsset(root, file, s.sha256, fst);
+      this.insertVersion(id, s, round, {...this.versionCommon(s, label, analysis), fileName: placed.fileName, relativePath: placed.rel, reused: false, identity: placed.identity, assetId}, at);
+      s.status = 'ready'; s.versionId = id; s.label = label; s.error = null; s.recovered = true; delete s.placing;
+      this.persistImport(s);
+    })();
+    if (s.stage) await fs.rm(s.stage, {force: true}).catch(() => {});
+    delete s.stage; this.persistImport(s);
+    this.lib.enqueue?.(assetId);
+    this.queueTags(assetId);
+  }
+
+  // .incoming 里的 .partial：只留还在等你选择（重名）或本次运行正在接收的，其余（已结束、上次中断的）清掉。
+  async cleanStages() {
+    const base = this.files.baseSync();
+    if (!base) return;
+    const dir = path.join(base, '.incoming');
+    let names;
+    try { names = await fs.readdir(dir); } catch { return; }
+    const keep = new Set(this.db.prepare('SELECT data_json FROM project_music_imports').all().map(r => JSON.parse(r.data_json))
+      .filter(s => s.status === 'duplicate' || (['waiting', 'uploading'].includes(s.status) && s.instance === this.instance))
+      .map(s => s.id + '.partial'));
+    for (const name of names) {
+      if (!name.endsWith('.partial') || keep.has(name) || (name.startsWith('migrate-') && this.migrationActive)) continue;
+      await fs.rm(path.join(dir, name), {force: true}).catch(() => {});
+    }
   }
 
   insertVersion(id, s, round, data, at) {

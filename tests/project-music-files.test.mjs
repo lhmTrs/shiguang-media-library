@@ -143,6 +143,17 @@ test('项目音乐 · 文件区：建文件夹、上传、同内容先问、波�
   gone = (await s.call('GET', M + `/songs/${song.id}`)).body.rounds[0].versions.find(x => x.id === v.id);
   assert.equal(gone.library.offline, false);
 
+  // 「文件」区收全部音频格式；加入歌曲只收 mp3、wav、m4a、flac，格式不对给明确提示（开发统筹定的格式规则）
+  await fs.copyFile(b, path.join(projectDir, 'AI剪辑', '小样.ogg'));
+  const oggList = (await s.call('GET', F + '?folder=AI剪辑')).body.items.find(i => i.name === '小样.ogg');
+  assert.equal(oggList.audio, true);
+  assert.equal(oggList.addable, false);
+  const ogg = await s.call('POST', F + '/add-to-song', {requestId: uuid(), path: 'AI剪辑/小样.ogg', roundId: round.id}, {asPage: true});
+  assert.equal(ogg.status, 400);
+  assert.equal(ogg.body.code, 'UNSUPPORTED_FORMAT');
+  assert.match(ogg.body.error, /这个格式不能放进歌曲对比，请先转成 mp3\/wav\/m4a\/flac/);
+  await fs.rm(path.join(projectDir, 'AI剪辑', '小样.ogg'));
+
   // 歌曲上传以后「歌曲」文件夹出现（作为系统入口单独给出）；在访达里把它挪走，页面提示核对
   view = (await s.call('GET', F)).body;
   assert.equal(view.songs.songCount, 1);
