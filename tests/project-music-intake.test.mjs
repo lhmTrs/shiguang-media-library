@@ -87,15 +87,15 @@ test('项目音乐收纳：默认放进「文件」下的文件夹；放进歌�
 
   // 3) 新建一首歌并新开第 1 轮：两个文件是同一轮的 A、B；带提示词
   r = await confirm(f, [a, b], [
-    {kind: 'music', scope: 'project', projectId: pid, newSongTitle: '麦田', newRound: true, roundPrompt: '中国风流行 女声 慢板'},
-    {kind: 'music', scope: 'project', projectId: pid, newSongTitle: '麦田', newRound: true, roundPrompt: '中国风流行 女声 慢板'},
+    {kind: 'music', scope: 'project', projectId: pid, newSongTitle: '麦田', newRound: true, roundPrompt: '中国风流行, 女声, 慢板'},
+    {kind: 'music', scope: 'project', projectId: pid, newSongTitle: '麦田', newRound: true, roundPrompt: '中国风流行, 女声, 慢板'},
   ]);
   assert.deepEqual(r.batch.items.map(i => i.status), ['ready', 'ready'], JSON.stringify(r.batch.items));
   let song = f.store.list(pid).songs[0];
   assert.equal(song.title, '麦田');
   assert.equal(song.rounds.length, 1, '同一批只开一轮');
   assert.deepEqual(song.rounds[0].versions.map(v => v.label), ['A', 'B']);
-  assert.equal(song.rounds[0].prompt.style, '中国风流行 女声 慢板');
+  assert.equal(song.rounds[0].prompt.style, '中国风流行, 女声, 慢板');
   assert.equal(song.rounds[0].promptConfirmed.kind, 'user');
   assert.equal(song.rounds[0].versions[0].uploadedBy.kind, 'user');
   assert.equal(song.rounds[0].versions[0].uploadedBy.via, 'finder', '作者记成用户，来自访达');

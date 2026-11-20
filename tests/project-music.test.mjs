@@ -349,8 +349,12 @@ test('项目音乐：上传四种格式、重复内容、先补上一轮、AI �
     const mine = await synth(own, '我先收好的.mp3', {freq: 660});
     const added = await s.call('POST', '/roots', {path: path.join(base, '我的音乐'), kind: 'music'});
     assert.equal(added.status, 200, added.text);
-    for (let i = 0; i < 200 && (await s.call('GET', '/jobs')).body.some?.(j => j.status === 'running'); i++) await new Promise(r => setTimeout(r, 25));
-    const mineAsset = (await s.call('GET', `/assets?root=${added.body.root.id}`)).body.items?.[0];
+    // 等扫描真的把这首登记出来（只看 /jobs 有没有在跑不可靠：扫描任务还没出现在列表里时会直接放行）
+    let mineAsset;
+    for (let i = 0; i < 400 && !mineAsset; i++) {
+      mineAsset = (await s.call('GET', `/assets?root=${added.body.root.id}`)).body.items?.find(a => a.name === '我先收好的.mp3');
+      if (!mineAsset) await new Promise(r => setTimeout(r, 25));
+    }
     assert.ok(mineAsset, '自己的音乐目录已扫描');
     const {put} = await upload(s, pid, r2.id, mine);
     assert.equal(put.body.status, 'ready', put.text);
