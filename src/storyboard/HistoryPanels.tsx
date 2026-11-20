@@ -142,13 +142,15 @@ export function PendingPanel({api, refreshKey, onLocate, onCount, shotNumber}: {
   const latest = useRef(0);
   // onCount 放进 ref：父组件每次渲染传进来的新函数不应让面板重新读待看。
   const onCountRef = useRef(onCount); onCountRef.current = onCount;
+  // 面板被切走后，「看过了」的请求才返回时只回报计数，不再重读（编辑页会自己重读）。
+  const mounted = useRef(true); useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const load = useCallback(async () => { const ticket = ++latest.current; try { const d = await api.pending(); if (ticket !== latest.current) return; setData(d); setError(null); setSelected(old => nextVersion(d.pending_versions.map(v => v.version), old)); onCountRef.current(pendingBadge(d)); } catch (e) { if (ticket === latest.current) setError(e); } }, [api]);
   useEffect(() => { setData(null); setSelected(null); setMode('version'); setNotice(''); setDetail(null); setFoldOpen(false); }, [api]);
   useEffect(() => { void load(); }, [load, refreshKey]);
   const clear = async (target: PendingTarget, version?: number, guarded = true) => {
     if (!data || busy) return; setBusy(true); setNotice('');
-    try { const r = await api.clearPending(data.current_revision, target, {...(version === undefined ? {} : {version}), ...(guarded ? {expected_revision: data.current_revision} : {})}); onCount(pendingBadge(r)); await load(); }
-    catch (e) { if (e instanceof HistoryError && e.code === PENDING_REVISION_CHANGED) { setNotice('Codex 刚保存了新版本，列表已刷新。这次没有清除，请确认后再点一次。'); await load(); } else setError(e); }
+    try { const r = await api.clearPending(data.current_revision, target, {...(version === undefined ? {} : {version}), ...(guarded ? {expected_revision: data.current_revision} : {})}); onCountRef.current(pendingBadge(r)); if (mounted.current) await load(); }
+    catch (e) { if (e instanceof HistoryError && e.code === PENDING_REVISION_CHANGED) { setNotice('Codex 刚保存了新版本，列表已刷新。这次没有清除，请确认后再点一次。'); if (mounted.current) await load(); } else setError(e); }
     finally { setBusy(false); }
   };
   const setCategory = async (v: number, next: ReasonCategory, prev: ReasonCategory | null) => { try { await api.setCategory(v, next, prev); await load(); } catch (e) { setError(e); } };

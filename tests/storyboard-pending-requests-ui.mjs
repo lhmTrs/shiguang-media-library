@@ -1,5 +1,6 @@
 // 分镜页待看接口的请求次数：打开页面、切到待看、切到改动记录、回到编辑，每一步只读必要的次数。
-// 真实本地服务（全新合成库）+ 无头浏览器，不拦截接口。不连真实库、4317、平台或模型。
+// 真实本地服务（全新合成库）+ 无头浏览器。只有最后一步把「看过了」请求人为延迟 1.5 秒，用来复现竞态；不改任何响应。
+// 不连真实库、4317、平台或模型。
 // 用法：npm run build && node tests/storyboard-pending-requests-ui.mjs
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -69,6 +70,16 @@ try {
   await check('编辑和改动记录之间来回不读待看', async () => {
     await tab('改动记录').click(); await step('编辑→改动记录', 0);
     await tab('编辑').click(); await step('改动记录→编辑', 0);
+  });
+  await check('「看过了」还没返回就切回编辑：返回后镜头标记跟着角标更新', async () => {
+    await tab(/待看的修改/).click(); const panel = page.getByLabel('待看的修改', { exact: true }); await expect(panel).toBeVisible();
+    await panel.getByRole('button', { name: '全部未看 · 1 处' }).click();
+    await page.route('**/pending/clear', async route => { await new Promise(r => setTimeout(r, 1500)); await route.continue(); });
+    await panel.getByRole('button', { name: '看过了' }).first().click();
+    await tab('编辑').click(); await expect(page.getByRole('table', { name: '可编辑分镜表' })).toBeVisible();
+    await expect(tab(/待看的修改/).locator('b')).toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator('.sb-pending-chip')).toHaveCount(0, { timeout: 3000 });
+    await page.unroute('**/pending/clear');
   });
 
   assert.deepEqual(errors, []);
