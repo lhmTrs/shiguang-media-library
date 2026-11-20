@@ -6,7 +6,10 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash,randomUUID} from 'node:crypto';
 import {error,privateDirectory,same,stamp,uuid} from './files.mjs';
+import {runInProcessGroup} from '../native-compile.mjs';
 const run=promisify(execFile);
+// swiftc 在自己的进程组里跑：超时或服务关闭时连 swift-frontend、链接器一起结束。
+const defaultRunner=(command,args,options)=>command.endsWith('/swiftc')?runInProcessGroup(command,args,options):run(command,args,options);
 const serviceTitle='收纳素材到拾光', legacyTitle='收纳视频到拾光';
 const mediaKinds=['photo','video','audio'], fileTypes=['public.image','public.movie','public.audio'];
 const owner='shiguang-file-intake-v1';
@@ -84,10 +87,10 @@ export function workflow(nodePath,script,config) {
 }
 
 export class IntakeNative {
-  constructor({dataDir,project,personalItemDirectory,servicesDirectory=path.join(os.homedir(),'Library/Services'),platform=process.platform,serviceTitle:title=serviceTitle,runner=run}) {
+  constructor({dataDir,project,personalItemDirectory,servicesDirectory=path.join(os.homedir(),'Library/Services'),platform=process.platform,serviceTitle:title=serviceTitle,runner=defaultRunner}) {
     this.dataDir=dataDir;this.project=project;this.personalItemDirectory=personalItemDirectory;this.servicesDirectory=servicesDirectory;
     if(typeof title!=='string'||!title||/[\\/\x00-\x1f]/.test(title))throw error('INTAKE_INSTALL_INVALID','右键入口名称无效');
-    this.platform=platform;this.serviceTitle=title;this.target=path.join(servicesDirectory,title+'.workflow');this.installing=null;this.run=runner;
+    this.platform=platform;this.serviceTitle=title;this.target=path.join(servicesDirectory,title+'.workflow');this.installing=null;this.run=runner;this.compileAbort=new AbortController();
     this.legacyTarget=title===serviceTitle?path.join(servicesDirectory,legacyTitle+'.workflow'):null;
     this.nativeDir=path.join(dataDir,'file-intake','native');
     this.jobFile=path.join(dataDir,'file-intake','install-job.json');
@@ -274,7 +277,7 @@ export class IntakeNative {
       const temporary=path.join(native,'.intake-window-'+randomUUID()+'.app'),binary=path.join(temporary,'Contents/MacOS/ShiguangIntake');
       try {
         await fs.mkdir(path.dirname(binary),{recursive:true,mode:0o700});
-        await this.run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),windowSource,'-o',binary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536});
+        await this.run('/usr/bin/swiftc',['-module-cache-path',path.join(native,'module-cache'),windowSource,'-o',binary,'-framework','Cocoa','-framework','WebKit'],{timeout:120000,maxBuffer:65536,signal:this.compileAbort.signal});
         await fs.chmod(binary,0o700);
         await fs.writeFile(path.join(temporary,'Contents/Info.plist'),plist({CFBundleIdentifier:'com.shiguang.intake.'+createHash('sha256').update(native).digest('hex').slice(0,12),
           CFBundleName:'拾光素材收纳',CFBundleDisplayName:'拾光素材收纳',CFBundleExecutable:'ShiguangIntake',CFBundlePackageType:'APPL',CFBundleVersion:'2',
@@ -282,6 +285,7 @@ export class IntakeNative {
         await fs.rename(temporary,bundle);
       }
       catch(e){
+        if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，未安装右键入口',503);
         if(e.killed&&e.signal==='SIGTERM')throw error('INTAKE_COMPILER_TIMEOUT','准备本机窗口组件超时，请重试安装');
         throw error('INTAKE_COMPILER_UNAVAILABLE','无法准备本机窗口组件，请先安装 Mac 命令行工具后再试；未安装右键入口',409);
       }
@@ -335,7 +339,7 @@ export class IntakeNative {
     try{await fs.lstat(target);}catch(e){if(e.code==='ENOENT')return;throw e;}
     throw error('INTAKE_INSTALL_CONFLICT','右键入口位置已被占用，未覆盖');
   }
-  beginClose(){this.closing=true;}
+  beginClose(){this.closing=true;this.compileAbort.abort();}
   async close(){this.beginClose();if(!this.installing)return;let timer;
     try{await Promise.race([this.installing.catch(e=>{if(e.code!=='APPLICATION_CLOSING')throw e;}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(error('INTAKE_INSTALL_UNSETTLED','本机窗口组件仍在准备，未强制终止')),10000);})]);}
     finally{clearTimeout(timer);}

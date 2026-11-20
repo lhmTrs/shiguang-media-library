@@ -12,6 +12,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Library, run } from "./library.mjs";
+import { runInProcessGroup } from "./native-compile.mjs";
 import { publicRepairCode, mergeAlias } from "./asset-repair.mjs";
 import { CloudUploadHost } from "./cloud-upload-host.mjs";
 import { CloudUploadTaskRuntime, runFileStatusMaintenance } from "./cloud-upload-task-runtime.mjs";
@@ -101,14 +102,19 @@ if (process.platform === "darwin") {
     await fs.access(trashBin);
     nativeTrash = trashBin;
   } catch {
+    // 先编到临时文件，成功后再改名：编译中途被结束时，不会留下写了一半的组件被下次启动当成可用。
+    const trashPartial = trashBin + ".partial";
     try {
-      await run(
+      await fs.rm(trashPartial, { force: true });
+      await runInProcessGroup(
         "swiftc",
-        [path.join(project, "server/trash.swift"), "-o", trashBin],
+        [path.join(project, "server/trash.swift"), "-o", trashPartial],
         { timeout: 90000 },
       );
+      await fs.rename(trashPartial, trashBin);
       nativeTrash = trashBin;
     } catch (e) {
+      await fs.rm(trashPartial, { force: true }).catch(() => {});
       console.warn("废纸篓组件不可用，删除操作已禁用：", e.message);
     }
   }
