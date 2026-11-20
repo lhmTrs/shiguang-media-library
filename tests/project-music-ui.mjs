@@ -85,6 +85,12 @@ test('项目音乐页：新建歌曲、上传一轮、先补上一轮、播放�
   await round1.getByText('只把慢板改成中速').waitFor();
   await root.getByRole('button', {name: '上传新一轮'}).click();
   const next = page.getByRole('dialog', {name: /第 2 轮/});
+  // 档位预填上一轮的值时要标出来；改了就不再标
+  await next.getByText('沿用上一轮，换了会员请改').waitFor();
+  assert.equal(await next.getByLabel('Suno 会员档位').inputValue(), 'unknown');
+  await next.getByLabel('Suno 会员档位').selectOption('pro');
+  assert.equal(await next.getByText('沿用上一轮，换了会员请改').count(), 0);
+  await next.getByLabel('Suno 会员档位').selectOption('unknown');
   await next.getByLabel('风格').fill('合成风格 女声 中速');
   await next.getByRole('button', {name: '只开新一轮'}).click();
   await root.locator('article[aria-label="第 2 轮"]').waitFor();

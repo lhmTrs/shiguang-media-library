@@ -47,14 +47,17 @@ export function SongDialog({song, onSubmit, onClose}: {song?: Song; onSubmit: (t
 
 type FileTask = {key: string; file: File; label: string; state: 'pending' | 'uploading' | 'ready' | 'duplicate' | 'failed' | 'cancelled'; receipt?: ImportReceipt; requestId?: string; error?: string};
 
-function PromptFields({value, onChange, disabled}: {value: Prompt; onChange: (p: Prompt) => void; disabled?: boolean}) {
+function PromptFields({value, onChange, disabled, inheritedTier = ''}: {value: Prompt; onChange: (p: Prompt) => void; disabled?: boolean; inheritedTier?: Prompt['sunoTier']}) {
   const set = (k: keyof Prompt) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => onChange({...value, [k]: e.target.value});
   return <fieldset className="sgm-prompt-fields" disabled={disabled}>
     <div className="sgm-row2">
       <label className="sgm-field">生成工具<input value={value.tool} maxLength={80} onChange={set('tool')} placeholder="Suno，或本地模型名"/></label>
       <label className="sgm-field">Suno 会员档位<select value={value.sunoTier} onChange={set('sunoTier')}>
         {(Object.keys(TIER_LABEL) as Prompt['sunoTier'][]).map(k => <option key={k} value={k}>{TIER_LABEL[k]}</option>)}
-      </select></label>
+      </select>
+        {/* 预填的是上一轮的值：标出来，避免换了会员却沿用旧档位（档位决定能不能商用）。 */}
+        {inheritedTier && value.sunoTier === inheritedTier && <small className="sgm-inherited">沿用上一轮，换了会员请改</small>}
+      </label>
     </div>
     <p className="sgm-hint">档位决定这首歌能不能商用，生成以后补不回来；拿不准就选「不确定」。在 Suno 上自己改过提示词的，请贴回改后的。</p>
     <label className="sgm-field">风格<textarea rows={2} value={value.style} maxLength={4000} onChange={set('style')} placeholder="例如：中国风流行 女声 慢板"/></label>
@@ -169,7 +172,7 @@ export function RoundDialog({projectId, song, round, request, blocked, onChanged
     <div className="sgm-form">
       {!round && <>
         {draft && <p className="sgm-note">已用上一轮 AI 给的提示词草稿预填，请核对后再开新一轮。</p>}
-        <PromptFields value={prompt} onChange={setPrompt} disabled={busy || !!roundId}/>
+        <PromptFields value={prompt} onChange={setPrompt} disabled={busy || !!roundId} inheritedTier={last?.prompt.sunoTier ?? ''}/>
       </>}
       <div className="sgm-drop">
         <label className="sgm-btn"><Upload size={16}/>选择音频文件<input type="file" multiple accept=".mp3,.wav,.m4a,.flac" hidden disabled={busy} onChange={e => { pick(e.target.files); e.target.value = ''; }}/></label>
