@@ -1,10 +1,11 @@
 /* 项目音乐 · 新画风试点（SPEC 第九节）
    - 只在 .sg-music 里生效，只用 --sg-* 语义变量；不改现有 --c-* 变量和其他页面。
+   - 「待处理」抽屉（.sg-notices，src/notices/）共用下面这份变量和三套试用配色，别的样式不共用。
    - 默认「跟随主题」：从当前主题的 token 派生，切到深色/午夜蓝等主题时跟着变。
    - 三套试用配色是固定色值（SPEC 第九节表格），全库推广时会换成正式主题。
    - 不用边框和分隔线划分区域，靠底色深浅和留白。 */
 
-.sg-music {
+.sg-music, .sg-notices {
   --sg-radius: 14px;
   --sg-radius-small: 10px;
   --sg-surface: var(--c-f7f9fa);
@@ -27,18 +28,18 @@
   /* 实心按钮底色、浅强调底上的强调字：多数配色直接用强调色；纸张的强调色配浅字只有 4.1:1，单独加深 */
   --sg-accent-strong: var(--sg-accent);
 }
-.sg-music[data-sg-palette="paper"] {
+.sg-music[data-sg-palette="paper"], .sg-notices[data-sg-palette="paper"] {
   --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #6f6250;
   --sg-accent: #b5653d; --sg-accent-soft: #f1dccb; --sg-wave: #d2c2a8; --sg-on-accent: #fffaf3; --sg-danger: #a8483a; --sg-warn: #9a6d1f;
   --sg-accent-strong: #934c2a;
   color-scheme: light;
 }
-.sg-music[data-sg-palette="studio"] {
+.sg-music[data-sg-palette="studio"], .sg-notices[data-sg-palette="studio"] {
   --sg-surface: #121417; --sg-sidebar: #0b0d0f; --sg-surface-raised: #1b1e23; --sg-text: #eceae6; --sg-text-muted: #8a9097;
   --sg-accent: #6fd3b0; --sg-accent-soft: #1c3830; --sg-wave: #3a4049; --sg-on-accent: #0b0d0f; --sg-danger: #e08b80; --sg-warn: #d9b45a;
   color-scheme: dark;
 }
-.sg-music[data-sg-palette="gallery"] {
+.sg-music[data-sg-palette="gallery"], .sg-notices[data-sg-palette="gallery"] {
   --sg-surface: #ffffff; --sg-sidebar: #ffffff; --sg-surface-raised: #f5f5f7; --sg-text: #1d1d1f; --sg-text-muted: #6a6a6f;
   --sg-accent: #2f6b55; --sg-accent-soft: #e3efea; --sg-wave: #c9ced3; --sg-on-accent: #ffffff; --sg-danger: #b3413a; --sg-warn: #8a6516;
   color-scheme: light;
