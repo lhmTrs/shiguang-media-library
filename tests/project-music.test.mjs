@@ -630,6 +630,17 @@ test('项目音乐 · PR3 搬迁：旧位置的歌先复制、核对、登记，
   const row = lib.db.prepare('SELECT data_json,revision FROM project_music_songs WHERE id=?').get(song.id);
   lib.db.prepare('UPDATE project_music_songs SET data_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.data_json), finalization: {requestId: uuid(), versionId: idA, status: 'duplicate', candidates: []}}), song.id);
 
+  // P3-1：上一次搬迁把文件落到新位置后、登记前中断（模拟进程被杀）。重启后认领这份文件，不再复制出 -2。
+  const crash = new ProjectMusic({lib, projects, dataDir: app, directory}).init();
+  const realPublish = crash.files.publish.bind(crash.files);
+  crash.files.publish = async (...args) => { const placed = await realPublish(...args); crash.files.publish = realPublish; throw Error('模拟中断：已落位、未登记'); };
+  for (let i = 0; i < 400 && !crash.migration; i++) await new Promise(r => setTimeout(r, 10));
+  await crash.migration;
+  await crash.close();
+  const songDirAfterCrash = path.join(directory, `合成项目乙--${p.id}`, '歌曲', '合成旧歌', '第01轮');
+  assert.deepEqual(await fs.readdir(songDirAfterCrash), ['合成旧歌-第01轮-A.mp3'], '中断时文件已落位');
+  assert.equal(JSON.parse(lib.db.prepare('SELECT data_json FROM project_music_versions WHERE id=?').get(idA).data_json).assetId, undefined, '中断时还没登记');
+
   const trashDir = path.join(base, '.Trash');
   await fs.mkdir(trashDir);
   const trashed = [];
@@ -645,6 +656,7 @@ test('项目音乐 · PR3 搬迁：旧位置的歌先复制、核对、登记，
   assert.equal(vs.A.library.reused, false);
   const newA = path.join(directory, `合成项目乙--${p.id}`, '歌曲', '合成旧歌', '第01轮', '合成旧歌-第01轮-A.mp3');
   assert.equal(sha(await fs.readFile(newA)), sha(await fs.readFile(a)), '复制后核对一致');
+  assert.deepEqual(await fs.readdir(path.dirname(newA)), ['合成旧歌-第01轮-A.mp3'], '重启后认领了中断前落位的文件，没有 -2 副本');
   await fs.access(a);
   assert.equal(vs.C.library.reused, true, '内容已在你的音乐目录里：复用那条记录');
   assert.equal(vs.C.library.assetId, ownAsset.id);
@@ -670,4 +682,41 @@ test('项目音乐 · PR3 搬迁：旧位置的歌先复制、核对、登记，
   list = await store.retryMigration(p.id);
   assert.deepEqual(list.legacy.failed.map(f => f.versionId), [idB]);
   assert.equal(idC.length, 36);
+});
+
+test('项目音乐 · 标签：复用你的记录时，你原来就有的同名标签算你的，改掉风格也不会被删（验收 P2-1）', async t => {
+  const base = await makeTemp(t);
+  const own = path.join(base, '我的音乐', '配乐');
+  await fs.mkdir(own, {recursive: true});
+  const mine = await synth(own, '夜曲.mp3', {freq: 410});
+  const s = await startServer(t, base);
+  const added = await s.call('POST', '/roots', {path: path.join(base, '我的音乐'), kind: 'music'});
+  assert.equal(added.status, 200, added.text);
+  let mineAsset;
+  for (let i = 0; i < 200 && !mineAsset; i++) { mineAsset = (await s.call('GET', `/assets?root=${added.body.root.id}`)).body.items?.[0]; if (!mineAsset) await new Promise(r => setTimeout(r, 25)); }
+  assert.ok(mineAsset);
+  await s.call('PATCH', `/assets/${mineAsset.id}`, {tags: ['钢琴', '我收藏的']});
+  const pid = (await s.call('POST', '/projects', {name: '合成标签项目'})).body.id;
+  const M = `/project-music/projects/${pid}`;
+  let song = (await s.call('POST', M + '/songs', {requestId: uuid(), title: '合成夜曲'}, {asPage: true})).body;
+  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {tool: 'Suno', style: '钢琴, 夜晚'}}, {asPage: true})).body;
+  const {put} = await upload(s, pid, song.rounds[0].id, mine);
+  assert.equal(put.body.reused.assetId, mineAsset.id, put.text);
+  song = await tagsSettled(s, M, song.id);
+  let tags = (await s.call('GET', `/assets/${mineAsset.id}`)).body.tags;
+  for (const tag of ['钢琴', '我收藏的', '夜晚', 'AI生成', '合成夜曲']) assert.ok(tags.includes(tag), tag + '：' + tags);
+  // 改风格：项目音乐加的「夜晚」去掉，你原来就有的「钢琴」留着
+  const r = song.rounds[0];
+  await s.call('PATCH', M + `/rounds/${r.id}`, {expectedRevision: r.revision, prompt: {...r.prompt, style: '流行 夜色'}}, {asPage: true});
+  song = await tagsSettled(s, M, song.id);
+  tags = (await s.call('GET', `/assets/${mineAsset.id}`)).body.tags;
+  assert.ok(tags.includes('钢琴'), '你自己的「钢琴」不能被删：' + tags);
+  assert.ok(tags.includes('我收藏的'));
+  assert.ok(!tags.includes('夜晚'), '项目音乐自己加的「夜晚」随风格去掉');
+  assert.ok(tags.includes('流行') && tags.includes('夜色'));
+  // 改歌名同理：系统标签换掉，你的不动
+  song = (await s.call('PATCH', M + `/songs/${song.id}`, {expectedRevision: song.revision, title: '合成夜曲二'}, {asPage: true})).body;
+  song = await tagsSettled(s, M, song.id);
+  tags = (await s.call('GET', `/assets/${mineAsset.id}`)).body.tags;
+  assert.ok(tags.includes('合成夜曲二') && !tags.includes('合成夜曲') && tags.includes('钢琴'), String(tags));
 });

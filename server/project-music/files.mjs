@@ -178,6 +178,25 @@ export class MusicFiles {
     fail('MUSIC_STORAGE_FULL', '同名文件过多，请换一个版本标签', 409);
   }
 
+  // 中断恢复（P3-1）：上次已经把文件落到目标位置、还没来得及登记就中断了。按 publish 的命名规则找同名（含 -2、-3…）的文件，
+  // 内容的 SHA-256 一致、不是符号链接、也不在 skip 里（别的版本已经在用的位置），就认领它，不再复制出新的 -N 副本。
+  async adopt(folderRel, stem, ext, sha256, skip = new Set()) {
+    const folder = await this.resolve(folderRel);
+    const safe = segment(stem, 160);
+    for (let n = 1; n < 1000; n++) {
+      const name = (n === 1 ? safe : `${safe}-${n}`) + ext, rel = `${folderRel}/${name}`, file = path.join(folder, name);
+      const st = await fs.lstat(file).catch(() => null);
+      if (!st) return null;
+      if (!st.isFile() || st.isSymbolicLink() || skip.has(rel)) continue;
+      let handle;
+      try {
+        handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        if (await this.hashFile(handle) === sha256) return {rel, fileName: name, identity: stamp(await handle.stat())};
+      } catch { /* 读不了就不认领 */ } finally { await handle?.close(); }
+    }
+    return null;
+  }
+
   async hashFile(handle) {
     const hash = createHash('sha256');
     for await (const chunk of handle.createReadStream({autoClose: false, start: 0})) hash.update(chunk);

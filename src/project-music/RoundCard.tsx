@@ -61,7 +61,7 @@ export function VersionRow({version, player, actions, busy, compact = false}: {v
       {version.isBest && <span className="sgm-pill accent"><Star size={12} fill="currentColor"/>当前最好</span>}
       {version.uploadedBy.kind === 'agent' && <span className="sgm-pill" title={`由 ${version.uploadedBy.session} 上传`}>AI 上传</span>}
       {version.uploadedBy.kind === 'user' && version.uploadedBy.via === 'finder' && <span className="sgm-pill" title="从访达右键收纳进来">访达收纳</span>}
-      {version.status === 'rejected' && version.library.inLibrary && <span className="sgm-pill" title="音乐库里打「未选用」标签，不隐藏">音乐库：未选用</span>}
+      {version.status === 'rejected' && 'unusedTagged' in version.library && version.library.unusedTagged && <span className="sgm-pill" title="音乐库里打了「未选用」标签，不隐藏">音乐库：未选用</span>}
     </span>
     <span className="sgm-version-actions">
       {!rejected && !version.isBest && <button type="button" className="sgm-icon" title="设为当前最好" aria-label={`把第 ${version.roundNo} 轮 ${version.label} 设为当前最好`} disabled={busy} onClick={() => actions.setBest(version)}><Star size={16}/></button>}
