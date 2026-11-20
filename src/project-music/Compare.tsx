@@ -1,7 +1,7 @@
 // A/B 对比页（SPEC 3.4）：两版同时走，只放出其中一版；空格切换，停在同一位置。
 // 响度按服务端估算对齐：只把较响的那版音量调低，不改原文件。盲听时显示 1 号、2 号，听完再揭晓。
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ArrowLeft, Eye, EyeOff, Flag, Pause, Play, Repeat, Star, Trash2, Volume2} from 'lucide-react';
+import {ArrowLeft, Check, Eye, EyeOff, Flag, Pause, Play, Repeat, Star, Trash2, Volume2} from 'lucide-react';
 import {Waveform} from './Waveform';
 import {clock} from './Player';
 import type {Request, Side, Song, Version} from './types';
@@ -163,8 +163,8 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
       <button type="button" className="sgm-btn ghost" onClick={() => { pauseBoth(); onClose(); }}><ArrowLeft size={16}/>返回</button>
       <h2>对比 · {song.title}</h2>
       <div className="sgm-compare-toggles">
-        <button type="button" className={`sgm-btn small ${matched ? 'primary' : ''}`} aria-pressed={matched} onClick={() => setMatched(m => !m)}><Volume2 size={14}/>音量对齐</button>
-        <button type="button" className={`sgm-btn small ${blind ? 'primary' : ''}`} aria-pressed={blind}
+        <button type="button" className="sgm-btn small sgm-choice" aria-pressed={matched} onClick={() => setMatched(m => !m)}>{matched ? <Check size={14}/> : <Volume2 size={14}/>}音量对齐</button>
+        <button type="button" className="sgm-btn small sgm-choice" aria-pressed={blind}
           onClick={() => { setBlind(b => !b); setRevealed(false); setFirstSlot(Math.random() < 0.5 ? 'left' : 'right'); }}>{blind ? <EyeOff size={14}/> : <Eye size={14}/>}盲听</button>
         {blind && !revealed && <button type="button" className="sgm-btn small" onClick={() => setRevealed(true)}>揭晓</button>}
       </div>
@@ -181,15 +181,22 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
 
     <div className="sgm-compare-tracks">
       {order.map(s => {
-        const ver = v[s], length = len[s] || (ver?.durationMs ?? 0) / 1000, ended = playing && length > 0 && pos[s] >= length - 0.05;
+        const ver = v[s], length = len[s] || (ver?.durationMs ?? 0) / 1000, ended = !hidden && playing && length > 0 && pos[s] >= length - 0.05;
+        // 盲听时不露出时长和波形：两版用同一时间刻度的中性进度条，只显示当前位置。
+        const common = Math.max(len.left || (v.left?.durationMs ?? 0) / 1000, len.right || (v.right?.durationMs ?? 0) / 1000);
         return <div key={s} className={`sgm-compare-track ${active === s ? 'is-active' : ''}`}>
           <button type="button" className="sgm-compare-side" aria-pressed={active === s} aria-label={`听 ${name(s)}`} onClick={() => setActive(s)}>
             <span className="sgm-compare-badge">{hidden ? slotNo(s) : ver?.label ?? '?'}</span>
             <span><strong>{name(s)}</strong><small>{active === s ? (ended ? '这一版已播完' : '正在听') : '静音同步'}</small></span>
           </button>
-          <Waveform peaks={ver?.peaks ?? null} bars={140} progress={length ? Math.min(1, pos[s] / length) : 0} active={active === s}
-            onSeek={f => seekTo(f * length)} label={`${name(s)} 波形`}/>
-          <span className="sgm-version-time">{clock(pos[s] * 1000)} / {clock(length * 1000)}</span>
+          {hidden
+            ? <div className="sgm-neutral-bar" role="slider" tabIndex={0} aria-label={`${name(s)} 播放位置`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={common ? Math.round(Math.min(1, pos[s] / common) * 100) : 0}
+                onPointerDown={e => { const b = e.currentTarget.getBoundingClientRect(); seekTo(Math.max(0, Math.min(1, (e.clientX - b.left) / b.width)) * common); }}>
+                <span style={{width: `${common ? Math.min(100, pos[s] / common * 100) : 0}%`}}/>
+              </div>
+            : <Waveform peaks={ver?.peaks ?? null} bars={140} progress={length ? Math.min(1, pos[s] / length) : 0} active={active === s}
+                onSeek={f => seekTo(f * length)} label={`${name(s)} 波形`}/>}
+          <span className="sgm-version-time">{hidden ? clock(pos[s] * 1000) : `${clock(pos[s] * 1000)} / ${clock(length * 1000)}`}</span>
           {ver && <audio ref={el => { audio.current[s] = el; }} src={ver.mediaUrl} preload="auto"
             onLoadedMetadata={e => { const d = e.currentTarget.duration; setLen(x => ({...x, [s]: Number.isFinite(d) ? d : 0})); }}/>}
         </div>;
@@ -221,7 +228,7 @@ export function ComparePanel({song, projectId, request, initial, onChanged, onCl
       <div className="sgm-compare-winner" role="radiogroup" aria-label="整体哪一版更好">
         {([1, 2, 'same'] as const).map(c => {
           const side = hidden ? sideFromChoice(c) : c === 'same' ? 'same' : c === 1 ? 'left' : 'right';
-          return <button key={String(c)} type="button" role="radio" aria-checked={winner === side} className={`sgm-btn small ${winner === side ? 'primary' : ''}`} onClick={() => setWinner(w => w === side ? null : side)}>{choiceLabel(side)}</button>;
+          return <button key={String(c)} type="button" role="radio" aria-checked={winner === side} className="sgm-btn small sgm-choice" onClick={() => setWinner(w => w === side ? null : side)}>{winner === side && <Check size={14} aria-hidden="true"/>}{choiceLabel(side)}</button>;
         })}
       </div>
       <label className="sgm-field">一句话结果（选填，也可以按段落记）<textarea rows={2} value={summary} maxLength={2000} onChange={e => setSummary(e.target.value)} placeholder="例如：副歌 2 号好，前奏 1 号好"/></label>

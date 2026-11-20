@@ -24,10 +24,13 @@
   --sg-focus: color-mix(in srgb, var(--sg-accent) 55%, transparent);
   /* 提醒色当文字用时向正文色靠一些，浅底、深底都看得清 */
   --sg-warn-text: color-mix(in srgb, var(--sg-warn) 60%, var(--sg-text));
+  /* 实心按钮底色、浅强调底上的强调字：多数配色直接用强调色；纸张的强调色配浅字只有 4.1:1，单独加深 */
+  --sg-accent-strong: var(--sg-accent);
 }
 .sg-music[data-sg-palette="paper"] {
   --sg-surface: #f4eee3; --sg-sidebar: #ede5d6; --sg-surface-raised: #fbf7ef; --sg-text: #3b3127; --sg-text-muted: #8c7e6a;
   --sg-accent: #b5653d; --sg-accent-soft: #f1dccb; --sg-wave: #d2c2a8; --sg-on-accent: #fffaf3; --sg-danger: #a8483a; --sg-warn: #9a6d1f;
+  --sg-accent-strong: #934c2a;
   color-scheme: light;
 }
 .sg-music[data-sg-palette="studio"] {
@@ -72,8 +75,8 @@
 .sg-music .sgm-btn { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 999px; padding: 8px 16px; min-height: 36px;
   background: var(--sg-sunken); color: var(--sg-text); font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; white-space: nowrap; }
 .sg-music .sgm-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-text) 9%, var(--sg-surface-raised)); }
-.sg-music .sgm-btn.primary { background: var(--sg-accent); color: var(--sg-on-accent); }
-.sg-music .sgm-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-accent) 88%, var(--sg-text)); }
+.sg-music .sgm-btn.primary { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sg-music .sgm-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--sg-accent-strong) 88%, var(--sg-text)); }
 .sg-music .sgm-btn.ghost { background: transparent; color: var(--sg-text-muted); }
 .sg-music .sgm-btn.ghost:hover:not(:disabled) { background: var(--sg-hover); color: var(--sg-text); }
 .sg-music .sgm-btn.small { padding: 4px 12px; min-height: 30px; font-size: 13px; }
@@ -84,7 +87,7 @@
 .sg-music .sgm-icon:disabled { opacity: .35; cursor: not-allowed; }
 .sgm-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 10px; border-radius: 999px; background: var(--sg-sunken); color: var(--sg-text-muted);
   font-size: 12px; line-height: 20px; white-space: nowrap; font-weight: 400; }
-.sgm-pill.accent { background: var(--sg-accent-soft); color: var(--sg-accent); }
+.sgm-pill.accent { background: var(--sg-accent-soft); color: var(--sg-accent-strong); }
 .sgm-pill.warn { background: color-mix(in srgb, var(--sg-warn) 16%, transparent); color: var(--sg-warn-text); }
 .sgm-pill.muted { opacity: .75; }
 
@@ -92,8 +95,9 @@
 .sg-music .sgm-play { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; border: 0; border-radius: 50%;
   background: var(--sg-sunken); color: var(--sg-text); cursor: pointer; }
 .sg-music .sgm-play:hover { background: var(--sg-accent-soft); color: var(--sg-accent); }
-.sg-music .sgm-play.is-large { width: 44px; height: 44px; background: var(--sg-accent); color: var(--sg-on-accent); }
-.sgm-version.is-current .sgm-play { background: var(--sg-accent); color: var(--sg-on-accent); }
+.sg-music .sgm-play.is-large { width: 44px; height: 44px; background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sgm-version.is-current .sgm-play { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sgm-version.is-current .sgm-version-time, .sgm-compare-track.is-active .sgm-version-time { color: var(--sg-text); }
 
 /* 波形 */
 .sgm-wave { position: relative; height: 40px; min-width: 60px; flex: 1; display: flex; align-items: center; border-radius: 8px; }
@@ -270,11 +274,19 @@
 .sgm-compare-side strong { display: block; font-weight: 500; }
 .sgm-compare-side small { color: var(--sg-text-muted); font-size: 12px; }
 .sgm-compare-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--sg-surface-raised); font-weight: 500; font-size: 16px; flex: none; }
-.sgm-compare-track.is-active .sgm-compare-badge { background: var(--sg-accent); color: var(--sg-on-accent); }
+.sgm-compare-track.is-active .sgm-compare-badge { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+/* 选项按钮（哪一版更好、音量对齐、盲听）：选中＝实心强调底＋对勾，不靠颜色渐变，任何配色下都看得清 */
+.sg-music .sgm-choice { transition: none; }
+.sg-music .sgm-choice[aria-checked="true"], .sg-music .sgm-choice[aria-pressed="true"] { background: var(--sg-accent-strong); color: var(--sg-on-accent); }
+.sg-music .sgm-choice[aria-checked="true"]:hover, .sg-music .sgm-choice[aria-pressed="true"]:hover { background: color-mix(in srgb, var(--sg-accent-strong) 88%, var(--sg-text)); }
+/* 盲听时的中性进度条：两版一样，不露出时长和波形 */
+.sgm-neutral-bar { position: relative; flex: 1; min-width: 60px; height: 10px; border-radius: 999px; background: var(--sg-wave); cursor: pointer; }
+.sgm-neutral-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--sg-text-muted); }
+.sgm-compare-track.is-active .sgm-neutral-bar > span { background: var(--sg-accent-strong); }
 .sgm-compare-transport { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sgm-markers { display: flex; gap: 8px; flex-wrap: wrap; }
 .sgm-marker { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 4px; border-radius: 999px; background: var(--sg-sunken); }
-.sg-music .sgm-marker-jump { border: 0; border-radius: 999px; padding: 2px 10px; background: var(--sg-accent-soft); color: var(--sg-accent); font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.sg-music .sgm-marker-jump { border: 0; border-radius: 999px; padding: 2px 10px; background: var(--sg-accent-soft); color: var(--sg-accent-strong); font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .sg-music .sgm-marker input { width: 96px; padding: 3px 8px; background: transparent; font-size: 13px; }
 .sgm-compare-lyrics ol { margin: 6px 0 0; padding-left: 22px; display: grid; gap: 2px; max-height: 220px; overflow: auto; }
 .sg-music .sgm-compare-lyrics button { border: 0; background: transparent; color: var(--sg-text); padding: 2px 6px; border-radius: 6px; cursor: pointer; text-align: left; }

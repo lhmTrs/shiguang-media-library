@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import {chromium} from '@playwright/test';
 import {tempDirectories} from './helpers/temp-cleanup.mjs';
 import {repo, startServer, synth} from './helpers/project-music-server.mjs';
+import {lowContrast} from './helpers/contrast.mjs';
 
 const makeTemp = tempDirectories(test, 'sg-project-music-cmp-');
 const uuid = () => crypto.randomUUID();
@@ -93,12 +94,19 @@ test('对比页：默认当前最好对最新、空格切换停在同一位置�
   assert.equal(await panel.getByLabel('左边版本').count(), 0);
   assert.equal(await panel.locator('.sgm-compare-track').filter({hasText: '第 1 轮'}).count(), 0, '盲听时不露出版本名');
   assert.ok(await panel.getByRole('button', {name: /听 1 号/}).isVisible());
+  // 盲听不露底：不显示波形和总时长，两版是同一刻度的中性进度条，只显示当前位置
+  assert.equal(await panel.locator('.sgm-compare-track .sgm-wave').count(), 0, '盲听时不显示波形');
+  assert.equal(await panel.locator('.sgm-compare-track .sgm-neutral-bar').count(), 2);
+  for (const t of await panel.locator('.sgm-compare-track .sgm-version-time').allInnerTexts()) assert.match(t, /^\d+:\d{2}$/, `盲听时不显示总时长：${t}`);
   await panel.getByRole('radio', {name: '1 号 更好'}).click();
   await panel.getByLabel(/一句话结果/).fill('副歌 1 号更稳');
   await panel.getByRole('button', {name: '保存对比结果'}).click();
   const note = await panel.getByRole('status').innerText();
   assert.match(note, /已存进第 1 轮的记录。1 号是 第 1 轮 [AB]，2 号是 第 1 轮 [AB]/);
   const oneIsB = /1 号是 第 1 轮 B/.test(note);
+  // 保存即揭晓：波形和总时长恢复显示
+  assert.equal(await panel.locator('.sgm-compare-track .sgm-wave').count(), 2);
+  for (const t of await panel.locator('.sgm-compare-track .sgm-version-time').allInnerTexts()) assert.match(t, /^\d+:\d{2} \/ \d+:\d{2}$/, t);
   if (oneIsB) {
     await panel.getByRole('button', {name: /把 第 1 轮 B 设为当前最好/}).click();
     await panel.getByText('已是当前最好').waitFor();
@@ -115,5 +123,24 @@ test('对比页：默认当前最好对最新、空格切换停在同一位置�
   const saved = (await s.call('GET', M + `/songs/${song.id}`)).body;
   assert.equal(saved.rounds[0].comparisons[0].winner, oneIsB ? 'right' : 'left', '盲听的 1 号按实际版本存');
   assert.equal(saved.bestVersionId, oneIsB ? vB : vA);
+
+  // 选中状态与实心按钮：四种配色加深色主题，在悬停过渡结束后对比度都要 ≥ 4.5
+  for (const [palette, theme] of [['follow', 'forest'], ['paper', 'forest'], ['studio', 'forest'], ['gallery', 'forest'], ['follow', 'dark']]) {
+    await page.evaluate(([p, t]) => { localStorage.setItem('shiguang.musicPalette.v1', p); localStorage.setItem('shiguang.theme', t); }, [palette, theme]);
+    await page.reload();
+    await root.getByRole('button', {name: '对比', exact: true}).click();
+    const cmp = root.getByRole('region', {name: 'A/B 对比'});
+    for (const blindMode of [false, true]) {
+      if (blindMode) await cmp.getByRole('button', {name: '盲听'}).click();
+      await cmp.locator('[role=radio][aria-checked=false]').first().click(); // 再点已选中的会取消选择
+      if (!blindMode) await cmp.getByRole('button', {name: '在当前位置打点'}).click();
+      await page.mouse.move(2, 2);
+      await page.waitForTimeout(300);
+      assert.equal(await cmp.locator('[role=radio][aria-checked=true]').count(), 1);
+      const bad = await lowContrast(page, '.sgm-compare .sgm-choice, .sg-music .sgm-btn.primary, .sg-music .sgm-pill.accent, .sgm-marker-jump, .sgm-compare-badge, .sgm-compare-track.is-active .sgm-version-time', 4.5);
+      assert.deepEqual(bad, [], `${palette}/${theme}${blindMode ? ' 盲听' : ''} 选中或实心按钮看不清`);
+    }
+    await cmp.getByRole('button', {name: '返回'}).click();
+  }
   assert.deepEqual(errors, []);
 });
