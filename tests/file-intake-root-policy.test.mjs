@@ -29,9 +29,9 @@ test('canonical parent aliases hide/protect the accepted managed base without cl
   await fs.mkdir(real);await fs.mkdir(other);await fs.symlink(real,alias);
   const configured=path.join(alias,'personal_item'),canonical=path.join(real,'personal_item');
   const policy=managedRootPolicy(configured),pinnedPolicy=managedRootPolicy(canonical);
-  for(const name of ['picture','video','system_picture','system_video','system_music','system_sfx']) {
+  for(const name of ['picture','video','music','system_picture','system_video','system_music','system_sfx']) {
     const root={path:path.join(canonical,name)};
-    assert.deepEqual(policy(root),{managed:true,hidden:!['system_music','system_sfx'].includes(name)});
+    assert.deepEqual(policy(root),{managed:true,hidden:!['music','system_music','system_sfx'].includes(name)});
     assert.deepEqual(pinnedPolicy(root),policy(root));
     assert.deepEqual(policy({path:path.join(other,'personal_item',name)}),{managed:false,hidden:false});
   }

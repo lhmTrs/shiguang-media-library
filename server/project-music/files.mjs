@@ -1,7 +1,9 @@
-// 项目音乐托管目录：<数据目录>/project-music/<项目>--<id>/<歌名>--<id前8位>/第NN轮/<标签>.<扩展名>
-// 目录只由本模块创建（0700），不登记为素材根，候选版不进音乐库（SPEC 3.2）。
-// 文件身份：保存 dev/ino/size/mtime 与 SHA-256；读取前核对，变了就拒绝，不悄悄换内容。
+// 项目音乐文件（PR3，SPEC 第十一节）：<personal_item>/music/<项目>--<id>/歌曲/<歌名>/第NN轮/<歌名>-第NN轮-<标签>.<扩展名>
+// personal_item/music 由 store 登记成音乐库根目录（显示名「AI生成」），全部版本都进全库索引。
+// PR1、PR2 时期的旧位置 <数据目录>/project-music/… 只读：用来搬迁，旧副本等用户确认后再移到废纸篓。
+// 文件身份：保存 dev/ino/size/mtime/ctime 与 SHA-256；读取前核对，变了就拒绝，不悄悄换内容。
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -21,6 +23,8 @@ function segment(name, max = 60) {
   return out.replace(/[. ]+$/g, '') || '未命名';
 }
 export const roundFolder = n => `第${String(n).padStart(2, '0')}轮`;
+export const SONGS_FOLDER = '歌曲';
+export {segment};
 
 async function privateDir(dir) {
   await fs.mkdir(dir, {recursive: true, mode: 0o700});
@@ -29,28 +33,58 @@ async function privateDir(dir) {
   return dir;
 }
 
+const validRel = rel => typeof rel === 'string' && !!rel && !path.isAbsolute(rel) && !rel.split('/').some(p => !p || p === '.' || p === '..');
+
 export class MusicFiles {
-  constructor(dataDir) {
-    this.configured = path.join(dataDir, 'project-music');
+  constructor(dataDir, directory) {
+    this.legacyConfigured = path.join(dataDir, 'project-music');
+    this.configured = path.resolve(directory);
     this.base = null;
   }
 
+  // 新位置：personal_item/music。上级目录按真实路径定位一次，之后位置变了就拒绝写入。目录本身不能是符号链接。
   async root() {
     if (this.base) {
-      if (await fs.realpath(this.base).catch(() => null) !== this.base) fail('MUSIC_STORAGE_CHANGED', '项目音乐目录位置已变化，请核对数据目录', 409);
+      if (await fs.realpath(this.base).catch(() => null) !== this.base) fail('MUSIC_STORAGE_CHANGED', '音乐目录位置已变化，请核对 personal_item/music', 409);
       return this.base;
     }
-    await privateDir(this.configured);
-    const real = await fs.realpath(this.configured);
-    await privateDir(path.join(real, '.incoming'));
-    this.base = real;
-    return real;
+    const parent = path.dirname(this.configured);
+    await fs.mkdir(parent, {recursive: true, mode: 0o700});
+    const canonical = path.join(await fs.realpath(parent), path.basename(this.configured));
+    await privateDir(canonical);
+    if (await fs.realpath(canonical) !== canonical) fail('MUSIC_STORAGE_INVALID', '音乐目录不能是符号链接', 409);
+    await privateDir(path.join(canonical, '.incoming'));
+    this.base = canonical;
+    return canonical;
   }
 
-  // 相对路径 → 绝对路径，并确认没有越出托管目录、路径上没有符号链接。
+  // 只用于展示和比较的位置（不创建目录）。
+  expectedPath(rel) {
+    if (!validRel(rel)) return null;
+    let base = this.base;
+    if (!base) { try { base = fsSync.realpathSync(this.configured); } catch { return null; } }
+    return path.join(base, ...rel.split('/'));
+  }
+
+  // 相对路径 → 绝对路径，并确认没有越出音乐目录。
   async resolve(rel) {
     const base = await this.root();
-    if (typeof rel !== 'string' || !rel || path.isAbsolute(rel) || rel.split('/').some(p => !p || p === '.' || p === '..')) fail('MUSIC_STORAGE_INVALID', '托管文件位置无效', 500);
+    if (!validRel(rel)) fail('MUSIC_STORAGE_INVALID', '音乐文件位置无效', 500);
+    return path.join(base, ...rel.split('/'));
+  }
+
+  // 旧位置（PR1、PR2）：只读，不存在就返回 null，不新建。
+  async legacyRoot() {
+    const real = await fs.realpath(this.legacyConfigured).catch(() => null);
+    if (!real) return null;
+    const st = await fs.lstat(real);
+    return st.isDirectory() ? real : null;
+  }
+
+  async legacyResolve(rel) {
+    const base = await this.legacyRoot();
+    if (!base) fail('MUSIC_FILE_MISSING', '旧的项目音乐目录不见了；记录保留', 404);
+    if (!validRel(rel)) fail('MUSIC_STORAGE_INVALID', '旧文件位置无效', 500);
     return path.join(base, ...rel.split('/'));
   }
 
@@ -64,10 +98,18 @@ export class MusicFiles {
     return name;
   }
 
-  async songFolder(project, songId, songTitle) {
+  // 歌曲文件夹：<项目>/歌曲/<名字>。名字由 store 选好（同项目里重名时加「 (2)」）。
+  async songFolder(project, name) {
     const projectRel = await this.projectFolder(project);
-    const rel = `${projectRel}/${segment(songTitle)}--${songId.slice(0, 8)}`;
+    await privateDir(await this.resolve(`${projectRel}/${SONGS_FOLDER}`));
+    const rel = `${projectRel}/${SONGS_FOLDER}/${segment(name, 120)}`;
     await privateDir(await this.resolve(rel));
+    return rel;
+  }
+
+  async ensureFolder(rel) {
+    const dir = await this.resolve(rel);
+    await privateDir(dir);
     return rel;
   }
 
@@ -102,14 +144,21 @@ export class MusicFiles {
     const folder = await this.resolve(folderRel);
     await privateDir(folder);
     if (await fs.realpath(folder) !== folder) fail('MUSIC_STORAGE_CHANGED', '轮次目录不能是符号链接', 409);
-    const safe = segment(stem, 80);
+    const safe = segment(stem, 160);
     for (let n = 1; n < 1000; n++) {
       const name = (n === 1 ? safe : `${safe}-${n}`) + ext;
       try {
         await fs.link(stage, path.join(folder, name));
       } catch (e) {
         if (e.code === 'EEXIST') continue;
-        throw e;
+        // 旧版本留下的暂存文件在数据目录里，可能和 personal_item 不在同一个磁盘：改为独占复制。
+        if (e.code !== 'EXDEV') throw e;
+        try { await fs.copyFile(stage, path.join(folder, name), constants.COPYFILE_EXCL); }
+        catch (c) { if (c.code === 'EEXIST') continue; throw c; }
+        if ((await fs.lstat(path.join(folder, name))).size !== (await fs.lstat(stage)).size) {
+          await fs.rm(path.join(folder, name), {force: true});
+          fail('MUSIC_STORAGE_CHANGED', '复制到音乐目录时长度不一致，已撤回', 409);
+        }
       }
       await fs.unlink(stage);
       const handle = await fs.open(folder, constants.O_RDONLY | constants.O_DIRECTORY);
@@ -128,8 +177,11 @@ export class MusicFiles {
 
   // 打开一个托管文件：身份（含 ctime）一致直接用；任何一项变了都重算 SHA-256——内容一致就刷新身份照常用（只动了属性），
   // 内容变了就拒绝（包括同长度改写后再把修改时间改回原值）。旧记录没有 ctime，也会走一次哈希后补上。
-  async open(rel, expected) {
-    const file = await this.resolve(rel);
+  async open(rel, expected) { return this.openPath(await this.resolve(rel), expected); }
+  async openLegacy(rel, expected) { return this.openPath(await this.legacyResolve(rel), expected); }
+
+  // expected.identity 为空时一定重算 SHA-256（比如复用音乐库里已有的文件）。
+  async openPath(file, expected) {
     let handle;
     try {
       if (await fs.realpath(file) !== file) fail('MUSIC_FILE_CHANGED', '音频文件位置已变化，未读取', 409);
@@ -143,7 +195,7 @@ export class MusicFiles {
       const st = stamp(await handle.stat());
       let refreshed = null;
       if (!sameStamp(st, expected.identity)) {
-        if (st.size !== expected.identity.size || await this.hashFile(handle) !== expected.sha256) fail('MUSIC_FILE_CHANGED', '音频文件内容已变化，与上传时不一致；未播放或下载', 409);
+        if ((expected.identity && st.size !== expected.identity.size) || await this.hashFile(handle) !== expected.sha256) fail('MUSIC_FILE_CHANGED', '音频文件内容已变化，与上传时不一致；未播放或下载', 409);
         refreshed = st;
       }
       return {handle, path: file, refreshed};

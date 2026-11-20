@@ -221,3 +221,66 @@ export function lyricTimes(input) {
     return {versionId: v.versionId.toLowerCase(), lines, method: text(v.method, '歌词时间的得出方法', 500, {required: true}).trim()};
   });
 }
+
+// ---------- PR3：音乐库标签（SPEC 第十一节第 4 条） ----------
+// 每条标签都记来源：system（系统写的项目、歌名、轮次、AI生成）、prompt（按提示词）、measured（测量）、status（未选用）。
+// 写进音乐库时沿用批量标注接口的 basis：测量的记 listened，其余记 metadata。
+export const LIBRARY_ROOT_NAME = 'AI生成';
+export const TAG_MAX = 60;
+const clip = (s, max = TAG_MAX) => [...String(s).normalize('NFC').trim()].slice(0, max).join('').trim();
+
+// 从风格字段拆标签：按逗号、顿号、斜杠、分号、空白分。只拆，不改写，不推断。
+export function promptTags(style) {
+  const out = [];
+  for (const part of String(style ?? '').split(/[,，、/／;；\s]+/u)) {
+    const t = clip(part.replace(/^[#＃]+/u, ''));
+    if (t && !/[\r\n\t]/.test(t) && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t);
+    if (out.length >= 16) break;
+  }
+  return out;
+}
+
+export const unusedTag = projectName => clip(`未选用（${clip(projectName, TAG_MAX - 5)}）`);
+export const roundTag = n => `第${n}轮`;
+export const clipTag = clip;
+
+// AI 测量的结果：写在版本上，标签由服务端按固定格式生成（「120 BPM」「时长 3:12」「有人声」「纯音乐」「中文」）。
+const VOCALS = {vocal: '有人声', instrumental: '纯音乐'};
+export function measurements(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 20) fail('INVALID_INPUT', 'measurements 需要 1–20 个版本');
+  return input.map((m, i) => {
+    onlyKeys(m, ['versionId', 'bpm', 'durationMs', 'vocals', 'language', 'method'], 'INVALID_INPUT', `measurements 第 ${i + 1} 项含不支持的字段`);
+    if (!idOK(m.versionId)) fail('INVALID_INPUT', `measurements 第 ${i + 1} 项的 versionId 无效`);
+    if (m.bpm != null && (typeof m.bpm !== 'number' || !Number.isFinite(m.bpm) || m.bpm < 20 || m.bpm > 400)) fail('INVALID_INPUT', `第 ${i + 1} 项 bpm 应在 20–400`);
+    if (m.durationMs != null && (!Number.isSafeInteger(m.durationMs) || m.durationMs < 1 || m.durationMs > 86400000)) fail('INVALID_INPUT', `第 ${i + 1} 项 durationMs 无效`);
+    if (m.vocals != null && !Object.hasOwn(VOCALS, m.vocals)) fail('INVALID_INPUT', `第 ${i + 1} 项 vocals 只能是 vocal 或 instrumental`);
+    const language = m.language == null ? null : clip(text(m.language, '语种', 20, {required: true}), 20);
+    const out = {versionId: m.versionId.toLowerCase(), bpm: m.bpm == null ? null : Math.round(m.bpm), durationMs: m.durationMs ?? null, vocals: m.vocals ?? null, language,
+      method: text(m.method, '测量方法', 500, {required: true}).trim()};
+    if (out.bpm == null && out.durationMs == null && !out.vocals && !out.language) fail('INVALID_INPUT', `第 ${i + 1} 项没有任何测量结果`);
+    return out;
+  });
+}
+export function measuredTags(m) {
+  if (!m) return [];
+  const tags = [];
+  if (m.bpm != null) tags.push(`${m.bpm} BPM`);
+  if (m.durationMs != null) { const s = Math.round(m.durationMs / 1000); tags.push(`时长 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`); }
+  if (m.vocals) tags.push(VOCALS[m.vocals]);
+  if (m.language) tags.push(m.language);
+  return tags;
+}
+
+// ---------- PR3：AI 按用户原话改版本状态（第十一节末「开发统筹按试行规矩定了」） ----------
+export const DECISION_ACTIONS = {reject: '淘汰', restore: '恢复为候选', best: '设为当前最好', final: '定稿'};
+export function decisions(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 10) fail('INVALID_INPUT', 'decisions 需要 1–10 条');
+  return input.map((d, i) => {
+    onlyKeys(d, ['versionId', 'action', 'userWords', 'saidAt'], 'INVALID_INPUT', `decisions 第 ${i + 1} 条含不支持的字段`);
+    if (!idOK(d.versionId)) fail('INVALID_INPUT', `decisions 第 ${i + 1} 条的 versionId 无效`);
+    if (!Object.hasOwn(DECISION_ACTIONS, d.action)) fail('INVALID_INPUT', `decisions 第 ${i + 1} 条的 action 只能是 ${Object.keys(DECISION_ACTIONS).join('、')}`);
+    const words = text(d.userWords ?? '', `第 ${i + 1} 条的用户原话`, 1000).trim();
+    if (!words) fail('USER_WORDS_REQUIRED', 'AI 改版本状态必须附上用户在对话里说的原话（userWords），一字不改', 400);
+    return {versionId: d.versionId.toLowerCase(), action: d.action, userWords: words, saidAt: saidAt(d.saidAt)};
+  });
+}

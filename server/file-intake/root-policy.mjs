@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
-const internal=new Set(['picture','video','system_picture','system_video','system_music','system_sfx']);
+// music：项目音乐（音乐库里显示为「AI生成」），托管但不隐藏，方便在音乐库里直接浏览。
+const internal=new Set(['picture','video','music','system_picture','system_video','system_music','system_sfx']);
 const hidden=new Set(['picture','video','system_picture','system_video']);
 export function managedRootPolicy(directory){
   let base=path.resolve(directory);

@@ -9,7 +9,7 @@ import {agentAuthor, fail, userAuthor} from './model.mjs';
 const fromPage = req => req.get('sec-fetch-site') === 'same-origin';
 const actor = req => fromPage(req) ? userAuthor() : agentAuthor(req.body?.session);
 const pageOnly = req => {
-  if (!fromPage(req)) fail('PAGE_ONLY', '这项只能由你在网页上操作：AI 不能改提示词确认、你的听感原文、版本取舍和定稿', 403);
+  if (!fromPage(req)) fail('PAGE_ONLY', '这项只能由你在网页上操作：AI 不能改提示词确认和你的听感原文；AI 改版本状态请走 agent-notes 的 decisions，并附上用户原话', 403);
 };
 
 export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()} = {}) {
@@ -37,9 +37,15 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   route('get', P + '/imports/:requestId', (req, res) => res.json(store.receipt(req.params.projectId, req.params.requestId)));
   route('post', P + '/imports/:requestId/resolve', async (req, res) => res.json(await store.resolveImport(req.params.projectId, req.params.requestId, req.body ?? {})));
 
-  route('post', P + '/songs/:songId/finalize', async (req, res) => { pageOnly(req); res.json(await store.finalize(req.params.projectId, req.params.songId, req.body ?? {})); });
-  route('post', P + '/songs/:songId/finalize/:requestId/resolve', async (req, res) => { pageOnly(req); res.json(await store.resolveFinalize(req.params.projectId, req.params.songId, req.params.requestId, req.body ?? {})); });
+  route('post', P + '/songs/:songId/finalize', (req, res) => { pageOnly(req); res.json(store.finalize(req.params.projectId, req.params.songId, req.body ?? {})); });
+  // PR3：定稿只做标记，不再复制进音乐库，原来的「重名选择」步骤没有了。
+  route('post', P + '/songs/:songId/finalize/:requestId/resolve', () => fail('FINALIZE_FLOW_RETIRED', '定稿已改为只在项目里标记，不再有重名选择；请直接重新定稿', 410));
   route('post', P + '/songs/:songId/unfinalize', (req, res) => { pageOnly(req); res.json(store.unfinalize(req.params.projectId, req.params.songId, req.body ?? {})); });
+  // AI 按你的原话改的版本状态：页面上一键改回。
+  route('post', P + '/songs/:songId/decisions/:decisionId/undo', (req, res) => { pageOnly(req); res.json(store.undoDecision(req.params.projectId, req.params.songId, req.params.decisionId, req.body ?? {})); });
+  // 旧位置（PR1、PR2）的歌：重试搬迁；确认后把旧副本移到废纸篓（只能由你在页面上做）。
+  route('post', P + '/legacy/migrate', async (req, res) => res.json(await store.retryMigration(req.params.projectId)));
+  route('post', P + '/legacy/trash', async (req, res) => { pageOnly(req); res.json(await store.trashLegacy(req.params.projectId, req.body ?? {})); });
 
   const media = async (req, res) => {
     const opened = await store.openVersion(req.params.projectId, req.params.versionId);
