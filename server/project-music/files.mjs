@@ -9,8 +9,9 @@ import {spawn} from 'node:child_process';
 import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {fail} from './model.mjs';
 
-const stamp = s => ({dev: String(s.dev), ino: String(s.ino), size: s.size, mtimeMs: Math.round(s.mtimeMs)});
-const sameStamp = (a, b) => !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+// 身份含 ctime：修改时间可以被改回原值，ctime 不能。任何写入或改属性都会让 ctime 变，变了就重新核对内容。
+const stamp = s => ({dev: String(s.dev), ino: String(s.ino), size: s.size, mtimeMs: Math.round(s.mtimeMs), ctimeMs: Math.round(s.ctimeMs)});
+const sameStamp = (a, b) => !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 export const PEAK_COUNT = 300;
 
 function segment(name, max = 60) {
@@ -125,7 +126,8 @@ export class MusicFiles {
     return hash.digest('hex');
   }
 
-  // 打开一个托管文件：身份一致直接用；时间戳变了但内容一致就更新身份；内容变了拒绝。
+  // 打开一个托管文件：身份（含 ctime）一致直接用；任何一项变了都重算 SHA-256——内容一致就刷新身份照常用（只动了属性），
+  // 内容变了就拒绝（包括同长度改写后再把修改时间改回原值）。旧记录没有 ctime，也会走一次哈希后补上。
   async open(rel, expected) {
     const file = await this.resolve(rel);
     let handle;

@@ -174,16 +174,37 @@ test('项目音乐：上传四种格式、重复内容、先补上一轮、AI �
   assert.deepEqual(round.listening.map(e => e.kind), ['transcript', 'user']);
   assert.equal(round.listening[0].author.kind, 'agent');
 
-  // 现在可以开第 2 轮；AI 开的轮次提示词待你确认
-  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), session: '合成会话', prompt: {tool: 'Suno', style: '合成风格二 女声 慢板', lyrics: '第一句\n第二句'}})).body;
+  // AI 开新一轮时不能填 Suno 会员档位：整次拒绝，不悄悄丢掉，也不建出这一轮
+  for (const sunoTier of ['pro', 'unknown', '']) {
+    const tier = await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), session: '合成会话', prompt: {tool: 'Suno', style: '合成风格二', sunoTier}});
+    assert.equal(tier.status, 403, sunoTier);
+    assert.equal(tier.body.code, 'AGENT_FIELD_FORBIDDEN');
+    assert.deepEqual(tier.body.details.fields, ['prompt.sunoTier']);
+  }
+  assert.equal((await s.call('GET', M + `/songs/${song.id}`)).body.rounds.length, 1, '被拒的请求没有建出新一轮');
+
+  // 现在可以开第 2 轮；AI 开的轮次提示词待你确认，档位留空，Suno 链接标「AI 填」
+  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), session: '合成会话', prompt: {tool: 'Suno', style: '合成风格二 女声 慢板', lyrics: '第一句\n第二句', sunoLink: 'synthetic-suno-id'}})).body;
   const r2 = song.rounds[1];
   assert.equal(r2.roundNo, 2);
   assert.equal(r2.promptConfirmed, null);
   assert.equal(r2.promptDraftedBy.session, '合成会话');
   assert.deepEqual(r2.promptDiffFromPrevious, ['style']);
-  assert.equal(r2.prompt.sunoTier, 'unknown', '档位沿用上一轮');
-  const confirmed = await s.call('PATCH', M + `/rounds/${r2.id}`, {expectedRevision: r2.revision, confirmPrompt: true}, {asPage: true});
+  assert.equal(r2.prompt.sunoTier, '', 'AI 开的轮次不沿用上一轮档位，留给你填');
+  assert.equal(r2.sunoLinkBy.kind, 'agent');
+  assert.equal(r2.sunoLinkBy.session, '合成会话');
+  let confirmed = await s.call('PATCH', M + `/rounds/${r2.id}`, {expectedRevision: r2.revision, confirmPrompt: true}, {asPage: true});
   assert.equal(confirmed.body.rounds[1].promptConfirmed.kind, 'user');
+  assert.equal(confirmed.body.rounds[1].prompt.sunoTier, '', '确认提示词不带出任何档位');
+  assert.equal(confirmed.body.rounds[1].sunoLinkBy.kind, 'agent', '确认后链接仍标 AI 填');
+  // 你在自己的界面里填档位；链接没改仍标 AI 填，改了就算你填的
+  let r2now = confirmed.body.rounds[1];
+  confirmed = await s.call('PATCH', M + `/rounds/${r2.id}`, {expectedRevision: r2now.revision, prompt: {...r2now.prompt, sunoTier: 'pro'}}, {asPage: true});
+  r2now = confirmed.body.rounds[1];
+  assert.equal(r2now.prompt.sunoTier, 'pro');
+  assert.equal(r2now.sunoLinkBy.kind, 'agent');
+  confirmed = await s.call('PATCH', M + `/rounds/${r2.id}`, {expectedRevision: r2now.revision, prompt: {...r2now.prompt, sunoLink: 'synthetic-suno-id-2'}}, {asPage: true});
+  assert.equal(confirmed.body.rounds[1].sunoLinkBy, null);
 
   // 淘汰区：设为当前最好 → 淘汰需确认 → 恢复；淘汰不删文件
   song = (await s.call('PATCH', M + `/songs/${song.id}`, {expectedRevision: confirmed.body.revision, bestVersionId: uploaded.mp3.id}, {asPage: true})).body;
@@ -218,6 +239,36 @@ test('项目音乐：上传四种格式、重复内容、先补上一轮、AI �
   assert.equal(stored.length, 5, '四种格式 + 另存的重复一份，无残留临时文件：' + stored.join('\n'));
   const cFile = stored.find(f => f.endsWith(path.join('第01轮', 'C.m4a')));
   assert.ok(cFile, '按 项目/歌曲/轮次 放置');
+  // 只改属性（ctime 变、内容不变）：重新核对内容后照常播放
+  const dFile = stored.find(f => f.endsWith(path.join('第01轮', 'D.flac')));
+  await fs.chmod(dFile, 0o640);
+  const attrOnly = await s.call('GET', M + `/versions/${uploaded.flac.id}/media`, undefined, {raw: true});
+  assert.equal(attrOnly.status, 200, '只改属性不算改内容');
+  assert.equal(sha(Buffer.from(await attrOnly.arrayBuffer())), sha(uploaded.flac.bytes));
+  // 同长度改写内容，再把修改时间改回原值：播放和下载都必须拒绝
+  const bFile = stored.find(f => f.endsWith(path.join('第01轮', 'B.wav')));
+  const before = await fs.stat(bFile);
+  const handle = await fs.open(bFile, 'r+');
+  const one = Buffer.alloc(1);
+  await handle.read(one, 0, 1, before.size - 1);
+  one[0] ^= 0xff;
+  await handle.write(one, 0, 1, before.size - 1);
+  await handle.close();
+  await fs.utimes(bFile, before.atimeMs / 1000, before.mtimeMs / 1000);
+  const sneaky = await fs.stat(bFile);
+  assert.equal(sneaky.size, before.size);
+  assert.equal(Math.round(sneaky.mtimeMs), Math.round(before.mtimeMs), '修改时间已改回原值（按身份核对的精度）');
+  assert.notEqual(sneaky.ctimeMs, before.ctimeMs, 'ctime 无法改回');
+  for (const q of ['', '?download=1']) {
+    const res = await s.call('GET', M + `/versions/${uploaded.wav.id}/media${q}`);
+    assert.equal(res.status, 409, '同长度改写并恢复修改时间后仍要拒绝' + q);
+    assert.equal(res.body.code, 'MUSIC_FILE_CHANGED');
+  }
+  // 恢复原内容（再改回那一字节），后面的定稿用例继续用这一版
+  const fix = await fs.open(bFile, 'r+');
+  one[0] ^= 0xff;
+  await fix.write(one, 0, 1, before.size - 1);
+  await fix.close();
   await fs.appendFile(cFile, Buffer.from('tampered'));
   const changed = await s.call('GET', M + `/versions/${uploaded.m4a.id}/media`);
   assert.equal(changed.status, 409);

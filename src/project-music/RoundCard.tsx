@@ -83,7 +83,7 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
         <h3>第 {round.roundNo} 轮</h3>
       </button>
       <span className="sgm-pill">{p.tool || '未填工具'}</span>
-      {p.sunoTier && <span className="sgm-pill">{TIER_LABEL[p.sunoTier]}</span>}
+      {p.sunoTier ? <span className="sgm-pill">{TIER_LABEL[p.sunoTier]}</span> : /suno/i.test(p.tool) && <span className="sgm-pill warn" title="Suno 会员档位只能由你填：在「改提示词」里选，拿不准就选「不确定」">档位未填</span>}
       {!round.promptConfirmed && <span className="sgm-pill warn">提示词待你确认</span>}
       {diff && <span className="sgm-round-diff">{diff.length ? `和上一轮比：改了${diff.map(k => PROMPT_FIELD_LABEL[k]).join('、')}` : '提示词和上一轮相同'}</span>}
       {!open && <span className="sgm-round-summary">{p.style || '（未填风格）'} · {versions.length} 个版本</span>}
@@ -105,7 +105,7 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
               <dt>风格</dt><dd>{p.style || <em>未填</em>}</dd>
               <dt>歌词</dt><dd className="sgm-lyrics">{p.lyrics || <em>未填</em>}</dd>
               {p.params && <><dt>其他参数</dt><dd>{p.params}</dd></>}
-              {p.sunoLink && <><dt>Suno</dt><dd>{p.sunoLink}</dd></>}
+              {p.sunoLink && <><dt>Suno</dt><dd>{p.sunoLink}{round.sunoLinkBy && <span className="sgm-pill" title={`由 ${round.sunoLinkBy.kind === 'agent' ? round.sunoLinkBy.session : '你'} 填写`}>AI 填</span>}</dd></>}
             </dl>
             <div className="sgm-block-actions">
               {!round.promptConfirmed && <button type="button" className="sgm-btn small primary" disabled={saving} onClick={() => patch({confirmPrompt: true})}>确认这份提示词</button>}
