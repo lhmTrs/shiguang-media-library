@@ -8,6 +8,10 @@
 .sgf-tree { position: sticky; top: 12px; display: grid; gap: 2px; padding: 10px; border-radius: var(--sg-radius); background: var(--sg-sidebar); max-height: calc(100vh - 140px); overflow: auto; }
 .sgf-tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; display: grid; gap: 2px; background: none; border: 0; box-shadow: none; }
 .sgf-tree li { background: none; border: 0; box-shadow: none; padding: 0; margin: 0; }
+/* 长文件夹名不能把树撑开（窄屏时树是 grid，列宽默认按最长内容）：列宽锁在容器内，名字显示省略号，数字留在画面里。 */
+.sgf-tree, .sgf-tree ul { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.sgf-tree li, .sgf-tree button { min-width: 0; }
+.sgf-tree button small { flex: none; }
 .sgf-tree > ul { padding-left: 0; }
 .sgf-tree button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 10px; border: 0; border-radius: var(--sg-radius-small);
   background: transparent; color: var(--sg-text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }

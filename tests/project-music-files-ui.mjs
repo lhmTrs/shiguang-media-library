@@ -107,6 +107,9 @@ test('项目音乐 · 文件标签：歌曲｜文件切换并记住、文件夹�
   await root.getByText(/复制给剪辑软件、在访达中显示要在运行拾光的这台 Mac 上用/).waitFor();
   assert.ok(!(await root.innerText()).includes(s.personal), '页面不显示本机路径');
 
+  // 很长的文件夹名：窄屏时文件夹树不能被撑开，名字省略、数字留在画面里（验收 PR4 P3-1）
+  const longName = '很长的文件夹名'.repeat(10) + '结尾';
+  await s.call('POST', F + '/folders', {parent: '', name: longName});
   // 深色主题 + 窄屏：文字看得清，不横向溢出
   await page.evaluate(() => { localStorage.setItem('shiguang.theme', 'dark'); localStorage.setItem('shiguang.musicPalette.v1', 'follow'); });
   for (const width of [1360, 820]) {
@@ -117,6 +120,10 @@ test('项目音乐 · 文件标签：歌曲｜文件切换并记住、文件夹�
     assert.deepEqual(bad, [], '深色主题下有看不清的文字');
     const overflow = await root.evaluate(el => el.scrollWidth - el.clientWidth);
     assert.ok(overflow <= 1, `宽 ${width} 时页面横向溢出 ${overflow}px`);
+    const tree = await root.locator('.sgf-tree').evaluate(el => el.scrollWidth - el.clientWidth);
+    assert.ok(tree <= 1, `宽 ${width} 时文件夹树被长名字撑开 ${tree}px`);
+    const count = await root.locator('.sgf-tree button', {hasText: '♪ 歌曲'}).locator('small').evaluate(el => { const r = el.getBoundingClientRect(), t = el.closest('.sgf-tree').getBoundingClientRect(); return r.right <= t.right + 1; });
+    assert.ok(count, `宽 ${width} 时「♪ 歌曲」后面的数字被挤出画面`);
   }
   for (const palette of ['paper', 'studio', 'gallery']) {
     await page.evaluate(p => localStorage.setItem('shiguang.musicPalette.v1', p), palette);
@@ -130,5 +137,11 @@ test('项目音乐 · 文件标签：歌曲｜文件切换并记住、文件夹�
   assert.equal(await root.getByRole('tab', {name: /歌曲/}).getAttribute('aria-selected'), 'true');
   await root.locator('article[aria-label="第 1 轮"] .sgm-version').first().waitFor();
   assert.ok(await root.getByText('音乐库：复用已有的「Suno下载甲.mp3」').first().isVisible());
+  // 在访达里把这首所在的文件夹挪走：版本行写明文件不在原位置，以及怎么恢复（验收 PR4 P3-2）
+  const folderOnDisk = path.join(s.personal, 'music', `合成文件界面--${pid}`, 'Suno下载');
+  await fs.rename(folderOnDisk, path.join(base, '挪走了'));
+  await page.reload();
+  await root.getByText(/文件不在原位置（离线）：原来在「项目音乐 › Suno下载 \/ Suno下载甲\.mp3」。在访达里把它放回原处/).first().waitFor();
+  await fs.rename(path.join(base, '挪走了'), folderOnDisk);
   assert.deepEqual(errors, []);
 });

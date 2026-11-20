@@ -133,6 +133,15 @@ test('项目音乐 · 文件区：建文件夹、上传、同内容先问、波�
   assert.equal(keep.status, 200, keep.text);
   const media = await s.call('GET', M + `/versions/${v.id}/media`, undefined, {raw: true});
   assert.equal(sha(Buffer.from(await media.arrayBuffer())), sha(await fs.readFile(b)));
+  // 在访达里把含「已加入歌曲」文件的文件夹挪走（等同删掉）：版本标「文件不在原位置」，写出原来的位置；放回原处就恢复
+  await fs.rename(path.join(projectDir, 'AI剪辑'), path.join(base, '挪走的AI剪辑'));
+  let gone = (await s.call('GET', M + `/songs/${song.id}`)).body.rounds[0].versions.find(x => x.id === v.id);
+  assert.equal(gone.library.offline, true);
+  assert.equal(gone.library.place, '项目音乐 › AI剪辑 / 剪好的.wav');
+  assert.ok(!JSON.stringify(gone.library).includes(s.personal), '不暴露本机路径');
+  await fs.rename(path.join(base, '挪走的AI剪辑'), path.join(projectDir, 'AI剪辑'));
+  gone = (await s.call('GET', M + `/songs/${song.id}`)).body.rounds[0].versions.find(x => x.id === v.id);
+  assert.equal(gone.library.offline, false);
 
   // 歌曲上传以后「歌曲」文件夹出现（作为系统入口单独给出）；在访达里把它挪走，页面提示核对
   view = (await s.call('GET', F)).body;
@@ -203,4 +212,41 @@ test('项目音乐 · 文件区：复制给剪辑软件、在访达中显示走�
   const st = await fs.lstat(dir);
   assert.deepEqual(calls.at(-1), ['open', dir, {dev: String(st.dev), ino: String(st.ino)}]);
   await assert.rejects(() => folders.clipboard(p.id, {requestId: uuid(), paths: []}), e => e.code === 'FILE_SELECTION_INVALID');
+});
+
+test('项目音乐 · 文件区：你在文件区给一首歌打的标签，加入歌曲后改风格也不会被删（验收 PR4 附 P2-1）', async t => {
+  const base = await makeTemp(t);
+  const audio = path.join(base, 'audio');
+  await fs.mkdir(audio);
+  const a = await synth(audio, 'a.mp3', {freq: 345});
+  const s = await startServer(t, base);
+  const pid = (await s.call('POST', '/projects', {name: '合成钢琴项目'})).body.id;
+  const M = `/project-music/projects/${pid}`, F = M + '/files';
+  await s.call('POST', F + '/folders', {parent: '', name: 'Suno下载'});
+  const up = await put(s, F, 'Suno下载', a);
+  assert.equal(up.body.status, 'ready', up.text);
+  const item = (await s.call('GET', F + '?folder=Suno下载')).body.items[0];
+  await s.call('PATCH', `/assets/${item.assetId}`, {tags: ['钢琴']});
+  let song = (await s.call('POST', M + '/songs', {requestId: uuid(), title: '合成钢琴曲'}, {asPage: true})).body;
+  song = (await s.call('POST', M + `/songs/${song.id}/rounds`, {requestId: uuid(), prompt: {tool: '本地模型', style: '钢琴, 夜晚'}}, {asPage: true})).body;
+  song = (await s.call('POST', F + '/add-to-song', {requestId: uuid(), path: item.id, roundId: song.rounds[0].id}, {asPage: true})).body;
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      const now = (await s.call('GET', M + `/songs/${song.id}`)).body;
+      const v = now.rounds[0].versions[0];
+      if (v.library.tagSync === 'done') return now;
+      if (v.library.tagSync === 'failed') assert.fail(v.library.tagError);
+      await new Promise(r => setTimeout(r, 25));
+    }
+    assert.fail('标签一直没写完');
+  };
+  song = await settle();
+  let tags = (await s.call('GET', `/assets/${item.assetId}`)).body.tags;
+  assert.ok(tags.includes('钢琴') && tags.includes('夜晚') && tags.includes('AI生成'), String(tags));
+  const r = song.rounds[0];
+  await s.call('PATCH', M + `/rounds/${r.id}`, {expectedRevision: r.revision, prompt: {...r.prompt, style: '流行'}}, {asPage: true});
+  song = await settle();
+  tags = (await s.call('GET', `/assets/${item.assetId}`)).body.tags;
+  assert.ok(tags.includes('钢琴'), '你在文件区打的「钢琴」不能被删：' + tags);
+  assert.ok(!tags.includes('夜晚') && tags.includes('流行'), String(tags));
 });

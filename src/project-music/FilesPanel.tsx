@@ -153,7 +153,10 @@ export function FilesPanel({active, projectId, request, player, songs, onJumpSon
           <button type="button" className="sgm-btn small ghost" onClick={() => setSelected(new Set())}>取消选择</button>
         </>}
       </>}
-      notice={caps && !caps.clipboard.available ? <p className="sgm-hint">复制给剪辑软件、在访达中显示要在运行拾光的这台 Mac 上用：{caps.clipboard.reason}</p> : undefined}
+      notice={<>
+        {view?.items.some(i => i.inSongs.length) && <p className="sgm-hint">标「已加入」的文件就是那首歌里的版本，没有另存。在访达里删掉或挪出项目音乐文件夹，歌曲里的那个版本也会听不了；放回原处就恢复。</p>}
+        {caps && !caps.clipboard.available && <p className="sgm-hint">复制给剪辑软件、在访达中显示要在运行拾光的这台 Mac 上用：{caps.clipboard.reason}</p>}
+      </>}
       items={items} selected={selected} onToggleSelect={toggle}/>
 
     {dialog?.kind === 'new-folder' && <NameDialog title="新建文件夹" label="文件夹名" initial="" submit="新建" onClose={() => setDialog(null)}
