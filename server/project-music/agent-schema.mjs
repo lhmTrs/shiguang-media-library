@@ -1,6 +1,6 @@
 // GET /api/project-music/schema：给 AI 看的字段规则（SPEC 3.3、3.5）。项目使用说明只放三行入口，细节在这里。
 export const AGENT_SCHEMA = {
-  version: '2026-11-20.3',
+  version: '2026-11-20.4',
   library: '每个版本都在音乐库里（根目录「AI生成」，主类是项目，子类是「歌曲」），versions[].library.assetId 是全库素材 ID。标签由服务端写：AI生成、项目名、歌名、第N轮、按提示词从风格拆出的词、测量结果，被淘汰的标「未选用（项目名）」。AI 不要自己调批量标注去改这些标签；不要打听感类标签（比如情绪），除非是用户原话。',
   comparisons: '对比结果在每轮的 comparisons 里（只读）：left/right 是两个版本，winner 和 segments[].winner 取 left、right、same；blind 表示当时是盲听。对比结果只能由用户在页面上记录。',
   read: {
@@ -47,6 +47,20 @@ export const AGENT_SCHEMA = {
       'AI 开的新一轮，提示词显示为「AI 起草，待你确认」，用户确认后才算数。',
       'prompt 里不能带 sunoTier（Suno 会员档位）：带了整次 403 AGENT_FIELD_FORBIDDEN。AI 开的轮次档位留空，由用户在页面上填。',
       'prompt.sunoLink 可以由 AI 带，页面会标「AI 填」。',
+    ],
+  },
+  files: {
+    what: '「文件」区：项目音乐文件夹 personal_item/music/<项目>/ 下用户和 AI 自建的文件夹，用来存放和传递（比如 Suno下载、AI剪辑），没有轮次，也不要求写记录。「歌曲」是系统文件夹，不在这里改。位置一律用相对项目音乐文件夹的路径，比如 "AI剪辑/副歌缩短版.wav"。',
+    read: [
+      'GET /api/project-music/projects/<projectId>/files?folder=<文件夹>：文件夹树（folders）和这个文件夹里的文件（items）。items[].inSongs 写着这个文件已经加入了哪首歌哪一轮',
+      'GET …/files/media?path=<文件>，支持 Range；加 &download=1 带原文件名',
+    ],
+    write: [
+      '建文件夹：POST …/files/folders {parent, name, session}；改名：POST …/files/folders/rename {path, name, session}。不能叫「歌曲」，同一层不能重名（不分大小写）',
+      '放文件（比如剪好的版本）：POST …/files/imports {requestId, folder, fileName, bytes, session} → PUT …/files/imports/<requestId>/content（原始字节）。同一文件夹里已有同样内容时回执是 duplicate，由用户决定 POST …/files/imports/<requestId>/resolve {choice:"keep"|"cancel"}',
+      '加入歌曲：POST …/files/add-to-song {requestId, path, roundId, label?, session}；文件不挪，新版本复用这条音乐库记录。项目里已有同样内容时返回 409 DUPLICATE_IN_PROJECT，由用户决定要不要带 keep:true 再加',
+      '放好以后，在对话里告诉用户放在哪个文件夹、叫什么名字。',
+      '复制给剪辑软件、在访达中显示会动用户的桌面，只能由用户在网页上点（POST …/files/clipboard、…/files/reveal 要求 Sec-Fetch-Site: same-origin）。',
     ],
   },
   upload: {

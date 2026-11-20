@@ -12,7 +12,7 @@ import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {fail} from './model.mjs';
 
 // 身份含 ctime：修改时间可以被改回原值，ctime 不能。任何写入或改属性都会让 ctime 变，变了就重新核对内容。
-const stamp = s => ({dev: String(s.dev), ino: String(s.ino), size: s.size, mtimeMs: Math.round(s.mtimeMs), ctimeMs: Math.round(s.ctimeMs)});
+export const stamp = s => ({dev: String(s.dev), ino: String(s.ino), size: s.size, mtimeMs: Math.round(s.mtimeMs), ctimeMs: Math.round(s.ctimeMs)});
 const sameStamp = (a, b) => !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 export const PEAK_COUNT = 300;
 
@@ -102,6 +102,15 @@ export class MusicFiles {
     const name = found[0]?.name ?? projectFolderName(project);
     await privateDir(path.join(base, name));
     return name;
+  }
+
+  // 只查不建：项目还没有音乐文件夹时返回 null。
+  async findProjectFolder(project) {
+    const base = await this.root();
+    const suffix = '--' + project.id.toLowerCase();
+    const found = (await fs.readdir(base, {withFileTypes: true})).filter(e => e.isDirectory() && e.name.endsWith(suffix));
+    if (found.length > 1) fail('MUSIC_STORAGE_CHANGED', '当前项目有多个音乐目录，请先核对', 409);
+    return found[0]?.name ?? null;
   }
 
   // 歌曲文件夹：<项目>/歌曲/<名字>。名字由 store 选好（同项目里重名时加「 (2)」）。

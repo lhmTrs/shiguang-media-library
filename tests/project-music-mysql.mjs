@@ -17,6 +17,7 @@ import {MysqlDatabase} from '../server/mysql-db.mjs';
 import {MysqlStorage} from '../server/mysql.mjs';
 import {Projects} from '../server/projects.mjs';
 import {ProjectMusic} from '../server/project-music/store.mjs';
+import {MusicFolders} from '../server/project-music/folders.mjs';
 import {projectFolderName as projectFolder} from '../server/prompt-codex/pictures.mjs';
 
 process.env.MEDIA_SKIP_IMPORT = '1'; process.env.MEDIA_SKIP_RECONCILE = '1'; process.env.MEDIA_NO_WATCH = '1'; process.env.SHIGUANG_AUDIO_ANALYSIS = '0';
@@ -105,6 +106,17 @@ async function scenario(lib, dataDir) {
   out.comparison = [cmp.left.label, cmp.right.label, cmp.blind, cmp.winner, cmp.summary, cmp.markers.length, cmp.segments[0].winner];
   out.lyric = song.rounds[0].versions[0].lyricTimes?.lines.map(l => l.startMs);
   out.comparisonEmpty = await code(() => store.createComparison(p.id, song.id, {requestId: randomUUID(), leftVersionId: va.id, rightVersionId: vb.id}));
+  // PR4「文件」区：建文件夹、放文件、加入歌曲（登记进音乐库）、改名后音乐库记录路径跟着改（用到 LIKE … ESCAPE）
+  const folders = new MusicFolders(store, {dataDir});
+  await folders.createFolder(p.id, {parent: '', name: 'Suno_下载%'});
+  const projectDir = path.join(directory, projectFolder(p));
+  await fs.copyFile(fileB, path.join(projectDir, 'Suno_下载%', '乙副本.mp3'));
+  await fs.appendFile(path.join(projectDir, 'Suno_下载%', '乙副本.mp3'), Buffer.alloc(16));
+  let rr2 = store.song(p.id, song.id).rounds.at(-1);
+  song = await folders.addToSong(p.id, {requestId: randomUUID(), path: 'Suno_下载%/乙副本.mp3', roundId: rr2.id}, page);
+  const added = song.rounds.at(-1).versions.at(-1);
+  const renamed = await folders.renameFolder(p.id, {path: 'Suno_下载%', name: '下载合集'});
+  out.files = [renamed.folder, renamed.items.map(i => [i.name, i.inLibrary, i.inSongs.length]), lib.asset(added.library.assetId).path.endsWith(path.join('下载合集', '乙副本.mp3')), lib.asset(added.library.assetId).sub];
   // 定稿：只做标记，加入项目候选
   song = store.finalize(p.id, song.id, {requestId: randomUUID(), expectedRevision: song.revision, versionId: va.id});
   out.final = [song.status, song.final.assetId === va.library.assetId, lib.db.prepare('SELECT status FROM project_assets WHERE project_id=? AND asset_id=?').get(p.id, song.final.assetId)?.status];
@@ -187,6 +199,7 @@ try {
   assert.deepEqual(result.sqlite.undone, [null, true]);
   assert.equal(result.sqlite.measuredTag, true);
   assert.deepEqual(result.sqlite.final, ['final', true, 'candidate']);
+  assert.deepEqual(result.sqlite.files, ['下载合集', [['乙副本.mp3', true, 1]], true, '下载合集']);
   passed = true;
 } finally {
   if (mysqlDb) { const done = mysqlDb.worker.threadId === -1 ? Promise.resolve() : once(mysqlDb.worker, 'exit'); mysqlDb.close(); await bounded(done, 10000, 'MySQL worker 未退出').catch(() => {}); }

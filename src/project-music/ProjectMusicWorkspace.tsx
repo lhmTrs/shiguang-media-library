@@ -8,6 +8,7 @@ import {Waveform} from './Waveform';
 import {FinalizeDialog, Modal, RoundDialog, SongDialog} from './dialogs';
 import {RoundCard, VersionRow, type VersionActions} from './RoundCard';
 import {ComparePanel, defaultPair} from './Compare';
+import {FilesPanel} from './FilesPanel';
 import type {MusicCollection, ProjectMusicWorkspaceProps, Round, Song, Version} from './types';
 import {STATUS_LABEL} from './types';
 
@@ -16,8 +17,15 @@ const uuid = (): string => crypto.randomUUID();
 type DialogState = null | {kind: 'new-song'} | {kind: 'edit-song'} | {kind: 'round'; round?: Round} | {kind: 'finalize'}
   | {kind: 'confirm'; title: string; text: string; action: () => Promise<void>};
 
+// 「歌曲｜文件」两个标签，各占满整个画面；记住上次停在哪个（只在本浏览器）。
+type Tab = 'songs' | 'files';
+const TAB_KEY = 'shiguang.projectMusic.tab.v1';
+const readTab = (): Tab => { try { return localStorage.getItem(TAB_KEY) === 'files' ? 'files' : 'songs'; } catch { return 'songs'; } };
+
 export function ProjectMusicWorkspace({active, projectId, projects, request}: ProjectMusicWorkspaceProps) {
   const [palette, setPalette] = usePalette();
+  const [tab, setTabState] = useState<Tab>(readTab);
+  const setTab = (t: Tab) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* 只在本页记住 */ } };
   const [data, setData] = useState<MusicCollection | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -141,9 +149,19 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
           <span>新画风试用：配色</span>
           {PALETTES.map(p => <button key={p.id} type="button" role="radio" aria-checked={palette === p.id} className={palette === p.id ? 'is-on' : ''} onClick={() => setPalette(p.id)}>{p.name}</button>)}
         </div>
-        {projectId && <button type="button" className="sgm-btn primary" onClick={() => setDialog({kind: 'new-song'})}><Plus size={16}/>新建歌曲</button>}
+        {projectId && tab === 'songs' && <button type="button" className="sgm-btn primary" onClick={() => setDialog({kind: 'new-song'})}><Plus size={16}/>新建歌曲</button>}
       </div>
     </header>
+
+    {projectId && <div className="sgm-tabs" role="tablist" aria-label="项目音乐">
+      <button type="button" role="tab" id="sgm-tab-songs" aria-controls="sgm-panel-songs" aria-selected={tab === 'songs'} onClick={() => setTab('songs')}>歌曲<small>采用和对比</small></button>
+      <button type="button" role="tab" id="sgm-tab-files" aria-controls="sgm-panel-files" aria-selected={tab === 'files'} onClick={() => { setCompare(null); setTab('files'); }}>文件<small>存储和传递</small></button>
+    </div>}
+
+    {projectId && tab === 'files' && <div role="tabpanel" id="sgm-panel-files" aria-labelledby="sgm-tab-files">
+      <FilesPanel active={active && tab === 'files'} projectId={projectId} request={request} player={player} songs={songs} onJumpSongs={() => setTab('songs')} onSongChanged={replaceSong}/>
+    </div>}
+    <div role="tabpanel" id="sgm-panel-songs" aria-labelledby="sgm-tab-songs" hidden={!!projectId && tab !== 'songs'}>
 
     {error && <p className="sgm-banner error" role="alert">{error}<button type="button" className="sgm-btn small ghost" onClick={() => { setError(''); void load(); }}>重新读取</button></p>}
     {legacy && legacy.waiting > 0 && <p className="sgm-banner" role="status">正在把以前上传的 {legacy.waiting} 个版本搬进音乐库「{libraryName}」：先复制、核对，旧位置的副本先保留。</p>}
@@ -220,8 +238,9 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
           </>}
         </main>}
       </div>}
+    </div>
 
-    <PlayerBar player={player} title={playingSong?.title ?? ''} subtitle={player.current ? `第 ${player.current.roundNo} 轮 · ${player.current.label}` : ''}
+    <PlayerBar player={player} title={player.current?.title ?? playingSong?.title ?? ''} subtitle={player.current ? (player.current.roundNo ? `第 ${player.current.roundNo} 轮 · ${player.current.label}` : player.current.label) : ''}
       hasPrevious={at > 0} hasNext={at >= 0 && at < queue.length - 1}
       onPrevious={() => at > 0 && player.play(queue[at - 1])} onNext={() => at >= 0 && at < queue.length - 1 && player.play(queue[at + 1])}/>
 

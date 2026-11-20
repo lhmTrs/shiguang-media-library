@@ -25,7 +25,7 @@ export type Version = {
 
 export type VersionLibrary =
   | {inLibrary: false; assetId: null; migrating: boolean; migrationError: string | null}
-  | {inLibrary: boolean; assetId: string; reused: boolean; name: string | null; category: string; sub: string; missing: boolean; offline: boolean; moved: boolean; unusedTagged: boolean; tagSync: 'pending' | 'done' | 'failed'; tagError: string | null};
+  | {inLibrary: boolean; assetId: string; reused: boolean; name: string | null; category: string; sub: string; missing: boolean; offline: boolean; place: string | null; moved: boolean; unusedTagged: boolean; tagSync: 'pending' | 'done' | 'failed'; tagError: string | null};
 
 export type DecisionAction = 'reject' | 'restore' | 'best' | 'final';
 export const DECISION_LABEL: Record<DecisionAction, string> = {reject: '淘汰', restore: '恢复为候选', best: '设为当前最好', final: '定稿'};
