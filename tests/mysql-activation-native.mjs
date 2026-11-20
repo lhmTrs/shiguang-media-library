@@ -1,5 +1,6 @@
 // Explicit native integration test. Never connects to an existing MySQL server.
 // MYSQL_ACTIVATION_MYSQLD=/path/to/mysqld node tests/mysql-activation-native.mjs
+// Add MYSQL_ACTIVATION_BROWSER=1 after npm run build for the real settings UI.
 // MYSQL_ACTIVATION_BASELINE=1 records the old HTTP failure without changing code.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -57,6 +58,7 @@ async function boot(dataDir, label) {
   const p = child(process.execPath, ['server/index.mjs'], label, {
     ...process.env, MEDIA_DATA_DIR: dataDir, MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1',
     MEDIA_PERSONAL_ITEM_DIR: path.join(dataDir, 'personal-items'),
+    MEDIA_UPDREAM_QUEUE_DIR: path.join(dataDir, 'owned-absent-updream-queue'),
     MEDIA_NO_WATCH: '1', MEDIA_CODEX_AUTOCONNECT: '0', SHIGUANG_AUDIO_ANALYSIS: '0',
     // Existing desktop-unavailable gate avoids unrelated lazy Swift compilers.
     CONTAINER: '1', NODE_ENV: 'production', PORT: String(await port()),
@@ -74,7 +76,7 @@ async function boot(dataDir, label) {
   const session = await fetch(origin + '/api/session');
   assert.equal(session.status, 200);
   const {token} = await session.json(), cookie = session.headers.get('set-cookie').split(';')[0];
-  return {p, dataDir, async api(route, method = 'GET', body) {
+  return {p, dataDir, origin, async api(route, method = 'GET', body) {
     const response = await fetch(origin + route, {method, signal: AbortSignal.timeout(60000), headers: {
       cookie, origin, 'x-local-token': token, 'content-type': 'application/json',
     }, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -95,6 +97,44 @@ async function absentConfig(app) {
   const state = await app.api('/api/mysql'); assert.equal(state.body.mode, 'sqlite'); assert.equal(state.body.migrating, false);
 }
 async function check(label, fn) { await fn(); inventory.checks.push(label); console.log('PASS ' + label); }
+async function activateFromPage(app, config) {
+  const {chromium, expect} = await import('@playwright/test');
+  const browser = await chromium.launch({headless: true, ...(process.env.MYSQL_ACTIVATION_BROWSER_CHANNEL ? {channel: process.env.MYSQL_ACTIVATION_BROWSER_CHANNEL} : {})});
+  inventory.browser = {run: true, closed: false};
+  try {
+    const context = await browser.newContext();
+    const external = [], errors = [];
+    await context.route('**/*', route => {
+      if (new URL(route.request().url()).origin === app.origin) return route.continue();
+      external.push(route.request().url()); return route.abort();
+    });
+    const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+    await page.goto(app.origin);
+    await page.getByRole('button', {name: '设置与缓存', exact: true}).click();
+    const dialog = page.getByRole('dialog', {name: '设置与缓存'});
+    const section = dialog.getByRole('heading', {name: '本机 MySQL', exact: true}).locator('../..');
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel('MySQL 端口', {exact: true}).fill(String(config.port));
+    await dialog.getByLabel('MySQL 数据库', {exact: true}).fill(config.database);
+    await dialog.getByLabel('MySQL 用户名', {exact: true}).fill(config.user);
+    const response = page.waitForResponse(r => r.url() === app.origin + '/api/mysql/config' && r.request().method() === 'POST');
+    await dialog.getByRole('button', {name: '迁移并启用 MySQL', exact: true}).click();
+    const raw = await response, result = {status: raw.status(), body: await raw.json()};
+    await check('real settings UI reports pending restart, disables repeat activation and survives reload', async () => {
+      await expect(section.locator('.database-status')).toHaveText('待重启');
+      await expect(dialog.getByRole('button', {name: '迁移并启用 MySQL', exact: true})).toBeDisabled();
+      await expect(section.locator('.database-summary')).toContainText('SQLite（当前只读；已迁移到 MySQL，待重启）');
+      await expect(section.locator(':scope > [role="status"]')).toContainText('重启前只读');
+      await page.screenshot({path: path.join(root, 'restart-required.png'), fullPage: true});
+      await page.reload();
+      await page.getByRole('button', {name: '设置与缓存', exact: true}).click();
+      await expect(section.locator('.database-status')).toHaveText('待重启');
+      await expect(page.getByRole('button', {name: '迁移并启用 MySQL', exact: true})).toBeDisabled();
+      assert.deepEqual(errors, []); assert.deepEqual(external, []);
+    });
+    return result;
+  } finally { await browser.close(); inventory.browser.closed = true; }
+}
 
 try {
   const data = path.join(root, 'mysql'); await fs.mkdir(data, {mode: 0o700});
@@ -116,7 +156,8 @@ try {
   const fixture = await seed(app);
   const cfg = {...config, database: 'activation_populated'};
   await check('real HTTP connection test succeeds', async () => assert.deepEqual(await app.api('/api/mysql/test', 'POST', cfg), {status: 200, body: {connected: true}}));
-  const activation = await app.api('/api/mysql/config', 'POST', cfg);
+  const activation = process.env.MYSQL_ACTIVATION_BROWSER === '1' && !baseline
+    ? await activateFromPage(app, cfg) : await app.api('/api/mysql/config', 'POST', cfg);
   if (baseline) {
     assert.equal(activation.status, 400); assert.match(activation.body.error, /MySQL 操作失败/);
     const log = await fs.readFile(path.join(root, 'queries.log'), 'utf8');
@@ -131,7 +172,12 @@ try {
     await check('baseline HTTP activate fails with project_scripts PRIMARY KEY NULL; SQLite retained', async () => {});
   } else {
     assert.equal(activation.status, 200, JSON.stringify(activation));
-    assert.equal(activation.body.mode, 'mysql');
+    assert.equal(activation.body.mode, 'sqlite');
+    assert.equal(activation.body.configuredMode, 'mysql');
+    assert.equal(activation.body.restartRequired, true);
+    assert.equal(activation.body.readOnly, true);
+    assert.equal(activation.body.status, 'restart_required');
+    assert.match(activation.body.message, /重启|重新启动/);
     await check('populated HTTP activate preserves complete script JSON and numeric timestamps', async () => assert.deepEqual((await app.api(fixture.route)).body, fixture.script));
     const [cols] = await control.execute("SELECT COLUMN_NAME name,IS_NULLABLE nullable,COLUMN_KEY colkey,DATA_TYPE datatype FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='project_scripts'", [cfg.database]);
     await check('migrated script PK, NOT NULL and BIGINT types survive', async () => {
@@ -147,20 +193,49 @@ try {
       assert.equal(columns[0].Null, 'YES');
       await assert.rejects(control.query("INSERT INTO activation_populated.media_projects SELECT 'owned-duplicate',name,software,note,created_at,updated_at,project_kind,system_key FROM activation_populated.media_projects WHERE id=?", [fixture.project.id]), {code: 'ER_DUP_ENTRY'});
     });
+    await check('pending restart keeps reads and rejects every HTTP write family and repeated activation', async () => {
+      for (const [route, method, body] of [
+        ['/api/projects', 'POST', {name: 'must not be created'}],
+        [fixture.route, 'PUT', {expected_revision: 1, title: 'must not save', content: ''}],
+        ['/api/roots', 'POST', {path: root, kind: 'music'}],
+        ['/api/reconcile', 'POST', {}],
+        ['/api/project-music/invalid/songs', 'POST', {}],
+        ['/api/concierge/scopes', 'PUT', {}],
+        ['/api/roots/invalid', 'DELETE', {}],
+        ['/api/mysql/config', 'POST', cfg],
+      ]) {
+        const result = await app.api(route, method, body);
+        assert.equal(result.status, 423, route); assert.equal(result.body.code, 'MYSQL_RESTART_REQUIRED', route);
+      }
+      assert.deepEqual((await app.api(fixture.route)).body, fixture.script);
+      assert.equal((await app.api('/api/projects')).status, 200);
+      assert.equal((await app.api('/api/stats')).status, 200);
+      for (const route of ['/api/roots', '/api/storyboard/projects', '/api/storyboard/workspace', '/api/project-music/projects/' + fixture.project.id, '/api/project-music/projects/' + fixture.project.id + '/files'])
+        assert.equal((await app.api(route)).status, 200, route);
+      const sqlite = new Sqlite(path.join(app.dataDir, 'library.sqlite'), {readonly: true});
+      try { assert.equal(sqlite.prepare('SELECT revision FROM project_scripts').get().revision, 1); }
+      finally { sqlite.close(); }
+      assert.equal((await control.query('SELECT revision FROM activation_populated.project_scripts'))[0][0].revision, 1);
+    });
     await app.close();
     const restarted = await boot(app.dataDir, 'restarted');
     await check('native MySQL restart preserves script JSON and permits revision update', async () => {
       assert.equal((await restarted.api('/api/mysql')).body.mode, 'mysql');
+      assert.equal((await restarted.api('/api/mysql')).body.restartRequired, false);
       assert.deepEqual((await restarted.api(fixture.route)).body, fixture.script);
       const changed = await restarted.api(fixture.route, 'PUT', {expected_revision: 1, title: '改后', content: '仍为合成数据'});
       assert.equal(changed.status, 200); assert.equal(changed.body.revision, 2); assert.equal(typeof changed.body.updated_at, 'number');
       assert.equal((await restarted.api(fixture.route, 'PUT', {expected_revision: 1, title: '旧', content: ''})).status, 409);
+      const preserved = new Sqlite(path.join(app.dataDir, 'library.sqlite'), {readonly: true});
+      try { assert.equal(preserved.prepare('SELECT revision FROM project_scripts').get().revision, 1); }
+      finally { preserved.close(); }
     });
     await restarted.close();
     const empty = await boot(path.join(root, 'empty'), 'empty');
     await check('fresh empty SQLite with project_scripts activates over real HTTP', async () => {
       const result = await empty.api('/api/mysql/config', 'POST', {...config, database: 'activation_empty'});
       assert.equal(result.status, 200, JSON.stringify(result)); assert.equal(result.body.counts.project_scripts, 0);
+      assert.equal(result.body.mode, 'sqlite'); assert.equal(result.body.restartRequired, true);
     });
     await empty.close();
     const fail = await boot(path.join(root, 'rollback'), 'rollback'), source = await seed(fail);

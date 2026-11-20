@@ -40,6 +40,22 @@ test("MySQL 限本机、名称校验、密码保留边界与错误脱敏", () =>
     false,
   );
 });
+test("迁移前拒绝未结清的后台工作，不连接目标或冻结源库", async t => {
+  const directory = await temporary(t), db = new Sqlite(':memory:'); t.after(() => db.close());
+  const storage = await new MysqlStorage(directory).init();
+  const lib = {db, locks: new Set(), jobs: new Map(), workers: 0, metadataPending: new Set(), metadataQueue: [], pump() {}};
+  storage.attach(lib); let connected = false;
+  storage.connect = async () => { connected = true; throw Error('must not connect'); };
+  const config = {host: '127.0.0.1', database: 'owned', user: 'synthetic'};
+  for (const scenario of ['worker', 'queued-metadata', 'queued-job', 'unknown-job']) {
+    lib.workers = scenario === 'worker' ? 1 : 0;
+    lib.metadataQueue = scenario === 'queued-metadata' ? ['synthetic'] : [];
+    lib.jobs.clear(); if (scenario.endsWith('job')) lib.jobs.set('synthetic', {status: scenario === 'queued-job' ? 'queued' : 'unknown'});
+    await assert.rejects(storage.activate(config), /等待扫描或文件操作完成/);
+    assert.equal(connected, false); assert.equal(db.pragma('query_only', {simple: true}), 0);
+    assert.equal(storage.restartRequired, false); assert.equal(storage.migrating, false);
+  }
+});
 test("迁移诊断只暴露受限表名和阶段，不暴露驱动原文", () => {
   const driver = {code: "UNKNOWN", message: "private SQL and connection details"};
   assert.equal(safeError(driver, {phase: "schema", table: "project_scripts"}),
@@ -88,5 +104,26 @@ test("真实 SQLite PRAGMA 的可空主键生成非空 MySQL DDL，保留非主�
   assert.match(table("asset_metadata_fields"), /`asset_id` VARCHAR\(36\) NOT NULL,`field` VARCHAR\(24\) NOT NULL,PRIMARY KEY\(asset_id,field\)/);
   assert.equal(lib.db, db); assert.equal(db.open, true); assert.equal(lib.migrating, false);
   assert.equal(ended, true); assert.equal(rolledBack, true);
+  assert.equal(db.pragma('query_only', {simple: true}), 0);
   await assert.rejects(fs.access(storage.configPath), {code: "ENOENT"});
+
+  const oldPrepared = db.prepare("INSERT INTO project_scripts VALUES('owned','title','body',1,1,1)");
+  storage.connect = async () => ({
+    async changeUser() {},
+    async execute(sql) { return [sql.startsWith("SELECT * FROM shiguang_database_meta") ? [{source_id: storage.sourceId, schema_version: 1}] : []]; },
+    async query(sql) { return sql.startsWith('SELECT COUNT(*)') ? [[{n: 0}]] : [[]]; },
+    async beginTransaction() {}, async commit() {}, async rollback() {}, async end() {},
+  });
+  const result = await storage.activate({host: "127.0.0.1", port: 49152, user: "synthetic", password: "", database: "owned_ddl"});
+  assert.equal(lib.db, db); assert.equal(db.open, true); assert.equal(storage.database, null);
+  assert.equal(result.mode, 'sqlite'); assert.equal(result.configuredMode, 'mysql'); assert.equal(result.restartRequired, true);
+  assert.equal(result.status, 'restart_required'); assert.equal(result.migrating, false); assert.equal(result.readOnly, true);
+  assert.equal(lib.migrating, true);
+  assert.equal(db.pragma('query_only', {simple: true}), 1);
+  // Bypassing all HTTP/UI guards still cannot write copied business data.
+  assert.throws(() => oldPrepared.run(), {code: 'SQLITE_READONLY'});
+  assert.throws(() => db.exec("INSERT INTO roots VALUES('background','owned')"), {code: 'SQLITE_READONLY'});
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM project_scripts').get().n, 0);
+  assert.equal(JSON.parse(await fs.readFile(storage.configPath, 'utf8')).database, 'owned_ddl');
+  await assert.rejects(storage.activate({host: '127.0.0.1', user: 'synthetic', database: 'other'}), /未重复迁移/);
 });

@@ -16,7 +16,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
 import { MysqlDatabase } from "./mysql-db.mjs";
-import { observeDatabase } from "./read-cache.mjs";
 import { UPLOAD_TABLES, uploadMysqlColumnType, uploadConstraints, uploadOrderBy } from "./cloud-upload-batch-store.mjs";
 const TABLES = ["roots", "assets", "operations"];
 // Some existing metadata tables have a named/composite primary key, not `id`.
@@ -146,6 +145,7 @@ export class MysqlStorage {
     this.database = null;
     this.lib = null;
     this.migrating = false;
+    this.restartRequired = false;
     this.state = {
       status: "disabled",
       lastSync: null,
@@ -211,6 +211,10 @@ export class MysqlStorage {
       },
       ...this.state,
       mode: this.database ? "mysql" : "sqlite",
+      configuredMode: this.config ? "mysql" : "sqlite",
+      restartRequired: this.restartRequired,
+      readOnly: this.restartRequired,
+      message: this.restartRequired ? "数据已迁移，请正常关闭并重新启动拾光后使用 MySQL；重启前仅可读取" : "",
       migrating: this.migrating,
     };
   }
@@ -239,6 +243,7 @@ export class MysqlStorage {
     }
   }
   async activate(input) {
+    if (this.restartRequired) throw error("数据已迁移，请重启拾光后使用 MySQL，未重复迁移");
     if (this.migrating) throw error("数据库迁移进行中");
     const c = validateConfig(input, this.config || {});
     if (this.database)
@@ -246,8 +251,8 @@ export class MysqlStorage {
         "已使用 MySQL 主数据库；更换数据库需单独迁移，未覆盖现有配置",
       );
     if (
-      this.lib.locks.size ||
-      [...this.lib.jobs.values()].some((j) => j.status === "running")
+      this.lib.locks.size || this.lib.workers || this.lib.metadataPending?.size || this.lib.metadataQueue?.length ||
+      [...this.lib.jobs.values()].some((j) => !["done", "failed", "partial", "cancelled", "interrupted"].includes(j.status))
     )
       throw error("请等待扫描或文件操作完成后再迁移");
     if (this.lib.db.prepare("SELECT operation_id FROM asset_repair_journal WHERE alias_asset_id IS NOT NULL LIMIT 1").get()) throw error("存在已合并记录，尚未验证其 MySQL 迁移，未切换数据库");
@@ -255,9 +260,13 @@ export class MysqlStorage {
     this.lib.migrating = true;
     this.state.status = "syncing";
     this.state.error = "";
-    let conn, newDb, migrationStep;
+    const sourceDb = this.lib.db;
+    let conn, migrationStep, previousQueryOnly;
     try {
-      while (this.lib.workers) await new Promise((r) => setTimeout(r, 50));
+      // Freeze every writer on the actual source connection, including prepared
+      // statements held by old owners and background callbacks, before any await.
+      previousQueryOnly = sourceDb.pragma("query_only", {simple: true});
+      sourceDb.pragma("query_only = ON");
       conn = await this.connect(c);
       const backups = path.join(this.dataDir, "backups");
       await fs.mkdir(backups, { recursive: true });
@@ -471,7 +480,6 @@ export class MysqlStorage {
       }
       migrationStep = null;
       await conn.commit();
-      newDb = new MysqlDatabase(c);
       const counts = Object.fromEntries(
         tables.map((t) => [t, snapshot[t].rows.length]),
       );
@@ -484,26 +492,23 @@ export class MysqlStorage {
       );
       await fs.chmod(temp, 0o600);
       await fs.rename(temp, this.configPath);
-      const old = this.lib.db;
-      this.lib.db = newDb;
-      observeDatabase(newDb);
-      this.database = newDb;
-      newDb = null;
       this.config = c;
-      old.close();
-      this.state = { status: "ready", lastSync: migratedAt, counts, error: "" };
+      this.restartRequired = true;
+      this.migrating = false;
+      this.state = { status: "restart_required", lastSync: migratedAt, counts, error: "" };
       return this.publicState();
     } catch (e) {
       await conn?.rollback().catch(() => {});
-      newDb?.close();
+      if (!this.restartRequired && previousQueryOnly !== undefined)
+        sourceDb.pragma(`query_only = ${previousQueryOnly ? "ON" : "OFF"}`);
       this.state.status = "error";
       this.state.error = safeError(e, migrationStep);
       throw error(this.state.error);
     } finally {
       await conn?.end();
       this.migrating = false;
-      this.lib.migrating = false;
-      this.lib.pump();
+      this.lib.migrating = this.restartRequired;
+      if (!this.restartRequired) this.lib.pump();
     }
   }
 }

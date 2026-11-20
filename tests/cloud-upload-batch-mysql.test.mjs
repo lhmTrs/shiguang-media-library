@@ -1,4 +1,6 @@
+import {activateAndRestart,startOwnedNativeMysql} from './helpers/mysql-activate.mjs';
 // Opt-in only: UQ01_MYSQL_TEST=1. No existing database/configuration is consulted.
+// PR134_NATIVE_MYSQLD selects an owned native 8.2 instance for the migration group.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -32,8 +34,8 @@ function basicSource(file){
  return{db,locks:new Set(),jobs:new Map(),workers:0,migrating:false,pump(){}};
 }
 function summaries(db){return Object.fromEntries(Object.keys(UPLOAD_TABLES).map(table=>{const data=db.prepare('SELECT * FROM '+table+' ORDER BY '+uploadOrderBy(table)).all();return[table,{count:data.length,hash:fingerprint(data)}];}));}
-test('UQ01 real MySQL8.4 worker/store and original migration (explicit owned environment)',{skip:!enabled},async t=>{
- const env=await startOwnedMysql(),results={server:env.inventory.server,scenarios:[],inventory:env.inventory};
+test('UQ01 real MySQL worker/store and original migration (explicit owned environment)',{skip:!enabled},async t=>{
+ const env=process.env.PR134_NATIVE_MYSQLD?await startOwnedNativeMysql(process.env.PR134_NATIVE_MYSQLD):await startOwnedMysql(),results={server:env.inventory.server,scenarios:[],inventory:env.inventory};
  try{
   await t.test('real schema, constraints, durable commands, CAS, rollback and two-worker stale updates',async()=>{
    const database=await env.schema('direct');let db=new MysqlDatabase(env.config(database));
@@ -84,7 +86,7 @@ test('UQ01 real MySQL8.4 worker/store and original migration (explicit owned env
    }finally{await env.closeDb(db);}
   });
   await t.test('original MysqlStorage.activate migrates eight upload tables with original source and digest intact',async()=>{
-   const database=await env.schema('migration'),dir=path.join(env.directory,'source');await fs.mkdir(dir);const file=path.join(dir,'library.sqlite'),lib=basicSource(file),storage=await new MysqlStorage(dir).init();storage.attach(lib);
+   const database=await env.schema('migration'),dir=path.join(env.directory,'source');await fs.mkdir(dir);const file=path.join(dir,'library.sqlite');let lib=basicSource(file),storage=await new MysqlStorage(dir).init();storage.attach(lib);
    let sqlite=lib.db;
    try{
     const synthetic=rows(12).map(r=>({...r,fileName:"合成'音频.wav",category:'音乐',subcategory:'氛围',sourceVersion:{...r.sourceVersion,ino:9007199254740990,mtimeMs:100.125}}));
@@ -106,7 +108,7 @@ test('UQ01 real MySQL8.4 worker/store and original migration (explicit owned env
     const orderedPreview=sqlite.prepare('SELECT ordinal FROM cloud_upload_preview_items WHERE preview_id=? ORDER BY preview_id,ordinal').all(p.previewId).map(r=>r.ordinal);assert.deepEqual(orderedPreview,Array.from({length:12},(_,i)=>i));
     const legacy=Object.fromEntries(['roots','assets','operations'].map(table=>{const columns=sqlite.prepare('PRAGMA table_info('+table+')').all().map(c=>c.name);return[table,{columns,rows:sqlite.prepare('SELECT '+columns.join(',')+' FROM '+table+' ORDER BY id').all()}];}));
     const sourceId=storage.sourceId,before=await digest(file),counts=summaries(sqlite);
-    try{await storage.activate(env.config(database));}catch(error){
+    try{({lib,storage}=await activateAndRestart({storage,lib,config:env.config(database),openLibrary:(dataDir,db)=>({dataDir,db,locks:new Set(),jobs:new Map(),workers:0,migrating:false,pump(){}})}));}catch(error){
      assert.equal(lib.db,sqlite);assert.equal(sqlite.open,true);assert.equal(await digest(file),before);assert.equal(storage.sourceId,sourceId);assert.equal(storage.database,null);await assert.rejects(fs.stat(storage.configPath),{code:'ENOENT'});
      const connection=await env.connection(database);let detail;
      try{await connection.query('SELECT preview_id FROM cloud_upload_previews ORDER BY id');}catch(e){detail={code:e.code,errno:e.errno,sql:'SELECT preview_id FROM cloud_upload_previews ORDER BY id'};}finally{await connection.end();}

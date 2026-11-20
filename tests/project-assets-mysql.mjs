@@ -1,3 +1,4 @@
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -42,12 +43,12 @@ try {
  for (let i = 0; i < 100; i++) { try { connection = await mysql.createConnection({ ...config, database: undefined, connectTimeout: 500 }); break; } catch { if (server.exitCode !== null) throw Error('Owned mysqld exited'); await new Promise(r => setTimeout(r, 150)); } }
  assert.ok(connection); version = (await connection.query('SELECT VERSION() version'))[0][0].version; assert.match(version, /^8\.2\./); console.log('MySQL ' + version);
  const appDir = path.join(base, 'app'); storage = await new MysqlStorage(appDir).init(); lib = await new Library(appDir, { directoryClassification: true }).init(); storage.attach(lib);
- const projects = new Projects(lib).init(), store = new ProjectAssets(lib).init(), photoDir = path.join(base, 'photos'); await fs.mkdir(photoDir);
+ let projects = new Projects(lib).init(), store = new ProjectAssets(lib).init(), photoDir = path.join(base, 'photos'); await fs.mkdir(photoDir);
  await fs.writeFile(path.join(photoDir, 'synthetic.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64'));
  const root = await lib.addRoot(photoDir, 'photo'); const job = lib.scan(root.id); for (let i = 0; i < 100 && job.status === 'running'; i++) await new Promise(r => setTimeout(r, 30)); assert.equal(job.status, 'done');
  const media = lib.db.prepare('SELECT id FROM assets LIMIT 1').get().id;
  await lifecycle(store, projects, media); const before = store.snapshot(), projectBefore = store.scopes();
- await check('实际 SQLite→MySQL 迁移保留六表、项目身份、版本、默认项及时间', async () => { await storage.activate(config); assert.equal(lib.db.kind, 'mysql'); assert.deepEqual(store.snapshot(), before); assert.deepEqual(store.scopes().items, projectBefore.items); });
+ await check('实际 SQLite→MySQL 迁移保留六表、项目身份、版本、默认项及时间', async () => { {const next=await activateAndRestart({storage,lib,config,rebuild:owner=>({projects:new Projects(owner).init(),store:new ProjectAssets(owner).init()})});lib=next.lib;storage=next.storage;({projects,store}=next.owners);} assert.equal(lib.db.kind, 'mysql'); assert.deepEqual(store.snapshot(), before); assert.deepEqual(store.scopes().items, projectBefore.items); });
  await check('迁移后的当前 MySQL 实际人物/场景/道具、复制和版本冲突闭环', async () => { projects.init(); store.init(); await lifecycle(store, projects, media); });
  const snapshot = store.backup();
  await check('MySQL 数据库唯一约束与失败事务回滚', async () => {

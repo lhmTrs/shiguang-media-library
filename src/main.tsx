@@ -175,6 +175,8 @@ type MysqlState = {
   counts: { roots: number; assets: number; operations: number } | null;
   error: string;
   mode: "mysql" | "sqlite";
+  configuredMode: "mysql" | "sqlite";
+  restartRequired: boolean;
 };
 type Root = {
   id: string;
@@ -3662,6 +3664,7 @@ function App() {
                               disabled: "未启用",
                               pending: "等待同步",
                               syncing: "迁移中",
+                              restart_required: "待重启",
                               ready: "MySQL 主数据库",
                               paused: "自动同步暂停",
                               error: "连接异常",
@@ -3768,6 +3771,7 @@ function App() {
                         disabled={
                           busy ||
                           mysqlState?.status === "syncing" ||
+                          mysqlState?.restartRequired ||
                           mysqlState?.mode === "mysql"
                         }
                         onClick={() =>
@@ -3782,7 +3786,7 @@ function App() {
                             );
                             setMysqlState(state);
                             setMysqlForm((prev) => ({ ...prev, password: "" }));
-                            setNotice("数据已迁移，MySQL 已成为主数据库");
+                            setNotice("数据已迁移，请正常关闭并重新启动拾光后使用 MySQL；重启前只读");
                           })
                         }
                       >
@@ -3790,6 +3794,9 @@ function App() {
                         迁移并启用 MySQL
                       </button>
                     </div>
+                    {mysqlState?.restartRequired && (
+                      <p role="status">数据已迁移，请正常关闭并重新启动拾光后使用 MySQL；重启前只读。</p>
+                    )}
                     {mysqlState?.error && (
                       <p className="database-error" role="alert">
                         {mysqlState.error}
@@ -3805,7 +3812,9 @@ function App() {
                       <dd>
                         {mysqlState?.mode === "mysql"
                           ? `MySQL · ${mysqlState.config.database}`
-                          : "SQLite（尚未迁移）"}
+                          : mysqlState?.restartRequired && mysqlState.configuredMode === "mysql"
+                            ? "SQLite（当前只读；已迁移到 MySQL，待重启）"
+                            : "SQLite（尚未迁移）"}
                       </dd>
                       <dt>迁移时间</dt>
                       <dd>
