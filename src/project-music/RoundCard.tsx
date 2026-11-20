@@ -1,10 +1,10 @@
 import React, {useState} from 'react';
-import {Archive, ChevronDown, ChevronRight, Download, GitCompare, Pause, Pencil, Play, Plus, RotateCcw, Star, Trash2, Upload} from 'lucide-react';
+import {Archive, ChevronDown, ChevronRight, Download, GitCompare, Pause, Pencil, Play, Plus, RotateCcw, Star, Trash2, Undo2, Upload} from 'lucide-react';
 import {Waveform} from './Waveform';
 import {clock, type PlayerState} from './Player';
 import type {Author, Request, Round, Song, Version} from './types';
 import {beijingTime} from './time';
-import {CHECK_LABEL, PROMPT_FIELD_LABEL, TIER_LABEL} from './types';
+import {CHECK_LABEL, DECISION_LABEL, PROMPT_FIELD_LABEL, TIER_LABEL} from './types';
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
 export function AuthorLine({author, prefix = ''}: {author: Author | null | undefined; prefix?: string}) {
@@ -17,7 +17,31 @@ export type VersionActions = {
   reject: (v: Version) => void;
   restore: (v: Version) => void;
   compareWithBest: (v: Version) => void;
+  /** 改回 AI 按你原话做的改动；undoable 为 false 时不显示按钮。 */
+  undoDecision: (v: Version) => void;
+  undoable: (v: Version) => boolean;
 };
+
+// 音乐库里的情况：一行小字。系统标签（AI生成、项目、歌名、轮次）不重复列出，只列按提示词和测量的。
+function LibraryLine({version}: {version: Version}) {
+  const l = version.library;
+  const prompt = version.tags.filter(t => t.source === 'prompt').map(t => t.tag);
+  const measured = version.tags.filter(t => t.source === 'measured');
+  if (!l.inLibrary && !('migrating' in l)) return null;
+  return <p className="sgm-version-meta">
+    {'migrating' in l
+      ? (l.migrationError ? <span className="sgm-meta-warn">没搬进音乐库：{l.migrationError}</span> : <span>正在从旧位置搬进音乐库…</span>)
+      : <>
+        <span title={l.name ?? undefined}>音乐库：{l.reused ? `复用已有的「${l.name}」` : [l.category, l.sub].filter(Boolean).join(' / ') || '待确认'}</span>
+        {l.missing && <span className="sgm-meta-warn">音乐库里的记录已删除，文件读不到</span>}
+        {l.offline && !l.missing && <span className="sgm-meta-warn">文件不在原位置（离线）{l.place ? `：原来在「${l.place}」` : ''}。在访达里把它放回原处（同一个文件夹、同一个名字）就能恢复；如果已经清空了废纸篓，这个版本就听不了了</span>}
+        {l.moved && !l.missing && !l.offline && <span className="sgm-meta-warn">位置变了，需要核对</span>}
+        {l.tagSync === 'failed' && <span className="sgm-meta-warn">标签没写进音乐库：{l.tagError}</span>}
+        {prompt.length > 0 && <span>按提示词：{prompt.join('、')}</span>}
+        {measured.length > 0 && <span title={measured[0].method}>测量：{measured.map(t => t.tag).join('、')}</span>}
+      </>}
+  </p>;
+}
 
 export function VersionRow({version, player, actions, busy, compact = false}: {version: Version; player: PlayerState; actions: VersionActions; busy: boolean; compact?: boolean}) {
   const current = player.current?.id === version.id;
@@ -37,6 +61,8 @@ export function VersionRow({version, player, actions, busy, compact = false}: {v
       {version.isFinal && <span className="sgm-pill accent">定稿</span>}
       {version.isBest && <span className="sgm-pill accent"><Star size={12} fill="currentColor"/>当前最好</span>}
       {version.uploadedBy.kind === 'agent' && <span className="sgm-pill" title={`由 ${version.uploadedBy.session} 上传`}>AI 上传</span>}
+      {version.uploadedBy.kind === 'user' && version.uploadedBy.via === 'finder' && <span className="sgm-pill" title="从访达右键收纳进来">访达收纳</span>}
+      {version.status === 'rejected' && 'unusedTagged' in version.library && version.library.unusedTagged && <span className="sgm-pill" title="音乐库里打了「未选用」标签，不隐藏">音乐库：未选用</span>}
     </span>
     <span className="sgm-version-actions">
       {!rejected && !version.isBest && <button type="button" className="sgm-icon" title="设为当前最好" aria-label={`把第 ${version.roundNo} 轮 ${version.label} 设为当前最好`} disabled={busy} onClick={() => actions.setBest(version)}><Star size={16}/></button>}
@@ -46,6 +72,13 @@ export function VersionRow({version, player, actions, busy, compact = false}: {v
         ? <button type="button" className="sgm-icon" title="从淘汰区恢复" aria-label={`恢复第 ${version.roundNo} 轮 ${version.label}`} disabled={busy} onClick={() => actions.restore(version)}><RotateCcw size={16}/></button>
         : !version.isFinal && <button type="button" className="sgm-icon" title="淘汰（不删文件）" aria-label={`淘汰第 ${version.roundNo} 轮 ${version.label}`} disabled={busy} onClick={() => actions.reject(version)}><Archive size={16}/></button>}
     </span>
+    {version.decidedBy && actions.undoable(version) && <p className="sgm-version-decision">
+      <span className="sgm-pill warn">AI 改的</span>
+      <span>{DECISION_LABEL[version.decidedBy.action]}，依据你说的「{version.decidedBy.userWords}」{version.decidedBy.saidAt ? `（${version.decidedBy.saidAt}）` : ''}</span>
+      <AuthorLine author={version.decidedBy.author}/>
+      <button type="button" className="sgm-btn small ghost" disabled={busy} aria-label={`改回第 ${version.roundNo} 轮 ${version.label} 的 AI 改动`} onClick={() => actions.undoDecision(version)}><Undo2 size={14}/>改回</button>
+    </p>}
+    <LibraryLine version={version}/>
   </div>;
 }
 
@@ -84,7 +117,8 @@ export function RoundCard({song, round, previous, latest, open, onToggle, player
       </button>
       <span className="sgm-pill">{p.tool || '未填工具'}</span>
       {p.sunoTier ? <span className="sgm-pill">{TIER_LABEL[p.sunoTier]}</span> : /suno/i.test(p.tool) && <span className="sgm-pill warn" title="Suno 会员档位只能由你填：在「改提示词」里选，拿不准就选「不确定」">档位未填</span>}
-      {!round.promptConfirmed && <span className="sgm-pill warn">提示词待你确认</span>}
+      {!round.promptConfirmed && <span className="sgm-pill warn">{round.prompt.style || round.prompt.lyrics ? '提示词待你确认' : '还没有提示词'}</span>}
+      {round.pendingAgentNotes && <span className="sgm-pill warn" title={`${round.pendingAgentNotes.reason}；记录由 AI 补写，你不用管`}>待 AI 补写</span>}
       {diff && <span className="sgm-round-diff">{diff.length ? `和上一轮比：改了${diff.map(k => PROMPT_FIELD_LABEL[k]).join('、')}` : '提示词和上一轮相同'}</span>}
       {!open && <span className="sgm-round-summary">{p.style || '（未填风格）'} · {versions.length} 个版本</span>}
       {open && canUpload && <button type="button" className="sgm-btn small ghost" onClick={() => onUpload(round)}><Upload size={14}/>上传到这一轮</button>}

@@ -3,7 +3,8 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Pause, Play, SkipBack, SkipForward, Volume2, X} from 'lucide-react';
 import {Waveform} from './Waveform';
-import type {Version} from './types';
+// 能放进播放条的东西：歌曲版本，或者「文件」区里的一个音频（title 写文件名，没有轮次）。
+export type Playable = {id: string; mediaUrl: string; peaks: number[] | null; durationMs: number | null; label: string; roundNo?: number; songId?: string; title?: string};
 
 export const clock = (ms: number | null | undefined) => {
   if (ms == null || !Number.isFinite(ms)) return '--:--';
@@ -16,7 +17,7 @@ export type PlayerState = ReturnType<typeof usePlayer>;
 
 export function usePlayer(active: boolean) {
   const audio = useRef<HTMLAudioElement | null>(null);
-  const [current, setCurrent] = useState<Version | null>(null);
+  const [current, setCurrent] = useState<Playable | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -59,7 +60,7 @@ export function usePlayer(active: boolean) {
     a.play().catch(e => { if (e?.name !== 'AbortError' && ticket === generation.current) { wants.current = false; setError('浏览器没有开始播放，请再点一次播放'); } });
   }, []);
 
-  const play = useCallback((version: Version, at: number | null = null) => {
+  const play = useCallback((version: Playable, at: number | null = null) => {
     const a = audio.current;
     if (!a) return;
     setError('');

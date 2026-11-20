@@ -9,10 +9,10 @@ import {agentAuthor, fail, userAuthor} from './model.mjs';
 const fromPage = req => req.get('sec-fetch-site') === 'same-origin';
 const actor = req => fromPage(req) ? userAuthor() : agentAuthor(req.body?.session);
 const pageOnly = req => {
-  if (!fromPage(req)) fail('PAGE_ONLY', '这项只能由你在网页上操作：AI 不能改提示词确认、你的听感原文、版本取舍和定稿', 403);
+  if (!fromPage(req)) fail('PAGE_ONLY', '这项只能由你在网页上操作：AI 不能改提示词确认和你的听感原文；AI 改版本状态请走 agent-notes 的 decisions，并附上用户原话', 403);
 };
 
-export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()} = {}) {
+export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn(), folders = null} = {}) {
   const router = express.Router();
   router.use(express.json({limit: '256kb'}));
   router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -22,6 +22,8 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   const P = '/projects/:projectId';
 
   route('get', '/schema', (_req, res) => res.json(AGENT_SCHEMA));
+  // 「待补写」清单：全部项目，或 ?projectId= 只看一个项目。
+  route('get', '/pending-notes', (req, res) => res.json(store.pendingNotes(req.query.projectId || null)));
   route('get', P, (req, res) => res.json(store.list(req.params.projectId)));
   route('get', P + '/songs/:songId', (req, res) => res.json(store.song(req.params.projectId, req.params.songId)));
   route('post', P + '/songs', (req, res) => res.json(store.createSong(req.params.projectId, req.body ?? {}, actor(req))));
@@ -37,9 +39,15 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   route('get', P + '/imports/:requestId', (req, res) => res.json(store.receipt(req.params.projectId, req.params.requestId)));
   route('post', P + '/imports/:requestId/resolve', async (req, res) => res.json(await store.resolveImport(req.params.projectId, req.params.requestId, req.body ?? {})));
 
-  route('post', P + '/songs/:songId/finalize', async (req, res) => { pageOnly(req); res.json(await store.finalize(req.params.projectId, req.params.songId, req.body ?? {})); });
-  route('post', P + '/songs/:songId/finalize/:requestId/resolve', async (req, res) => { pageOnly(req); res.json(await store.resolveFinalize(req.params.projectId, req.params.songId, req.params.requestId, req.body ?? {})); });
+  route('post', P + '/songs/:songId/finalize', (req, res) => { pageOnly(req); res.json(store.finalize(req.params.projectId, req.params.songId, req.body ?? {})); });
+  // PR3：定稿只做标记，不再复制进音乐库，原来的「重名选择」步骤没有了。
+  route('post', P + '/songs/:songId/finalize/:requestId/resolve', () => fail('FINALIZE_FLOW_RETIRED', '定稿已改为只在项目里标记，不再有重名选择；请直接重新定稿', 410));
   route('post', P + '/songs/:songId/unfinalize', (req, res) => { pageOnly(req); res.json(store.unfinalize(req.params.projectId, req.params.songId, req.body ?? {})); });
+  // AI 按你的原话改的版本状态：页面上一键改回。
+  route('post', P + '/songs/:songId/decisions/:decisionId/undo', (req, res) => { pageOnly(req); res.json(store.undoDecision(req.params.projectId, req.params.songId, req.params.decisionId, req.body ?? {})); });
+  // 旧位置（PR1、PR2）的歌：重试搬迁；确认后把旧副本移到废纸篓（只能由你在页面上做）。
+  route('post', P + '/legacy/migrate', async (req, res) => res.json(await store.retryMigration(req.params.projectId)));
+  route('post', P + '/legacy/trash', async (req, res) => { pageOnly(req); res.json(await store.trashLegacy(req.params.projectId, req.body ?? {})); });
 
   const media = async (req, res) => {
     const opened = await store.openVersion(req.params.projectId, req.params.versionId);
@@ -56,6 +64,39 @@ export function projectMusicRouter(store, {sendMedia, withActivity = fn => fn()}
   };
   route('get', P + '/versions/:versionId/media', media);
   route('head', P + '/versions/:versionId/media', media);
+
+  // ---------- 「文件」区（SPEC 第十三节）：位置用相对项目音乐文件夹的路径（path / folder），不暴露本机路径 ----------
+  if (folders) {
+    const F = P + '/files';
+    route('get', F, async (req, res) => res.json(await folders.list(req.params.projectId, req.query.folder ?? '')));
+    route('post', F + '/folders', async (req, res) => res.json(await folders.createFolder(req.params.projectId, req.body ?? {})));
+    route('post', F + '/folders/rename', async (req, res) => res.json(await folders.renameFolder(req.params.projectId, req.body ?? {})));
+    route('get', F + '/peaks', async (req, res) => res.json(await folders.peaks(req.params.projectId, req.query.path)));
+    const fileMedia = async (req, res) => {
+      const opened = await folders.openFile(req.params.projectId, req.query.path);
+      try {
+        if (req.query.download === '1') {
+          const ascii = opened.downloadName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+          res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(opened.downloadName)}`);
+        }
+        await sendMedia(req, res, opened.path, opened.handle);
+      } catch (e) {
+        await opened.handle.close().catch(() => {});
+        throw e;
+      }
+    };
+    route('get', F + '/media', fileMedia);
+    route('head', F + '/media', fileMedia);
+    route('post', F + '/imports', (req, res) => res.json(folders.startImport(req.params.projectId, req.body ?? {}, actor(req))));
+    route('put', F + '/imports/:requestId/content', async (req, res) => res.json(await folders.upload(req.params.projectId, req.params.requestId, req)));
+    route('get', F + '/imports/:requestId', (req, res) => res.json(folders.receipt(req.params.projectId, req.params.requestId)));
+    route('post', F + '/imports/:requestId/resolve', async (req, res) => res.json(await folders.resolve(req.params.projectId, req.params.requestId, req.body ?? {})));
+    route('post', F + '/add-to-song', async (req, res) => res.json(await folders.addToSong(req.params.projectId, req.body ?? {}, actor(req))));
+    route('get', F + '/desktop', async (req, res) => res.json(await folders.capabilities(req.params.projectId)));
+    // 复制到剪贴板、打开访达会动用户的桌面：只能由用户在网页上点。
+    route('post', F + '/clipboard', async (req, res) => { pageOnly(req); res.json(await folders.clipboard(req.params.projectId, req.body ?? {})); });
+    route('post', F + '/reveal', async (req, res) => { pageOnly(req); res.json(await folders.reveal(req.params.projectId, req.body ?? {})); });
+  }
 
   router.use((_req, res) => res.status(404).json({error: '项目音乐接口不存在', code: 'MUSIC_ROUTE_NOT_FOUND'}));
   router.use((e, _req, res, next) => {

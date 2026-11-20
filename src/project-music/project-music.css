@@ -166,7 +166,13 @@
 
 .sgm-versions { display: grid; gap: 6px; margin: 14px 0 4px; }
 .sgm-versions.is-compact { margin-top: 10px; gap: 2px; }
-.sgm-version { display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 12px; }
+.sgm-version { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; row-gap: 4px; padding: 8px 10px 8px 8px; border-radius: 12px; }
+/* PR3：版本下面的小字——音乐库里的位置、按提示词和测量的标签；AI 按你原话改的状态和「改回」。 */
+.sgm-version-meta, .sgm-version-decision { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; padding-left: 86px;
+  color: var(--sg-text-muted); font-size: 12px; line-height: 1.5; }
+.sgm-version-decision { gap: 4px 10px; color: var(--sg-text); font-size: 13px; }
+.sgm-versions.is-compact .sgm-version-meta, .sgm-versions.is-compact .sgm-version-decision { padding-left: 74px; }
+.sgm-meta-warn { color: var(--sg-warn-text); }
 .sgm-version:hover { background: var(--sg-hover); }
 .sgm-version.is-current { background: var(--sg-accent-soft); }
 /* 淘汰区的版本只淡化波形和播放键，文字不淡化，保持可读 */
@@ -306,3 +312,16 @@
   .sgm-compare-pick { grid-template-columns: 1fr; }
   .sgm-compare-track { flex-wrap: wrap; }
 }
+
+/* PR4：「歌曲｜文件」标签。两个标签各占满整个画面，标签本身不用边框，靠底色区分。 */
+.sgm-tabs { display: inline-flex; gap: 4px; padding: 4px; margin: -8px 0 22px; border-radius: 999px; background: var(--sg-sunken); }
+.sg-music .sgm-tabs button { display: inline-flex; align-items: baseline; gap: 8px; border: 0; border-radius: 999px; padding: 6px 18px; min-height: 36px;
+  background: transparent; color: var(--sg-text-muted); font: inherit; font-size: 16px; font-weight: 500; cursor: pointer; }
+.sg-music .sgm-tabs button small { font-size: 12px; font-weight: 400; color: var(--sg-text-muted); }
+.sg-music .sgm-tabs button[aria-selected="true"] { background: var(--sg-surface-raised); color: var(--sg-text); box-shadow: var(--sg-shadow); }
+.sg-music .sgm-tabs button:focus-visible { outline: 2px solid var(--sg-focus); outline-offset: 1px; }
+.sgm-files { display: grid; gap: 14px; }
+.sgm-play.is-static { background: var(--sg-sunken); color: var(--sg-text-muted); cursor: default; }
+.sgm-files-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sgm-files-list li { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px; background: var(--sg-sunken); }
+.sgf-row.is-current .sgm-play { background: var(--sg-accent-strong); color: var(--sg-on-accent); }

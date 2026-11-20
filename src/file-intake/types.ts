@@ -11,15 +11,21 @@ export type IntakeDestination = {kind:MediaKind;scope:'library'|'project';projec
   /** 项目视频：点「收纳」时才在 folderId（父目录，'root' 为项目根目录）下新建这一层文件夹。 */
   newFolder?:{name:string};
   /** 「成片」保留文件夹（合同 PROJECT-USAGE-RENDER v1）：还没建时用逻辑目标，确认收纳时由后台建好或接管；与 folderId/newFolder 互斥。 */
-  folderRole?:'final'};
+  folderRole?:'final';
+  /** 项目音乐（kind music + scope project）：放进「文件」下的文件夹（'' 是项目音乐文件夹本身）。 */
+  musicFolder?:string;
+  /** 项目音乐：放进某首歌（或新建一首）的某一轮，或新开一轮；新开时可附本轮提示词。 */
+  songId?:string;newSongTitle?:string;roundId?:string;newRound?:boolean;roundPrompt?:string};
 export type IntakeFile = {mediaKind?:'photo'|'video'|'audio';id: string; name: string; bytes: number; path: string; durationSec?: number | null};
 export type NameMode = 'keep' | 'standard';
-export type RoutingPreferences = {lastProjectId: {photo: string | null; video: string | null}; lastVideoFolderByProject: Record<string, string>; lastLibraryDirectory: Partial<Record<MediaKind, string>>; lastAudioKind: 'music' | 'sfx' | null; mode: 'copy' | 'move'; standardNames: boolean; revealWhenDone?: boolean};
+export type RoutingPreferences = {lastProjectId: {photo: string | null; video: string | null; music?: string | null}; lastVideoFolderByProject: Record<string, string>; lastMusicFolderByProject?: Record<string, string>; lastLibraryDirectory: Partial<Record<MediaKind, string>>; lastAudioKind: 'music' | 'sfx' | null; mode: 'copy' | 'move'; standardNames: boolean; revealWhenDone?: boolean};
 export type RoutingLook = {id: string; name: string; revision: number};
 export type RoutingAsset = {id: string; kind: AssetKind; name: string; revision: number; defaultLookId: string | null; looks: RoutingLook[]};
 /** 剧集位置，只用于显示去处；未归剧的项目没有这一项。 */
 export type RoutingSeries = {id: string; name: string; seasonNo: number | null; seasonLabel: string | null; episodeNo: number};
-export type RoutingProject = {id: string; name: string; videoFolders: IntakeFolder[]; assets: RoutingAsset[]; series?: RoutingSeries};
+export type MusicRoutingSong = {id: string; title: string; key: string; rounds: {id: string; roundNo: number; versionCount: number; complete: boolean}[]; defaultRound: {roundId: string} | {newRound: true}};
+export type MusicRouting = {folders: IntakeFolder[]; songs: MusicRoutingSong[]};
+export type RoutingProject = {id: string; name: string; videoFolders: IntakeFolder[]; assets: RoutingAsset[]; series?: RoutingSeries; music?: MusicRouting};
 export type RoutingOptions = {projects: RoutingProject[]; photoCategories: IntakeFolder[]};
 export type NamePartRole = 'series' | 'season' | 'episode' | 'project' | 'folder' | 'number' | 'ext';
 export type NamePart = {role: NamePartRole; text: string};

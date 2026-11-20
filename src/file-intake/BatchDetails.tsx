@@ -12,13 +12,15 @@ function previewUrl(value: string) {
 function Conflict({item, disabled, resolve, prompt}: {item: IntakeItem; disabled: boolean; resolve: (input: ResolveInput) => void; prompt?: boolean}) {
   const [candidateId, setCandidateId] = useState(item.candidates?.[0]?.id || ''), [apply, setApply] = useState(false), [overwrite, setOverwrite] = useState(false), [confirmed, setConfirmed] = useState(false);
   const candidate = item.candidates?.find(c => c.id === candidateId), shots = candidate?.adoptedShots || [], media = previewUrl(candidate?.mediaUrl || '');
+  const projectMusic = item.destination?.scope === 'project' && item.destination.kind === 'music';
   return <div className="fi-conflict">
     {!!item.candidates?.length && <label>已有文件<select aria-label={'重名候选 ' + item.name} disabled={disabled} value={candidateId} onChange={e => {setCandidateId(e.target.value); setOverwrite(false); setConfirmed(false);}}>{item.candidates.map(c => <option key={c.id} value={c.id}>{c.name} · {c.reason}</option>)}</select></label>}
     {candidate && <p className="fi-muted">{shots.length ? `已采用：${shots.map(s => '镜 ' + s.number).join('、')}` : '该候选尚未被分镜采用'} {media && <a href={media} target="_blank" rel="noopener noreferrer">预览原文件 <ExternalLink size={12}/></a>}</p>}
-    <label className="fi-check"><input type="checkbox" checked={apply} disabled={disabled || overwrite} onChange={e => setApply(e.target.checked)}/>将改名导入或复用的选择应用到后续重名项</label>
+    <label className="fi-check"><input type="checkbox" checked={apply} disabled={disabled || overwrite} onChange={e => setApply(e.target.checked)}/>{projectMusic ? '后面已经收过的也都仍然保留' : '将改名导入或复用的选择应用到后续重名项'}</label>
     <div className="fi-actions">
-      <button className="fi-primary" disabled={disabled} onClick={() => resolve({choice: 'import', ...(apply ? {applyRemaining: true} : {})})}>改名导入</button>
-      <button disabled={disabled || !candidate} onClick={() => resolve({choice: 'reuse', candidateId, ...(apply ? {applyRemaining: true} : {})})}>复用已有文件</button>
+      {/* 项目音乐：已经收过了时只有「仍然保留」和「取消」，不提供复用和覆盖（SPEC 第十二节）。 */}
+      <button className="fi-primary" disabled={disabled} onClick={() => resolve({choice: 'import', ...(apply ? {applyRemaining: true} : {})})}>{projectMusic ? '仍然保留' : '改名导入'}</button>
+      {!projectMusic && <button disabled={disabled || !candidate} onClick={() => resolve({choice: 'reuse', candidateId, ...(apply ? {applyRemaining: true} : {})})}>复用已有文件</button>}
       {(!item.destination||item.destination.scope==='project'&&item.destination.kind==='video')&&<button className="fi-danger-link" disabled={disabled || !candidate} aria-expanded={overwrite} onClick={() => {setOverwrite(v => !v); setConfirmed(false);}}>覆盖…</button>}
       <button disabled={disabled} onClick={() => resolve({choice: 'cancel'})}>取消此项</button>
     </div>

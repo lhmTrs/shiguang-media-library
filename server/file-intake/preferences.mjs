@@ -8,15 +8,19 @@ const kinds=new Set(['photo','video','music','sfx']);
 const themes=new Set(['forest','dark','midnight','sepia','graphite','ocean']);
 const maxBytes=128*1024;
 export const defaultRoutingPreferences=()=>({
-  lastProjectId:{photo:null,video:null},lastVideoFolderByProject:{},
+  lastProjectId:{photo:null,video:null,music:null},lastVideoFolderByProject:{},lastMusicFolderByProject:{},
   lastLibraryDirectory:{photo:'',video:'',music:'',sfx:''},lastAudioKind:null,mode:'copy',standardNames:true,standardNamesChosen:false,revealWhenDone:false,
 });
 const validFolder=id=>uuid(id)||id==='root';
+const musicFolderOK=f=>typeof f==='string'&&f.length<=1000&&(!f||f.split('/').every(p=>p&&!p.startsWith('.')&&!/[\\\x00-\x1f]/.test(p)))&&f.split('/')[0]!=='歌曲';
 const isAudio=kind=>kind==='music'||kind==='sfx';
 // Convenience preferences contain no authority, source paths or IDs
 // of people. Every restored destination is checked again before confirmation.
 export function preferenceTarget(value) {
   if(!value||!kinds.has(value.kind)||!['library','project'].includes(value.scope))return null;
+  // 项目音乐只记「文件」区的文件夹（和收视频一样）；放进某首歌的不记，下次仍按文件名认歌或回到上次的文件夹。
+  if(value.scope==='project'&&value.kind==='music')return uuid(value.projectId)&&typeof value.musicFolder==='string'&&musicFolderOK(value.musicFolder)
+    ? {kind:'music',scope:'project',projectId:value.projectId,musicFolder:value.musicFolder}:null;
   if(value.scope==='project')return ['photo','video'].includes(value.kind)&&uuid(value.projectId)
     ? {kind:value.kind,scope:'project',projectId:value.projectId,...(value.kind==='video'?(value.folderRole==='final'&&value.folderId===undefined&&!value.newFolder?{folderRole:'final'}:{folderId:uuid(value.folderId)?value.folderId:'root'}):{})}:null;
   const directory=value.directory??'';
@@ -26,6 +30,12 @@ export function preferenceTarget(value) {
 function recordTarget(r,t) {
   if(t.scope==='project') {
     r.lastProjectId[t.kind]=t.projectId;
+    if(t.kind==='music') {
+      delete r.lastMusicFolderByProject[t.projectId];
+      r.lastMusicFolderByProject[t.projectId]=t.musicFolder;
+      const ids=Object.keys(r.lastMusicFolderByProject);
+      for(const id of ids.slice(0,Math.max(0,ids.length-1000)))delete r.lastMusicFolderByProject[id];
+    }
     if(t.kind==='video'&&!t.folderRole) {
       // Keep bounded recent per-project history; remove/reinsert to update order.
       delete r.lastVideoFolderByProject[t.projectId];
@@ -33,12 +43,18 @@ function recordTarget(r,t) {
       const ids=Object.keys(r.lastVideoFolderByProject);
       for(const id of ids.slice(0,Math.max(0,ids.length-1000)))delete r.lastVideoFolderByProject[id];
     }
-  } else r.lastLibraryDirectory[t.kind]=t.directory;
+  } else {
+    r.lastLibraryDirectory[t.kind]=t.directory;
+    // 上次音乐放进了音乐库，下次就不再默认放进项目音乐。
+    if(t.kind==='music')r.lastProjectId.music=null;
+  }
   if(isAudio(t.kind))r.lastAudioKind=t.kind;
 }
 function loadRouting(raw) {
   const r=defaultRoutingPreferences();
-  for(const kind of ['photo','video'])if(uuid(raw?.lastProjectId?.[kind]))r.lastProjectId[kind]=raw.lastProjectId[kind];
+  for(const kind of ['photo','video','music'])if(uuid(raw?.lastProjectId?.[kind]))r.lastProjectId[kind]=raw.lastProjectId[kind];
+  for(const [id,folder] of Object.entries(raw?.lastMusicFolderByProject??{}).slice(-1000))
+    if(uuid(id)&&musicFolderOK(folder))r.lastMusicFolderByProject[id]=folder;
   for(const [id,folder] of Object.entries(raw?.lastVideoFolderByProject??{}).slice(-1000))
     if(uuid(id)&&validFolder(folder))r.lastVideoFolderByProject[id]=folder;
   for(const kind of kinds){
@@ -77,7 +93,8 @@ export class IntakePreferences {
   snapshot(projects=[],hasFolder=()=>true){
     const ids=new Set(projects.filter(p=>!p.archived).map(p=>p.id)), r=structuredClone(this.routing);
     const safeFolder=(id,folder)=>folder==='root'||hasFolder(id,folder)?folder:'root';
-    for(const kind of ['photo','video'])if(!ids.has(r.lastProjectId[kind]))r.lastProjectId[kind]=null;
+    for(const kind of ['photo','video','music'])if(!ids.has(r.lastProjectId[kind]))r.lastProjectId[kind]=null;
+    for(const id of Object.keys(r.lastMusicFolderByProject))if(!ids.has(id))delete r.lastMusicFolderByProject[id];
     for(const [id,folder] of Object.entries(r.lastVideoFolderByProject))
       if(!ids.has(id))delete r.lastVideoFolderByProject[id];else r.lastVideoFolderByProject[id]=safeFolder(id,folder);
     const targets=Object.fromEntries(Object.entries(this.values).filter(([,t])=>t.scope==='library'||ids.has(t.projectId)).map(([kind,t])=>
