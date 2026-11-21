@@ -194,6 +194,7 @@ try {
   });
 
   await check('ON sidebar: material and project groups open one at a time, both can close, current page opens its own group', async () => {
+    await page.reload(); await expect(rows()).toHaveCount(4); // 不带上一步留下的选中行
     const mat = groupButton('素材 · 剪辑时用'), proj = groupButton('项目 · 做漫剧时用');
     await expect(mat).toHaveAttribute('aria-expanded', 'true'); await expect(proj).toHaveAttribute('aria-expanded', 'false');
     await expect(proj.locator('.sgp-group-count')).toHaveText('7');
