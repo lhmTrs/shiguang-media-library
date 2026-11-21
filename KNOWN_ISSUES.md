@@ -17,7 +17,7 @@
 - 一些音频引擎测试固定了旧阶段源码哈希，或依赖历史验收目录、Git 元数据；干净源码副本中不能直接当作当前发布验收。
 - 部分旧云端上传夹具未满足现行 scope binding 等要求，会被安全检查拒绝。未通过取消绑定要求或弱化保护来修复测试。
 - 素材合并遇到未被合并器识别的引用表时会返回 `MERGE_REFERENCE_UNKNOWN`，包括新项目模块注册后的部分路径。此情况应保留原素材和关系，不能绕过引用检查强行合并。
-- 2026-11-20 实测（be83755 起的 `claude/fix-stale-tests`）：在全新的合成库上启动完整服务后，库里有 100 张表。`server/asset-merge.mjs` 的 `associationProof` 规定表数超过 64 就失败，所以合并预览一律返回 409 `REFERENCE_LIMIT`，还到不了上面那条 `MERGE_REFERENCE_UNKNOWN` 检查。结果是现在的库上素材合并无法使用；这条检查是遇到问题就拒绝合并的，所以原素材不受影响。`tests/asset-metadata-registration-ui.mjs` 的第 1 条（先显式登记、再手动选值并合并）因此失败，另外 3 条通过。修这个要改产品代码（调整表数上限和已识别表名单），没在修过时测试的 PR 里处理。
+- 2026-11-21（北京时间）实测（be83755 起的 `claude/fix-stale-tests`）：在全新的合成库上启动完整服务后，库里有 100 张表。`server/asset-merge.mjs` 的 `associationProof` 规定表数超过 64 就失败，所以合并预览一律返回 409 `REFERENCE_LIMIT`，还到不了上面那条 `MERGE_REFERENCE_UNKNOWN` 检查。结果是现在的库上素材合并无法使用；这条检查是遇到问题就拒绝合并的，所以原素材不受影响。`tests/asset-metadata-registration-ui.mjs` 的第 1 条（先显式登记、再手动选值并合并）因此失败，另外 3 条通过；`tests/asset-merge-ui.mjs` 的 10 条里也有 4 条（normal、choice、fault、refusal unsupported）因同一原因失败。只放开表数上限修不好：这 100 张表里有 74 张不在 `knownTables` 里（包括 `notices` 和 5 张 `project_music_*`），放开后会全部报 `MERGE_REFERENCE_UNKNOWN`。同时 `/api/asset-merges/readiness` 在这种情况下仍返回 `ready:true`，界面会让用户走到预览才报 409。SQLite 是新安装和分享包的默认模式，所以默认装法下素材合并完全不可用。修这个要改产品代码（逐张判断这些表是否引用素材 ID，并让 readiness 如实反映），没在修过时测试的 PR 里处理。
 
 ## 使用边界
 
