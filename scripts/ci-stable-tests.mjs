@@ -18,6 +18,7 @@ export const CI_FILES = Object.freeze([
   'video-media-abort-release.test.mjs',
   'file-intake-receipt-commit.test.mjs',
   'notices-poll.test.mjs',
+  'project-music-prompt-split.test.mjs',
   'video-probe-readiness.test.mjs',
 ]);
 export const CI_TIMEOUT_MS = 120_000;
