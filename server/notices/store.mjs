@@ -195,7 +195,9 @@ export class Notices {
 
   // ---------- 用户做决定（仅页面） ----------
 
-  decide(id, input) {
+  /** origin：路由层读到的请求来历（User-Agent、Sec-Fetch-*），只记录，不参与判断。
+   *  写两处：history 那一条，和 decision 对象。history 最多 40 条会被挤掉，decision 只在决定时写一次，一直留着。 */
+  decide(id, input, {origin = null} = {}) {
     onlyKeys(input, DECISION_FIELDS);
     const {action} = input;
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) fail('INVALID_REVISION', '请提供 expectedRevision');
@@ -209,8 +211,8 @@ export class Notices {
       if (!from.includes(row.status)) fail('ALREADY_DECIDED', `这张卡现在是「${STATUS_LABEL[row.status]}」，不能再这样改`, 409, {notice: this.dto(row)});
       if (action === 'redo' && input.costAcknowledged !== true) fail('COST_NOT_ACKNOWLEDGED', '重做前要先在确认框里看过花费', 400);
       const next = {redo: 'redo_decided', skip: 'skipped', later: 'later', read: 'read'}[action];
-      const data = {...row.data, decision: {action, at: now, by: 'user'}};
-      pushHistory(data, {at: now, event: 'decided', by: 'user', note: action});
+      const data = {...row.data, decision: {action, at: now, by: 'user', ...(origin ? {origin} : {})}};
+      pushHistory(data, {at: now, event: 'decided', by: 'user', note: action, ...(origin ? {origin} : {})});
       this.write(row, next, data, now);
       return {notice: this.dto(this.row(row.id))};
     })();

@@ -5,6 +5,14 @@ import express from 'express';
 import {NOTICES_AGENT_SCHEMA} from './agent-schema.mjs';
 
 const fromPage = req => req.get('sec-fetch-site') === 'same-origin';
+// 做决定时记下请求来历，事后能分出「页面点的」和「手写请求伪造了请求头」。只记录，不参与判断，不拦截。
+const header = (req, name, max) => { const v = req.get(name); return typeof v === 'string' && v ? v.slice(0, max) : null; };
+export const requestOrigin = req => ({
+  userAgent: header(req, 'user-agent', 200),
+  fetchSite: header(req, 'sec-fetch-site', 40),
+  fetchMode: header(req, 'sec-fetch-mode', 40),
+  fetchDest: header(req, 'sec-fetch-dest', 40),
+});
 const pageOnly = req => {
   if (!fromPage(req)) throw Object.assign(Error('只有用户能在网页上做决定。AI 和后台程序只能放卡片、读决定、回报执行结果，不能替用户点「重做」「不重做」「稍后」「已读」'), {status: 403, code: 'PAGE_ONLY'});
 };
@@ -25,7 +33,7 @@ export function noticesRouter(store, {withActivity = fn => fn()} = {}) {
     res.status(out.created ? 201 : 200).json(out);
   });
   route('get', '/:id', (req, res) => res.json(store.one(req.params.id)));
-  route('patch', '/:id/decision', (req, res) => { pageOnly(req); res.json(store.decide(req.params.id, req.body ?? {})); });
+  route('patch', '/:id/decision', (req, res) => { pageOnly(req); res.json(store.decide(req.params.id, req.body ?? {}, {origin: requestOrigin(req)})); });
   route('post', '/:id/result', (req, res) => res.json(store.report(req.params.id, req.body ?? {})));
 
   router.use((_req, res) => res.status(404).json({error: '待处理接口不存在', code: 'NOTICES_ROUTE_NOT_FOUND'}));

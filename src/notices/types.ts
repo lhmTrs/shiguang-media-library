@@ -11,12 +11,15 @@ export type Notice = {
   typeLabel: string; title: string; context: string | null; costNote: string | null;
   owner: {session: string | null; id: string | null; gone: boolean} | null; unassigned: boolean; links: NoticeLink[];
   occurredAt: number; postedBy: string | null;
-  decision: {action: NoticeAction; at: number; by: 'user'} | null;
+  decision: {action: NoticeAction; at: number; by: 'user'; origin?: NoticeOrigin} | null;
   result: {state: 'running' | 'done' | 'failed'; at: number; by: string | null; note: string | null} | null;
   resolution: {at: number; note: string} | null;
   previousId: string | null; nextId: string | null;
+  /** 每一步的记录；用户做决定的那一条带 origin（请求来历，只记录不判断）。 */
+  history: {at: number; event: string; by: string; note?: string; origin?: NoticeOrigin}[];
   revision: number; createdAt: number; updatedAt: number;
 };
+export type NoticeOrigin = {userAgent: string | null; fetchSite: string | null; fetchMode: string | null; fetchDest: string | null};
 export type NoticeSummary = {pending: number; info: number; later: number; inflight: number; ended: number};
 export type NoticeList = {schemaVersion: number; readAt: number; summary: NoticeSummary; notices: Notice[]; endedTotal: number};
 
