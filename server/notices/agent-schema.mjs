@@ -2,10 +2,10 @@
 import {LINK_VIEWS, STATUS_LABEL} from './store.mjs';
 
 export const NOTICES_AGENT_SCHEMA = {
-  version: '2026-11-21.1',
+  version: '2026-11-21.2',
   what: '「待处理」：后台任务的结果放成卡片，用户在页面顶栏「待处理 N」里拍板或已读。卡片分两种：decision（要用户拍板：重做、知道了不重做、稍后）和 info（只是告知：已读）。',
   roles: [
-    '只有用户能做决定：PATCH /api/notices/<id>/decision 要求浏览器自带的 Sec-Fetch-Site: same-origin，只接受网页发来的请求。AI 和后台程序不得伪造这个请求头，也不得调用这个接口；这条限制是防误用约定，不是技术上的安全边界。',
+    '只有用户能做决定：PATCH /api/notices/<id>/decision 要求浏览器自带的 Sec-Fetch-Site: same-origin，只接受网页发来的请求。AI 和后台程序不得伪造这个请求头，也不得调用这个接口；这条限制是防误用约定，不是技术上的安全边界。每次决定都会在卡片的 history 里记下请求来历（origin：User-Agent、Sec-Fetch-Site、Sec-Fetch-Mode、Sec-Fetch-Dest），事后能查出不是从页面点的决定。',
     'AI 和后台程序只能做三件事：放卡片（POST /api/notices）、读卡片和用户的决定（GET）、回报执行结果（POST /api/notices/<id>/result）。',
     '用户点「重做」只是记下决定，拾光不会执行任何东西，也不会花钱。负责的一方（例如 Updream 跟进器或负责的会话）读到 status=redo_decided 后自己去执行，开始时报 running，结束时报 done 或 failed。',
     '「稍后」不会自动提醒；卡片上只显示已经挂了几天，用户自己决定什么时候处理。不要因为卡片挂着就替用户做决定，也不要反复放同一张卡来催。',
@@ -46,7 +46,7 @@ export const NOTICES_AGENT_SCHEMA = {
     summary: 'GET /api/notices/summary → {summary: {pending, info, later, inflight, ended}}；pending 就是顶栏的 N',
     findMine: '执行方找用户决定重做的卡：GET /api/notices?source=<你的来源>&status=redo_decided',
     statuses: STATUS_LABEL,
-    fields: 'notice.status 是当前状态；notice.decision = {action: redo|skip|later|read, at, by: user}；notice.result = {state, at, by, note}；notice.nextId 是又失败后新开的那张卡。',
+    fields: 'notice.status 是当前状态；notice.decision = {action: redo|skip|later|read, at, by: user}；notice.result = {state, at, by, note}；notice.nextId 是又失败后新开的那张卡；notice.history[] 是每一步的记录，用户做决定的那一条带 origin = {userAgent, fetchSite, fetchMode, fetchDest}。',
   },
   result: {
     request: 'POST /api/notices/<id>/result（带 x-local-token），body {state: running | done | failed, session: 必填, note?: 最多 500 字, next?: {typeLabel?, title?, context?, costNote?}}',

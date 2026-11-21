@@ -6,6 +6,7 @@ import {createPortal} from 'react-dom';
 import {ArrowUpRight, ChevronDown, CircleAlert, Inbox, X} from 'lucide-react';
 import {readPalette, type Palette} from '../project-music/palette';
 import {beijingTime} from '../project-music/time';
+import {startPolling} from './poll';
 import type {Notice, NoticeAction, NoticeList, NoticesOpenLink, NoticesRequest} from './types';
 import '../project-music/project-music.css';
 import './notices.css';
@@ -116,17 +117,8 @@ export function NoticesEntry({request, onOpenLink}: {request: NoticesRequest; on
     } catch (e) { if (id === seq.current) setError(message(e)); }
   }, [request]);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined, stopped = false;
-    const tick = async () => {
-      if (!document.hidden) await refresh(open);
-      if (!stopped) timer = setTimeout(tick, open ? OPEN_INTERVAL : CLOSED_INTERVAL);
-    };
-    void tick();
-    const visible = () => { if (!document.hidden) { clearTimeout(timer); void tick(); } };
-    document.addEventListener('visibilitychange', visible);
-    return () => { stopped = true; clearTimeout(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [open, refresh]);
+  // 最多一条轮询链（见 poll.ts）：页面从隐藏变回可见时不会多出一条。
+  useEffect(() => startPolling(() => refresh(open), open ? OPEN_INTERVAL : CLOSED_INTERVAL), [open, refresh]);
 
   const show = useCallback(() => { setPalette(readPalette()); setNow(Date.now()); setActionError(''); setOpen(true); }, []);
   const hide = useCallback(() => { setOpen(false); setConfirm(null); entry.current?.focus(); }, []);
@@ -150,9 +142,22 @@ export function NoticesEntry({request, onOpenLink}: {request: NoticesRequest; on
       if (action === 'redo') setConfirm(null);
       await refresh(true);
     } catch (e) {
-      const err = e as Error & {code?: string};
-      const text = err.code === 'REVISION_CONFLICT' || err.code === 'ALREADY_DECIDED' ? '这张卡刚刚有了变化，已经刷新，请看一眼再决定。' : message(e);
-      if (action === 'redo') setConfirmError(text); else setActionError(text);
+      const err = e as Error & {code?: string; details?: {notice?: Notice}};
+      const changed = err.code === 'REVISION_CONFLICT' || err.code === 'ALREADY_DECIDED';
+      if (action === 'redo' && changed) {
+        // 来源中途改了花费等：确认框换成最新的这张卡，再点「确定重做」用的就是新的版本号。
+        const latest = err.details?.notice ?? await request<{notice: Notice}>(`/notices/${n.id}`).then(r => r.notice, () => null);
+        if (latest?.awaitingUser) {
+          setConfirm(latest);
+          setConfirmError(latest.costNote !== n.costNote ? '这张卡刚刚有了变化，花费也变了，框里已经换成最新的，请再看一眼。' : '这张卡刚刚有了变化，框里已经换成最新的，请再看一眼。');
+        } else {
+          setConfirm(null);
+          setActionError('这张卡刚刚有了变化，已经不用再决定了，已经刷新。');
+        }
+      } else {
+        const text = changed ? '这张卡刚刚有了变化，已经刷新，请看一眼再决定。' : message(e);
+        if (action === 'redo') setConfirmError(text); else setActionError(text);
+      }
       await refresh(true);
     } finally { setBusy(null); }
   }, [request, refresh]);

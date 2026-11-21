@@ -105,14 +105,27 @@ test('待处理：放卡片、同编号只更新、只有页面能拍板、重�
   // 重做要先看过花费（页面的确认框）
   assert.equal((await s.call('PATCH', `${N}/${A.id}/decision`, {action: 'redo', expectedRevision: cur.revision}, {asPage: true})).body.code, 'COST_NOT_ACKNOWLEDGED');
 
-  // 重做：只记下决定，不执行任何东西
-  r = await s.call('PATCH', `${N}/${A.id}/decision`, {action: 'redo', expectedRevision: cur.revision, costAcknowledged: true}, {asPage: true});
+  // 重做：只记下决定，不执行任何东西（带上浏览器会自带的请求头，User-Agent 故意写长）
+  const browserish = {'user-agent': 'Mozilla/5.0 SyntheticBrowser ' + 'x'.repeat(300), 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty'};
+  r = await s.call('PATCH', `${N}/${A.id}/decision`, {action: 'redo', expectedRevision: cur.revision, costAcknowledged: true}, {asPage: true, headers: browserish});
   assert.equal(r.status, 200, r.text);
   assert.equal(r.body.notice.status, 'redo_decided');
   assert.equal(r.body.notice.statusLabel, '已决定重做');
   assert.equal(r.body.notice.awaitingUser, false);
   assert.equal(r.body.notice.decision.action, 'redo');
   assert.equal(r.body.notice.decision.by, 'user');
+  // 每次决定都在历史里记下请求来历（只记录，不判断）：GET 读得到
+  const decidedLog = (await s.call('GET', `${N}/${A.id}`)).body.notice.history.filter(h => h.event === 'decided');
+  assert.deepEqual(decidedLog.map(h => h.note), ['later', 'redo']);
+  const [laterOrigin, redoOrigin] = decidedLog.map(h => h.origin);
+  // 只伪造了 Sec-Fetch-Site 的程序请求：Node 的 fetch 会自己带 Sec-Fetch-Mode: cors，但没有 Sec-Fetch-Dest，User-Agent 也不是浏览器
+  assert.deepEqual([laterOrigin.fetchSite, laterOrigin.fetchDest], ['same-origin', null]);
+  assert.ok(laterOrigin.userAgent && !/Mozilla/.test(laterOrigin.userAgent), laterOrigin.userAgent);
+  assert.deepEqual([redoOrigin.fetchSite, redoOrigin.fetchMode, redoOrigin.fetchDest], ['same-origin', 'cors', 'empty']);
+  assert.equal(redoOrigin.userAgent.length, 200, 'User-Agent 截到 200 字');
+  assert.ok(redoOrigin.userAgent.startsWith('Mozilla/5.0 SyntheticBrowser '));
+  // 被拒绝的请求（PAGE_ONLY）不改卡片，也就不留记录
+  assert.ok(!(await s.call('GET', `${N}/${A.id}`)).body.notice.history.some(h => h.event === 'decided' && h.note === 'skip'));
   // 不能反悔成别的决定
   assert.equal((await s.call('PATCH', `${N}/${A.id}/decision`, {action: 'skip', expectedRevision: r.body.notice.revision}, {asPage: true})).body.code, 'ALREADY_DECIDED');
   // 执行方找到它

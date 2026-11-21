@@ -195,7 +195,8 @@ export class Notices {
 
   // ---------- 用户做决定（仅页面） ----------
 
-  decide(id, input) {
+  /** origin：路由层读到的请求来历（User-Agent、Sec-Fetch-*），只记进历史，不参与判断。 */
+  decide(id, input, {origin = null} = {}) {
     onlyKeys(input, DECISION_FIELDS);
     const {action} = input;
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) fail('INVALID_REVISION', '请提供 expectedRevision');
@@ -210,7 +211,7 @@ export class Notices {
       if (action === 'redo' && input.costAcknowledged !== true) fail('COST_NOT_ACKNOWLEDGED', '重做前要先在确认框里看过花费', 400);
       const next = {redo: 'redo_decided', skip: 'skipped', later: 'later', read: 'read'}[action];
       const data = {...row.data, decision: {action, at: now, by: 'user'}};
-      pushHistory(data, {at: now, event: 'decided', by: 'user', note: action});
+      pushHistory(data, {at: now, event: 'decided', by: 'user', note: action, ...(origin ? {origin} : {})});
       this.write(row, next, data, now);
       return {notice: this.dto(this.row(row.id))};
     })();

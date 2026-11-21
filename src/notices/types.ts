@@ -15,8 +15,11 @@ export type Notice = {
   result: {state: 'running' | 'done' | 'failed'; at: number; by: string | null; note: string | null} | null;
   resolution: {at: number; note: string} | null;
   previousId: string | null; nextId: string | null;
+  /** 每一步的记录；用户做决定的那一条带 origin（请求来历，只记录不判断）。 */
+  history: {at: number; event: string; by: string; note?: string; origin?: NoticeOrigin}[];
   revision: number; createdAt: number; updatedAt: number;
 };
+export type NoticeOrigin = {userAgent: string | null; fetchSite: string | null; fetchMode: string | null; fetchDest: string | null};
 export type NoticeSummary = {pending: number; info: number; later: number; inflight: number; ended: number};
 export type NoticeList = {schemaVersion: number; readAt: number; summary: NoticeSummary; notices: Notice[]; endedTotal: number};
 

@@ -23,8 +23,9 @@ test('待处理：顶栏 N、四组抽屉、重做先确认花费、稍后不计
   const s = await startServer(t, base);
   const day = 86_400_000;
   const post = async body => { const r = await s.call('POST', '/notices', {source: 'synthetic-runner', session: '合成跟进器', ...body}); assert.equal(r.status, 201, r.text); return r.body.notice; };
-  const A = await post({key: 'job-a', kind: 'decision', typeLabel: '生成失败 · 超时', title: '合成短剧 · 56 集 · S2 镜', context: '合成：平台返回任务执行超时',
-    costNote: '重做约花 1 次生成费', owner: {session: '合成导演会话', id: 'local_synthetic'}, links: [{label: '看这首歌', view: 'projectMusic', projectId: seed.projectId}], occurredAt: Date.now() - 3 * day});
+  const bodyA = {key: 'job-a', kind: 'decision', typeLabel: '生成失败 · 超时', title: '合成短剧 · 56 集 · S2 镜', context: '合成：平台返回任务执行超时',
+    costNote: '重做约花 1 次生成费', owner: {session: '合成导演会话', id: 'local_synthetic'}, links: [{label: '看这镜', view: 'storyboard', projectId: seed.projectId}], occurredAt: Date.now() - 3 * day};
+  const A = await post(bodyA);
   const B = await post({key: 'job-b', kind: 'decision', typeLabel: '生成失败 · 参考图尺寸', title: '合成短剧 · 56 集 · S5 镜',
     costNote: '重做约花 1 次生成费', owner: {session: '已经不在的会话', gone: true}, occurredAt: Date.now() - 2 * day});
 
@@ -52,7 +53,7 @@ test('待处理：顶栏 N、四组抽屉、重做先确认花费、稍后不计
   // 卡片内容：类型、标题、来源和负责、发生时间和挂了几天、花费、链接
   const cardA = drawer.locator(`[data-notice-id="${A.id}"]`);
   const textA = await cardA.innerText();
-  for (const want of ['生成失败 · 超时', '合成短剧 · 56 集 · S2 镜', 'synthetic-runner', '负责：合成导演会话', '已挂 3 天', '重做约花 1 次生成费', '看这首歌', '重做…', '知道了，不重做', '稍后'])
+  for (const want of ['生成失败 · 超时', '合成短剧 · 56 集 · S2 镜', 'synthetic-runner', '负责：合成导演会话', '已挂 3 天', '重做约花 1 次生成费', '看这镜', '重做…', '知道了，不重做', '稍后'])
     assert.ok(textA.includes(want), `卡片缺「${want}」：${textA}`);
   assert.match(textA, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   const cardB = drawer.locator(`[data-notice-id="${B.id}"]`);
@@ -77,7 +78,17 @@ test('待处理：顶栏 N、四组抽屉、重做先确认花费、稍后不计
   await dialog.getByRole('button', {name: '取消'}).click();
   await dialog.waitFor({state: 'detached'});
   assert.equal((await s.call('GET', `/notices/${A.id}`)).body.notice.status, 'open');
+  // 确认框开着时来源改了花费：第一次点「确定重做」被拒，框里换成新花费；再点才记下
   await cardA.getByRole('button', {name: '重做…'}).click();
+  await dialog.waitFor();
+  const repost = await s.call('POST', '/notices', {source: 'synthetic-runner', session: '合成跟进器', ...bodyA, costNote: '重做约花 2 次生成费'});
+  assert.deepEqual([repost.status, repost.body.updated], [200, true], repost.text);
+  assert.match(await dialog.locator('.sgn-modal-cost').innerText(), /重做约花 1 次生成费/, '框里还是打开时看到的花费');
+  await dialog.getByRole('button', {name: '确定重做'}).click();
+  await dialog.getByRole('alert').filter({hasText: '花费也变了'}).waitFor();
+  await dialog.locator('.sgn-modal-cost', {hasText: '重做约花 2 次生成费'}).waitFor();
+  assert.equal((await s.call('GET', `/notices/${A.id}`)).body.notice.status, 'open', '被拒的那一下什么都没记');
+  if (shots) await page.screenshot({path: path.join(shots, 'notices-redo-cost-changed.png')});
   await dialog.getByRole('button', {name: '确定重做'}).click();
   await dialog.waitFor({state: 'detached'});
   await group('要你拍板').getByRole('heading', {name: /已决定，等执行/}).waitFor();
@@ -86,6 +97,14 @@ test('待处理：顶栏 N、四组抽屉、重做先确认花费、稍后不计
   await page.waitForFunction(() => !document.querySelector('.sgn-entry .sgn-count'));
   const decided = (await s.call('GET', `/notices/${A.id}`)).body.notice;
   assert.deepEqual([decided.status, decided.decision.action, decided.decision.by], ['redo_decided', 'redo', 'user']);
+  assert.equal(decided.costNote, '重做约花 2 次生成费');
+  // 页面点的决定：历史里记下浏览器自带的请求来历（只有成功的那一下，被拒的不留）
+  const pageDecisions = decided.history.filter(h => h.event === 'decided');
+  assert.equal(pageDecisions.length, 1);
+  const o = pageDecisions[0].origin;
+  assert.deepEqual([o.fetchSite, o.fetchMode, o.fetchDest], ['same-origin', 'cors', 'empty']);
+  assert.match(o.userAgent, /Mozilla\/5\.0 .*Chrome\//);
+  assert.ok(o.userAgent.length <= 200);
 
   // 执行方报「又失败」：原卡进「已结束」，另开一张新卡等你拍板
   const failed = await s.call('POST', `/notices/${A.id}/result`, {state: 'failed', session: '合成跟进器', note: '合成：又超时了'});
