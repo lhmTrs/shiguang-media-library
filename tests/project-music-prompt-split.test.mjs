@@ -44,6 +44,27 @@ const cases = [
   ['规则 4 不算：第一行没有分隔符', 'dreamy synth pop female vocal\n\n' + L, {style: '', lyrics: 'dreamy synth pop female vocal\n\n' + L}],
   ['规则 4 不算：第一行后面没有空行（多行一律算歌词）', '流行, 女声/钢琴\n' + L, {style: '', lyrics: '流行, 女声/钢琴\n' + L}],
   ['规则 4 不算：风格词是两段，但第一段两行', '流行, 女声\n钢琴, 慢板\n\n' + L, {style: '', lyrics: '流行, 女声\n钢琴, 慢板\n\n' + L}],
+  // ---- 规则 4 收紧（PR #142 独验 P2-1）：每段都要能被风格词表完全解释；下面的歌词第一行（独验编的难例）不能当风格 ----
+  ['规则 4 不算（独验难例）：古风长街，琵琶声声慢', '古风长街，琵琶声声慢\n\n' + L, {style: '', lyrics: '古风长街，琵琶声声慢\n\n' + L}],
+  ['规则 4 不算（独验难例）：二胡声声，唢呐长鸣', '二胡声声，唢呐长鸣\n\n' + L, {style: '', lyrics: '二胡声声，唢呐长鸣\n\n' + L}],
+  ['规则 4 不算（独验难例）：伤感的夜，治愈的风', '伤感的夜，治愈的风\n\n' + L, {style: '', lyrics: '伤感的夜，治愈的风\n\n' + L}],
+  ['规则 4 不算（独验难例）：摇滚不死，民谣不老', '摇滚不死，民谣不老\n\n' + L, {style: '', lyrics: '摇滚不死，民谣不老\n\n' + L}],
+  ['规则 4 不算（独验难例）：爵士酒馆，蓝调长夜', '爵士酒馆，蓝调长夜\n\n' + L, {style: '', lyrics: '爵士酒馆，蓝调长夜\n\n' + L}],
+  ['规则 4 不算（独验难例）：Pop the bottle, feel the beat tonight', 'Pop the bottle, feel the beat tonight\n\n' + L, {style: '', lyrics: 'Pop the bottle, feel the beat tonight\n\n' + L}],
+  ['规则 4 不算（独验难例）：Jazz in the rain, blues at dawn', 'Jazz in the rain, blues at dawn\n\n' + L, {style: '', lyrics: 'Jazz in the rain, blues at dawn\n\n' + L}],
+  ['规则 4 不算（独验难例）：Strings of fate, drums of war', 'Strings of fate, drums of war\n\n' + L, {style: '', lyrics: 'Strings of fate, drums of war\n\n' + L}],
+  ['规则 4 不算（独验难例）：Latin heat, summer nights', 'Latin heat, summer nights\n\n' + L, {style: '', lyrics: 'Latin heat, summer nights\n\n' + L}],
+  ['规则 4 不算（独验难例）：月光 piano，晚风 guitar', '月光 piano，晚风 guitar\n\n' + L, {style: '', lyrics: '月光 piano，晚风 guitar\n\n' + L}],
+  ['规则 4 不算（独验难例）：Hip hop 少年，街头 rap', 'Hip hop 少年，街头 rap\n\n' + L, {style: '', lyrics: 'Hip hop 少年，街头 rap\n\n' + L}],
+  ['规则 4 不算（独验难例）：古风雨，琵琶情', '古风雨，琵琶情\n\n' + L, {style: '', lyrics: '古风雨，琵琶情\n\n' + L}],
+  ['规则 4 不算（独验难例）：Epic night, chill vibes', 'Epic night, chill vibes\n\n' + L, {style: '', lyrics: 'Epic night, chill vibes\n\n' + L}],
+  ['规则 4：修饰词、对唱、年代和速度也能解释掉：acoustic, warm, intimate', "acoustic, warm, intimate\n\n" + L, {style: "acoustic, warm, intimate", lyrics: L}],
+  ['规则 4：修饰词、对唱、年代和速度也能解释掉：温柔女声，钢琴', "温柔女声，钢琴\n\n" + L, {style: "温柔女声，钢琴", lyrics: L}],
+  ['规则 4：修饰词、对唱、年代和速度也能解释掉：情歌，男女对唱，吉他', "情歌，男女对唱，吉他\n\n" + L, {style: "情歌，男女对唱，吉他", lyrics: L}],
+  ["规则 4：修饰词、对唱、年代和速度也能解释掉：80's synth pop, female vocals, 120bpm", "80's synth pop, female vocals, 120bpm\n\n" + L, {style: "80's synth pop, female vocals, 120bpm", lyrics: L}],
+  // ---- 规则 4 的前置条件（独验 P3）----
+  ['规则 4 不算：第一行以句号结尾', '流行，钢琴。\n\n' + L, {style: '', lyrics: '流行，钢琴。\n\n' + L}],
+  ['规则 4 不算：有一段超过 30 字（哪怕全是风格词）', 'pop rock folk jazz blues soul piano guitar, female vocal\n\n' + L, {style: '', lyrics: 'pop rock folk jazz blues soul piano guitar, female vocal\n\n' + L}],
 ];
 
 for (const [name, text, want] of cases) {
