@@ -192,6 +192,27 @@ test('待处理：放卡片、同编号只更新、只有页面能拍板、重�
   // 历史里记着每一步，决定都是用户做的
   const hist = (await s.call('GET', `${N}/${A.id}`)).body.notice.history.map(h => [h.event, h.by]);
   assert.deepEqual(hist, [['posted', '合成跟进器'], ['updated', '合成跟进器'], ['updated', '合成跟进器'], ['decided', 'user'], ['decided', 'user'], ['running', '合成跟进器'], ['failed', '合成跟进器']]);
+  // 不重做、已读也记来历，写在 decision.origin 里
+  for (const id of [C.id, D.id]) assert.equal((await s.call('GET', `${N}/${id}`)).body.notice.decision.origin.fetchSite, 'same-origin');
+
+  // 拍板之后来源用同一个编号再放 41 次：history 里 decided 那条被挤掉，decision.origin 还在
+  const E = (await s.call('POST', N, card({key: 'job-crowd'}))).body.notice;
+  r = await s.call('PATCH', `${N}/${E.id}/decision`, {action: 'redo', expectedRevision: E.revision, costAcknowledged: true}, {asPage: true, headers: browserish});
+  assert.equal(r.status, 200, r.text);
+  const decidedOrigin = r.body.notice.decision.origin;
+  assert.deepEqual([decidedOrigin.fetchSite, decidedOrigin.fetchMode, decidedOrigin.fetchDest, decidedOrigin.userAgent.length], ['same-origin', 'cors', 'empty', 200]);
+  for (let i = 1; i <= 41; i++) {
+    r = await s.call('POST', N, card({key: 'job-crowd', context: `合成：第 ${i} 次检查，还在排队`}));
+    assert.equal(r.body.updated, true, r.text);
+  }
+  const crowded = (await s.call('GET', `${N}/${E.id}`)).body.notice;
+  assert.equal(crowded.status, 'redo_decided');
+  assert.equal(crowded.history.length, 40);
+  assert.ok(!crowded.history.some(h => h.event === 'decided'), 'decided 那条已经被挤出 history');
+  assert.deepEqual(crowded.decision, {action: 'redo', at: crowded.decision.at, by: 'user', origin: decidedOrigin}, '来历还留在 decision 里');
+  // 执行方回报之后也还在
+  r = await s.call('POST', `${N}/${E.id}/result`, {state: 'running', session: '合成跟进器'});
+  assert.deepEqual(r.body.notice.decision.origin, decidedOrigin);
 });
 
 test('待处理：项目音乐「待 AI 补写」自动成为只是告知的卡；补完自动结束；已读后不再挂起', async t => {

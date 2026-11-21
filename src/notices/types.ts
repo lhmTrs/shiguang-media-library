@@ -11,7 +11,7 @@ export type Notice = {
   typeLabel: string; title: string; context: string | null; costNote: string | null;
   owner: {session: string | null; id: string | null; gone: boolean} | null; unassigned: boolean; links: NoticeLink[];
   occurredAt: number; postedBy: string | null;
-  decision: {action: NoticeAction; at: number; by: 'user'} | null;
+  decision: {action: NoticeAction; at: number; by: 'user'; origin?: NoticeOrigin} | null;
   result: {state: 'running' | 'done' | 'failed'; at: number; by: string | null; note: string | null} | null;
   resolution: {at: number; note: string} | null;
   previousId: string | null; nextId: string | null;

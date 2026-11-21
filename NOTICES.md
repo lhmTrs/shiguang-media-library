@@ -16,7 +16,7 @@
 
 ## 规矩
 
-- **只有你能做决定**：`PATCH /api/notices/:id/decision` 要求浏览器自带的 `Sec-Fetch-Site: same-origin`，做法和项目音乐「仅页面」的操作一样。AI 和后台程序只能放卡片、读决定、回报执行结果。页面和 AI 用的是同一种本机会话，刻意伪造请求头仍能绕过，所以这是防误用，不是安全边界。为了事后查得出来，每次决定都在卡片历史（`history`）那一条里记下请求来历 `origin`：`userAgent`（截到 200 字）、`fetchSite`、`fetchMode`、`fetchDest`。浏览器点的通常是 `same-origin / cors / empty` 加浏览器的 User-Agent；只伪造了 `Sec-Fetch-Site` 的程序请求，`fetchDest` 是空的，User-Agent 也不像浏览器。只记录，不参与判断；被拒绝的请求不改卡片，也不留记录。
+- **只有你能做决定**：`PATCH /api/notices/:id/decision` 要求浏览器自带的 `Sec-Fetch-Site: same-origin`，做法和项目音乐「仅页面」的操作一样。AI 和后台程序只能放卡片、读决定、回报执行结果。页面和 AI 用的是同一种本机会话，刻意伪造请求头仍能绕过，所以这是防误用，不是安全边界。为了事后查得出来，每次决定（重做、不重做、稍后、已读）都记下请求来历 `origin`，写在 `decision.origin`（最近一次决定，一直保留）和卡片历史（`history`，最多留最近 40 条，会被挤掉）那一条里：`userAgent`（截到 200 字）、`fetchSite`、`fetchMode`、`fetchDest`。浏览器点的通常是 `same-origin / cors / empty` 加浏览器的 User-Agent；只伪造了 `Sec-Fetch-Site` 的程序请求，`fetchDest` 是空的，User-Agent 也不像浏览器。只记录，不参与判断；被拒绝的请求不改卡片，也不留记录。
 - **同一件事只有一张卡**：放卡片时带「来源 + 原编号」（`source` + `key`，例：`updream` + job 编号）。卡还没结束时，同一个编号再放一次只更新原卡（标题、说明、花费、负责的会话、链接），状态和你的决定不变，发生时间保留第一次的。卡已经结束时，再放一次不会让它重新挂起来；真有新情况要用新的原编号。
 - **负责的会话不在了**：放卡片的一方用同一个编号再放一次，`owner.gone = true`，页面标「待分派」，由项目总监或开发统筹认领（认领就是再放一次，写新的 owner）。
 - **拾光内置的来源**（目前是 `project-music`）由拾光自己放卡，外部放会被拒绝（403 `SOURCE_RESERVED`）。
