@@ -66,3 +66,17 @@ test('concurrent root revision and real approval revocation cannot bypass author
  const f=await fixture(t),s=await imported(f),hash=f.catalog.hash.bind(f.catalog);let touched=false;f.catalog.hash=async(...a)=>{const r=await hash(...a);if(!touched){touched=true;f.lib.db.prepare('UPDATE roots SET revision=revision+1,reconciled_ms=?').run(Date.now());}return r;};await failed(f,s,{},'RENDER_CONFLICT');f.catalog.hash=hash;await link(f,s);
  const g=await fixture(t),v=await imported(g),check=g.catalog.hash.bind(g.catalog);let revoke=false;g.catalog.hash=async(...a)=>{const r=await check(...a);if(!revoke){revoke=true;g.lib.db.prepare('DELETE FROM storyboard_video_approvals WHERE id=?').run(v.id);}return r;};const input=linkInput(g,v);let r;try{r=await g.renders.save(g.project.id,g.timelineId,input);}catch(e){assert.ok(['RENDER_CONFLICT','RENDER_SOURCE_UNTRUSTED'].includes(e.code));r=g.renders.request(g.project.id,g.timelineId,input.requestId);}r=await settled(g,r);assert.equal(r.status,'failed');assert.equal(g.renders.row(g.project.id,g.timelineId),undefined);
 });
+// 旧 W05 测过“偏移越界被拒”（offset 999999 → 400）；#107 换成新流程后这道上限（±86400 秒）还没有测试。
+test('render offset outside ±86400 seconds is rejected before any write; the boundary itself links',async t=>{
+ const f=await fixture(t),s=await imported(f);
+ for(const offset of [86401,-86401,999999,Number.NaN,Number.POSITIVE_INFINITY]){
+  const input=linkInput(f,s,{offset});
+  await assert.rejects(Promise.resolve().then(()=>f.renders.save(f.project.id,f.timelineId,input)),e=>e.code==='INVALID_INPUT'&&e.accepted===false&&e.status===400,String(offset));
+  assert.equal(f.renders.row(f.project.id,f.timelineId),undefined,String(offset));
+  assert.equal((await f.renders.get(f.project.id,f.timelineId,{schema:2})).revision,0);
+ }
+ const far=await link(f,s,{offset:-86400});
+ assert.equal((await f.renders.get(f.project.id,f.timelineId,{schema:2})).offset,-86400,JSON.stringify(far));
+ await link(f,s,{offset:86400,expectedRevision:1});
+ assert.equal((await f.renders.get(f.project.id,f.timelineId,{schema:2})).offset,86400);
+});
