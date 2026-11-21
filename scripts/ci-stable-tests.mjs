@@ -24,7 +24,6 @@ export const CI_TIMEOUT_MS = 120_000;
 
 const trackedOutsideCi = Object.freeze([
   { file: 'concierge-attachments.test.mjs', issue: 7, reason: 'Local PDF/Office tool and baseline-failure investigation' },
-  { file: 'timeline-render-picker.test.mjs', issue: 7, reason: 'Native App/picker baseline-failure investigation' },
   { file: 'audio-engine-installer.test.mjs', issue: 8, reason: 'Separate concurrent-installer qualification' },
 ]);
 

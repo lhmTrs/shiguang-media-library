@@ -49,7 +49,6 @@ import { projectSeriesRouter } from "./project-series/router.mjs";
 import { projectAgentGuide } from "./project-agent-guide.mjs";
 import { FolderBrowser } from "./folder-browser.mjs";
 import { createFolderPicker, folderPickerAvailable } from "./folder-picker.mjs";
-import { createFilePicker, filePickerAvailable } from "./file-picker.mjs";
 import { MetadataBatches, metadataCapabilities } from "./metadata-batches.mjs";
 import { createManifestSync, reconcileRoot, relocateRoot, startWatcher } from "./reconcile.mjs";
 import { dataDirectory } from "./runtime.mjs";
@@ -457,7 +456,6 @@ app.get("/api/session", (req, res) => {
     token,
     trashAvailable: !!nativeTrash,
     folderPickerAvailable: folderPickerAvailable(),
-    renderFilePickerAvailable: filePickerAvailable(),
     instanceId: mysqlStorage.sourceId,
     app: "shiguang-local-media",
   });

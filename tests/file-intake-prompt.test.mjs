@@ -27,7 +27,7 @@ async function fixture(t) {
     lib.enqueue=()=>{};
     const projects=new Projects(lib).init(),assets=new ProjectAssets(lib).init();
     const storyboards=new StoryboardDatabase(lib,assets).init();
-    const entry=createStoryboardVideo({lib,storyboards,command:'ffprobe'});
+    const entry=createStoryboardVideo({lib,storyboards,command:'ffprobe',instanceId:dataDir});
     const catalog=new ProjectVideos(entry.store,{directory:path.join(directory,'video')});
     const generic=await new ManagedIntakeCatalog({catalog,assets,dataDir,directory}).init();
     const preferences=await new IntakePreferences({dataDir,libraryId:dataDir}).init();

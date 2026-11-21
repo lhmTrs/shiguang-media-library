@@ -31,7 +31,7 @@
 | 文件 / 用例 | 旧报告 | 本次准确观察与处理 |
 | --- | --- | --- |
 | `concierge-attachments.test.mjs` / `PDF and Office existing local tools parse bounded text without execution` | 用户报告在 `698825d` 失败 | 在原 `698825d67461705339fd5ff32e94a24cb1044793` 和当前未改该模块的源码上，使用本机 Node 22.7.0、现有 `pdftotext`/`unzip` 与锁定依赖，分别定向 1/1 通过，退出 0、无遗留组内资源。当前未复现，不将旧失败抹成已修复；缺本机解析工具的环境仍可能失败。未安装工具、未执行附件或真实模型。 |
-| `timeline-render-picker.test.mjs` / `W05 original private App: validate/auth/type guards, cancel zero saves, success exactly one original save` | 用户报告在 `698825d` 失败 | 原基线和当前均在启动前复现 `ERR_MODULE_NOT_FOUND`：夹具只复制根模块与 `sql/`，漏掉新增子模块。修正夹具复制嵌套源码、内置规则资源，并保留选择器的其它真实导出；原来只替换 `createFilePicker` 的包装器漏导出 `createVideoFilesPicker`。本批不改产品源码、鉴权或保存断言。修复后原 HTTP App 用例 1/1 通过，仍严格检查鉴权/Origin/类型/偏移、取消零保存和成功恰一次保存；App 正常关闭，退出 0。 |
+| `timeline-render-picker.test.mjs` / `W05 original private App: validate/auth/type guards, cancel zero saves, success exactly one original save` | 用户报告在 `698825d` 失败 | 原基线和当前均在启动前复现 `ERR_MODULE_NOT_FOUND`：夹具只复制根模块与 `sql/`，漏掉新增子模块。修正夹具复制嵌套源码、内置规则资源，并保留选择器的其它真实导出；原来只替换 `createFilePicker` 的包装器漏导出 `createVideoFilesPicker`。本批不改产品源码、鉴权或保存断言。修复后原 HTTP App 用例 1/1 通过，仍严格检查鉴权/Origin/类型/偏移、取消零保存和成功恰一次保存；App 正常关闭，退出 0。**2026-11-20 更新：** #107 改为从项目视频里选成片，去掉了本地路径和原生选片接口，这个文件测的功能已不存在，已删除；新流程由 `project-renders-v2`、`project-render-contract`、`project-render-reference-guards` 和 `project-usage-render-*` 覆盖。 |
 | `audio-engine-installer.test.mjs` / 双进程同时安装 | 作者报告偶发失败 | #8 单独跟踪同步/异步 `ENGINE_BUSY` 两种竞态与夹具收尾；不在这里把作者观察写成该任务已合并或真实引擎资格。 |
 
 本次 W05 夹具修复的中间启动失败（缺选择器导出、缺内置规则）保留为真实失败；这些 App 在监听前退出 1，不能写成正常关闭 0。最终通过场才取得 `APPLICATION_CLOSED_KNOWN` 和原退出 0。PDF/Office 及 W05 的两份原基线结果分别是 PASS / FAIL，不归因于主题或资产界面 PR。
@@ -40,7 +40,6 @@
 
 ```sh
 npm test -- --file concierge-attachments.test.mjs --test-name-pattern 'PDF and Office existing local tools parse bounded text without execution'
-npm test -- --file timeline-render-picker.test.mjs --test-name-pattern 'W05 original private App'
 ```
 
 作者在 PR #26 报告的非云端全套 1048 项中 9 失败、1 跳过，是其对应基线/环境的历史结果；本批没有重新运行并确认该完整清单，不能将剩余未逐项复现的问题冒称当前已解决。上述定向实测也不代表 W05 浏览器分支、所有文档解析工具版本、Windows/Linux 或完整 MySQL 验证通过。
