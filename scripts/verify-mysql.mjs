@@ -1,3 +1,4 @@
+import {activateAndRestart} from '../tests/helpers/mysql-activate.mjs';
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -63,12 +64,12 @@ try {
     .init()
     .create({ name: "迁移空分类" });
   const emptyTag = new Tags(lib).init().create({ name: "迁移空标签" });
-  const projects = new Projects(lib).init();
+  let projects = new Projects(lib).init();
   const project = projects.save(null, { name: "迁移项目", software: "resolve", note: "项目备注" });
   projects.add(project.id, { ids: [asset.id] });
   projects.change(project.id, { ids: [asset.id], status: "used", note: "开场" });
   const projectUsedAt = projects.history(asset.id)[0].used_at;
-  const analysis = await new MusicAnalysis(lib).init();
+  let analysis = await new MusicAnalysis(lib).init();
   await analysis.configure({ apiKey: "sk-mysql-secret-fixture-not-real" });
   const log = analysis.diagnostics.record({
     operation: "connection",
@@ -91,7 +92,7 @@ try {
     );
   storage = await new MysqlStorage(lib.dataDir).init();
   storage.attach(lib);
-  await storage.activate({ ...config, database });
+  {const next=await activateAndRestart({storage,lib,config:{...config,database},rebuild:async owner=>{owner.enqueue=()=>{};return {projects:new Projects(owner).init(),analysis:await new MusicAnalysis(owner).init()};}});lib=next.lib;storage=next.storage;({projects,analysis}=next.owners);}
   assert.equal(storage.publicState().mode, "mysql");
   new Projects(lib).init();
   assert.equal(projects.list()[0].used, 1);

@@ -1,3 +1,4 @@
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -33,10 +34,10 @@ try{
  const appDir=path.join(base,'app');storage=await new MysqlStorage(appDir).init();lib=await new Library(appDir,{directoryClassification:true}).init();storage.attach(lib);
  // Capture the actual first SQL cause only for this wholly synthetic scene.
  const connect=storage.connect.bind(storage);storage.connect=async(...args)=>{const c=await connect(...args);for(const method of ['query','execute']){const call=c[method].bind(c);c[method]=async(...q)=>{try{return await call(...q);}catch(e){logs+='\nSYNTHETIC SQL FAILURE '+JSON.stringify({code:e.code,message:e.message,sql:q[0]});throw e;}};}return c;};
- const store=new PromptTemplates(lib).init();const sqlite=lifecycle(store);orderLifecycle(store);const before=store.snapshot();
- await storage.activate(config);
+ let store=new PromptTemplates(lib).init();const sqlite=lifecycle(store);orderLifecycle(store);const before=store.snapshot();
+ ({lib,storage,owners:store}=await activateAndRestart({storage,lib,config,rebuild:owner=>new PromptTemplates(owner).init()}));
  check('Actual SQLite → MySQL migration preserves all four tables, soft-deleted data, timestamps and full history',()=>{assert.equal(lib.db.kind,'mysql');assert.deepEqual(store.snapshot(),before);assert.deepEqual(store.list().items.map(r=>r.sort_order),before.prompt_templates.filter(r=>r.deleted_at===null).sort((a,b)=>a.sort_order-b.sort_order).map(r=>r.sort_order));assert.equal(storage.state.counts.prompt_template_versions,before.prompt_template_versions.length);});
- check('MySQL lifecycle and manual order use the same store after live DB-handle switch',()=>{store.init();lifecycle(store);orderLifecycle(store);});
+ check('MySQL lifecycle and manual order use the fresh owners after configured restart',()=>{store.init();lifecycle(store);orderLifecycle(store);});
  const snapshot=store.backup();
  const backups=await fs.readdir(path.join(appDir,'backups'));assert.ok(backups.some(n=>n.startsWith('before-mysql-')&&n.endsWith('.sqlite')));
  check('Migrated MySQL schema retains unique version and draft constraints',()=>{const versionRow=store.snapshot().prompt_template_versions[0];assert.throws(()=>lib.db.prepare('INSERT INTO prompt_template_versions SELECT ?,template_id,version,definition,rollback_of,created_at,updated_at FROM prompt_template_versions WHERE id=?').run('11111111-1111-1111-1111-111111111111',versionRow.id),e=>e.code==='ER_DUP_ENTRY');});

@@ -87,7 +87,7 @@ for (const duration of [0.08, 0.3, 0.8]) {
   await run("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `sine=frequency=440:duration=${duration}`, file]);
   shortAudioBuffers.push(await fs.readFile(file));
 }
-const library = await new Library(data).init();
+let library = await new Library(data).init();
 library.enqueue = () => {};
 const soundRoot = await library.addRoot(source, "sfx");
 const photoRoot = await library.addRoot(photos, "mixed");
@@ -116,8 +116,10 @@ if (process.env.MYSQL_QA_CONFIG) {
   const { MysqlStorage } = await import("../server/mysql.mjs");
   const storage = await new MysqlStorage(data).init();
   storage.attach(library);
-  await storage.activate(JSON.parse(process.env.MYSQL_QA_CONFIG));
-  assert.equal(storage.publicState().mode, "mysql");
+  const {activateAndRestart}=await import('../tests/helpers/mysql-activate.mjs');
+  const restarted=await activateAndRestart({storage,lib:library,config:JSON.parse(process.env.MYSQL_QA_CONFIG)});
+  library=restarted.lib;
+  assert.equal(restarted.storage.publicState().mode, "mysql");
 }
 library.db.prepare("UPDATE assets SET reveal_count=3 WHERE name=?").run("第二段 音效.mp3");
 library.db.close();

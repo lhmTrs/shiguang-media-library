@@ -399,14 +399,15 @@ const asyncRoute = (fn) => (req, res, next) => {
   const registration = route === "/api/cloud-upload-host/register";
   const audioMaintenance = route.startsWith("/api/cloud-management/audio-maintenance/");
   const fileStatusMaintenance = req.method === "POST" && route === "/api/maintenance/files";
-  const maintenance = req.method !== "GET" && (audioMaintenance || route === "/api/mysql" || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
-  const changesAttachment = req.method !== "GET" && (route === "/api/mysql" || ["/api/cloud-auth/config", "/api/cloud-auth/enroll", "/api/cloud-auth/recover-device", "/api/cloud-auth/activate", "/api/cloud-auth/login", "/api/cloud-auth/logout"].includes(route));
+  const mysqlActivation = req.method === "POST" && route === "/api/mysql/config";
+  const maintenance = req.method !== "GET" && (audioMaintenance || mysqlActivation || route === "/api/roots/:id/relocate" || req.method === "DELETE" && route === "/api/roots/:id" || ["/api/maintenance/files/cleanup", "/api/duplicate-audio/cleanup", "/api/asset-metadata-registration/confirm", "/api/asset-metadata-registration/commands/:id/finalize", "/api/asset-metadata-registration/commands/:id/abort"].includes(route));
+  const changesAttachment = req.method !== "GET" && (mysqlActivation || ["/api/cloud-auth/config", "/api/cloud-auth/enroll", "/api/cloud-auth/recover-device", "/api/cloud-auth/activate", "/api/cloud-auth/login", "/api/cloud-auth/logout"].includes(route));
   const invoke = async () => {
     if (audioMaintenance) requireCloudAudioPlatform();
     if (!changesAttachment) return fn(req, res, next);
     if (identityChanging) throw taskError("TASK_OWNER_UNSETTLED", 423);
     identityChanging = true; let drained = false;
-    try { await drainTaskEntry({ ownHostActive: 1 }); drained = true; return await fn(req, res, next); }
+    try { await drainTaskEntry({ ownHostActive: 1, allowNeverStarted: mysqlActivation }); drained = true; return await fn(req, res, next); }
     finally { identityChanging = false; if (drained) taskClosing = false; }
   };
   // File-status checks write assets too. Use the same HOST/manual gate for the
@@ -487,6 +488,8 @@ app.use("/api", (req, res, next) => {
   if (!["GET","HEAD"].includes(req.method) && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
   res.locals.localSessionId = cookie;
+  if (mysqlStorage.restartRequired && !["GET", "HEAD"].includes(req.method))
+    return res.status(423).json({code: "MYSQL_RESTART_REQUIRED", error: "数据已迁移，请正常关闭并重新启动拾光后使用 MySQL；重启前仅可读取"});
   // A different tab can establish a valid cookie while this page still belongs to its old library.
   const expectedLibrary = req.get("X-Shiguang-Library-Id");
   if (expectedLibrary !== undefined && expectedLibrary !== mysqlStorage.sourceId)
@@ -749,7 +752,9 @@ app.post(
   "/api/mysql/config",
   asyncRoute(async (req, res) => {
     const result=await mysqlStorage.activate(req.body);
-    await storyboardVideo.bindingV2.startup();
+    // All owners keep their original SQLite connection until normal shutdown.
+    // Stop scheduled business writers; query_only also fences already-prepared SQL.
+    reconcileWatcher?.stop(); manifestSync.stop(); fileIntake.beginClose();
     res.json({...result,videoBindingMigration:storyboardVideo.bindingV2.migrationStatus()});
   }),
 );
