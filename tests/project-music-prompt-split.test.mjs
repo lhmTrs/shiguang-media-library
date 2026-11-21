@@ -34,6 +34,7 @@ const cases = [
   // ---- 规则 4：第一行、空一行、后面是歌词（合并后补的） ----
   ['规则 4：英文风格一行、空一行、英文歌词', 'dreamy synth pop, female vocal, 90 bpm\n\nWalking down the empty road\nI hear you call my name', {style: 'dreamy synth pop, female vocal, 90 bpm', lyrics: 'Walking down the empty road\nI hear you call my name'}],
   ['规则 4：中文风格用全角逗号，空两行接歌词', '中国风流行，女声，古筝\n\n\n' + L, {style: '中国风流行，女声，古筝', lyrics: L}],
+  ['规则 4：风格里有「吉他」（「他」是风格词的一部分，不算歌词字）', '民谣，吉他，男声\n\n' + L, {style: '民谣，吉他，男声', lyrics: L}],
   ['规则 4：只有两段也行（国风 electronic, female vocal）', '国风 electronic, female vocal\n\n' + L, {style: '国风 electronic, female vocal', lyrics: L}],
   ['规则 4 不算：一句带逗号的中文歌词、空一行接歌词', '月光洒在窗前，我想起了你\n\n风吹过的街道，只剩下我', {style: '', lyrics: '月光洒在窗前，我想起了你\n\n风吹过的街道，只剩下我'}],
   ['规则 4 不算：英文歌词带逗号', 'Baby, I love you\n\nCome back to me tonight', {style: '', lyrics: 'Baby, I love you\n\nCome back to me tonight'}],

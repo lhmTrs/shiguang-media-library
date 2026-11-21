@@ -34,9 +34,11 @@ const STYLE_ZH = /流行|摇滚|民谣|爵士|蓝调|说唱|嘻哈|电子|电音
 // 歌词里才常见的字词：有它就不当风格。
 const LYRIC_ZH = /[我你他她吗呢吧啊了]/;
 const LYRIC_EN = /\b(?:i|i'm|i'll|me|my|mine|you|you're|your|we|our|us|he|she|they|them|don't|can't|won't|oh|baby|love)\b/i;
+const STYLE_ZH_ALL = new RegExp(STYLE_ZH.source, 'g');
 function styleParagraphLine(line) {
   const t = line.trim();
-  if (!styleLine(t) || LYRIC_ZH.test(t) || LYRIC_EN.test(t)) return false;
+  // 先去掉认得出的风格词再查歌词字：「吉他」里有「他」，不能因此当成歌词。
+  if (!styleLine(t) || LYRIC_ZH.test(t.replace(STYLE_ZH_ALL, '')) || LYRIC_EN.test(t)) return false;
   const parts = t.split(SEP).map(x => x.trim()).filter(Boolean);
   if (parts.length < 2 || parts.some(x => x.length > 30)) return false;
   return parts.filter(x => STYLE_EN.test(x) || STYLE_ZH.test(x)).length >= 2;
