@@ -60,6 +60,9 @@ import {ProjectMusic} from './project-music/store.mjs';
 import {projectMusicRouter} from './project-music/router.mjs';
 import {MusicFolders} from './project-music/folders.mjs';
 import {ProjectMusicIntake} from './project-music/intake.mjs';
+import {Notices} from './notices/store.mjs';
+import {noticesRouter} from './notices/router.mjs';
+import {projectMusicSource} from './notices/project-music-source.mjs';
 import {FileIntake} from './file-intake/store.mjs';
 import {ManagedIntakeCatalog} from './file-intake/media-catalog.mjs';
 import {IntakePreferences} from './file-intake/preferences.mjs';
@@ -370,6 +373,8 @@ const managedIntake=await new ManagedIntakeCatalog({catalog:projectVideos,assets
 const projectMusic=new ProjectMusic({lib,projects,dataDir,directory:path.join(process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item'),'music'),metadata:metadataBatches,onRootAdded:async()=>{await reconcileWatcher?.refresh();},withActivity:fn=>uploadHost.track(fn)}).init();
 const projectMusicFolders=new MusicFolders(projectMusic,{dataDir,native:process.env.MEDIA_READONLY_FILES!=='1'&&process.env.MEDIA_DISABLE_DESKTOP_NATIVE!=='1'?projectVideos.desktopNative:null});
 const projectMusicIntake=new ProjectMusicIntake(projectMusic,projectMusicFolders,{withActivity:fn=>uploadHost.track(fn)});
+// 待处理：后台任务结果通知。先接项目音乐「待 AI 补写」（只是告知）；Updream 等外部来源走 POST /api/notices。
+const notices=new Notices({lib}).init().registerSource('project-music',projectMusicSource(projectMusic));
 const fileIntake=await new FileIntake({music:projectMusicIntake,generic:managedIntake,preferences:intakePreferences,dataDir,libraryId:mysqlStorage.sourceId,catalog:projectVideos,projects,withActivity:fn=>uploadHost.track(fn)}).init();
 const intakeNative=await new IntakeNative({dataDir,project,personalItemDirectory:process.env.MEDIA_PERSONAL_ITEM_DIR||path.join(project,'personal_item')}).init();
 const concierge=await createConcierge({lib,dataDir,sendMedia,withActivity:fn=>uploadHost.track(fn)});
@@ -530,6 +535,7 @@ app.use('/api/updream-progress',updreamProgressRouter(updreamProgress,{withActiv
 app.use('/api/file-intake',fileIntakeRouter(fileIntake,intakeNative,{sendMedia,withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/project-videos",projectVideoRouter(projectVideos,{sendMedia,rememberTarget:target=>intakePreferences.remember([target]),withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/project-music",projectMusicRouter(projectMusic,{sendMedia,withActivity:fn=>uploadHost.track(fn),folders:projectMusicFolders}));
+app.use('/api/notices',noticesRouter(notices,{withActivity:fn=>uploadHost.track(fn)}));
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
 app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{desktop:projectAssetDesktop,headBox:projectAssetHeadBox,rememberTarget:target=>intakePreferences.remember([target])}));
