@@ -9,13 +9,16 @@ import { STORYBOARD_COLUMNS, normalizeColumns, type StoryboardAppearance } from 
  * 界面设置：界面风格（主题）+ 导航栏目显隐。
  * 风格切换只写 <html data-theme>，配色由 themes.css 的 token 覆盖完成，因此即时生效、无需刷新。
  */
-export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, refreshSeconds, setRefreshSeconds, storyboardAppearance, setStoryboardAppearance, memory, setMemory, resetBrowserPreferences, close }: {
+export function NavigationSettings({ items, hidden, toggle, reset, theme, setTheme, paperTrial, setPaperTrial, refreshSeconds, setRefreshSeconds, storyboardAppearance, setStoryboardAppearance, memory, setMemory, resetBrowserPreferences, close }: {
   items: [string, string][];
   hidden: string[];
   toggle: (id: string) => void;
   reset: () => void;
   theme: ThemeId;
   setTheme: (id: ThemeId) => void;
+  /** 「新样子（试用）」开关：只记在本浏览器，见 src/paper/trial.ts。 */
+  paperTrial?: boolean;
+  setPaperTrial?: (on: boolean) => void;
   refreshSeconds: number;
   setRefreshSeconds: (seconds: number) => void;
   storyboardAppearance?: StoryboardAppearance;
@@ -63,7 +66,18 @@ export function NavigationSettings({ items, hidden, toggle, reset, theme, setThe
               </button>;
             })}
           </div>
+          {paperTrial && <p className="settings-memory-note">新样子试用中：配色由新样子决定，这里的选择先记着，关掉试用后生效。</p>}
         </section>
+        {setPaperTrial && <section className="settings-section paper-trial-settings">
+          <div className="settings-section-head">
+            <h3>新样子（试用）</h3>
+            <small>只记在本浏览器，随时可以关掉</small>
+          </div>
+          <div className="navigation-options">
+            <label><input type="checkbox" role="switch" aria-label="新样子（试用）" checked={!!paperTrial} onChange={e => setPaperTrial(e.target.checked)}/><span>试用新样子</span></label>
+          </div>
+          <p className="settings-memory-note">纸本配色、赭红强调、宋体标题；侧栏「素材」「项目」一次只开一组；顶栏只留「待处理」和「后台任务」。先改了侧栏、顶栏和素材列表，其他页面只跟着换颜色。关掉就是原来的样子。</p>
+        </section>}
         <section className="settings-section">
           <label className="field settings-refresh" htmlFor="background-refresh-interval">自动刷新间隔
             <select id="background-refresh-interval" aria-label="自动刷新间隔" value={refreshSeconds} onChange={e => setRefreshSeconds(Number(e.target.value))}>
