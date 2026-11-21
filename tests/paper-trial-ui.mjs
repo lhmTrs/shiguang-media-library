@@ -101,7 +101,7 @@ try {
     for (const name of ['素材查找', '项目设计和管理']) await expect(groupButton(name)).toHaveAttribute('aria-expanded', 'true');
     assert.equal(await style(page.locator('.sidebar'), 'backgroundColor'), 'rgb(240, 244, 243)');
     assert.ok(!(await style(page.locator('.library-heading h1'), 'fontFamily')).includes('Noto Serif SC'));
-    await page.screenshot({path: path.join(evidence, 'off-materials.png')});
+    await page.screenshot({path: path.join(evidence, 'off-materials.png'), animations: 'disabled'});
   });
 
   await check('OFF in all 6 themes: theme colours are the themes\' own, trial rules still match nothing', async () => {
@@ -129,7 +129,7 @@ try {
     await expect(page.locator('html')).toHaveAttribute('data-sg-paper', 'on');
     const dialog = await openSettings();
     await expect(dialog.getByRole('switch', {name: '新样子（试用）'})).toBeChecked();
-    await dialog.screenshot({path: path.join(evidence, 'on-settings.png')});
+    await dialog.screenshot({path: path.join(evidence, 'on-settings.png'), animations: 'disabled'});
     await dialog.getByRole('button', {name: '完成', exact: true}).click();
   });
 
@@ -149,7 +149,7 @@ try {
     for (const control of [page.locator('.filters .advanced-filter-trigger'), page.locator('.heading-tools > .plain').first()]) {
       assert.equal(await style(control, 'backgroundColor'), 'rgb(242, 238, 231)'); assert.equal(await style(control, 'borderTopWidth'), '0px');
     }
-    await page.screenshot({path: path.join(evidence, 'on-materials.png')});
+    await page.screenshot({path: path.join(evidence, 'on-materials.png'), animations: 'disabled'});
   });
 
   await check('ON list page keeps every field: checkbox, audition or thumbnail, name, meta, two-line category, duration, size, actions, toolbar', async () => {
@@ -188,7 +188,7 @@ try {
     await expect(rows().nth(1).getByRole('button', {name: '取消收藏', exact: true})).toBeVisible();
     await page.mouse.move(5, 950); await page.locator('.library-heading h1').click();
     await expect.poll(() => style(rows().nth(1).getByRole('button', {name: '取消收藏', exact: true}), 'opacity')).toBe('1');
-    await rows().nth(1).hover(); await page.screenshot({path: path.join(evidence, 'on-row-hover.png')});
+    await rows().nth(1).hover(); await page.screenshot({path: path.join(evidence, 'on-row-hover.png'), animations: 'disabled'});
     await rows().nth(1).getByRole('button', {name: '取消收藏', exact: true}).click();
     await expect(rows().nth(1).getByRole('button', {name: '收藏', exact: true})).toBeVisible();
   });
@@ -198,12 +198,12 @@ try {
     const mat = groupButton('素材 · 剪辑时用'), proj = groupButton('项目 · 做漫剧时用');
     await expect(mat).toHaveAttribute('aria-expanded', 'true'); await expect(proj).toHaveAttribute('aria-expanded', 'false');
     await expect(proj.locator('.sgp-group-count')).toHaveText('7');
-    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-material.png')});
+    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-material.png'), animations: 'disabled'});
     await proj.click();
     await expect(proj).toHaveAttribute('aria-expanded', 'true'); await expect(mat).toHaveAttribute('aria-expanded', 'false');
     await expect(mat.locator('.sgp-group-count')).toHaveText('6');
     await expect(page.locator('#navigation-find')).toBeHidden(); await expect(page.locator('#navigation-design')).toBeVisible();
-    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-project.png')});
+    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-project.png'), animations: 'disabled'});
     await proj.click();
     await expect(proj).toHaveAttribute('aria-expanded', 'false'); await expect(mat).toHaveAttribute('aria-expanded', 'false');
     await page.goto(origin + '/#/project-music');
@@ -231,7 +231,7 @@ try {
     await expect(menu.getByRole('button', {name: /文件任务/})).toBeVisible();
     await expect(menu.getByRole('button', {name: '检查文件状态', exact: true})).toBeVisible();
     await expect(menu).toContainText('Updream 视频任务 · 最近没有');
-    await page.screenshot({path: path.join(evidence, 'on-background-tasks.png')});
+    await page.screenshot({path: path.join(evidence, 'on-background-tasks.png'), animations: 'disabled'});
     await page.keyboard.press('Escape'); await expect(menu).toBeHidden(); await expect(tasks).toBeFocused();
     await tasks.click(); await menu.getByRole('button', {name: /文件任务/}).click();
     await expect(page.locator('#file-intake-tasks')).toBeVisible(); await expect(menu).toBeHidden();
@@ -270,14 +270,14 @@ try {
     assert.equal(await style(page.locator('.sidebar'), 'backgroundColor'), 'rgb(240, 244, 243)');
     await page.reload(); await expect(rows()).toHaveCount(4);
     assert.equal(await page.evaluate(() => document.documentElement.hasAttribute('data-sg-paper')), false);
-    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'off-again-materials.png')});
+    await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'off-again-materials.png'), animations: 'disabled'});
   });
 
   await check('No page errors and no request leaves this machine (fonts included)', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
   });
   await context.close(); passed = true;
-} catch (e) { await page?.screenshot({path: path.join(evidence, 'failure.png')}).catch(() => {}); await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }
+} catch (e) { await page?.screenshot({path: path.join(evidence, 'failure.png'), animations: 'disabled'}).catch(() => {}); await fs.writeFile(path.join(evidence, 'failure.txt'), e.stack); throw e; }
 finally {
   await browser?.close(); if (child.exitCode === null && !child.signalCode) child.kill('SIGTERM');
   let timer; try { await Promise.race([exited, new Promise((_, reject) => timer = setTimeout(() => reject(Error('Application closure unconfirmed')), 15000))]); } finally { clearTimeout(timer); }
