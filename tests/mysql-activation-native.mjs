@@ -14,6 +14,7 @@ import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import mysql from 'mysql2/promise';
 import Sqlite from 'better-sqlite3';
+import {assertOwnedMysqlTarget} from './helpers/mysql-target-guard.mjs';
 
 const binary = process.env.MYSQL_ACTIVATION_MYSQLD;
 assert.ok(binary && path.isAbsolute(binary), 'explicit absolute MYSQL_ACTIVATION_MYSQLD required');
@@ -77,6 +78,8 @@ async function boot(dataDir, label) {
   assert.equal(session.status, 200);
   const {token} = await session.json(), cookie = session.headers.get('set-cookie').split(';')[0];
   return {p, dataDir, origin, async api(route, method = 'GET', body) {
+    if (['/api/mysql/config','/api/mysql/test'].includes(route))
+      assertOwnedMysqlTarget(body, {...body, host:'127.0.0.1',port:inventory.mysqlPort});
     const response = await fetch(origin + route, {method, signal: AbortSignal.timeout(60000), headers: {
       cookie, origin, 'x-local-token': token, 'content-type': 'application/json',
     }, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -103,20 +106,48 @@ async function activateFromPage(app, config) {
   inventory.browser = {run: true, closed: false};
   try {
     const context = await browser.newContext();
-    const external = [], errors = [];
+    const external = [], errors = [], blocked = [];
+    let configResponses = 0;
     await context.route('**/*', route => {
+      const request = route.request(), url = new URL(request.url());
+      if (url.origin === app.origin && ['/api/mysql/config','/api/mysql/test'].includes(url.pathname)) {
+        try { assertOwnedMysqlTarget(request.postDataJSON(), config); }
+        catch { blocked.push(url.pathname); return route.abort('blockedbyclient'); }
+      }
+      if (url.origin === app.origin && url.pathname === '/api/mysql' && request.method() === 'GET') {
+        return (async()=>{const response=await route.fetch();await sleep(500);configResponses++;await route.fulfill({response});})();
+      }
       if (new URL(route.request().url()).origin === app.origin) return route.continue();
       external.push(route.request().url()); return route.abort();
     });
     const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
     await page.goto(app.origin);
+    const configured = page.waitForResponse(r=>r.url()===app.origin+'/api/mysql' && r.request().method()==='GET');
     await page.getByRole('button', {name: '设置与缓存', exact: true}).click();
+    await (await configured).finished();
+    await page.waitForLoadState('networkidle');
     const dialog = page.getByRole('dialog', {name: '设置与缓存'});
     const section = dialog.getByRole('heading', {name: '本机 MySQL', exact: true}).locator('../..');
     await expect(dialog).toBeVisible();
+    assert.ok(configResponses > 0);
     await dialog.getByLabel('MySQL 端口', {exact: true}).fill(String(config.port));
     await dialog.getByLabel('MySQL 数据库', {exact: true}).fill(config.database);
     await dialog.getByLabel('MySQL 用户名', {exact: true}).fill(config.user);
+    await dialog.getByLabel('MySQL 密码', {exact: true}).fill(config.password);
+    // Adversarial late/default targets are intercepted before any backend I/O.
+    for (const change of [{port:3306},{socketPath:'/tmp/mysql.sock'},{port:config.port+1}]) {
+      const failed=await page.evaluate(async body=>{try{await fetch('/api/mysql/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return false;}catch{return true;}},{...config,...change});
+      assert.equal(failed,true);
+    }
+    assert.equal(blocked.length,3);
+    const submitted = {
+      host:await dialog.getByLabel('MySQL 地址',{exact:true}).inputValue(),
+      port:Number(await dialog.getByLabel('MySQL 端口',{exact:true}).inputValue()),
+      database:await dialog.getByLabel('MySQL 数据库',{exact:true}).inputValue(),
+      user:await dialog.getByLabel('MySQL 用户名',{exact:true}).inputValue(),
+      password:await dialog.getByLabel('MySQL 密码',{exact:true}).inputValue(),
+    };
+    assertOwnedMysqlTarget(submitted,config);
     const response = page.waitForResponse(r => r.url() === app.origin + '/api/mysql/config' && r.request().method() === 'POST');
     await dialog.getByRole('button', {name: '迁移并启用 MySQL', exact: true}).click();
     const raw = await response, result = {status: raw.status(), body: await raw.json()};
@@ -131,6 +162,8 @@ async function activateFromPage(app, config) {
       await expect(section.locator('.database-status')).toHaveText('待重启');
       await expect(page.getByRole('button', {name: '迁移并启用 MySQL', exact: true})).toBeDisabled();
       assert.deepEqual(errors, []); assert.deepEqual(external, []);
+      assert.equal(blocked.length,3);
+      inventory.pageTargetGuard={delayedConfigurationMs:500,rejectedBeforeBackend:3,submittedPort:submitted.port,ownedPort:config.port};
     });
     return result;
   } finally { await browser.close(); inventory.browser.closed = true; }
@@ -145,6 +178,7 @@ try {
     '--socket=' + path.join(root, 'mysql.sock'), '--pid-file=' + path.join(root, 'mysql.pid'), '--mysqlx=OFF',
     '--general-log=ON', '--general-log-file=' + path.join(root, 'queries.log')], 'mysqld');
   const config = {host: '127.0.0.1', port: mysqlPort, user: 'root', password: ''};
+  assertOwnedMysqlTarget(config,config);
   for (let i = 0; i < 200 && !control; i++) {
     try { control = await mysql.createConnection({...config, connectTimeout: 500}); }
     catch { assert.equal(daemon.exitCode, null, daemon.log); await sleep(150); }
