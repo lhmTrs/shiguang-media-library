@@ -30,21 +30,22 @@ const looksStyle = lines => lines.length === 1 && styleLine(lines[0]);
 
 // 第 4 条用的词表。认不出就当歌词（宁可风格留空，之后在项目音乐里补）。
 // 核心词：曲风、乐器、人声、速度。修饰词：情绪、音色这类形容词，歌词里也常见，所以只用来「解释掉」一段里的字，不算风格的证据。
-const STYLE_EN = /\b(?:pop|rock|folk|jazz|blues|soul|r&b|rnb|hip[- ]?hop|rap|trap|edm|house|techno|trance|electronic|electro|synth\w*|lo-?fi|ambient|acoustic|ballad|orchestral|cinematic|classical|piano|guitars?|bass|drums|strings|violin|cello|sax(?:ophone)?|vocals?|female|male|choir|bpm|tempo|indie|punk|metal|country|reggae|funk|disco|[kjc]-?pop|anime|gospel|latin|bossa|swing|beats?|instrumental|duet|falsetto|808)\b/i;
-const STYLE_EN_MOD = /\b(?:dreamy|mellow|epic|upbeat|chill\w*|warm|intimate|melanchol(?:ic|y)|slow|fast|soft|dark|bright|sad|happy|deep|heavy|light|catchy|emotional|powerful|gentle|smooth|raw|lush|ethereal|atmospheric|groovy|energetic|uplifting|haunting|nostalgic|romantic|moody|cozy|minimal|modern|retro|vintage|live|clean|distorted|reverb|airy|breathy|mid-?tempo|driving|punchy|layered|sparse)\b/gi;
-const STYLE_ZH = /中国风|男女对唱|电吉他|木吉他|架子鼓|流行|摇滚|民谣|爵士|蓝调|说唱|嘻哈|电子|电音|舞曲|国风|古风|古典|抒情|慢板|快板|中速|慢速|快速|钢琴|吉他|贝斯|弦乐|小提琴|大提琴|二胡|古筝|琵琶|唢呐|笛子|鼓点|女声|男声|童声|合唱|和声|对唱|独唱|吟唱|人声|轻音乐|纯音乐|器乐|民乐|管弦|交响|慢歌|情歌|戏腔/;
-const STYLE_ZH_MOD = /温柔|空灵|深情|清新|甜美|低沉|沙哑|轻快|舒缓|激昂|磅礴|大气|悠扬|动感|浪漫|忧郁|悲伤|伤感|治愈|欢快|史诗|氛围|热血|复古|梦幻|轻柔|柔和|明亮|暗黑|唯美|宏大|空旷|安静|慵懒|俏皮|可爱|中式|东方/g;
+const STYLE_EN = /\b(?:pop|rock|folk|jazz|blues|soul|r&b|rnb|hip[- ]?hop|rap|trap|edm|house|techno|trance|electronic|electro|synth\w*|lo-?fi|ambient|acoustic|ballad|orchestral|cinematic|classical|piano|guitars?|bass|drums|strings|violin|cello|sax(?:ophone)?|vocals?|female|male|choir|bpm|tempo|indie|punk|metal|country|reggae|funk|disco|[kjc]-?pop|anime|gospel|latin|bossa|swing|beats?|instrumental|duet|falsetto|808|mandarin|cantonese|cantopop|mandopop|guzheng|erhu|pipa|dizi|suona)\b/i;
+const STYLE_EN_MOD = /\b(?:dreamy|mellow|epic|upbeat|chill\w*|warm|intimate|melanchol(?:ic|y)|slow|fast|soft|dark|bright|sad|happy|deep|heavy|light|catchy|emotional|powerful|gentle|smooth|raw|lush|ethereal|atmospheric|groovy|energetic|uplifting|haunting|nostalgic|romantic|moody|cozy|minimal|modern|retro|vintage|live|clean|distorted|reverb|airy|breathy|mid-?tempo|driving|punchy|layered|sparse|chinese|oriental|style)\b/gi;
+const STYLE_ZH = /中国风|男女对唱|普通话|闽南语|粤语|国语|伴奏|弹唱|电吉他|木吉他|架子鼓|流行|摇滚|民谣|爵士|蓝调|说唱|嘻哈|电子|电音|舞曲|国风|古风|古典|抒情|慢板|快板|中速|慢速|快速|钢琴|吉他|贝斯|弦乐|小提琴|大提琴|二胡|古筝|琵琶|唢呐|笛子|鼓点|女声|男声|童声|合唱|和声|对唱|独唱|吟唱|人声|轻音乐|纯音乐|器乐|民乐|管弦|交响|慢歌|情歌|戏腔/;
+const STYLE_ZH_MOD = /温柔|空灵|深情|清新|甜美|低沉|沙哑|轻快|舒缓|激昂|磅礴|大气|悠扬|动感|浪漫|忧郁|悲伤|伤感|治愈|欢快|史诗|氛围|热血|复古|梦幻|轻柔|柔和|明亮|暗黑|唯美|宏大|空旷|安静|慵懒|俏皮|可爱|中式|东方|乐|曲/g;
 const STYLE_EN_ALL = new RegExp(STYLE_EN.source, 'gi');
 const STYLE_ZH_ALL = new RegExp(STYLE_ZH.source, 'g');
 // 歌词里才常见的字词：有它就不当风格。
 const LYRIC_ZH = /[我你他她吗呢吧啊了]/;
 const LYRIC_EN = /\b(?:i|i'm|i'll|me|my|mine|you|you're|your|we|our|us|he|she|they|them|don't|can't|won't|oh|baby|love)\b/i;
-// 一段去掉核心词、修饰词、数字、连接词以后，还剩几个汉字、几个英文词。剩下的就是“说不清是不是风格”的内容。
+// 一段去掉核心词、修饰词、数字、连接词以后，还剩几个字符、几个英文词。剩下的就是“说不清是不是风格”的内容。
 function leftover(part) {
   const r = part.toLowerCase().replace(/\d+(?:'?s\b)?/g, ' ')
     .replace(STYLE_ZH_ALL, ' ').replace(STYLE_ZH_MOD, ' ').replace(/的/g, ' ')
     .replace(STYLE_EN_ALL, ' ').replace(STYLE_EN_MOD, ' ').replace(/\b(?:and|with)\b|[&+\-–—·.'"()]/g, ' ');
-  return {zh: (r.match(/[㐀-鿿]/g) || []).length, en: (r.match(/[a-z]+/g) || []).length};
+  // 英文按词数；其余凡是不是空白、标点、a-z 的字符（汉字、假名、韩文、俄文、♪ 这类符号）都按个数算（PR #142 复验 P3-3）。
+  return {other: (r.match(/[^\sa-z\p{P}]/gu) || []).length, en: (r.match(/[a-z]+/g) || []).length};
 }
 // 第 4 条：每一段都要能被词表完全解释（一个字、一个词都不剩），并且至少一段有核心词。
 // 只看“含不含风格词”会把「古风长街，琵琶声声慢」「Jazz in the rain, blues at dawn」这类歌词当成风格（PR #142 独验 P2-1）。
@@ -54,7 +55,7 @@ function styleParagraphLine(line) {
   if (!styleLine(t) || LYRIC_ZH.test(t.replace(STYLE_ZH_ALL, '')) || LYRIC_EN.test(t)) return false;
   const parts = t.split(SEP).map(x => x.trim()).filter(Boolean);
   if (parts.length < 2 || parts.some(x => x.length > 30)) return false;
-  if (!parts.every(x => { const r = leftover(x); return r.zh === 0 && r.en === 0; })) return false;
+  if (!parts.every(x => { const r = leftover(x); return r.other === 0 && r.en === 0; })) return false;
   return parts.some(x => STYLE_EN.test(x) || STYLE_ZH.test(x));
 }
 

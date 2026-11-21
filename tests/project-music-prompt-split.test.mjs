@@ -62,6 +62,17 @@ const cases = [
   ['规则 4：修饰词、对唱、年代和速度也能解释掉：温柔女声，钢琴', "温柔女声，钢琴\n\n" + L, {style: "温柔女声，钢琴", lyrics: L}],
   ['规则 4：修饰词、对唱、年代和速度也能解释掉：情歌，男女对唱，吉他', "情歌，男女对唱，吉他\n\n" + L, {style: "情歌，男女对唱，吉他", lyrics: L}],
   ["规则 4：修饰词、对唱、年代和速度也能解释掉：80's synth pop, female vocals, 120bpm", "80's synth pop, female vocals, 120bpm\n\n" + L, {style: "80's synth pop, female vocals, 120bpm", lyrics: L}],
+  // ---- 复验 P3-3、P3-4：别的文字也算剩余；英文剩一个词也不算；只有修饰词不算 ----
+  ['规则 4 不算：さよなら, piano', 'さよなら, piano\n\n' + L, {style: '', lyrics: 'さよなら, piano\n\n' + L}],
+  ['规则 4 不算：사랑의 노래, ballad', '사랑의 노래, ballad\n\n' + L, {style: '', lyrics: '사랑의 노래, ballad\n\n' + L}],
+  ['规则 4 不算：♪♪，pop', '♪♪，pop\n\n' + L, {style: '', lyrics: '♪♪，pop\n\n' + L}],
+  ['规则 4 不算：jazz night, piano bar', 'jazz night, piano bar\n\n' + L, {style: '', lyrics: 'jazz night, piano bar\n\n' + L}],
+  ['规则 4 不算：温柔，伤感', '温柔，伤感\n\n' + L, {style: '', lyrics: '温柔，伤感\n\n' + L}],
+  ['规则 4 不算：dreamy, epic', 'dreamy, epic\n\n' + L, {style: '', lyrics: 'dreamy, epic\n\n' + L}],
+  ['规则 4：语种、国风乐器、伴奏也能解释掉：国语，流行，钢琴', '国语，流行，钢琴\n\n' + L, {style: '国语，流行，钢琴', lyrics: L}],
+  ['规则 4：语种、国风乐器、伴奏也能解释掉：cantopop, female vocal', 'cantopop, female vocal\n\n' + L, {style: 'cantopop, female vocal', lyrics: L}],
+  ['规则 4：语种、国风乐器、伴奏也能解释掉：chinese style, guzheng, erhu', 'chinese style, guzheng, erhu\n\n' + L, {style: 'chinese style, guzheng, erhu', lyrics: L}],
+  ['规则 4：语种、国风乐器、伴奏也能解释掉：古风乐，琵琶曲，伴奏', '古风乐，琵琶曲，伴奏\n\n' + L, {style: '古风乐，琵琶曲，伴奏', lyrics: L}],
   // ---- 规则 4 的前置条件（独验 P3）----
   ['规则 4 不算：第一行以句号结尾', '流行，钢琴。\n\n' + L, {style: '', lyrics: '流行，钢琴。\n\n' + L}],
   ['规则 4 不算：有一段超过 30 字（哪怕全是风格词）', 'pop rock folk jazz blues soul piano guitar, female vocal\n\n' + L, {style: '', lyrics: 'pop rock folk jazz blues soul piano guitar, female vocal\n\n' + L}],
