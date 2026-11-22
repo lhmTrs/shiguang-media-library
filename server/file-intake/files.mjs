@@ -5,7 +5,7 @@ import fs from '../fs-platform.mjs';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
-import {spawn} from '../background-process.mjs';
+import {spawnMedia as spawn} from '../media-process.mjs';
 import {PHOTO,VIDEO,AUDIO} from '../fs-identity.mjs';
 
 export const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);

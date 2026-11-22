@@ -22,7 +22,13 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - name: Install ephemeral media probe
-        run: choco install ffmpeg --yes --no-progress
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          "$env:PATH" -split ';' | Where-Object { $_ } | ForEach-Object { $_ >> $env:GITHUB_PATH }
       - run: node --test --test-timeout=120000 tests/windows-files.test.mjs
         env:
           WINDOWS_MEDIA_SMOKE: '1'
