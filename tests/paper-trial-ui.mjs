@@ -139,19 +139,21 @@ try {
     await dialog.getByRole('button', {name: '完成', exact: true}).click();
   });
 
-  await check('ON list page: spec colours, serif title and names, medium density, no external font request', async () => {
+  await check('ON list page: spec colours, serif title, sans names, medium density, no external font request', async () => {
     assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor), 'rgb(244, 242, 238)');
     assert.equal(await style(page.locator('.library-browser'), 'backgroundColor'), 'rgb(253, 252, 250)');
     const h1 = page.locator('.library-heading h1');
     assert.match(await style(h1, 'fontFamily'), /Noto Serif SC/); assert.equal(await style(h1, 'fontSize'), '24px'); assert.equal(await style(h1, 'color'), 'rgb(38, 35, 31)');
     const name = rows().first().locator('.asset-name-button');
-    assert.match(await style(name, 'fontFamily'), /Noto Serif SC/); assert.equal(await style(name, 'fontSize'), '14px');
+    assert.match(await style(name, 'fontFamily'), /^"?Noto Sans SC/); assert.equal(await style(name, 'fontSize'), '14px'); assert.equal(await style(name, 'fontWeight'), '400');
+    assert.match(await style(page.locator('.sgp-path'), 'fontFamily'), /^"?Noto Sans SC/);
     assert.match(await style(page.locator('.result-count'), 'fontFamily'), /Noto Sans SC/);
     // 打包的 Noto Serif SC 真的加载上了，而且是从本机拿的（同源 woff2）。
     await expect.poll(() => page.evaluate(() => [...document.fonts].some(f => f.family.replace(/["']/g, '') === 'Noto Serif SC' && f.status === 'loaded')), {timeout: 15000}).toBe(true);
     assert.ok(fontRequests().some(u => u.endsWith('.woff2')), 'a bundled woff2 slice was fetched from this machine');
     assert.ok(!fontRequests().some(u => u.endsWith('.woff')), 'only woff2 is shipped');
-    assert.equal(await style(rows().first(), 'paddingTop'), '8px'); assert.equal(await style(rows().first(), 'paddingBottom'), '8px');
+    assert.equal(await style(rows().first(), 'paddingTop'), '12px'); assert.equal(await style(rows().first(), 'paddingBottom'), '12px');
+    assert.equal(await style(rows().first().locator('.file-cell span').first(), 'marginTop'), '3px');
     assert.equal(await style(rows().first().locator('.file-cell span').first(), 'lineHeight'), '18px'); // 12px × 1.5
     assert.equal(await style(rows().first(), 'borderBottomColor'), 'rgb(236, 231, 222)');
     assert.equal(await style(rows().first().locator('.file-cell span').first(), 'color'), 'rgb(100, 92, 81)');
@@ -205,7 +207,7 @@ try {
 
   await check('ON sidebar: material and project groups open one at a time, both can close, current page opens its own group', async () => {
     await page.reload(); await expect(rows()).toHaveCount(4); // 不带上一步留下的选中行
-    const mat = groupButton('素材 · 剪辑时用'), proj = groupButton('项目 · 做漫剧时用');
+    const mat = groupButton('素材'), proj = groupButton('项目');
     await expect(mat).toHaveAttribute('aria-expanded', 'true'); await expect(proj).toHaveAttribute('aria-expanded', 'false');
     await expect(proj.locator('.sgp-group-count')).toHaveText('7');
     await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-material.png'), animations: 'disabled'});
@@ -213,6 +215,7 @@ try {
     await expect(proj).toHaveAttribute('aria-expanded', 'true'); await expect(mat).toHaveAttribute('aria-expanded', 'false');
     await expect(mat.locator('.sgp-group-count')).toHaveText('6');
     await expect(page.locator('#navigation-find')).toBeHidden(); await expect(page.locator('#navigation-design')).toBeVisible();
+    await expect(page.locator('#navigation-design').getByRole('button', {name: '全部项目', exact: true})).toBeVisible(); // 不和组名“项目”重名
     await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'on-sidebar-project.png'), animations: 'disabled'});
     await proj.click();
     await expect(proj).toHaveAttribute('aria-expanded', 'false'); await expect(mat).toHaveAttribute('aria-expanded', 'false');
@@ -259,7 +262,7 @@ try {
       title: page.locator('.library-heading h1'), count: page.locator('.library-heading p'), results: page.locator('.result-count'),
       head: page.locator('.table-head span').first(), name: rows().first().locator('.asset-name-button'), meta: rows().first().locator('.file-cell span').first(),
       category: rows().first().locator('.category-cell span'), subcategory: rows().first().locator('.category-cell small'), size: rows().first().locator('.size-cell'),
-      group: groupButton('项目 · 做漫剧时用'), item: sidebar().locator('.nav-item.selected'), itemCount: sidebar().locator('.nav-group-items .nav-item small').nth(1),
+      group: groupButton('项目'), item: sidebar().locator('.nav-item.selected'), itemCount: sidebar().locator('.nav-group-items .nav-item small').nth(1),
       path: page.locator('.sgp-path .ppb-seg').first(), page: page.locator('.sgp-path-page'), pending: page.locator('.sgn-entry'),
       tasks: page.getByRole('button', {name: /^后台任务/}), addRoot: page.locator('.add-root-button'), sort: page.getByRole('combobox', {name: '排序'}),
       tiled: page.getByRole('button', {name: '平铺', exact: true}), search: page.getByPlaceholder('搜索名称、标签或备注'),

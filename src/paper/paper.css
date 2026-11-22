@@ -33,12 +33,12 @@ html[data-sg-paper="on"] .sidebar-controls { padding: 0 2px 10px; }
 html[data-sg-paper="on"] .sidebar-controls .icon-button { color: var(--sgp-muted); border-radius: 6px; }
 html[data-sg-paper="on"] .sidebar-controls .icon-button:hover { background: var(--sgp-field); color: var(--sgp-ink); }
 
-/* 分组标题：宋体小字，右边是“数量（收起时）＋箭头”。 */
+/* 分组标题：黑体小字，右边是“数量（收起时）＋箭头”。 */
 html[data-sg-paper="on"] .library-workspace .sidebar-nav-group { padding-top: 0; }
 html[data-sg-paper="on"] .library-workspace .sidebar-nav-group + .sidebar-nav-group { margin-top: 14px; }
 html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-toggle {
   min-height: 0; margin: 0; padding: 4px 8px; gap: 6px; border-radius: 6px;
-  font-family: var(--sgp-serif); font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--sgp-muted); background: transparent;
+  font-family: var(--sgp-sans); font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--sgp-muted); background: transparent;
 }
 html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-toggle:hover { background: var(--sgp-field); color: var(--sgp-ink); }
 html[data-sg-paper="on"] .library-workspace .nav-group-toggle.has-current { color: var(--sgp-accent); background: transparent; }
@@ -75,7 +75,7 @@ html[data-sg-paper="on"] .library-workspace .library-topbar {
   min-height: 60px; padding: 12px 20px 10px 10px; gap: 12px;
   background: var(--sgp-bg); border-bottom: 0; backdrop-filter: none; font-size: 14px;
 }
-html[data-sg-paper="on"] .sgp-path { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; font-family: var(--sgp-serif); font-size: 16px; line-height: 1.5; }
+html[data-sg-paper="on"] .sgp-path { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; font-family: var(--sgp-sans); font-size: 16px; line-height: 1.5; }
 html[data-sg-paper="on"] .library-topbar .sgp-path .topbar-project-slot { flex: 0 1 auto; width: auto; min-width: 0; max-width: 60%; }
 @media (max-width: 1100px) {
   html[data-sg-paper="on"] .library-topbar .sgp-path { flex: 1 1 100%; }
@@ -83,9 +83,9 @@ html[data-sg-paper="on"] .library-topbar .sgp-path .topbar-project-slot { flex: 
 html[data-sg-paper="on"] .sgp-path-sep { flex: none; color: var(--sgp-slash); }
 html[data-sg-paper="on"] .sgp-path-page { flex: none; color: var(--sgp-ink); font-weight: 500; white-space: nowrap; }
 /* 项目选择：像一段可以点开的路径，不要框。 */
-html[data-sg-paper="on"] .sgp-path .ppb { font-family: var(--sgp-serif); }
+html[data-sg-paper="on"] .sgp-path .ppb { font-family: var(--sgp-sans); }
 html[data-sg-paper="on"] .sgp-path .ppb-crumbs { height: 30px; padding: 0; border: 0; background: transparent; }
-html[data-sg-paper="on"] .sgp-path .ppb-seg { height: 30px; padding: 0 4px; font: 400 16px var(--sgp-serif); color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sgp-path .ppb-seg { height: 30px; padding: 0 4px; font: 400 16px var(--sgp-sans); color: var(--sgp-muted); }
 html[data-sg-paper="on"] .sgp-path .ppb-seg:hover:not(:disabled), html[data-sg-paper="on"] .sgp-path .ppb-seg[aria-expanded=true] { background: var(--sgp-field); color: var(--sgp-ink); }
 html[data-sg-paper="on"] .sgp-path .ppb-sep { color: var(--sgp-slash); }
 html[data-sg-paper="on"] .sgp-path .ppb-step { width: 26px; height: 28px; border: 0; background: transparent; color: var(--sgp-muted); }
@@ -192,7 +192,7 @@ html[data-sg-paper="on"] .library-browser .segmented .icon-button.active { backg
 html[data-sg-paper="on"] .library-browser .content-toolbar select { color: var(--sgp-muted); font-size: 12px; }
 html[data-sg-paper="on"] .library-browser .content-toolbar .toolbar-popover > button { color: var(--sgp-muted); }
 
-/* 表格：去掉整块分隔，靠行间细线；行上下 8px、行距 1.5。 */
+/* 表格：去掉整块分隔，靠行间细线；行上下 12px、名称和下面一行隔 3px、行距 1.5（用户 11-22 从四档里选的“中加”）。 */
 html[data-sg-paper="on"] .library-browser .workspace { border-top: 0; }
 html[data-sg-paper="on"] .library-browser .results { background: transparent; }
 html[data-sg-paper="on"] .library-browser .table-head { background: transparent; color: var(--sgp-muted); font-size: 12px; border-bottom: 1px solid var(--sgp-rule); }
@@ -201,7 +201,7 @@ html[data-sg-paper="on"] .library-browser .asset-row:hover { background: var(--s
 html[data-sg-paper="on"] .library-browser .asset-row.selected { background: var(--sgp-field); box-shadow: inset 2px 0 0 var(--sgp-accent); }
 @media (min-width: 1151px) {
   html[data-sg-paper="on"] .library-browser .table-head { height: auto; margin: 0 18px; padding: 6px 8px; }
-  html[data-sg-paper="on"] .library-browser .asset-row { height: auto; min-height: 0; margin: 0 18px; padding: 8px; }
+  html[data-sg-paper="on"] .library-browser .asset-row { height: auto; min-height: 0; margin: 0 18px; padding: 12px 8px; }
   html[data-sg-paper="on"] .library-browser .asset-row:hover,
   html[data-sg-paper="on"] .library-browser .asset-row.selected { border-radius: 6px; }
 }
@@ -216,10 +216,10 @@ html[data-sg-paper="on"] .library-browser .file-icon > svg { width: 14px; height
 html[data-sg-paper="on"] .library-browser .file-icon.sfx > svg,
 html[data-sg-paper="on"] .library-browser .file-icon.music > svg { width: 11px; height: 11px; }
 html[data-sg-paper="on"] .sgp-row-thumb { display: block; width: 100%; height: 100%; object-fit: cover; }
-html[data-sg-paper="on"] .library-browser .asset-name-button { font-family: var(--sgp-serif); font-size: 14px; font-weight: 500; line-height: 1.5; color: var(--sgp-ink); }
-html[data-sg-paper="on"] .library-browser .file-cell span { margin-top: 0; gap: 5px; font-size: 12px; line-height: 1.5; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-browser .asset-name-button { font-family: var(--sgp-sans); font-size: 14px; font-weight: 400; line-height: 1.5; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-browser .file-cell span { margin-top: 3px; gap: 5px; font-size: 12px; line-height: 1.5; color: var(--sgp-muted); }
 html[data-sg-paper="on"] .library-browser .file-cell i { color: var(--sgp-slash); }
-html[data-sg-paper="on"] .library-browser .category-cell { gap: 0; }
+html[data-sg-paper="on"] .library-browser .category-cell { gap: 3px; }
 html[data-sg-paper="on"] .library-browser .category-cell span { font-size: 13px; line-height: 1.5; color: var(--sgp-ink); }
 html[data-sg-paper="on"] .library-browser .category-cell small { font-size: 13px; line-height: 1.5; color: var(--sgp-muted); }
 html[data-sg-paper="on"] .library-browser .asset-row .mono { font-size: 13px; color: var(--sgp-ink); font-variant-numeric: tabular-nums; }
