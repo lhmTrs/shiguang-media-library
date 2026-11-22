@@ -89,6 +89,6 @@ test('normal database close protocol requires real Worker ACK and normal exit; m
   const worker=new Worker(`const {workerData,parentPort}=require('node:worker_threads');const {port,signal,delay,ack}=workerData;const gate=new Int32Array(signal);port.on('message',()=>setTimeout(()=>{port.postMessage({value:ack});Atomics.store(gate,0,1);Atomics.notify(gate,0);port.close();parentPort.close();},delay));`,{eval:true,workerData:{port:port2,signal,...options},transferList:[port2]});await once(worker,'online');const exited=once(worker,'exit');let forced=0;worker.terminate=()=>{forced++;throw Error('FORCED_EXIT_FORBIDDEN');};
   const db=Object.assign(Object.create(MysqlDatabase.prototype),{worker,port:port1,gate,closed:false});
   if(options.delay===0&&options.ack===true)await db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000});else await assert.rejects(db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000}));
-  assert.equal((await exited)[0],0);assert.equal(forced,0);port1.close();
+  worker.ref();assert.equal((await exited)[0],0);assert.equal(forced,0);port1.close();
  }
 });

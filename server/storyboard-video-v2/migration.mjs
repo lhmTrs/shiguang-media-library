@@ -1,3 +1,4 @@
+import {posixPrivate} from '../fs-platform.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -27,7 +28,7 @@ export const videoV2Migration={
  async exportLegacy(directory){
   const body=this.assets.tx(()=>{this.assets.lockDirectory();const tables=this.legacyRows();return {format:'shiguang-legacy-video-binding-export',schemaVersion:1,instanceId:this.instanceId,createdAt:Date.now(),tables,counts:Object.fromEntries(Object.entries(tables).map(([k,v])=>[k,v.length]))};});
   const output={...body,checksum:hash(body)};this.validateLegacyExport(output);
-  directory=path.resolve(directory);await fs.mkdir(directory,{recursive:true,mode:0o700});const stat=await fs.lstat(directory);if(!stat.isDirectory()||stat.isSymbolicLink()||(process.getuid&&stat.uid!==process.getuid())||(stat.mode&0o077))fail('VIDEO_V2_INVALID_INPUT','导出目录须为当前用户私有的真实目录');if(await fs.realpath(directory)!==directory)fail('VIDEO_V2_INVALID_INPUT','导出目录不能经过符号链接');
+  directory=path.resolve(directory);await fs.mkdir(directory,{recursive:true,mode:0o700});const stat=await fs.lstat(directory);if(!stat.isDirectory()||stat.isSymbolicLink()||!posixPrivate(stat))fail('VIDEO_V2_INVALID_INPUT','导出目录须为当前用户私有的真实目录');if(await fs.realpath(directory)!==directory)fail('VIDEO_V2_INVALID_INPUT','导出目录不能经过符号链接');
   const file=path.join(directory,'legacy-video-binding-'+randomUUID()+'.json'),handle=await fs.open(file,'wx',0o600);try{await handle.writeFile(canonical(output));await handle.sync();}finally{await handle.close();}
   const readback=decode(await fs.readFile(file,'utf8'));this.validateLegacyExport(readback);if(readback.checksum!==output.checksum)fail('VIDEO_V2_UNSETTLED','旧绑定私有导出读回未通过',503);
   return {file,checksum:output.checksum,counts:output.counts};
