@@ -1,3 +1,5 @@
+import {Worker,MessageChannel} from 'node:worker_threads';
+import {MysqlDatabase} from '../server/mysql-db.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -79,4 +81,14 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  const db=new Database(path.join(app.data,'library.sqlite'),{readonly:true});assert.equal(db.prepare('SELECT name FROM media_projects WHERE id=?').get(project.id).name,'原样访达标题');db.close();
  const restarted=await startOwned(t,base);assert.notEqual(restarted.record.runId,app.record.runId);const readback=await (await restarted.call('projects')).json();assert.equal(readback.find(p=>p.id===project.id).name,'原样访达标题');
  const stopped=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:{...process.env,MEDIA_DATA_DIR:restarted.data},timeout:35000,windowsHide:true});assert.match(stopped.stdout,/已正常停止/);assert.deepEqual(await restarted.exited,{code:0,signal:null});
+});
+
+test('normal database close protocol requires real Worker ACK and normal exit; missing/false ACK never terminates (no MySQL connection)',async()=>{
+ for(const options of [{delay:0,ack:true},{delay:120,ack:true},{delay:0,ack:false}]){
+  const {port1,port2}=new MessageChannel(),signal=new SharedArrayBuffer(4),gate=new Int32Array(signal);
+  const worker=new Worker(`const {workerData,parentPort}=require('node:worker_threads');const {port,signal,delay,ack}=workerData;const gate=new Int32Array(signal);port.on('message',()=>setTimeout(()=>{port.postMessage({value:ack});Atomics.store(gate,0,1);Atomics.notify(gate,0);port.close();parentPort.close();},delay));`,{eval:true,workerData:{port:port2,signal,...options},transferList:[port2]});await once(worker,'online');const exited=once(worker,'exit');let forced=0;worker.terminate=()=>{forced++;throw Error('FORCED_EXIT_FORBIDDEN');};
+  const db=Object.assign(Object.create(MysqlDatabase.prototype),{worker,port:port1,gate,closed:false});
+  if(options.delay===0&&options.ack===true)await db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000});else await assert.rejects(db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000}));
+  assert.equal((await exited)[0],0);assert.equal(forced,0);port1.close();
+ }
 });

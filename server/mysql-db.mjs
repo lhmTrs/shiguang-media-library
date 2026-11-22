@@ -28,9 +28,9 @@ export class MysqlDatabase {
     if (!renderMigration) this.read();
   }
   read() {
-    if (Atomics.wait(this.gate, 0, 0, 15000) === "timed-out") {
+    if (Atomics.wait(this.gate, 0, 0, this.normalCloseInProgress?this.normalCloseReadBudgetMs:15000) === "timed-out") {
       this.closed = true;
-      if (migrationConnections.has(this)) {
+      if (migrationConnections.has(this)||this.normalCloseInProgress) {
         // An outstanding migration response is unknown: never terminate its
         // Worker or reuse its response channel for another SQL command.
         this.renderMigrationTransportUnknown = true;
@@ -164,12 +164,16 @@ export class MysqlDatabase {
     } catch (error) { this.worker.unref(); this.port.unref(); throw error; }
     finally { clearTimeout(timer); }
   }
-  async closeNormally() {
-    if(this.closed)throw Error('数据库关闭身份未知');
-    const exited=new Promise((resolve,reject)=>{this.worker.once('exit',code=>code===0?resolve():reject(Error('数据库Worker退出未知')));this.worker.once('error',reject);});
-    // No terminate/kill: request a real connection.end and require ACK + exit.
-    if(this.request('',[],'close')!==true)throw Error('数据库关闭ACK未知');this.closed=true;this.port.close();
-    let timer;try{await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('数据库Worker关闭未确认')),10000);})]);}finally{clearTimeout(timer);}
+  async closeNormally({ackTimeoutMs=10000,exitTimeoutMs=10000}={}) {
+    if(this.closed||!Number.isInteger(ackTimeoutMs)||ackTimeoutMs<20||ackTimeoutMs>10000||!Number.isInteger(exitTimeoutMs)||exitTimeoutMs<20||exitTimeoutMs>10000)throw Error('数据库关闭身份未知');
+    const exited=new Promise((resolve,reject)=>{this.worker.once('exit',code=>code===0?resolve():reject(Error('数据库Worker退出未知')));this.worker.once('error',reject);});exited.catch(()=>{});
+    this.normalCloseInProgress=true;this.normalCloseReadBudgetMs=ackTimeoutMs;let timer;
+    try{
+      // The synchronous ACK timeout also uses the non-terminating read branch.
+      if(this.request('',[],'close')!==true)throw Error('数据库关闭ACK未知');this.closed=true;this.port.close();
+      await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('数据库Worker关闭未确认')),exitTimeoutMs);})]);
+    }catch(e){this.closed=true;this.worker.unref();this.port.unref();throw e;}
+    finally{this.normalCloseInProgress=false;clearTimeout(timer);}
   }
   close() {
     if (migrationConnections.has(this)) throw Error("迁移连接必须等待正常关闭回执");
