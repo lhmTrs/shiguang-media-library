@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {readExiftool} from '../server/exiftool-read.mjs';
 import {EventEmitter} from 'node:events';
 import {tempDirectories} from './helpers/temp-cleanup.mjs';
 import {mediaCommand} from '../server/media-tool.mjs';
@@ -43,5 +44,5 @@ test('Windows installed media tools read a synthetic Unicode filename', {skip:pr
  const dir=await temporary(t),file=path.join(dir,'合成 🎬.mp4');
  await runMedia('ffmpeg',['-v','error','-nostdin','-f','lavfi','-i','color=c=green:s=64x64:r=5:d=1','-c:v','mpeg4',file],{timeout:20000});
  const {stdout}=await runMedia('ffprobe',['-v','error','-show_entries','format=duration','-of','json',file],{timeout:10000});assert.ok(Number(JSON.parse(stdout).format.duration)>0);
- try{const {stdout}=await runMedia('exiftool',['-charset','filename=utf8','-j','-FileType',file],{timeout:10000});assert.equal(JSON.parse(stdout)[0].FileType,'MP4');}catch(e){console.log('Synthetic ExifTool diagnostic:',String(e.stderr||e.code).replaceAll(dir,'<owned-fixture>').slice(0,1000));throw Error('WINDOWS_EXIFTOOL_UNICODE_FAILED');}
+ try{const {stdout}=await readExiftool(file,['-j','-FileType'],{timeout:10000});assert.equal(JSON.parse(stdout)[0].FileType,'MP4');}catch(e){console.log('Synthetic ExifTool diagnostic:',String(e.stderr||e.code).replaceAll(dir,'<owned-fixture>').slice(0,1000));throw Error('WINDOWS_EXIFTOOL_UNICODE_FAILED');}
 });

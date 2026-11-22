@@ -1,6 +1,6 @@
-import {runMedia} from "./media-process.mjs";
+import {readExiftool} from "./exiftool-read.mjs";
 import { promisify } from "node:util";
-const run = runMedia;
+
 export function parseCaptureTime(value, defaultZone = "+08:00") {
   if (typeof value !== "string") return null;
   const m =
@@ -75,8 +75,8 @@ export function captureFromTags(tags) {
   return { ms: null, source: "" };
 }
 export async function readCapture(p) {
-  const { stdout } = await run(
-    "exiftool",
+  const { stdout } = await readExiftool(
+    p,
     [
       ...(process.platform === "win32" ? ["-charset", "filename=utf8"] : []),
       "-j",
@@ -89,7 +89,6 @@ export async function readCapture(p) {
       "-CreationDate",
       "-QuickTime:CreateDate",
       "-XMP-exif:DateTimeDigitized",
-      p,
     ],
     { env: { ...process.env, TZ: "UTC" }, timeout: 20000, maxBuffer: 2e6 },
   );
