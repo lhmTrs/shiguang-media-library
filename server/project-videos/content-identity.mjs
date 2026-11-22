@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn } from '../background-process.mjs';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { constants } from 'node:fs';

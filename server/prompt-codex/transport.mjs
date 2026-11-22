@@ -1,4 +1,4 @@
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import {EventEmitter} from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';

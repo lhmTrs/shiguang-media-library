@@ -62,8 +62,8 @@ export class MediaReceipts {
     try {
       if(exclusive) {fs.linkSync(temporary,target);fs.unlinkSync(temporary);}
       else fs.renameSync(temporary,target);
-      const directory=fs.openSync(this.base,constants.O_RDONLY|constants.O_NOFOLLOW);
-      try {fs.fsyncSync(directory);} finally {fs.closeSync(directory);}
+      if(process.platform!=='win32'){const directory=fs.openSync(this.base,constants.O_RDONLY|constants.O_NOFOLLOW);
+      try {fs.fsyncSync(directory);} finally {fs.closeSync(directory);}}
       assertDirectories(this.proofs);
     } catch(e) {
       // Only touch our private temporary after its directory is revalidated.

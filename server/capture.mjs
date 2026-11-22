@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./background-process.mjs";
 import { promisify } from "node:util";
 const run = promisify(execFile);
 export function parseCaptureTime(value, defaultZone = "+08:00") {

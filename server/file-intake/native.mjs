@@ -1,9 +1,10 @@
 import {platformWords} from '../platform-words.mjs';
-import fs from 'node:fs/promises';
+import {syncDir} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import {constants,lstatSync,realpathSync} from 'node:fs';
-import {execFile} from 'node:child_process';
+import {execFile} from '../background-process.mjs';
 import {promisify} from 'node:util';
 import {createHash,randomUUID} from 'node:crypto';
 import {error,privateDirectory,same,stamp,uuid} from './files.mjs';
@@ -138,8 +139,7 @@ export class IntakeNative {
       await handle.sync();
       await handle.close();handle=null;
       await fs.rename(temporary,target);
-      const dir=await fs.open(directory,'r');
-      try{await dir.sync();}finally{await dir.close();}
+      await syncDir(directory);
     }finally{await handle?.close();await fs.unlink(temporary).catch(()=>{});}
   }
   async previousKept(previous){

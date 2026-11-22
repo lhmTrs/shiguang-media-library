@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
 import {Readable} from 'node:stream';

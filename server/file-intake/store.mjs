@@ -3,7 +3,7 @@ import {safeProbeDiagnostic} from '../storyboard-video/probe-tool.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import path from 'node:path';
 import {Receipts,uuid,stamp,same,unchanged,revalidateSelection,error} from './files.mjs';
 
