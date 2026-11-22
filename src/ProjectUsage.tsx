@@ -7,6 +7,7 @@ import { TimelineImportDialog } from "./TimelineImportDialog";
 import { TimelineUsage, type TimelineReference } from "./TimelineUsage";
 import { RenderWorkbench } from "./project-usage/RenderWorkbench";
 import {MediaViewer, assetMediaView, mediaDoubleClick} from './MediaViewer';
+import {usePlatformWords} from './platform-words';
 
 // 某一集的素材使用账本：候选 / 已使用、类型筛选、时间线总览、逐条操作、导入时间线。
 // 只认传入的 project；切换项目由宿主负责。
@@ -45,6 +46,7 @@ export type ProjectUsageProps = {
 };
 
 export function ProjectUsage({ project, request, revision, changed, play, playingId, isPlaying, edit, stopAudio, browseLibrary, headerActions, requestedTab, onBusyChange }: ProjectUsageProps) {
+  const words = usePlatformWords();
   const activeId = project.id;
   const [tab, setTab] = useState<"candidate" | "used">("candidate"), [q, setQ] = useState(""), [search, setSearch] = useState("");
   const [items, setItems] = useState<Item[]>([]), [total, setTotal] = useState(0), [pages, setPages] = useState(0), [page, setPage] = useState(1);
@@ -102,7 +104,7 @@ export function ProjectUsage({ project, request, revision, changed, play, playin
         <TimelineUsage references={item.timelineReferences} projectId={active.id} projectName={active.name} request={request} stopAudio={stopAudio} compact/>
         <details className="project-file-details"><summary>文件信息</summary><div><span>原文件路径</span><p>{item.asset.path}</p><span>{item.status === "used" ? `首次确认 ${date(item.used_at)}` : `加入 ${date(item.added_at)}`}</span></div></details>
         {noteEditor?.id === item.asset_id ? <div className="project-note-editor"><textarea aria-label="使用位置备注" maxLength={2000} value={noteEditor.note} onChange={e => setNoteEditor({ ...noteEditor, note: e.target.value })}/><button className="plain" disabled={busy} onClick={() => void perform(async () => { await request(`/projects/${activeId}/items`, { ids: [item.asset_id], note: noteEditor.note }, "PATCH"); setNoteEditor(null); changed(); })}>保存备注</button><button className="icon-button" title="取消备注编辑" aria-label="取消备注编辑" onClick={() => setNoteEditor(null)}><X size={15}/></button></div> : <button className="text-button project-note" onClick={() => setNoteEditor({ id: item.asset_id, note: item.note })}>{item.note || "添加使用位置备注"}</button>}
-      </div><div className="project-item-actions"><label className="check-label"><input type="checkbox" aria-label={"手动已使用：" + item.asset.name} checked={item.manualStatus!==undefined?item.manualStatus==="used":item.status==="used"} disabled={busy || loading} onChange={e => { const status = e.target.checked ? "used" : "candidate"; void perform(() => markItem(item, status)); }}/ >{item.source==="manual"?"已使用":"手动已使用"}</label><button className="icon-button" title="在访达中显示" aria-label={"定位项目素材：" + item.asset.name} disabled={busy || item.unavailable} onClick={() => void perform(async () => { await request(`/assets/${item.asset_id}/reveal`, {}); })}><ExternalLink size={16}/></button><button className="icon-button" title="移出项目（不删文件）" aria-label={"移出项目素材：" + item.asset.name} disabled={busy} onClick={() => void perform(() => remove([item.asset_id]))}><X size={16}/></button></div>
+      </div><div className="project-item-actions"><label className="check-label"><input type="checkbox" aria-label={"手动已使用：" + item.asset.name} checked={item.manualStatus!==undefined?item.manualStatus==="used":item.status==="used"} disabled={busy || loading} onChange={e => { const status = e.target.checked ? "used" : "candidate"; void perform(() => markItem(item, status)); }}/ >{item.source==="manual"?"已使用":"手动已使用"}</label><button className="icon-button" title={words.reveal} aria-label={"定位项目素材：" + item.asset.name} disabled={busy || item.unavailable} onClick={() => void perform(async () => { await request(`/assets/${item.asset_id}/reveal`, {}); })}><ExternalLink size={16}/></button><button className="icon-button" title="移出项目（不删文件）" aria-label={"移出项目素材：" + item.asset.name} disabled={busy} onClick={() => void perform(() => remove([item.asset_id]))}><X size={16}/></button></div>
     </article>)}</div>
     {pages > 1 && <div className="pagination"><button className="icon-button" title="上一页项目素材" aria-label="上一页项目素材" disabled={page <= 1 || loading} onClick={() => { setChecked([]); setPage(p => p - 1); }}><ChevronLeft size={17}/></button><span>{page} / {pages}</span><button className="icon-button" title="下一页项目素材" aria-label="下一页项目素材" disabled={page >= pages || loading} onClick={() => { setChecked([]); setPage(p => p + 1); }}><ChevronRight size={17}/></button></div>}
     {preview && previewScope.current === previewContext && <ProjectMediaDialog key={preview.id} asset={preview} close={() => setPreview(null)} stopAudio={stopAudio}/>}

@@ -5,6 +5,7 @@ import {clock, type PlayerState} from './Player';
 import type {Author, Request, Round, Song, Version} from './types';
 import {beijingTime} from './time';
 import {CHECK_LABEL, DECISION_LABEL, PROMPT_FIELD_LABEL, TIER_LABEL} from './types';
+import {usePlatformWords} from '../platform-words';
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
 export function AuthorLine({author, prefix = ''}: {author: Author | null | undefined; prefix?: string}) {
@@ -24,6 +25,7 @@ export type VersionActions = {
 
 // 音乐库里的情况：一行小字。系统标签（AI生成、项目、歌名、轮次）不重复列出，只列按提示词和测量的。
 function LibraryLine({version}: {version: Version}) {
+  const words = usePlatformWords();
   const l = version.library;
   const prompt = version.tags.filter(t => t.source === 'prompt').map(t => t.tag);
   const measured = version.tags.filter(t => t.source === 'measured');
@@ -34,7 +36,7 @@ function LibraryLine({version}: {version: Version}) {
       : <>
         <span title={l.name ?? undefined}>音乐库：{l.reused ? `复用已有的「${l.name}」` : [l.category, l.sub].filter(Boolean).join(' / ') || '待确认'}</span>
         {l.missing && <span className="sgm-meta-warn">音乐库里的记录已删除，文件读不到</span>}
-        {l.offline && !l.missing && <span className="sgm-meta-warn">文件不在原位置（离线）{l.place ? `：原来在「${l.place}」` : ''}。在访达里把它放回原处（同一个文件夹、同一个名字）就能恢复；如果已经清空了废纸篓，这个版本就听不了了</span>}
+        {l.offline && !l.missing && <span className="sgm-meta-warn">文件不在原位置（离线）{l.place ? `：原来在「${l.place}」` : ''}。{words.editOutside}把它放回原处（同一个文件夹、同一个名字）就能恢复；如果已经清空了{words.trash}，这个版本就听不了了</span>}
         {l.moved && !l.missing && !l.offline && <span className="sgm-meta-warn">位置变了，需要核对</span>}
         {l.tagSync === 'failed' && <span className="sgm-meta-warn">标签没写进音乐库：{l.tagError}</span>}
         {prompt.length > 0 && <span>按提示词：{prompt.join('、')}</span>}

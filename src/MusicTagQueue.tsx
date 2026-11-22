@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { Asset } from "./main";
 import { MusicAnalysisPanel } from "./MusicAnalysisPanel";
+import {usePlatformWords} from './platform-words';
 
 type Props = {
   request: <T = unknown>(
@@ -44,6 +45,7 @@ export function MusicTagQueue({
   changed,
   close,
 }: Props) {
+  const words = usePlatformWords();
   const [current, setCurrent] = useState<Asset | null>(null);
   const [tags, setTags] = useState<TagItem[]>([]);
   const [draft, setDraft] = useState<string[]>([]);
@@ -151,7 +153,7 @@ export function MusicTagQueue({
         latest.note !== note
       )
         throw Error("备注已在其他页面修改，请刷新后再保存");
-      if (latest.trashed) throw Error("此素材已移入废纸篓");
+      if (latest.trashed) throw Error(`此素材已移入${words.trash}`);
       await request(
         "/assets/" + current.id,
         {

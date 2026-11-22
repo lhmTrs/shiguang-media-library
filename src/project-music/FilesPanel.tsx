@@ -7,6 +7,7 @@ import {Waveform} from './Waveform';
 import {clock, type PlayerState} from './Player';
 import {Modal} from './dialogs';
 import type {Request, Song} from './types';
+import {usePlatformWords} from '../platform-words';
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
 const uuid = (): string => crypto.randomUUID();
@@ -38,6 +39,7 @@ export function FilesPanel({active, projectId, request, player, songs, onJumpSon
   active: boolean; projectId: string; request: Request; player: PlayerState; songs: Song[];
   onJumpSongs: () => void; onSongChanged: (s: Song) => void;
 }) {
+  const words = usePlatformWords();
   const [folder, setFolderState] = useState(() => readFolder(projectId));
   const [view, setView] = useState<MusicFilesView | null>(null);
   const [loading, setLoading] = useState(false), [busy, setBusy] = useState(false);
@@ -128,41 +130,41 @@ export function FilesPanel({active, projectId, request, player, songs, onJumpSon
     setSelected(new Set());
     setNotice(`已复制 ${r.count} 个文件，可以直接粘贴到剪辑软件里`);
   });
-  const reveal = (body: {paths: string[]} | {folder: string}) => act(() => request(`${base}/reveal`, {requestId: uuid(), ...body}), '已在访达中打开');
+  const reveal = (body: {paths: string[]} | {folder: string}) => act(() => request(`${base}/reveal`, {requestId: uuid(), ...body}), `已在${words.fileManager}中打开`);
 
   if (!projectId) return null;
   const songsHint = view?.songs.songCount ? `${view.songs.songCount} 首` : '';
   return <div className="sgm-files" aria-label="项目音乐文件">
     {error && <p className="sgm-banner error" role="alert">{error}<button type="button" className="sgm-btn small ghost" onClick={() => { setError(''); void load(); }}>重新读取</button></p>}
     {notice && <p className="sgm-banner accent" role="status">{notice}</p>}
-    {view?.songs.needsReview && <p className="sgm-banner error">找不到「歌曲」文件夹：可能在访达里挪动或改了名。歌曲版本仍按音乐库记录播放，请把它挪回项目音乐文件夹里，名字改回「歌曲」。</p>}
+    {view?.songs.needsReview && <p className="sgm-banner error">找不到「歌曲」文件夹：可能{words.editOutside}挪动或改了名。歌曲版本仍按音乐库记录播放，请把它挪回项目音乐文件夹里，名字改回「歌曲」。</p>}
     <FolderTemplate label="项目音乐文件" rootLabel="项目音乐文件夹" rootCount={view?.rootCount} folders={view?.folders ?? []} current={view?.folder ?? folder}
       onNavigate={setFolder} loading={loading} itemLabel="个音频"
       specialNodes={[{id: 'songs', label: '♪ 歌曲', hint: songsHint, icon: null, onSelect: onJumpSongs}]}
-      emptyText={view && !view.exists ? '还没有文件夹。建一个，比如「Suno下载」或「AI剪辑」，把要存的、要传的音乐放进来。' : '这个文件夹还是空的。可以上传，也可以在访达里直接放进来。'}
+      emptyText={view && !view.exists ? '还没有文件夹。建一个，比如「Suno下载」或「AI剪辑」，把要存的、要传的音乐放进来。' : `这个文件夹还是空的。可以上传，也可以${words.editOutside}直接放进来。`}
       toolbar={<>
         <button type="button" className="sgm-btn small" disabled={busy} onClick={() => setDialog({kind: 'new-folder'})}><FolderPlus size={15}/>新建文件夹</button>
         {!!view?.folder && <button type="button" className="sgm-btn small" disabled={busy} onClick={() => setDialog({kind: 'rename'})}><Pencil size={15}/>改名</button>}
         <button type="button" className="sgm-btn small" disabled={busy} onClick={() => setDialog({kind: 'upload'})}><Upload size={15}/>上传</button>
         <button type="button" className="sgm-btn small ghost" disabled={busy || !caps?.revealMany.available} title={caps?.revealMany.available ? undefined : caps?.revealMany.reason}
-          onClick={() => reveal({folder: view?.folder ?? ''})}><FolderSearch size={15}/>在访达中显示</button>
+          onClick={() => reveal({folder: view?.folder ?? ''})}><FolderSearch size={15}/>{words.reveal}</button>
         {chosen.length > 0 && <>
           <span className="sgm-hint">已选 {chosen.length} 个</span>
           <button type="button" className="sgm-btn small primary" disabled={busy || !caps?.clipboard.available} title={caps?.clipboard.available ? '复制后可以直接粘贴到剪辑软件' : caps?.clipboard.reason} onClick={copy}><Clipboard size={15}/>复制给剪辑软件</button>
-          <button type="button" className="sgm-btn small" disabled={busy || !caps?.revealMany.available} title={caps?.revealMany.available ? undefined : caps?.revealMany.reason} onClick={() => reveal({paths: chosen})}><FolderSearch size={15}/>在访达中显示所选</button>
+          <button type="button" className="sgm-btn small" disabled={busy || !caps?.revealMany.available} title={caps?.revealMany.available ? undefined : caps?.revealMany.reason} onClick={() => reveal({paths: chosen})}><FolderSearch size={15}/>{words.reveal}所选</button>
           <button type="button" className="sgm-btn small ghost" onClick={() => setSelected(new Set())}>取消选择</button>
         </>}
       </>}
       notice={<>
-        {view?.items.some(i => i.inSongs.length) && <p className="sgm-hint">标「已加入」的文件就是那首歌里的版本，没有另存。在访达里删掉或挪出项目音乐文件夹，歌曲里的那个版本也会听不了；放回原处就恢复。</p>}
-        {caps && !caps.clipboard.available && <p className="sgm-hint">复制给剪辑软件、在访达中显示要在运行拾光的这台 Mac 上用：{caps.clipboard.reason}</p>}
+        {view?.items.some(i => i.inSongs.length) && <p className="sgm-hint">标「已加入」的文件就是那首歌里的版本，没有另存。{words.editOutside}删掉或挪出项目音乐文件夹，歌曲里的那个版本也会听不了；放回原处就恢复。</p>}
+        {caps && !caps.clipboard.available && <p className="sgm-hint">复制给剪辑软件、{words.reveal}要在运行拾光的{words.thisMac === '这台 Mac' ? '这台 Mac 上用' : words.thisMac + '上用'}：{caps.clipboard.reason}</p>}
       </>}
       items={items} selected={selected} onToggleSelect={toggle}/>
 
     {dialog?.kind === 'new-folder' && <NameDialog title="新建文件夹" label="文件夹名" initial="" submit="新建" onClose={() => setDialog(null)}
       onSubmit={async name => { const next = await request<MusicFilesView>(`${base}/folders`, {parent: view?.folder ?? '', name}); setView(next); setFolder(next.folder); }}/>}
     {dialog?.kind === 'rename' && view && <NameDialog title="改名" label="新名字" initial={view.folders.find(f => f.id === view.folder)?.name ?? ''} submit="改名"
-      hint="访达里的文件夹也会一起改名；里面的文件在音乐库里的记录、标签和加入过的歌曲都保留。" onClose={() => setDialog(null)}
+      hint={`${words.fileManager}里的文件夹也会一起改名；里面的文件在音乐库里的记录、标签和加入过的歌曲都保留。`} onClose={() => setDialog(null)}
       onSubmit={async name => { const next = await request<MusicFilesView>(`${base}/folders/rename`, {path: view.folder, name}); setView(next); setFolder(next.folder); }}/>}
     {dialog?.kind === 'upload' && <UploadDialog base={base} folder={view?.folder ?? ''} request={request} onClose={() => { setDialog(null); void load(); }}/>}
     {dialog?.kind === 'add' && <AddToSongDialog projectId={projectId} item={dialog.item} songs={songs} request={request}

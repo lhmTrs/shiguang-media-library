@@ -53,7 +53,7 @@ const reasons: Record<string, string> = {
   DB_WRITE_FAILED: "索引保存失败，没有确认保存该条指纹。",
 };
 function label(value: string | undefined, fallback: string) {
-  if (!value || /(?:^\/|\/(?:Users|home|private|var|Volumes)\/|[A-Za-z]:[\\/]|file:\/\/)/.test(value)) return fallback;
+  if (!value || /(?:^\/|^\\\\|\/(?:Users|home|private|var|Volumes)\/|[A-Za-z]:[\\/]|file:\/\/)/.test(value)) return fallback;
   return value.length > 180 ? value.slice(0, 177) + "…" : value;
 }
 function readSaved(key: string, ids: string[]): SavedTask | null {

@@ -126,6 +126,7 @@ import { usePaperTrial } from "./paper/trial";
 import { BackgroundTasks, type TaskSummary } from "./paper/BackgroundTasks";
 import { RowThumb } from "./paper/RowThumb";
 import "./paper/paper.css";
+import { hasPastedPath, pastedPath, setServerPlatform, usePlatformWords } from "./platform-words";
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
@@ -283,7 +284,7 @@ async function establishLocalSession(force = false): Promise<LocalSession> {
     const next = await response.json() as LocalSession;
     if (next.app !== 'shiguang-local-media' || typeof next.token !== 'string' || !next.token || typeof next.instanceId !== 'string') throw Error('本机服务身份无法确认，请检查地址后刷新页面');
     if (localSession && next.instanceId !== localSession.instanceId) throw libraryIdentityError();
-    localSession = next; token = next.token; return next;
+    localSession = next; token = next.token; setServerPlatform((next as { platform?: unknown }).platform); return next;
   })();
   try { return await sessionEstablishing; }
   finally { sessionEstablishing = null; }
@@ -526,6 +527,7 @@ function UploadTaskEntry({ onClose }: { onClose: () => void }) {
 }
 
 function App() {
+  const words = usePlatformWords();
   const codexNavigation=useRef(0);
   const cancelCodexNavigation=useCallback(()=>{codexNavigation.current++;},[]);
   const [uploadTasksOpen, setUploadTasksOpen] = useState(false);
@@ -2575,7 +2577,7 @@ function App() {
                     />
                     <IconButton
                       icon={Trash2}
-                      title="移入废纸篓"
+                      title={`移入${words.trash}`}
                       disabled={!trashAvailable}
                       onClick={() => openOperation("trash")}
                     />
@@ -2965,7 +2967,7 @@ function App() {
                         />
                         <IconButton
                           icon={Trash2}
-                          title="移入废纸篓"
+                          title={`移入${words.trash}`}
                           disabled={!trashAvailable || !selected.online}
                           onClick={() => {
                             setOperationIds([selected.id]);
@@ -3336,7 +3338,7 @@ function App() {
                 settings: "设置与缓存",
                 rename: "重命名素材",
                 move: "移动素材",
-                trash: "移入废纸篓",
+                trash: `移入${words.trash}`,
                 tags: "批量标签",
                 zoom: "照片预览",
               }[modal]
@@ -3351,7 +3353,7 @@ function App() {
                     settings: "设置与缓存",
                     rename: "重命名素材",
                     move: "移动素材",
-                    trash: "移入废纸篓",
+                    trash: `移入${words.trash}`,
                     tags: "批量设置标签",
                     zoom: "照片预览",
                   }[modal]
@@ -3396,7 +3398,7 @@ function App() {
                       {busy ? "等待文件夹选择…" : "选择文件夹"}
                     </button>
                   </div>
-                  <div className="folder-path-entry"><label className="library-folder-path-field"><span>文件夹绝对路径</span><input aria-label="素材文件夹绝对路径" dir="ltr" placeholder="例如 D:\素材\音乐 或 /Volumes/素材" value={folderPath} onChange={e => setFolderPath(e.target.value)}/></label><button className="plain" disabled={busy || !folderPath.trim()} onClick={() => void run(async () => { await api("/roots", { path: folderPath.trim(), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
+                  <div className="folder-path-entry"><label className="library-folder-path-field"><span>文件夹绝对路径</span><input aria-label="素材文件夹绝对路径" dir="ltr" placeholder="例如 D:\素材\音乐 或 /Volumes/素材" value={folderPath} onChange={e => setFolderPath(e.target.value)}/></label><button className="plain" disabled={busy || !hasPastedPath(folderPath)} onClick={() => void run(async () => { await api("/roots", { path: pastedPath(folderPath), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
                   {allRoots.map((r) => (
                     <div className={"folder-record" + (r.retired ? " is-retired" : "")} key={r.id}>
                       <FolderOpen size={21} />
@@ -3541,10 +3543,10 @@ function App() {
                           <div className="folder-edit-actions">
                             <button
                               className="primary"
-                              disabled={busy || !rootEdit.name.trim() || !rootEdit.path.trim()}
+                              disabled={busy || !rootEdit.name.trim() || !hasPastedPath(rootEdit.path)}
                               onClick={() =>
                                 void runWith("正在迁移目录位置…", async () => {
-                                  const next = rootEdit.path.trim();
+                                  const next = pastedPath(rootEdit.path);
                                   const moved = next !== r.path;
                                   const metaChanged = rootEdit.name !== r.name || rootEdit.kind !== r.kind;
                                   if (metaChanged) await api("/roots/" + r.id, { name: rootEdit.name, kind: rootEdit.kind }, "PATCH");
@@ -3636,7 +3638,7 @@ function App() {
                             {{
                               rename: "改名",
                               move: "移动",
-                              trash: "移入废纸篓",
+                              trash: `移入${words.trash}`,
                             }[o.action] || o.action}
                           </strong>
                           <span>
@@ -3657,7 +3659,7 @@ function App() {
                         </div>
                         <p>{o.source}</p>
                         <p className="target-path">
-                          → {o.target || "系统废纸篓"}
+                          → {o.target || words.systemTrash}
                         </p>
                         {o.error && <p className="muted-warning">{o.error}</p>}
                         {o.status === "done" && !o.undone && (
@@ -3902,10 +3904,10 @@ function App() {
                     <dd>
                       {cache.files} 个文件 · {bytes(cache.bytes)}
                     </dd>
-                    <dt>废纸篓</dt>
+                    <dt>{words.trash}</dt>
                     <dd>
                       {trashAvailable
-                        ? "Mac 原生组件可用"
+                        ? `${words.macNative}可用`
                         : "不可用，删除已禁用"}
                     </dd>
                   </dl>
@@ -3953,7 +3955,7 @@ function App() {
                   <p className="operation-summary">
                     所选 {operationIds.length} 个素材
                     {modal === "trash"
-                      ? "将移入系统废纸篓，可在操作记录中恢复。"
+                      ? `将移入${words.systemTrash}，可在操作记录中恢复。`
                       : "将修改原文件。请先核对下方路径。"}
                   </p>
                   {modal === "trash" && operationIds.length === 1 && <p className="trash-file-name">{assets.find(a => a.id === operationIds[0])?.name || (selected?.id === operationIds[0] ? selected.name : operationIds[0])}</p>}
@@ -3999,7 +4001,7 @@ function App() {
                           {p.ok ? (
                             <>
                               <p>{p.source}</p>
-                              <p>→ {p.target || "系统废纸篓"}</p>
+                              <p>→ {p.target || words.systemTrash}</p>
                               {p.warning && <p className="muted-warning">{p.warning}</p>}
                             </>
                           ) : (
@@ -4080,7 +4082,7 @@ function App() {
                     className={modal === "trash" ? "danger" : "primary"}
                     disabled={busy || !plans.some((p) => p.ok) || (modal === "move" && !destinationReady)}
                     onClick={() =>
-                      void runWith(modal === "move" ? "正在移动素材…" : modal === "trash" ? "正在移入废纸篓…" : "正在重命名素材…", async () => {
+                      void runWith(modal === "move" ? "正在移动素材…" : modal === "trash" ? `正在移入${words.trash}…` : "正在重命名素材…", async () => {
                         pauseAudition();
                         video.current?.pause();
                         const result = await api<Plan[]>("/operations", {
@@ -4116,7 +4118,7 @@ function App() {
                   >
                     {busy
                       ? "处理中…"
-                      : `确认${modal === "trash" ? "移入废纸篓" : modal === "move" ? "移动" : "改名"}`}
+                      : `确认${modal === "trash" ? `移入${words.trash}` : modal === "move" ? "移动" : "改名"}`}
                   </button>
                 )}
               </div>
