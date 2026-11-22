@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import crypto from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {once} from 'node:events';
 import Database from 'better-sqlite3';
 import {tempDirectories} from './helpers/temp-cleanup.mjs';
@@ -56,6 +57,18 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  const base=await temporary(t),app=await startOwned(t,base);assert.equal(app.identity.platform,'win32');assert.ok(!('runId' in app.identity));assert.deepEqual(Object.keys(app.identity).sort(),['app','folderPickerAvailable','instanceId','platform','token','trashAvailable'].sort());
  assert.equal((await fetch(app.origin+'/api/application/identity')).status,401);
  const project=await (await app.call('projects',{name:'原样访达标题'})).json();assert.ok(project.id);
+
+ // Actual project publication and DB readback, not just the cleanup adapter.
+ const fixtureVideo=path.join(base,'synthetic.mp4');await promisify(execFile)('ffmpeg',['-v','error','-nostdin','-f','lavfi','-i','color=c=green:s=64x64:r=5:d=1','-c:v','libx264',fixtureVideo]);const video=await fs.readFile(fixtureVideo),requestId=crypto.randomUUID(),videoRoute=`project-videos/projects/${project.id}/imports`;
+ const started=await app.call(videoRoute,{requestId,fileName:'验证 🎬.mp4',bytes:video.length,prompt:{mode:'none'}});assert.equal(started.status,200,await started.clone().text());
+ const videoResponse=await fetch(app.origin+'/api/'+videoRoute+'/'+requestId+'/content',{method:'PUT',headers:{...app.headers,'content-type':'application/octet-stream'},body:video});const uploaded=await videoResponse.json();assert.equal(videoResponse.status,200,JSON.stringify(uploaded));assert.equal(uploaded.status,'ready');
+ const probeDB=new Database(path.join(app.data,'library.sqlite'),{readonly:true});const stored=JSON.parse(probeDB.prepare('SELECT data_json FROM project_video_imports WHERE id=?').get(requestId).data_json);assert.equal(stored.stageCleanup.complete,true);await assert.rejects(fs.stat(stored.cache),{code:'ENOENT'});
+ const published=JSON.parse(probeDB.prepare('SELECT data_json FROM storyboard_video_sources WHERE id=?').get(uploaded.videoId).data_json);assert.deepEqual(await fs.readFile(published.path),video);probeDB.close();
+ const scene=await (await app.call('project-assets/assets',{project_id:project.id,kind:'scene',name:'合成场景'})).json();assert.ok(scene.id);
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=','base64'),imageId=crypto.randomUUID();
+ const imageStart=await app.call('project-assets/image-imports',{requestId:imageId,assetId:scene.id,projectId:project.id,lookId:null,fileName:'场景 🎬.png',bytes:png.length});assert.equal(imageStart.status,200,await imageStart.clone().text());
+ const imageResponse=await fetch(app.origin+'/api/project-assets/image-imports/'+imageId+'/content',{method:'PUT',headers:{...app.headers,'content-type':'application/octet-stream'},body:png});const image=await imageResponse.json();assert.equal(imageResponse.status,200,JSON.stringify(image));assert.equal(image.status,'ready');
+ const imageDB=new Database(path.join(app.data,'library.sqlite'),{readonly:true});const savedImage=imageDB.prepare('SELECT path FROM assets WHERE id=?').get(image.mediaAssetId);imageDB.close();assert.deepEqual(await fs.readFile(savedImage.path),png);assert.ok(!(await fs.readdir(path.dirname(savedImage.path))).some(n=>n.startsWith('.shiguang-reference-import-')));
  const command={runId:app.record.runId,requestId:crypto.randomUUID()};
  assert.equal((await app.call('application/shutdown',command,{'x-local-token':'wrong'})).status,403);
  assert.equal((await app.call('application/shutdown',command,{origin:'http://example.invalid'})).status,403);

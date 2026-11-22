@@ -1,3 +1,4 @@
+import {unquotePath} from './path-input.mjs';
 import {platformWords} from './platform-words.mjs';
 import {createApplicationShutdown,createShutdownWorkGate,createShutdownReceiptStore,observeShutdownResource,observeSqliteShutdown} from './application-shutdown.mjs';
 import {videoBindingV2AgentGuide} from './storyboard-video-v2/agent-guide.mjs';
@@ -784,8 +785,9 @@ app.post("/api/folder-browser", asyncRoute(async (req, res) => {
   res.json(await folderBrowser.create(req.body));
 }));
 app.post("/api/roots", asyncRoute(async (req, res) => {
-  if (typeof req.body.path !== "string" || !path.isAbsolute(req.body.path)) throw Error("请输入服务器上的绝对文件夹路径");
-  const root = await lib.addRoot(req.body.path, req.body.kind);
+  const input=unquotePath(req.body.path);
+  if (typeof input !== "string" || !path.isAbsolute(input)) throw Error("请输入服务器上的绝对文件夹路径");
+  const root = await lib.addRoot(input, req.body.kind);
   void reconcileWatcher?.refresh(); // 立刻开始监听这个新目录，否则外部改动要等下一轮兜底刷新
   res.json({ root, job: lib.scan(root.id) });
 }));

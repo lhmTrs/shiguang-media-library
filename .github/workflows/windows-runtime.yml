@@ -21,5 +21,6 @@ jobs:
           node-version: '22.x'
           package-manager-cache: false
       - run: npm ci
+      - run: choco install ffmpeg --yes --no-progress
       - run: npm run build
       - run: node --test --test-timeout=120000 tests/windows-runtime.test.mjs
