@@ -1,3 +1,5 @@
+import {Library} from '../server/library.mjs';
+import {startWatcher} from '../server/reconcile.mjs';
 import {Worker,MessageChannel} from 'node:worker_threads';
 import {MysqlDatabase} from '../server/mysql-db.mjs';
 import test from 'node:test';
@@ -93,4 +95,11 @@ test('normal database close protocol requires real Worker ACK and normal exit; m
   if(options.delay===0&&options.ack===true)await db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000});else await assert.rejects(db.closeNormally({ackTimeoutMs:50,exitTimeoutMs:1000}));
   worker.ref();assert.equal((await exited)[0],0);assert.equal(forced,0);port1.close();
  }
+});
+
+test('Windows actual filesystem watchers and their manifest writes close before database release',{skip:process.platform!=='win32',timeout:5000},async t=>{
+ const base=await temporary(t),root=path.join(base,'root');await fs.mkdir(root);const lib=await new Library(path.join(base,'data')).init();lib.enqueue=()=>{};await lib.addRoot(root,'sfx');
+ const messages=[],watcher=startWatcher(lib,{debounceMs:10,log:s=>messages.push(s)});t.after(async()=>{await watcher.close();if(lib.db.open)lib.db.close();});
+ await fs.writeFile(path.join(root,'owned.wav'),'synthetic');await watcher.close();assert.equal(watcher.activeRoots,0);lib.db.close();
+ const manifest=path.join(root,'.shiguang','manifest.json'),before=await fs.readFile(manifest);await fs.writeFile(path.join(root,'after-close.wav'),'still-owned');await pause(40);assert.deepEqual(await fs.readFile(manifest),before);assert.deepEqual(messages,[]);
 });

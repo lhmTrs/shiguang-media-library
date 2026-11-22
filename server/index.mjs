@@ -772,7 +772,7 @@ app.post(
     const result=await mysqlStorage.activate(req.body);
     // All owners keep their original SQLite connection until normal shutdown.
     // Stop scheduled business writers; query_only also fences already-prepared SQL.
-    reconcileWatcher?.stop(); manifestSync.stop(); fileIntake.beginClose();
+    if(process.platform==='win32')await reconcileWatcher?.close();else reconcileWatcher?.stop();manifestSync.stop(); fileIntake.beginClose();
     res.json({...result,videoBindingMigration:storyboardVideo.bindingV2.migrationStatus()});
   }),
 );
@@ -1558,7 +1558,7 @@ async function shutdownApplication() {
     await projectVideos.changes.cleanup(true);
     await codexService.close();
     if(process.platform==='win32'){await storyboardGeneration.service.close();await audioAnalysis?.dispose();audioEngine?.dispose();}
-    reconcileWatcher?.stop(); manifestSync.stop();
+    if(process.platform==='win32')await reconcileWatcher?.close();else reconcileWatcher?.stop();manifestSync.stop();
     await drainTaskEntry({ allowNeverStarted: true });
     manifestSync.stop();
     await viteServer?.close();
