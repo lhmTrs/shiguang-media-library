@@ -21,4 +21,4 @@ node scripts/windows-ci-tests.mjs <report-directory>
 
 本批 Windows Node 22 实测（提交以 PR 准确 head 为准）：目录 fsync 与向已存在空目录改名均为 EPERM；生成文件 inode 在安全整数内。长路径文件读写/realpath 成功，子进程 cwd 未成功；FFmpeg/FFprobe 中文 emoji 文件名成功，ExifTool 和尾部 moov 的 pipe:3 未成功。保留这些观测供后续修复，不根据一次 runner 推断所有盘和程序。
 
-现有子集 Windows 为 7/8 文件成功；font-scale 的跨平台路径断言仍使用 src/style.css 字面值，本 PR 不改前端测试。macOS 8/8。排除5个文件不是产品通过：其中 notices-poll 与 project-music-prompt-split 使用真实服务/现有工具前提，需后续独立隔离验证，另外3个依赖 POSIX 句柄/脚本或刷盘前提。
+初次完整报告中现有子集 Windows 为 7/8 文件成功；font-scale 路径断言使用 src/style.css 字面值，现将测试枚举路径统一为 /，Mac 结果不变，最终结果以准确 head 的报告为准。macOS 8/8。排除5个文件不是产品通过：其中 notices-poll 与 project-music-prompt-split 使用真实服务/现有工具前提，需后续独立隔离验证，另外3个依赖 POSIX 句柄/脚本或刷盘前提。
