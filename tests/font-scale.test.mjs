@@ -9,7 +9,7 @@ import { rewrite, offenders, maskSizes } from './helpers/font-scale.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 // 四批已全部完成：src 下所有 CSS 文件都必须在档位内（themes.css 由脚本生成、不含字号，也一并检查）。
 const listCss = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? listCss(path.join(dir, e.name)) : e.name.endsWith('.css') ? [path.join(dir, e.name)] : []);
-const DONE = listCss(path.join(root, 'src')).map(f => path.relative(root, f)).sort();
+const DONE = listCss(path.join(root, 'src')).map(f => path.relative(root, f).split(path.sep).join('/')).sort();
 
 test('src 下全部 CSS 文件里没有档位以外的字号', () => {
   assert.ok(DONE.length >= 20 && DONE.includes('src/style.css'), '没有找到 CSS 文件：' + DONE.length);
