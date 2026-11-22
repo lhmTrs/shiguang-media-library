@@ -7,7 +7,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawnMedia as spawn} from '../media-process.mjs';
 import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {fail} from './model.mjs';
 

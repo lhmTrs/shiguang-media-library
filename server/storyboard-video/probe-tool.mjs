@@ -1,3 +1,4 @@
+import {mediaCommand} from '../media-tool.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
@@ -24,6 +25,7 @@ export function defaultProbePaths(platform=process.platform){
 // Discover only known locations and the inherited executable search path. No
 // shell, installation, recursive disk search, or environment mutation occurs.
 export async function resolveVideoProbe({command='ffprobe',explicit=false,env=process.env,platform=process.platform,defaults=defaultProbePaths(platform)}={}){
+ if(platform==='win32'&&command==='ffprobe'){try{return {command:mediaCommand('ffprobe',{env:explicit?{...env,MEDIA_FFPROBE_BIN:command}:env,platform,defaults})};}catch(e){throw probeFailure(e,'resolve');}}
  if(typeof command!=='string'||!command.trim()||/[\x00-\x1f\x7f]/.test(command)||command.length>8192)throw probeFailure({code:'EINVAL'},'resolve');
  const isPath=path.isAbsolute(command)||/[\\/]/.test(command);
  if(isPath&&!path.isAbsolute(command))throw probeFailure({code:'EINVAL'},'resolve');

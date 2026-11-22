@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import {runMedia} from "./media-process.mjs";
 import { promisify } from "node:util";
-const run = promisify(execFile);
+const run = runMedia;
 export function parseCaptureTime(value, defaultZone = "+08:00") {
   if (typeof value !== "string") return null;
   const m =
@@ -78,6 +78,7 @@ export async function readCapture(p) {
   const { stdout } = await run(
     "exiftool",
     [
+      ...(process.platform === "win32" ? ["-charset", "filename=utf8"] : []),
       "-j",
       "-G1",
       "-s",

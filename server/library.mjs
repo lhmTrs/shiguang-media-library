@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { execFile } from "node:child_process";
+import {runMedia,revealWindows} from "./media-process.mjs";
 import { promisify } from "node:util";
 import { PHOTO, VIDEO, AUDIO, rootIdentity, indexFileIdentity } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
@@ -18,7 +18,7 @@ import { readManifest } from "./fs-manifest.mjs";
 import { initRepairJournal, mergeAlias, repairRootState } from "./asset-repair.mjs";
 import { metadataVersionsFor } from "./asset-metadata-versions.mjs";
 import { installPassiveScanProofFence } from "./cloud-upload-scan-proof.mjs";
-export const run = promisify(execFile);
+export const run = runMedia;
 export const within = (base, p) => p === base || p.startsWith(base + path.sep);
 export const id = () => crypto.randomUUID();
 export const fileCreated = (stat) =>
@@ -238,7 +238,7 @@ export class Library {
   async reveal(assetId, openFile = p => {
     if (process.env.MEDIA_CONTAINER === "1") throw Error("容器不能打开宿主机文件管理器，请复制素材路径");
     if (process.platform === "darwin") return run("open", ["-R", p]);
-    if (process.platform === "win32") return run("explorer.exe", ["/select," + p]);
+    if (process.platform === "win32") return revealWindows(p);
     return run("xdg-open", [path.dirname(p)]);
   }) {
     const { p } = await this.source(assetId);
