@@ -5,6 +5,7 @@ import {Modal, ModalActions} from './Modal';
 import {folderContains, folderTrail, uniqueShots} from './folders';
 import {adoptedShotsText, unbindConfirmation} from './shot-binding-model.mjs';
 import type {ConflictChoice, Folder, FolderOperation, OperationPlan, OperationReceipt, ProjectVideoRequest} from './types';
+import {usePlatformWords} from '../platform-words';
 
 const POLL_RETRIES = 6;
 export type FolderAction = {kind: 'create'; parentId: string} | (FolderOperation & {label: string});
@@ -19,6 +20,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
   /** 批量移动完成后「打开目标文件夹」。 */
   onOpenFolder?: (folderId: string) => void;
 }) {
+  const words = usePlatformWords();
   const [name, setName] = useState(''), [destination, setDestination] = useState('root');
   const [mode, setMode] = useState<'trash' | 'contents-to-root'>('contents-to-root');
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({}), [plan, setPlan] = useState<OperationPlan | null>(null);
@@ -188,7 +190,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
           {(shown.kind === 'move-video' || shown.kind === 'move-videos' || shown.kind === 'move-folder') && <label className="pv-field">目标文件夹<select value={destination} onChange={e => {setDestination(e.target.value); invalidate();}}>
             {batch && <option value="" disabled>请选择目标文件夹</option>}<option value="root">项目根目录</option>{folders.filter(f => f.available && !excludeTargets?.has(f.id) && !(shown.kind === 'move-folder' && shown.folderId && folderContains(folders, shown.folderId, f.id))).map(f => <option key={f.id} value={f.id}>{folderTrail(folders, f.id).map(part => part.name).join(' / ') || f.name}</option>)}
           </select><small>选择项目内的目标目录，下一步核对移动影响。{excludeTargets?.size ? '要收纳为废片，请用“标记为废片…”。' : ''}</small></label>}
-          {shown.kind === 'delete-folder' && <label className="pv-field">删除方式<select value={mode} onChange={e => {setMode(e.target.value as typeof mode); invalidate();}}><option value="contents-to-root">内容移到项目根目录，再删除空文件夹</option><option value="trash" disabled={!canTrash}>整个文件夹与全部内容移到废纸篓{!canTrash ? '（当前环境不可用）' : ''}</option></select></label>}
+          {shown.kind === 'delete-folder' && <label className="pv-field">删除方式<select value={mode} onChange={e => {setMode(e.target.value as typeof mode); invalidate();}}><option value="contents-to-root">内容移到项目根目录，再删除空文件夹</option><option value="trash" disabled={!canTrash}>整个文件夹与全部内容移到{words.trash}{!canTrash ? '（当前环境不可用）' : ''}</option></select></label>}
         </fieldset>
         {plan && <div className="pv-operation-plan"><h3>{plan.description}</h3><p>{plan.files} 个文件 · {plan.folders} 个文件夹</p>
           {!!plan.conflicts.length && <><h3>同名冲突</h3><p>同名文件夹请选择改名或取消，不直接覆盖或合并目录。</p>{plan.conflicts.map(c => <label className="pv-field" key={c.key}>{c.sourceName || c.name} → {c.targetName}<small>覆盖会解除目标视频的采用：{adoptedShotsText(c.adoptedShots) || '无'}</small><select aria-label={`冲突处理 ${c.name}`} value={choices[c.key] || ''} disabled={busy} onChange={e => {const value = e.target.value; setChoices(old => {const next = {...old}; if (value) next[c.key] = value as ConflictChoice; else delete next[c.key]; return next;}); setPlan(old => old ? {...old, ready: false} : old); setConfirmed(false);}}><option value="">请选择</option><option value="rename">保留双方，递增 _0 重命名</option><option value="overwrite" disabled={shown.kind === 'move-folder' || shown.kind === 'rename-folder'}>覆盖目标同名视频</option></select></label>)}<button type="button" disabled={busy || plan.conflicts.some(c => !choices[c.key])} onClick={() => void preview()}>按所选冲突方式重新预览</button></>}
@@ -206,7 +208,7 @@ export function FolderOperations({action, active, folders, projectId, request, c
         : receipt && notStarted(receipt) ? <><button type="button" disabled={busy} onClick={() => void query()}>查询原文件夹操作</button><button type="button" className="pv-primary" disabled={busy} onClick={() => void abandon()}>放下这笔，重新核对</button></>
         : receipt ? <><button type="button" disabled={busy} onClick={() => void query()}>查询原文件夹操作</button>{receipt.status === 'unknown' && receipt.canRecover === true && <button type="button" disabled={busy} onClick={() => void query(true)}>恢复原操作（回滚）</button>}</> : <>
           <button type="button" className={plan ? undefined : 'pv-primary'} disabled={busy || readOnly || shown.kind === 'rename-folder' && !name.trim() || batch && (!destination || !movable.length)} onClick={() => void preview()}>{busy ? '正在核对…' : plan ? '重新核对影响' : batch ? `核对 ${movable.length} 个视频的移动影响` : '核对操作影响'}{!busy && <ArrowRight size={15} aria-hidden="true"/>}</button>
-          {plan && <button type="button" className={shown.kind === 'delete-folder' || affected.length ? 'pv-danger' : 'pv-primary'} disabled={busy || !plan.ready || !!affected.length && !confirmed || readOnly} onClick={() => void commit()}>{(shown.kind === 'delete-folder' || !!affected.length) && <AlertTriangle size={15} aria-hidden="true"/>}{batch ? `确认移动 ${movable.length} 个` : '确认执行'}{shown.kind === 'delete-folder' && mode === 'trash' ? '并移到废纸篓' : ''}</button>}
+          {plan && <button type="button" className={shown.kind === 'delete-folder' || affected.length ? 'pv-danger' : 'pv-primary'} disabled={busy || !plan.ready || !!affected.length && !confirmed || readOnly} onClick={() => void commit()}>{(shown.kind === 'delete-folder' || !!affected.length) && <AlertTriangle size={15} aria-hidden="true"/>}{batch ? `确认移动 ${movable.length} 个` : '确认执行'}{shown.kind === 'delete-folder' && mode === 'trash' ? `并移到${words.trash}` : ''}</button>}
         </>}
       </ModalActions>}
     </Modal>}

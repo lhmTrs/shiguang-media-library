@@ -11,6 +11,7 @@ import {ComparePanel, defaultPair} from './Compare';
 import {FilesPanel} from './FilesPanel';
 import type {MusicCollection, ProjectMusicWorkspaceProps, Round, Song, Version} from './types';
 import {STATUS_LABEL} from './types';
+import {usePlatformWords} from '../platform-words';
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e || '请求失败');
 const uuid = (): string => crypto.randomUUID();
@@ -23,6 +24,7 @@ const TAB_KEY = 'shiguang.projectMusic.tab.v1';
 const readTab = (): Tab => { try { return localStorage.getItem(TAB_KEY) === 'files' ? 'files' : 'songs'; } catch { return 'songs'; } };
 
 export function ProjectMusicWorkspace({active, projectId, projects, request}: ProjectMusicWorkspaceProps) {
+  const words = usePlatformWords();
   const [palette, setPalette] = usePalette();
   const [tab, setTabState] = useState<Tab>(readTab);
   const setTab = (t: Tab) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* 只在本页记住 */ } };
@@ -110,7 +112,7 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
       const out = await request<MusicCollection | {trashed: number; skipped: {reason: string}[]; project: MusicCollection}>(`${base}/legacy/${path}`, path === 'trash' ? {confirm: true} : {});
       const next = 'project' in out ? out.project : out;
       setData(next);
-      if ('skipped' in out && out.skipped.length) setError(`有 ${out.skipped.length} 份旧副本没有移到废纸篓：${out.skipped[0].reason}`);
+      if ('skipped' in out && out.skipped.length) setError(`有 ${out.skipped.length} 份旧副本没有移到${words.trash}：${out.skipped[0].reason}`);
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   };
 
@@ -167,8 +169,8 @@ export function ProjectMusicWorkspace({active, projectId, projects, request}: Pr
     {legacy && legacy.waiting > 0 && <p className="sgm-banner" role="status">正在把以前上传的 {legacy.waiting} 个版本搬进音乐库「{libraryName}」：先复制、核对，旧位置的副本先保留。</p>}
     {legacy && legacy.failed.length > 0 && <p className="sgm-banner error">有 {legacy.failed.length} 个以前上传的版本没搬进音乐库：{legacy.failed[0].error}。记录保留。
       <button type="button" className="sgm-btn small" disabled={busy} onClick={() => void legacyAction('migrate')}>重试搬迁</button></p>}
-    {legacy && legacy.waiting === 0 && legacy.copies > 0 && <p className="sgm-banner">以前上传的 {legacy.copies} 个版本已经搬进音乐库「{libraryName}」，旧位置还留着一份副本。核对新位置能正常播放后，可以把旧副本移到废纸篓。
-      <button type="button" className="sgm-btn small" disabled={busy} onClick={() => setDialog({kind: 'confirm', title: '把旧副本移到废纸篓？', text: `会逐个核对：音乐库里的那一份能正常读出、旧副本内容也没变，才移到系统废纸篓。核对不通过的保留并告诉你原因。共 ${legacy.copies} 份。`, action: () => legacyAction('trash')})}>把旧副本移到废纸篓</button></p>}
+    {legacy && legacy.waiting === 0 && legacy.copies > 0 && <p className="sgm-banner">以前上传的 {legacy.copies} 个版本已经搬进音乐库「{libraryName}」，旧位置还留着一份副本。核对新位置能正常播放后，可以把旧副本移到{words.trash}。
+      <button type="button" className="sgm-btn small" disabled={busy} onClick={() => setDialog({kind: 'confirm', title: `把旧副本移到${words.trash}？`, text: `会逐个核对：音乐库里的那一份能正常读出、旧副本内容也没变，才移到${words.systemTrash}。核对不通过的保留并告诉你原因。共 ${legacy.copies} 份。`, action: () => legacyAction('trash')})}>把旧副本移到{words.trash}</button></p>}
 
     {!projectId ? <div className="sgm-hero"><Music2 size={28}/><h2>先选一个项目</h2><p>项目音乐跟着项目走。在顶部选好项目后，这里会列出为它做的歌。</p></div>
       : !songs.length ? <div className="sgm-hero">

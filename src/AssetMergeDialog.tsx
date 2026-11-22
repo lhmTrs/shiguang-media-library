@@ -53,7 +53,7 @@ function problem(error: unknown) {
   return messages[code] || "结果尚未确认。请查询原操作；不会自动重试或另建命令。";
 }
 function text(field: Field, value: unknown) { if (field === "note") return value === "" ? "（空字符串）" : String(value); if (field === "favorite" || field === "confirmed") return value === true ? "是（true）" : "否（false）"; const tuple = value as [number | null, string | null]; return tuple[0] === null ? `未设置（null）；来源：${tuple[1] === null ? "null" : tuple[1] || "空字符串"}` : `时间：${new Date(tuple[0]).toISOString()}；来源：${tuple[1] === null ? "null" : tuple[1] || "空字符串"}`; }
-function safeName(v: string | undefined, fallback: string) { return v && v.length <= 180 && !/(?:^\/|\/(?:Users|home|private|var|Volumes)\/|[A-Za-z]:[\\/]|file:\/\/)/.test(v) ? v : fallback; }
+function safeName(v: string | undefined, fallback: string) { return v && v.length <= 180 && !/(?:^\/|^\\\\|\/(?:Users|home|private|var|Volumes)\/|[A-Za-z]:[\\/]|file:\/\/)/.test(v) ? v : fallback; }
 
 export function AssetMergeDialog({ canonicalAssetId, donorAssetId, initialOperationId, assets = [], roots = [], request, close, completed, beforeConfirm, pollMs = 750 }: {
   canonicalAssetId: string; donorAssetId: string; initialOperationId?: string; assets?: { id: string; name: string }[]; roots?: { id: string; name: string }[]; request: Request; close: () => void; completed?: (canonicalId: string, donorId: string) => void; beforeConfirm?: (canonicalId: string, donorId: string) => boolean; pollMs?: number;

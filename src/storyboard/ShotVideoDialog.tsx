@@ -8,6 +8,7 @@ import {
 } from './shot-video-model.mjs';
 import type {SelectionPreview, ShotVideoApi} from './shot-video-api';
 import './video-binding-v2.css';
+import {useServerPlatform, wordsFor} from '../platform-words';
 
 type Pending = { action: SelectionAction; intent: SelectionIntent; preview: SelectionPreview };
 type Props = {
@@ -22,6 +23,7 @@ const CONFLICT_CODES = new Set(['VIDEO_SELECTION_CONFLICT', 'VIDEO_BINDING_CONFL
 const timeText = (ms: number) => new Date(ms).toLocaleString('zh-CN', {hour12: false});
 
 export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, onClose}: Props) {
+  const platform = useServerPlatform();
   const [clips, setClips] = useState<ShotClip[] | null>(null);
   const [playing, setPlaying] = useState<ShotClip | null>(null);
   const [mediaError, setMediaError] = useState(''), [mediaMs, setMediaMs] = useState<number | undefined>(undefined);
@@ -153,7 +155,7 @@ export function ShotVideoDialog({api, shotId, shotNumber, summaries, onChanged, 
             ? <video key={playing.id} ref={video} className="sv-screen" aria-label={'正在播放 ' + playing.name} src={mediaUrl} controls playsInline preload="metadata"
                 onLoadedMetadata={metadataLoaded}
                 onError={() => setMediaError('这条视频无法读取或编码不受浏览器支持，请到生成视频页核对。')}/>
-            : <div className="sv-screen sv-empty" role="alert"><AlertTriangle size={20}/><span>{MEDIA_STATUS_TEXT[playing.status] ?? '这条视频现在不能播放，请到生成视频页核对。'}</span></div>)}
+            : <div className="sv-screen sv-empty" role="alert"><AlertTriangle size={20}/><span>{(playing.status === 'unsupported' && platform !== 'darwin' ? `浏览器不支持这条视频的编码，可到生成视频页在${wordsFor(platform).fileManager}中打开。` : MEDIA_STATUS_TEXT[playing.status]) ?? '这条视频现在不能播放，请到生成视频页核对。'}</span></div>)}
           {mediaError && <p className="sv-message" data-tone="bad" role="alert">{mediaError}</p>}
           {playing && estimate && <div className="sv-now">
             <div><strong>{playing.name}</strong><small data-testid="sv-start">{startText(estimate)}</small></div>
