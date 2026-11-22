@@ -1,3 +1,4 @@
+import {descendantLike} from '../path-input.mjs';
 // 项目音乐 ·「文件」区（SPEC 第十三节）：存储和传递用的文件夹，和「歌曲」（采用和对比）并列。
 // 磁盘就是真相：personal_item/music/<项目>--<id>/<用户文件夹>/…，访达里看到的和页面一致，不另建表。
 // 文件都在音乐库根目录「AI生成」下，由我们放进来的会立即登记；在访达里直接放进来的，等音乐库扫描登记。
@@ -230,7 +231,7 @@ export class MusicFolders {
       await fs.rename(from.abs, target);
       const root = this.store.lib.roots().find(r => within(r.path, from.abs));
       if (root) {
-        const like = from.abs.replace(/[\\%_]/g, '\\$&') + '/%';
+        const like = descendantLike(from.abs);
         const rows = this.db.prepare("SELECT id,path FROM assets WHERE root_id=? AND path LIKE ? ESCAPE '\\'").all(root.id, like);
         this.db.transaction(() => {
           for (const r of rows) this.db.prepare('UPDATE assets SET path=? WHERE id=? AND path=?').run(target + r.path.slice(from.abs.length), r.id, r.path);
