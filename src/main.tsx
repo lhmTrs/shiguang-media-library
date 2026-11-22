@@ -133,7 +133,9 @@ const navigationGroups = [
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
 /** 「新样子（试用）」里一次只开一组的两组，以及各自的名字（剪辑时用素材，做漫剧时用项目）。 */
-const paperGroupLabels: Record<string, string> = { find: "素材 · 剪辑时用", design: "项目 · 做漫剧时用" };
+const paperGroupLabels: Record<string, string> = { find: "素材", design: "项目" };
+/** 试用里“项目”组的第一项叫“全部项目”：和“全部素材”对齐，也不和组名“项目”重名。 */
+const paperItemLabels: Record<string, string> = { projects: "全部项目" };
 const paperGroupOf = (view: string) => navigationGroups.find(group => group.id in paperGroupLabels && group.items.includes(view))?.id ?? null;
 
 export type Asset = {
@@ -1843,7 +1845,7 @@ function App() {
   }
   const currentProject = projects.find(project => project.id === activeProject);
   const title =
-    view === "projectVideos" ? "生成视频" : view === "projectMusic" ? "项目音乐" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? "项目" : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectMusic" ? "项目音乐" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? (paperTrial ? paperItemLabels.projects : "项目") : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
@@ -1988,7 +1990,8 @@ function App() {
         <div className="sidebar-scroll">
         <nav aria-label="主导航">
           {navigationGroups.map(({ id, label: groupLabel, icon: GroupIcon, items }) => {
-            const visibleItems = navs.filter(([value]) => items.includes(value) && !hiddenNav.includes(value));
+            const visibleItems = navs.filter(([value]) => items.includes(value) && !hiddenNav.includes(value))
+              .map(([value, itemLabel, Icon]): typeof navs[number] => [value, paperTrial ? paperItemLabels[value] ?? itemLabel : itemLabel, Icon]);
             if (!visibleItems.length) return null;
             const paired = paperTrial && id in paperGroupLabels, label = paired ? paperGroupLabels[id] : groupLabel;
             const expanded = paired ? paperGroup === id : expandedNavGroups[id];
