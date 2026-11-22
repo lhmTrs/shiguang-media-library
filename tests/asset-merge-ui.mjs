@@ -14,11 +14,11 @@ import Database from 'better-sqlite3';
 const repo=fileURLToPath(new URL('..',import.meta.url)),output=await fs.realpath(process.env.MERGE_UI_EVIDENCE||await fs.mkdtemp(path.join(os.tmpdir(),'sg-merge-ui-evidence-')));
 await fs.mkdir(output,{recursive:true});
 const registered=[],results=[];const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
-// The frozen API fixture is reused as source, not executed as an old suite.
-let helper=await fs.readFile(path.join(repo,'tests/asset-merge-routes.test.mjs'),'utf8');helper=helper.slice(0,helper.indexOf('test.after('));
-helper=helper.replace("const repo=fileURLToPath(new URL('..',import.meta.url)),registered=[]",`const repo=${JSON.stringify(repo)},registered=[]`).replaceAll("'../server/",`'${repo}/server/`).replace("new URL('../server/index.mjs',import.meta.url).href",JSON.stringify(pathToFileURL(path.join(repo,'server/index.mjs')).href)).replace('register=true,mirrorFault=false','register=true,mirrorFault=false,listenPort=0').replace("socket.listen(0,'127.0.0.1'","socket.listen(listenPort,'127.0.0.1'");
-await fs.writeFile(path.join(output,'actual-fixture.mjs'),helper+'\nexport {seed,server};\n',{flag:'wx'});
-const {seed,server}=await import(pathToFileURL(path.join(output,'actual-fixture.mjs')).href);
+// 真实索引夹具来自 tests/helpers/asset-http-fixture.mjs（以前拼接 asset-merge-routes 的源码，#128 改了那边的导入和 seed 签名后就坏了）。
+// 按 repo 绝对路径动态导入：asset-metadata-registration-ui.mjs 会把这一段拷到别的目录里执行，相对路径在那里不成立。
+const {seedAssetLibrary,startIndexServer}=await import(pathToFileURL(path.join(repo,'tests/helpers/asset-http-fixture.mjs')).href);
+async function seed(){const base=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'sg-merge-http-')));registered.push({base,policy:'RETAIN_ALL',setup:true});return seedAssetLibrary(base);}
+const server=(t,f,options)=>startIndexServer(t,f,options);
 const main=await fs.readFile(path.join(repo,'src/main.tsx'),'utf8'),ast=ts.createSourceFile('main.tsx',main,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),extract={};
 function visit(n){if(ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(ast)==='mergeDetails'))extract.mergeDetails=n.getText(ast);if(ts.isFunctionDeclaration(n)&&['beforeAssetMerge','mergedAsset','restoredAsset','assetActions','IconButton','useMergeDetails'].includes(n.name?.text))extract[n.name.text]=n.getText(ast);if(ts.isJsxExpression(n)&&n.expression?.getText(ast).startsWith('repairIds && <OfflineRepairDialog'))extract.dialog=n.expression.getText(ast);ts.forEachChild(n,visit);}visit(ast);assert.equal(Object.keys(extract).length,8);
 await fs.writeFile(path.join(output,'entry-source.json'),JSON.stringify({source:'src/main.tsx',sha256:sha(main),extraction:'exact main functions/JSX plus committed-detail hook and state via TS AST; full App startup and refresh implementation excluded',exports:Object.keys(extract)},null,2));

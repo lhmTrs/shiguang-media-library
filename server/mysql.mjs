@@ -11,6 +11,7 @@ import { STORYBOARD_TABLES, storyboardColumnType, storyboardConstraints } from "
 import { CODEX_TABLES, codexColumnType, codexConstraints } from "./prompt-codex/schema.mjs";
 import {CONCIERGE_TABLES,conciergeColumnType} from './concierge/schema.mjs';
 import {MUSIC_TABLES,musicColumnType,musicConstraints,musicMysqlIndexes} from './project-music/schema.mjs';
+import {NOTICE_TABLES,noticeColumnType,noticeConstraints,noticeMysqlIndexes} from './notices/schema.mjs';
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -95,6 +96,7 @@ export function mysqlColumnType(table, col) {
   if (Object.hasOwn(SERIES_TABLES, table)) return seriesMysqlColumnType(table, col.name);
   if(Object.hasOwn(CONCIERGE_TABLES,table))return conciergeColumnType(table,col);
   if(Object.hasOwn(MUSIC_TABLES,table))return musicColumnType(table,col);
+  if(Object.hasOwn(NOTICE_TABLES,table))return noticeColumnType(table,col);
   if(Object.hasOwn(V2_TABLES,table))return v2ColumnType(table,col);
   if(Object.hasOwn(VIDEO_TABLES,table))return videoColumnType(table,col);
   if(Object.hasOwn(SCRIPT_TABLES,table))return scriptColumnType(table,col);
@@ -340,6 +342,7 @@ export class MysqlStorage {
       for(const table of Object.keys(CODEX_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(CONCIERGE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(MUSIC_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
+      for(const table of Object.keys(NOTICE_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       for(const table of Object.keys(UPLOAD_TABLES))if(this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))tables.push(table);
       const snapshot = this.lib.db.transaction(() =>
         Object.fromEntries(
@@ -393,7 +396,7 @@ export class MysqlStorage {
           // (including table-level/composite keys) must always be NOT NULL.
           if (col.pk || /\bPRIMARY KEY\b/.test(type)) col = {...col, notnull: 1};
           if(Object.hasOwn(GENERATION_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
-          if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t)||Object.hasOwn(MUSIC_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
+          if(Object.hasOwn(CODEX_TABLES,t)||Object.hasOwn(CONCIERGE_TABLES,t)||Object.hasOwn(MUSIC_TABLES,t)||Object.hasOwn(NOTICE_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(PROMPT_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(V2_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
           if(Object.hasOwn(VIDEO_TABLES,t))return `\`${col.name}\` ${type}${col.notnull?" NOT NULL":" NULL"}`;
@@ -415,6 +418,7 @@ export class MysqlStorage {
         if(Object.hasOwn(GENERATION_TABLES,t))defs.push(...generationConstraints(t));
         if(Object.hasOwn(CODEX_TABLES,t))defs.push(...codexConstraints(t));
         if(Object.hasOwn(MUSIC_TABLES,t))defs.push(...musicConstraints(t),...musicMysqlIndexes(t));
+        if(Object.hasOwn(NOTICE_TABLES,t))defs.push(...noticeConstraints(t),...noticeMysqlIndexes(t));
         if (Object.hasOwn(SERIES_TABLES, t)) defs.push("PRIMARY KEY(id)", ...seriesConstraints(t));
         if (t === "asset_metadata_fields") defs.push("PRIMARY KEY(asset_id,field)");
         // Evidence is retained by migration, but MySQL latest remains unsupported.

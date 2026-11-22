@@ -17,13 +17,14 @@ export const CI_FILES = Object.freeze([
   'tag-usage.test.mjs',
   'video-media-abort-release.test.mjs',
   'file-intake-receipt-commit.test.mjs',
+  'notices-poll.test.mjs',
+  'project-music-prompt-split.test.mjs',
   'video-probe-readiness.test.mjs',
 ]);
 export const CI_TIMEOUT_MS = 120_000;
 
 const trackedOutsideCi = Object.freeze([
   { file: 'concierge-attachments.test.mjs', issue: 7, reason: 'Local PDF/Office tool and baseline-failure investigation' },
-  { file: 'timeline-render-picker.test.mjs', issue: 7, reason: 'Native App/picker baseline-failure investigation' },
   { file: 'audio-engine-installer.test.mjs', issue: 8, reason: 'Separate concurrent-installer qualification' },
 ]);
 

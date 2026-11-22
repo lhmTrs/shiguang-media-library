@@ -1,4 +1,5 @@
 import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
+import {NoticesEntry} from './notices/NoticesEntry';
 import {confirmStoryboardLeave, hasStoryboardLeaveGuard} from './storyboard/leave-guard';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
 import { Users, ListMusic } from "lucide-react";
@@ -2038,6 +2039,11 @@ function App() {
               disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
               onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
           </div>
+          <NoticesEntry request={api} onOpenLink={link=>{
+            // 有没保存的改动时，切项目要先确认；确认后再切到对应页面。
+            if(link.projectId&&!selectKnownProject(link.projectId,false,()=>navigate(link.view)))return false;
+            navigate(link.view);
+          }}/>
           <UpdreamTaskEntry request={api} onView={async(projectId:string,videoId?:string)=>{
             if(!projectId||!selectKnownProject(projectId))return;
             if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));
