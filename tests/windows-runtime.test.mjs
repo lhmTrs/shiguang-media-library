@@ -51,6 +51,7 @@ async function startOwned(t,base){
  let output='',closed=false;child.stdout.on('data',b=>output=(output+b).slice(-16000));child.stderr.on('data',b=>output=(output+b).slice(-16000));const exited=new Promise(resolve=>child.once('close',(code,signal)=>{closed=true;resolve({code,signal});}));
  const origin=`http://127.0.0.1:${port}`;
  const record=await until(async()=>{if(closed)throw Error('OWNED_SERVER_START_FAILED '+output.slice(-1000));try{const value=JSON.parse(await fs.readFile(path.join(data,'server.json'),'utf8'));return value.pid===child.pid&&value;}catch{return null;}});
+ assert.equal(record.port,port,'owned test refuses fallback or foreign ports before HTTP');assert.equal(record.url,origin);
  const readReceipt=()=>readShutdownReceipt(path.join(data,record.receiptDirectory));
  t.after(async()=>{if(!closed){const c=createShutdownClient({budgetMs:30000,readReceipt});const state=await c.stop({url:origin,libraryId:record.instanceId,runId:record.runId,requestId:crypto.randomUUID()});if(state.phase!=='CLOSED_KNOWN'){t.diagnostic('OWNED_APP_CLOSE_UNKNOWN: no forced stop');child.unref();child.stdout.unref();child.stderr.unref();}}});
  const response=await fetch(origin+'/api/session'),identity=await response.json(),cookie=response.headers.get('set-cookie').split(';')[0];const headers={cookie,origin,'x-local-token':identity.token,'content-type':'application/json'};
