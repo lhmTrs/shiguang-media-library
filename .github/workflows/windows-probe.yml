@@ -1,0 +1,84 @@
+name: Windows observations (non-required)
+'on':
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-observations:
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      MEDIA_SKIP_IMPORT: '1'
+      MEDIA_SKIP_RECONCILE: '1'
+      MEDIA_NO_WATCH: '1'
+      MEDIA_CODEX_AUTOCONNECT: '0'
+      SHIGUANG_AUDIO_ANALYSIS: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22.x'
+          package-manager-cache: false
+      - name: Initialize isolated paths
+        shell: pwsh
+        run: |
+          "MEDIA_DATA_DIR=$env:RUNNER_TEMP\shiguang-data" >> $env:GITHUB_ENV
+          "MEDIA_UPDREAM_QUEUE_DIR=$env:RUNNER_TEMP\shiguang-empty-queue" >> $env:GITHUB_ENV
+          "MEDIA_PERSONAL_ITEM_DIR=$env:RUNNER_TEMP\shiguang-personal" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force reports/windows-probe | Out-Null
+      - name: Install locked dependencies
+        id: dependencies
+        continue-on-error: true
+        run: npm ci
+        timeout-minutes: 8
+      - name: Build source
+        id: build
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        run: npm run build
+        timeout-minutes: 5
+      - name: Install probe media tools on ephemeral runner
+        id: tools
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install ffmpeg exiftool --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          "$env:PATH" -split ';' | Where-Object { $_ } | ForEach-Object { $_ >> $env:GITHUB_PATH }
+        timeout-minutes: 8
+      - name: Observe Windows primitives and media arguments
+        id: probe
+        if: always()
+        continue-on-error: true
+        run: node scripts/windows-probe.mjs reports/windows-probe
+        timeout-minutes: 4
+      - name: Run explicitly portable test subset
+        id: tests
+        if: always() && steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        run: node scripts/windows-ci-tests.mjs reports/windows-probe
+        timeout-minutes: 10
+      - name: Summarize all step outcomes, including failures
+        if: always()
+        shell: pwsh
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          New-Item -ItemType Directory -Force reports/windows-probe | Out-Null
+          $env:STEP_RESULTS | Set-Content reports/windows-probe/steps.json
+          if (-not (Test-Path reports/windows-probe/摘要.md)) { '# Windows探针未能完成；见steps.json的实际失败。' | Set-Content reports/windows-probe/摘要.md }
+          Get-Content -Raw reports/windows-probe/摘要.md >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload observations even when earlier steps failed
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-observations
+          path: reports/windows-probe/
+          if-no-files-found: error
+          retention-days: 14
