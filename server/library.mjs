@@ -4,7 +4,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import {runMedia,revealWindows} from "./media-process.mjs";
-import { promisify } from "node:util";
 import { PHOTO, VIDEO, AUDIO, rootIdentity, indexFileIdentity } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";
 import { folderPredicate } from "./folder-browser.mjs";

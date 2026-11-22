@@ -1,5 +1,4 @@
 import {readExiftool} from "./exiftool-read.mjs";
-import { promisify } from "node:util";
 
 export function parseCaptureTime(value, defaultZone = "+08:00") {
   if (typeof value !== "string") return null;
