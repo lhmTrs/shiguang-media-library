@@ -16,7 +16,14 @@ function openBrowser(url) {
 await fsp.mkdir(data, { recursive: true });
 async function running(record) {
   try {
-    if(process.platform==='win32'){await probeRuntimeBinding(record);return true;}
+    if(process.platform==='win32'){
+      if(record.runId===undefined){
+        if(!Number.isSafeInteger(record.pid)||record.pid<1)throw Object.assign(Error('旧运行记录未核清'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+        try{process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')return false;throw e;}
+        throw Object.assign(Error('旧实例仍在运行或需要核对，未另起服务'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+      }
+      await probeRuntimeBinding(record);return true;
+    }
     process.kill(record.pid, 0);
     const r = await fetch(record.url + "/api/session", {
       signal: AbortSignal.timeout(1500),

@@ -91,6 +91,17 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  const db=new Database(path.join(app.data,'library.sqlite'),{readonly:true});assert.equal(db.prepare('SELECT name FROM media_projects WHERE id=?').get(project.id).name,'原样访达标题');db.close();
  const restarted=await startOwned(t,base);assert.notEqual(restarted.record.runId,app.record.runId);const readback=await (await restarted.call('projects')).json();assert.equal(readback.find(p=>p.id===project.id).name,'原样访达标题');
  const stopped=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:{...process.env,MEDIA_DATA_DIR:restarted.data},timeout:35000,windowsHide:true});assert.match(stopped.stdout,/已正常停止/);assert.deepEqual(await restarted.exited,{code:0,signal:null});
+ // Legacy share libraries retain data even when their dead run record predates runId.
+ const legacy={...restarted.record};delete legacy.runId;await fs.writeFile(path.join(restarted.data,'server.json'),JSON.stringify(legacy));
+ const slot=net.createServer();slot.listen(0,'127.0.0.1');await once(slot,'listening');const coldPort=slot.address().port;assert.ok(![4317,3306].includes(coldPort));await new Promise(r=>slot.close(r));
+ const coldEnv={...process.env,MEDIA_DATA_DIR:restarted.data,MEDIA_PERSONAL_ITEM_DIR:path.join(base,'personal'),MEDIA_UPDREAM_QUEUE_DIR:path.join(base,'empty-queue'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_CODEX_AUTOCONNECT:'0',MEDIA_DISABLE_DESKTOP_NATIVE:'1',SHIGUANG_AUDIO_ANALYSIS:'',SHIGUANG_CLOUD_RELEASE_CONFIG:path.join(base,'absent-release.json'),PORT:String(coldPort)};
+ const cold=await promisify(execFile)(process.execPath,[path.resolve('scripts/launch.mjs')],{env:coldEnv,timeout:20000,windowsHide:true});assert.equal(cold.stdout.trim(),`http://127.0.0.1:${coldPort}`);
+ const coldRecord=JSON.parse(await fs.readFile(path.join(restarted.data,'server.json'),'utf8'));assert.equal(coldRecord.port,coldPort);assert.notEqual(coldRecord.runId,restarted.record.runId);
+ let coldClosed=false;t.after(async()=>{if(!coldClosed){const cleanup=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:coldEnv,timeout:35000,windowsHide:true}).catch(()=>null);if(!cleanup)t.diagnostic('COLD_APP_CLOSE_UNKNOWN: retained, no forced stop');}});
+ const session=await fetch(coldRecord.url+'/api/session'),cookie=session.headers.get('set-cookie').split(';')[0];const projects=await (await fetch(coldRecord.url+'/api/projects',{headers:{cookie}})).json();assert.equal(projects.find(p=>p.id===project.id).name,'原样访达标题');
+ const coldStop=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:coldEnv,timeout:35000,windowsHide:true});assert.match(coldStop.stdout,/已正常停止/);coldClosed=true;
+ await until(async()=>{try{process.kill(coldRecord.pid,0);return false;}catch(e){if(e.code==='ESRCH')return true;throw e;}},5000);t.diagnostic('Cold launcher app: signed close receipt verified by real CLI; PID disappearance is supplementary, exit code not observed');
+
 });
 
 test('normal database close protocol requires real Worker ACK and normal exit; missing/false ACK never terminates (no MySQL connection)',async()=>{
