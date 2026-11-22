@@ -78,5 +78,5 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  const receipt=await until(()=>app.readReceipt(),30000);assert.equal(verifyShutdownReceipt(receipt,{libraryId:app.record.instanceId,...command},app.identity.token),true);assert.deepEqual(await app.exited,{code:0,signal:null});
  const db=new Database(path.join(app.data,'library.sqlite'),{readonly:true});assert.equal(db.prepare('SELECT name FROM media_projects WHERE id=?').get(project.id).name,'原样访达标题');db.close();
  const restarted=await startOwned(t,base);assert.notEqual(restarted.record.runId,app.record.runId);const readback=await (await restarted.call('projects')).json();assert.equal(readback.find(p=>p.id===project.id).name,'原样访达标题');
- const client=createShutdownClient({budgetMs:30000,readReceipt:restarted.readReceipt});const result=await client.stop({url:restarted.origin,libraryId:restarted.record.instanceId,runId:restarted.record.runId,requestId:crypto.randomUUID()});assert.equal(result.phase,'CLOSED_KNOWN');assert.deepEqual(await restarted.exited,{code:0,signal:null});
+ const stopped=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:{...process.env,MEDIA_DATA_DIR:restarted.data},timeout:35000,windowsHide:true});assert.match(stopped.stdout,/已正常停止/);assert.deepEqual(await restarted.exited,{code:0,signal:null});
 });
