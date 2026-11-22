@@ -1,3 +1,4 @@
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 // 项目音乐：同一套场景分别跑在全新 SQLite 和自起的临时 mysqld 上，结果逐项对比（SPEC 第八节「SQLite 和原生 MySQL 行为一致」）。
 // 用法：PROJECT_MUSIC_MYSQLD=/path/to/mysqld node tests/project-music-mysql.mjs
 // 没给 mysqld 时只跑 SQLite 一半，输出「MySQL 未运行」并以退出码 3 结束，不算通过。
@@ -156,9 +157,9 @@ try {
     // 和正式环境一样：先起一个全新的 SQLite 库，再切到 MySQL（建出 assets、roots 等全部表），然后跑同一场景。
     const appDir = path.join(base, 'mysql-app'); await fs.mkdir(appDir);
     const mysqlStorage = await new MysqlStorage(appDir).init();
-    const mysqlLib = await new Library(appDir, {directoryClassification: true}).init();
+    let mysqlLib = await new Library(appDir, {directoryClassification: true}).init();
     mysqlStorage.attach(mysqlLib);
-    await mysqlStorage.activate({...config, database: 'project_music_check'});
+    ({lib:mysqlLib}=await activateAndRestart({storage:mysqlStorage,lib:mysqlLib,config:{...config,database:'project_music_check'}}));
     assert.equal(mysqlLib.db.kind, 'mysql');
     mysqlDb = mysqlLib.db;
     result.mysql = (await scenario(mysqlLib, appDir)).out;
@@ -173,9 +174,9 @@ try {
     // 一次性迁移（server/mysql.mjs）：SQLite 里的项目音乐原样进 MySQL，读出来和迁移前一致。
     const opts = {lib: sqliteLib, projects: sqliteRun.projects, dataDir: sqliteApp, directory: path.join(sqliteApp + '-personal', 'music'), autoMigrate: false};
     const before = new ProjectMusic(opts).init().list(sqliteRun.projectId);
-    await storage.activate({...config, database: 'project_music_migration'});
+    ({lib:sqliteLib}=await activateAndRestart({storage,lib:sqliteLib,config:{...config,database:'project_music_migration'}}));
     assert.equal(sqliteLib.db.kind, 'mysql');
-    const after = new ProjectMusic(opts).init().list(sqliteRun.projectId);
+    const after = new ProjectMusic({...opts,lib:sqliteLib,projects:new Projects(sqliteLib).init()}).init().list(sqliteRun.projectId);
     assert.deepEqual(after, before, '迁移到 MySQL 后项目音乐数据不一致');
     const [migrated] = await connection.query("SELECT TABLE_NAME t FROM information_schema.TABLES WHERE TABLE_SCHEMA='project_music_migration' AND TABLE_NAME LIKE 'project_music_%'");
     result.migratedTables = migrated.map(r => r.t).sort();
