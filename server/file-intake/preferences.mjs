@@ -1,4 +1,5 @@
-import fs from 'node:fs/promises';
+import {syncDir} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {randomUUID} from 'node:crypto';
@@ -112,7 +113,7 @@ export class IntakePreferences {
       try{
         h=await fs.open(temp,'wx',0o600);await h.writeFile(JSON.stringify({version:2,libraryId:this.libraryId,...next}));await h.sync();
         await h.close();h=null;await fs.rename(temp,this.file);
-        const dir=await fs.open(this.directory,'r');try{await dir.sync();}finally{await dir.close();}
+        await syncDir(this.directory);
         this.values=next.targets;this.routing=next.routingPreferences;this.themeId=next.themeId;delete this.warning;
         return {themeId:this.themeId};
       }finally{await h?.close();await fs.unlink(temp).catch(()=>{});}

@@ -1,3 +1,4 @@
+import {posixPrivate} from '../fs-platform.mjs';
 import {confirmUnbind} from '../storyboard-video-v2/confirmation.mjs';
 import {safeProbeDiagnostic} from '../storyboard-video/probe-tool.mjs';
 import {summarizeVideoFolders} from './folder-summaries.mjs';
@@ -11,12 +12,12 @@ import {ProjectVideoContentChanges} from './content-changes.mjs';
 import {ProjectVideoFolders, nameKey} from './folders.mjs';
 import {ProjectVideoFileOperations} from './file-operations.mjs';
 import {ProjectVideoRejectArea} from './reject-area.mjs';
-import fs from 'node:fs/promises';
+import fs from '../fs-platform.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import {canonical,digest,idOK} from '../project-assets/model.mjs';
 import {fail} from '../storyboard-video/model.mjs';
 import {privateDirectory} from '../prompt-codex/media.mjs';
@@ -150,7 +151,7 @@ export class ProjectVideos{
   if(this.running.has(s.id)||this.media.closing||this.media.handles.size||this.media.children.size||this.media.closes.size)fail('INTAKE_STAGE_BUSY','临时副本仍在使用，未移除',409);
   if(path.dirname(s.cache)!==await fs.realpath(os.tmpdir())||!path.basename(s.cache).startsWith('shiguang-project-video-import-')||s.stage!==path.join(s.cache,'original.partial')||await fs.realpath(s.cache)!==s.cache)fail('INTAKE_STAGE_CHANGED','临时副本位置变化，未移除',409);
   const dir=await fs.lstat(s.cache);
-  if(!dir.isDirectory()||dir.isSymbolicLink()||String(dir.dev)!==s.cacheIdentity.dev||String(dir.ino)!==s.cacheIdentity.ino||(process.getuid&&dir.uid!==process.getuid())||(dir.mode&0o077))fail('INTAKE_STAGE_CHANGED','临时目录身份变化，未移除',409);
+  if(!dir.isDirectory()||dir.isSymbolicLink()||String(dir.dev)!==s.cacheIdentity.dev||String(dir.ino)!==s.cacheIdentity.ino||!posixPrivate(dir))fail('INTAKE_STAGE_CHANGED','临时目录身份变化，未移除',409);
   const source=this.videos.source(id,s.videoId),m=this.metadata(id,source);
   if(!this.isManaged(id,source)||m.data.sha256!==s.hash)fail('INTAKE_STAGE_UNVERIFIED','正式视频登记不完整，临时副本保留',409);
   const copied=await this.hash(source.path,source.identity);

@@ -1,5 +1,6 @@
+import {syncDir} from './fs-platform.mjs';
 // User-started bounded jobs. No startup traversal, listeners, network or default instance.
-import fs from 'node:fs/promises';
+import fs from './fs-platform.mjs';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -198,13 +199,7 @@ export class AssetFingerprints {
             }
             await this.manifestGuard(s, r, meta, guard);
             await fs.rename(next, path.join(dir, 'manifest.json'));
-            const handle = await fs.open(dir, constants.O_RDONLY | constants.O_NOFOLLOW);
-            try {
-                await handle.sync();
-            }
-            finally {
-                await handle.close();
-            }
+            await syncDir(dir,{flags:constants.O_RDONLY|constants.O_NOFOLLOW});
             this.check(s);
             guard();
         }

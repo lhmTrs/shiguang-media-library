@@ -47,7 +47,7 @@ export async function rootIdentity(root) {
 export async function readAssetId(file) {
   if (process.platform !== "darwin") return null;
   try {
-    const { execFile } = await import("node:child_process");
+    const { execFile } = await import("./background-process.mjs");
     const { promisify } = await import("node:util");
     const { stdout } = await promisify(execFile)("xattr", ["-p", XATTR_KEY, file], {
       timeout: 5000,
@@ -64,7 +64,7 @@ export async function readAssetId(file) {
 export async function writeAssetId(file, id) {
   if (process.platform !== "darwin") return false;
   try {
-    const { execFile } = await import("node:child_process");
+    const { execFile } = await import("./background-process.mjs");
     const { promisify } = await import("node:util");
     await promisify(execFile)("xattr", ["-w", XATTR_KEY, id, file], { timeout: 5000 });
     return true;

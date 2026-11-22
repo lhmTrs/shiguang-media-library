@@ -1,9 +1,10 @@
-import fs from 'node:fs/promises';
+import {syncDir} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import fsSync, {constants} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import {canonical,digest} from '../project-assets/model.mjs';
 import {projectFolderName} from '../prompt-codex/pictures.mjs';
 import {within,rootIdentity,indexFileIdentity,kindForExt} from '../fs-identity.mjs';
@@ -380,7 +381,7 @@ export class ManagedIntakeCatalog {
       throw error('SOURCE_CHANGED','文件或其路径在核验期间发生变化');
   }
   durabilityProof(s,file,identity,hash) {
-    return {version:1,path:file,identity,hash,target:digest(s.target)};
+    return {version:process.platform==='win32'?2:1,path:file,identity,hash,target:digest(s.target),...(process.platform==='win32'?{directoryMethod:'entry-verified-no-directory-fsync'}:{})};
   }
   assertDurable(s,file=s.resultPath,identity=s.resultIdentity,hash=s.resultHash) {
     // A legacy ready/commit journal proves registration, not that copyOnly's
@@ -398,6 +399,7 @@ export class ManagedIntakeCatalog {
     const proofs=[...new Map([this.anchor,...s.target.proofs].map(p=>[p.path,p])).values()].reverse();
     for(const proof of proofs) {
       await this.current(s.target);
+      if(process.platform==='win32'){await syncDir(proof.path);await this.current(s.target);const st=await fs.lstat(proof.path);if(!sameDirectory(directoryIdentity(st),proof.identity))throw error('TARGET_CHANGED','同步目录不是原固定目标');continue;}
       const handle=await fs.open(proof.path,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try {
         const st=await handle.stat();

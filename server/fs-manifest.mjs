@@ -1,3 +1,4 @@
+import {syncDir} from './fs-platform.mjs';
 /**
  * 登记根内的清单文件：`<root>/.shiguang/manifest.json`
  *
@@ -11,7 +12,7 @@
  * 写盘约定：临时文件 + fsync + rename 原子替换，并保留上一版 `.bak`；
  * 未知字段原样保留（沿用项目里 config 的做法），避免把别的工具写的附加信息洗掉。
  */
-import fs from "node:fs/promises";
+import fs from "./fs-platform.mjs";
 import { constants, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -211,8 +212,7 @@ export async function writeManifest(root, manifest, { guard = () => {}, maxBytes
     guard();
     await fs.rename(tmp, file);
     guard();
-    const directoryHandle = await fs.open(dir, "r");
-    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+    await syncDir(dir);
     guard();
     return { bytes: Buffer.byteLength(text), revision, skipped: false };
   });

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {constants} from 'node:fs';
-import {spawn} from 'node:child_process';
+import {spawn} from '../background-process.mjs';
 import {createHash} from 'node:crypto';
 
 const sources = {
