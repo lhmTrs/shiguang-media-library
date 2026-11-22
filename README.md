@@ -11,7 +11,7 @@ npm run setup
 npm run portable
 ```
 
-前置条件是 Git、Node.js 22.x（含 npm），首次安装需要联网。私有仓库需先获得访问权限并在本机完成 Git 认证，不要将令牌写进命令或文件。打开启动输出中的本机地址，通常为 `http://127.0.0.1:4317/`；端口占用时可能递增。新安装使用项目 `data/` 中的 SQLite，初始为空，由使用者自行添加素材目录；**代码不包含原作者的素材或数据库**。源码版首次使用选 `npm run portable`，不要把旧库入口 `npm start` 当成分享版入口。
+前置条件是 Git、Node.js 22.x（含 npm），首次安装需要联网。私有仓库需先获得访问权限并在本机完成 Git 认证，不要将令牌写进命令或文件。打开启动输出中的本机地址，通常为 `http://127.0.0.1:4317/`；端口占用时可能递增。新安装使用项目 `data/` 中的 SQLite（Windows 新装默认 `%LOCALAPPDATA%\ShiguangMedia`，已有库选择规则见 START_HERE），初始为空，由使用者自行添加素材目录；**代码不包含原作者的素材或数据库**。源码版首次使用选 `npm run portable`，不要把旧库入口 `npm start` 当成分享版入口。
 
 AI 验收、停止服务、更新已有安装、媒体工具与下载 ZIP 的说明见 [快速接手指南](AI_QUICK_START.md)。不要仅凭链接声称已运行，必须核对服务响应与实际界面。
 
@@ -53,7 +53,7 @@ AI 验收、停止服务、更新已有安装、媒体工具与下载 ZIP 的说
 
 分享包请先读 **[START_HERE.md](START_HERE.md)**；其他 AI 先读 **[AGENTS.md](AGENTS.md)** 和 **[AI_HANDOFF.md](AI_HANDOFF.md)**。新安装默认内置 SQLite，不需要 MySQL，初始为空素材库。
 
-普通分享版安装 Node.js 22.x 后，运行 `npm run setup` 和 `npm start`，也可用 `启动分享版.command`（Mac）或 `安装并启动.cmd`（Windows）。分享模式数据在项目 `data/`。源开发目录保留的 `启动素材库.command` 和旧 `npm start` 可能连接已有库，测试分享模式请用 `npm run portable`。更多环境差异、Docker 方式和未实测平台说明以 START_HERE 为准。
+普通分享版安装 Node.js 22.x 后，运行 `npm run setup` 和 `npm start`，也可用 `启动分享版.command`（Mac）或 `安装并启动.cmd`（Windows）。分享模式数据在项目 `data/`；Windows 新装默认 `%LOCALAPPDATA%\ShiguangMedia`，保留唯一已确认旧库，两份库冲突时要求明确选择。源开发目录保留的 `启动素材库.command` 和旧 `npm start` 可能连接已有库，测试分享模式请用 `npm run portable`。更多环境差异、Docker 方式和未实测平台说明以 START_HERE 为准。
 
 FFmpeg/FFprobe 用于波形、参数与兼容预览，ExifTool 用于拍摄日期；缺少时相关功能降级。Mac 照片转换使用 sips，废纸篓组件需要 Swift 编译工具。
 

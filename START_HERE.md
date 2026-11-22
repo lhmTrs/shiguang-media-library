@@ -29,7 +29,7 @@ npm run doctor
 npm run stop:portable
 ```
 
-`doctor` 只检查环境，不安装系统软件、不连接或打印 MySQL 密码。Windows 的 `stop:portable` 与 `portable --foreground` 当前明确不支持：前者不读取运行记录或发送信号，后者不启动服务；普通后台启动入口保留。不要用强制信号、taskkill 或 PID 消失代替安全结清证明。非 Windows 沿用原停止路径，但本轮没有将其验证为完整安全关闭。
+`doctor` 只检查环境，不安装系统软件、不连接或打印 MySQL 密码。Windows 后台实例可用 `stop:portable`：同源本机会话核对实例后申请正常关闭，只有资源收尾及签名回执读回通过才显示已停止；未确认时保留现场，不强制结束。`portable --foreground` 仍拒绝启动，请用后台方式。不要用强制信号、taskkill 或 PID 消失代替安全结清证明。非 Windows 沿用原停止路径，但本轮没有将其验证为完整安全关闭。
 
 Mac 若提示没有执行权限，可在此目录运行 `chmod +x ./启动分享版.command` 后再打开；不要为此关闭系统安全设置。
 
@@ -77,7 +77,8 @@ Mac/Linux 可在本次启动前使用 `MEDIA_STORYBOARD_FFPROBE="/绝对路径/f
 
 ## 数据位置与迁移
 
-- 普通分享模式：解压目录的 `data/`，首次启动自动创建；SQLite 文件为 `data/library.sqlite`。
+- Mac/Linux 普通分享模式：解压目录的 `data/`，首次启动自动创建；SQLite 文件为 `data/library.sqlite`。
+- Windows 新装默认 `%LOCALAPPDATA%\ShiguangMedia`；若原解压目录有已确认的 `data/` 库，继续原库。两处都有有效库或标记无法核清时拒绝自动选择，须用 `MEDIA_DATA_DIR` 明确指定，不搬动、合并或删除库。启动、停止、doctor 共用此规则；下文的 `data/` 指实际所选完整数据目录。
 - 分镜保存在当前数据库；`data/storyboards/` 仅为旧版保留目录。标准JSON用于目标项目初始化；分镜设置中的完整备份保留项目、分镜和资产编号，不含原媒体。分享包不包含使用者数据。
 - 数据文件夹还包含预览缓存、操作记录、备份和本机加密密钥，不要随意分享。备份时先停止服务，再备份整个 `data/`，不要只复制一个运行中的 SQLite 文件。
 - 可用 `MEDIA_DATA_DIR` 显式指定其他数据目录；它的优先级高于便携模式。交给 AI 时应提醒它不要擅自使用你现有库的目录。

@@ -1,6 +1,6 @@
 const foreground = process.argv.includes("--foreground");
 if (process.platform === "win32" && foreground) {
-  console.error("WINDOWS_SAFE_SHUTDOWN_UNSUPPORTED：当前 Windows 前台模式无法保证安全结束，尚未启动服务。请使用普通后台启动方式；安全停止功能尚未支持。");
+  console.error("WINDOWS_SAFE_SHUTDOWN_UNSUPPORTED：当前 Windows 前台模式无法保证安全结束，尚未启动服务。请使用普通后台启动方式，并通过 npm run stop:portable 正常停止。");
   process.exitCode = 1;
 } else {
 const { default: path } = await import("node:path");

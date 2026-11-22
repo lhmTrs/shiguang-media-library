@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'server/**'
+      - 'scripts/**'
       - 'tests/windows-runtime.test.mjs'
       - '.github/workflows/windows-runtime.yml'
   workflow_dispatch:
