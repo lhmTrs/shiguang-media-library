@@ -2,6 +2,7 @@ import {useFeedbackToast} from '../global-feedback';
 import React,{useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {ImagePlus,LoaderCircle,X,UploadCloud,FolderOpen,ChevronRight} from 'lucide-react';
+import {usePlatformWords} from '../platform-words';
 
 export type ImageImportTarget={assetId:string;projectId:string;lookId:string|null};
 type Receipt={id:string;status:string;target:ImageImportTarget;fileName:string;mediaAssetId?:string;error?:string;candidates:{id:string;name:string;reason:string;previewUrl:string}[]};
@@ -12,8 +13,8 @@ type PendingDrop={file:File;preview:string;target:ImageImportTarget;context:Impo
 export type ScopedImport={startExtra:Record<string,string>;verify:(t:ImageImportTarget)=>Promise<{revision:number;kind:string;archived:boolean;lookArchived:boolean}>;note:string;confirmNote:string};
 type Props={target:ImageImportTarget;context:ImportContext;disabled:boolean;libraryAction?:React.ReactNode;request:<T=any>(path:string,body?:unknown,method?:string)=>Promise<T>;onReady:(r:Receipt)=>void;onBusy:(busy:boolean,owner:string)=>void;scoped?:ScopedImport};
 export function ReferencePreview({src,alt='',className,style}:{src:string;alt?:string;className?:string;style?:React.CSSProperties}){
-  const [failed,setFailed]=useState(false);useEffect(()=>setFailed(false),[src]);
-  return failed?<span className="ca-preview-unavailable">此格式暂不能预览<br/>可在访达中打开原图</span>:<img src={src} alt={alt} className={className} style={style} onError={()=>setFailed(true)}/>;
+  const [failed,setFailed]=useState(false),words=usePlatformWords();useEffect(()=>setFailed(false),[src]);
+  return failed?<span className="ca-preview-unavailable">此格式暂不能预览<br/>{words.openFallback}原图</span>:<img src={src} alt={alt} className={className} style={style} onError={()=>setFailed(true)}/>;
 }
 export function ReferenceImageImport({target,context,disabled,libraryAction,request,onReady,onBusy,scoped}:Props){
   const input=useRef<HTMLInputElement>(null),alive=useRef(true),running=useRef(false),savedFile=useRef<File|null>(null),owner=useRef(crypto.randomUUID());

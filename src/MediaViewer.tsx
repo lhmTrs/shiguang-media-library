@@ -4,6 +4,7 @@ import {AlertCircle, X} from 'lucide-react';
 import {bindPlaybackSpace} from './playback-shortcuts';
 import {useFeedbackToast} from './global-feedback';
 import './media-viewer.css';
+import {platformWords} from './platform-words';
 
 export type MediaView = {key: string; name: string; kind: 'photo' | 'video'; src: string; poster?: string | null; reason?: string; compatibilitySrc?: string};
 type VisualAsset = {id: string; name: string; kind: string; mtime: number; size?: number; online: number; file_status?: string; trashed?: number};
@@ -21,7 +22,7 @@ export function assetMediaView(asset: VisualAsset, reason?: string): MediaView {
     name: asset.name, kind: asset.kind === 'photo' ? 'photo' : 'video',
     src: `/api/media/${encodeURIComponent(asset.id)}/original?v=${encodeURIComponent(String(asset.mtime))}`,
     compatibilitySrc: asset.kind === 'photo' ? `/api/media/${encodeURIComponent(asset.id)}/thumb?v=${encodeURIComponent(String(asset.mtime))}` : undefined,
-    reason: reason || (asset.trashed ? '此素材已移入废纸篓，请先返回原位置核对。' : unavailable[asset.file_status || ''] || (!asset.online ? unavailable.offline : undefined))};
+    reason: reason || (asset.trashed ? `此素材已移入${platformWords().trash}，请先返回原位置核对。` : unavailable[asset.file_status || ''] || (!asset.online ? unavailable.offline : undefined))};
 }
 
 /** Card/row shortcuts must never consume editing, selection, dragging or native controls. */

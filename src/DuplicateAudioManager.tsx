@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { AudioLines, Check, CheckCircle2, Copy, Download, ExternalLink, Files, HardDrive, LoaderCircle, Pause, Play, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
 import type { Asset } from "./main";
 import { DuplicateCleanupDialog } from "./DuplicateCleanupDialog";
+import {usePlatformWords} from './platform-words';
 type Request = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
 type DuplicateFile = Asset & { actualSize: number };
 type Group = { sha256: string; files: DuplicateFile[]; size: number; extraBytes: number };
@@ -15,6 +16,7 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
   trash: (a: Asset) => void; canTrash: boolean; revision: number;
   stopAudio?: () => void; runTask?: (label: string, fn: () => Promise<void>) => Promise<void>; cleared?: (ids: string[]) => void;
 }) {
+  const words = usePlatformWords();
   const [scope, setScope] = useState("sfx"), [force, setForce] = useState(false);
   const [state, setState] = useState<State>({ active: null, marking: false, report: null });
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
@@ -81,8 +83,8 @@ export function DuplicateAudioManager({ request, play, edit, playingId, isPlayin
         <summary><strong>{group.files[0].name}</strong><span>{group.files.length} 个副本 · 单个 {size(group.size)}</span></summary>
         {group.files.map(file => <div className="duplicate-file" key={file.id}><button className="icon-button" title="试听音频" aria-label={"试听重复音频：" + file.name} disabled={file.ext === "ncm" || busy} onClick={() => play(file)}>{playingId === file.id && isPlaying ? <Pause size={17}/> : <Play size={17}/>}</button>
           <div className="duplicate-file-info"><button className="asset-name-button" onClick={() => void action(async () => edit(await request<Asset>("/assets/" + file.id)))}>{file.name}</button><small>{file.path}</small><span>{file.category || "未分类"}{file.sub ? " / " + file.sub : ""}{file.tags.includes("重复音频") && <b className="duplicate-badge"><Check size={12}/>重复音频</b>}</span></div>
-          <div className="duplicate-file-actions"><button className="icon-button" title="打开访达所在位置" aria-label={"定位重复音频：" + file.name} disabled={busy} onClick={() => void action(async () => { await request("/assets/" + file.id + "/reveal", {}); changed(); })}><ExternalLink size={17}/></button>
-          <button className="icon-button" title="删除音频（移入废纸篓）" aria-label={"删除重复音频：" + file.name} disabled={!canTrash || running || loading || !file.online} onClick={() => void action(async () => {
+          <div className="duplicate-file-actions"><button className="icon-button" title={words.openLocation} aria-label={"定位重复音频：" + file.name} disabled={busy} onClick={() => void action(async () => { await request("/assets/" + file.id + "/reveal", {}); changed(); })}><ExternalLink size={17}/></button>
+          <button className="icon-button" title={`删除音频（移入${words.trash}）`} aria-label={"删除重复音频：" + file.name} disabled={!canTrash || running || loading || !file.online} onClick={() => void action(async () => {
             const current = await request<Asset>("/assets/" + file.id);
             if (current.trashed || !current.online) throw Error("文件已删除或暂时离线，请刷新检测结果");
             trash(current);

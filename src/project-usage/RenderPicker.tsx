@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { FolderOpen, RefreshCw, Search, X } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { bytesText, checkOriginal, intentOf, renderApi, schemaErrorText, settle, unsettledReceipt, type FolderRoles, type Intent, type Receipt, type RenderFolder, type RenderV2, type RequestError, type SourceItem, type SourcesPage } from "./render";
+import {serverIsMac, usePlatformWords} from '../platform-words';
 
 /** 结果不明的写请求：原意图在提交前冻结，只按它核对；放在上层按时间线/操作分开保存，关掉窗口再打开、换到别的时间线都还在。 */
 export type Pending = { intent: Intent; label: string; status: Receipt["status"]; message: string };
@@ -20,6 +21,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
   /** 成片表现在不可写的原因（读接口 writable=false）；只禁「用这个作为成片」，准备文件夹、刷新视频信息照常。 */
   notWritable: string | null;
 }) {
+  const words = usePlatformWords();
   const linkPending = pendings.find(p => p.intent.timelineId === timelineId) ?? null;
   const ensurePending = pendings.find(p => p.intent.action === "final-folder-ensure") ?? null;
   const refreshPending = pendings.find(p => p.intent.action === "video-info-refresh") ?? null;
@@ -112,7 +114,7 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
   return createPortal(<div className="modal-backdrop usage-picker-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !busy) close(); }}>
     <div ref={dialog} tabIndex={-1} className="usage-picker" role="dialog" aria-modal="true" aria-label="选择这一集的成片" onKeyDown={e => { if (e.key === "Escape" && !busy) { e.stopPropagation(); close(); } }}>
       <header>
-        <div><h2>选择这一集的成片</h2><p>只能从「{projectName}」的项目视频里选。成片收进项目后，你在访达里整理文件不会让关联断开。</p></div>
+        <div><h2>选择这一集的成片</h2><p>只能从「{projectName}」的项目视频里选。成片收进项目后，你{words.editOutside}整理文件不会让关联断开。</p></div>
         <button type="button" className="icon-button" aria-label="关闭选择成片" disabled={!!busy} onClick={close}><X size={17} /></button>
       </header>
       <div className="usage-picker-body">
@@ -130,8 +132,8 @@ export function RenderPicker({ projectId, projectName, timelineId, render, reque
           {listError && <p className="banner error" role="alert">项目视频读取失败：{listError}</p>}
           {pendings.map(p => <div className="usage-pending" role="status" key={p.intent.requestId}><span>{p.label.replace("正在", "").replace("…", "")}的结果还没核清；不会自动重试。</span><button type="button" className="plain" disabled={!!busy} onClick={() => void recheck(p)}><RefreshCw size={14} />核对原请求</button></div>)}
           {selected === "virtual-final" ? <div className="usage-picker-empty">
-            {roles?.finalState === "needs_review" ? <><strong>「成片」文件夹需要核对</strong><span>它在访达里被改名、挪走或删除了。拾光不会自动重建或接管别的文件夹，请到「生成视频」页核对。</span></>
-              : <><strong>这一集还没有「成片」文件夹</strong><span>在访达里对导出的成片点右键 → 收纳到拾光，去处选「{projectName} / 成片」，收纳时会自动建好。也可以现在先准备好这个文件夹；如果你原来就有一个叫「成片」的文件夹，会直接接管它，里面的内容不动。</span>
+            {roles?.finalState === "needs_review" ? <><strong>「成片」文件夹需要核对</strong><span>它{words.editOutside}被改名、挪走或删除了。拾光不会自动重建或接管别的文件夹，请到「生成视频」页核对。</span></>
+              : <><strong>这一集还没有「成片」文件夹</strong><span>{serverIsMac() ? <>在访达里对导出的成片点右键 → 收纳到拾光，去处选「{projectName} / 成片」，收纳时会自动建好。也可以现在先准备好这个文件夹；</> : '可以现在先准备好这个文件夹；'}如果你原来就有一个叫「成片」的文件夹，会直接接管它，里面的内容不动。</span>
                 <button type="button" className="plain" disabled={!!busy || !roles || !!ensurePending} onClick={prepareFinal}>准备「成片」文件夹</button></>}
           </div> : loading ? <p className="usage-muted" role="status">正在读取项目视频…</p> : !data?.items.length ? <div className="usage-picker-empty"><strong>{search ? "没有匹配的项目视频" : "这里还没有视频"}</strong>{!search && <span>成片要先收进这一集的项目视频，才能在这里选。</span>}</div>
             : <div role="radiogroup" aria-label="项目视频">{data.items.map(v => {

@@ -22,6 +22,7 @@ import {
 import type { Asset } from "./main";
 import { QuickCategoryDialog } from "./QuickCategoryDialog";
 import { SubcategoryManager } from "./SubcategoryManager";
+import {usePlatformWords} from './platform-words';
 type Category = {
   id: string;
   name: string;
@@ -66,6 +67,7 @@ export function CategoryManager({
   isPlaying,
   changed,
 }: Props) {
+  const words = usePlatformWords();
   const [categories, setCategories] = useState<Category[]>([]),
     [active, setActive] = useState("all");
   const [items, setItems] = useState<Asset[]>([]),
@@ -355,7 +357,7 @@ export function CategoryManager({
               )}
             </label>
             <select aria-label="分类素材排序" value={sort} onChange={e => setSort(e.target.value)}>
-              <option value="revealCount">访达次数：从多到少</option>
+              <option value="revealCount">{words.revealCount}：从多到少</option>
               <option value="name">名称排序</option>
               <option value="recent">最近修改</option>
             </select>
@@ -466,8 +468,8 @@ export function CategoryManager({
                     </small>
                   </div>
                 </div>
-                <span className="mono" title="访达打开次数 / 时长">
-                  <small className="reveal-count">访达 {a.reveal_count || 0} 次</small>
+                <span className="mono" title={`${words.revealOpenCount} / 时长`}>
+                  <small className="reveal-count">{words.revealTimes} {a.reveal_count || 0} 次</small>
                   {a.kind === "photo" || a.duration === null
                     ? "—"
                     : `${Math.floor(a.duration / 60)
@@ -488,7 +490,7 @@ export function CategoryManager({
                   </button>
                   <button
                     className="icon-button"
-                    title="在访达中显示"
+                    title={words.reveal}
                     aria-label={`定位素材：${a.name}`}
                     disabled={busy}
                     onClick={() =>
@@ -499,7 +501,7 @@ export function CategoryManager({
                   >
                     <ExternalLink size={15} />
                   </button>
-                  <button className="icon-button" title="删除素材（移入废纸篓）"
+                  <button className="icon-button" title={`删除素材（移入${words.trash}）`}
                     aria-label={"删除素材：" + a.name}
                     disabled={!a.online || busy || !canTrash}
                     onClick={() => trash(a)}><Trash2 size={16}/></button>
