@@ -1,3 +1,4 @@
+import {unquotePath} from './path-input.mjs';
 import Database from "better-sqlite3";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -330,6 +331,7 @@ export class Library {
     return { ...a, tags: JSON.parse(a.tags) };
   }
   async addRoot(input, kind = "sfx") {
+    input=unquotePath(input);
     if (!["sfx", "music", "photo", "video", "mixed"].includes(kind))
       throw Error("未知目录类型");
     const p = await fs.realpath(input);

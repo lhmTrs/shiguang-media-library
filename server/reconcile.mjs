@@ -1,3 +1,4 @@
+import {unquotePath,descendantLike} from './path-input.mjs';
 /**
  * 文件系统对账（reconcile）：把"外部整理过的文件"重新认领回原来的素材 id。
  *
@@ -633,8 +634,8 @@ async function reconcilePathsWork(lib, root, relPaths, opts = {}) {
       }
       // 该路径下还有记录 → 消失的是一个**目录**，其下文件路径全部变了
       const descendants = lib.db
-        .prepare("SELECT 1 AS ok FROM assets WHERE root_id=? AND trashed=0 AND path LIKE ? LIMIT 1")
-        .get(root.id, abs + "/%");
+        .prepare("SELECT 1 AS ok FROM assets WHERE root_id=? AND trashed=0 AND path LIKE ? ESCAPE '\\' LIMIT 1")
+        .get(root.id, descendantLike(abs));
       if (descendants) report.needFullReconcile = true;
     }
   }
@@ -972,6 +973,7 @@ export function createManifestSync(lib, options = {}) {
 export async function relocateRoot(lib, rootId, input, opts = {}) {
   const root = lib.rootById(rootId);
   if (root.retired) throw Error("该目录已注销，请先恢复登记再迁移路径");
+  input=unquotePath(input);
   if (typeof input !== "string" || !input.trim() || !path.isAbsolute(input)) throw Error("请输入绝对路径");
   const next = await fs.realpath(input).catch(() => {
     throw Error("新路径不存在或无法访问");
@@ -997,7 +999,7 @@ export async function relocateRoot(lib, rootId, input, opts = {}) {
       matched++;
       continue;
     }
-    const rel = path.relative(next, row.path).split(path.sep).join("/");
+    const rel = path.relative(root.path, row.path).split(path.sep).join("/");
     const candidate = rel && !rel.startsWith("..") ? byRel.get(rel) : null;
     if (candidate && (!row.size || candidate.size === row.size)) matched++;
   }
