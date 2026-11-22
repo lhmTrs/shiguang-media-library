@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile } from "./background-process.mjs";
 import { promisify } from "node:util";
 import { PHOTO, VIDEO, AUDIO, rootIdentity, indexFileIdentity } from "./fs-identity.mjs";
 import { readCapture, parseCaptureTime } from "./capture.mjs";

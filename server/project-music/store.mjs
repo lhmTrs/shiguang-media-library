@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import {execFile} from 'node:child_process';
+import {execFile} from '../background-process.mjs';
 import {promisify} from 'node:util';
 import {ensureMusicSchema} from './schema.mjs';
 import {MusicFiles, roundFolder, segment} from './files.mjs';

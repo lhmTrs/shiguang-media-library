@@ -1,4 +1,5 @@
-import fs from 'node:fs/promises';
+import {syncDir,posixPrivate} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import sync,{constants} from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -7,14 +8,15 @@ import {canonical,fail,hash} from './model.mjs';
 export async function privateDirectory(directory){
  await fs.mkdir(directory,{recursive:true,mode:0o700});
  const s=await fs.lstat(directory);
- if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(directory)!==directory||(s.mode&0o077)||(process.getuid&&s.uid!==process.getuid()))fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级目录必须为当前用户私有真实目录',503);
+ if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(directory)!==directory||!posixPrivate(s))fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级目录必须为当前用户私有真实目录',503);
  return directory;
 }
 export async function readPrivateJson(file){
+ let named;if(process.platform==='win32'){try{named=await fs.lstat(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}if(!named.isFile()||named.isSymbolicLink()||await fs.realpath(file)!==file||await fs.realpath(path.dirname(file))!==path.dirname(file))fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级文件身份无法核验',503);}
  let h;try{h=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW);}catch(e){if(e.code==='ENOENT')return null;throw e;}
- try{const s=await h.stat();if(!s.isFile()||(s.mode&0o077)||(process.getuid&&s.uid!==process.getuid())||s.size>32*1024*1024)fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级文件身份无法核验',503);return JSON.parse(await h.readFile('utf8'));}finally{await h.close();}
+ try{const s=await h.stat();if(!s.isFile()||!posixPrivate(s)||s.size>32*1024*1024)fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级文件身份无法核验',503);const raw=await h.readFile('utf8');if(named){const after=await fs.lstat(file);if(after.isSymbolicLink()||String(named.dev)!==String(s.dev)||String(named.ino)!==String(s.ino)||named.size!==s.size||named.mtimeMs!==s.mtimeMs||String(after.ino)!==String(s.ino)||after.size!==s.size||after.mtimeMs!==s.mtimeMs)fail('VIDEO_V2_UPGRADE_FILES_INVALID','升级文件身份无法核验',503);}return JSON.parse(raw);}finally{await h.close();}
 }
-export async function syncDirectory(directory){const h=await fs.open(directory,'r');try{await h.sync();}finally{await h.close();}}
+export const syncDirectory=syncDir;
 export async function writePrivateJson(file,value){
  const temporary=path.join(path.dirname(file),'.'+path.basename(file)+'-'+randomUUID());let h;
  try{h=await fs.open(temporary,'wx',0o600);await h.writeFile(canonical(value));await h.sync();await h.close();h=null;await fs.rename(temporary,file);await syncDirectory(path.dirname(file));}

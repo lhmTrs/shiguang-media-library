@@ -17,7 +17,7 @@ import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "./background-process.mjs";
 import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
 import { within } from "./fs-identity.mjs";
