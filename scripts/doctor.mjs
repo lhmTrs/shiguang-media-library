@@ -1,3 +1,4 @@
+import {probeRuntimeBinding} from '../server/runtime-binding.mjs';
 import {findCodex} from '../server/prompt-codex/transport.mjs';
 import {runMedia} from '../server/media-process.mjs';
 import {resolveVideoProbe,safeProbeDiagnostic,probeFailure} from '../server/storyboard-video/probe-tool.mjs';
@@ -28,10 +29,15 @@ if (process.platform === "darwin") {
   catch { add("Mac 废纸篓组件", false, false, "未安装 Command Line Tools 时删除禁用，其他功能仍可使用"); }
 }
 const data = dataDirectory(project, { ...process.env, MEDIA_PORTABLE: "1" });
+let runtimeIdentity;
+if(process.platform==='win32'){
+ try{const file=path.join(data,'server.json'),st=await fs.lstat(file);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size>8192)throw Error();const record=JSON.parse(await fs.readFile(file,'utf8'));const binding=await probeRuntimeBinding(record);runtimeIdentity={state:'matched',...binding};add('运行实例',true,false,'当前素材库与运行编号已核对（不表示已关闭）');}
+ catch(e){runtimeIdentity={state:e.code==='ENOENT'?'absent':'unknown'};add('运行实例',e.code==='ENOENT',false,e.code==='ENOENT'?'尚无运行记录':'运行实例尚未核清；不表示已经安全停止');}
+}
 let existingMysql = false;
 try { await fs.access(path.join(data, "mysql-connection.json")); existingMysql = true; } catch {}
 const report = { passed: results.every(r => r.ok || !r.required), platform: process.platform, arch: process.arch, dataDirectory: data,
-  database: existingMysql ? "已有 MySQL 配置，不会删除或静默切换" : "新数据目录默认 SQLite", results };
+  ...(runtimeIdentity?{runtimeIdentity}:{}), database: existingMysql ? "已有 MySQL 配置，不会删除或静默切换" : "新数据目录默认 SQLite", results };
 if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
 else {
   console.log(`平台：${report.platform}/${report.arch}\n数据目录：${data}\n数据库：${report.database}`);

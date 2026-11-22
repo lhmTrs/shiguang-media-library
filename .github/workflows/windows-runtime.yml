@@ -22,6 +22,13 @@ jobs:
           node-version: '22.x'
           package-manager-cache: false
       - run: npm ci
-      - run: choco install ffmpeg --yes --no-progress
+      - name: Install ephemeral media tool paths
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          "$env:PATH" -split ';' | Where-Object { $_ } | ForEach-Object { $_ >> $env:GITHUB_PATH }
       - run: npm run build
       - run: node --test --test-timeout=120000 tests/windows-runtime.test.mjs

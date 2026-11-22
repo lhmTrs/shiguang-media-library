@@ -1,3 +1,4 @@
+import {probeRuntimeBinding} from '../server/runtime-binding.mjs';
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -15,13 +16,20 @@ function openBrowser(url) {
 await fsp.mkdir(data, { recursive: true });
 async function running(record) {
   try {
+    if(process.platform==='win32'){await probeRuntimeBinding(record);return true;}
     process.kill(record.pid, 0);
     const r = await fetch(record.url + "/api/session", {
       signal: AbortSignal.timeout(1500),
     });
     const identity = await r.json();
     return r.ok && identity.app === 'shiguang-local-media' && (!record.instanceId || identity.instanceId === record.instanceId);
-  } catch {
+  } catch(error) {
+    if(process.platform==='win32'){
+      if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;
+      // Liveness is only a reason to refuse another startup, never closure proof.
+      try{if(!Number.isSafeInteger(record.pid)||record.pid<1)throw error;process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')return false;throw Object.assign(Error('运行记录未能核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});}
+      throw Object.assign(Error('原实例仍需核对，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+    }
     return false;
   }
 }
@@ -35,7 +43,7 @@ try {
       openBrowser(record.url);
     process.exit(0);
   }
-} catch {}
+} catch(error) {if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;}
 try {
   await fsp.access(path.join(project, "dist/index.html"));
 } catch {

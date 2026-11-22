@@ -62,6 +62,10 @@ async function startOwned(t,base){
 test('Windows actual application: private identity, denied commands, 202 is not closure, real HTTP/DB drain receipt and restart readback',{skip:process.platform!=='win32',timeout:90000},async t=>{
  const base=await temporary(t),app=await startOwned(t,base);assert.equal(app.identity.platform,'win32');assert.ok(!('runId' in app.identity));assert.deepEqual(Object.keys(app.identity).sort(),['app','folderPickerAvailable','instanceId','platform','token','trashAvailable'].sort());
  assert.equal((await fetch(app.origin+'/api/application/identity')).status,401);
+ const cliEnv={...process.env,MEDIA_DATA_DIR:app.data},launcher=await promisify(execFile)(process.execPath,[path.resolve('scripts/launch.mjs')],{env:cliEnv,timeout:5000,windowsHide:true});assert.equal(launcher.stdout.trim(),app.origin);
+ const doctor=JSON.parse((await promisify(execFile)(process.execPath,[path.resolve('scripts/doctor.mjs'),'--json'],{env:cliEnv,timeout:15000,windowsHide:true})).stdout);assert.deepEqual(doctor.runtimeIdentity,{state:'matched',libraryId:app.record.instanceId,runId:app.record.runId});
+ const recordFile=path.join(app.data,'server.json');await fs.writeFile(recordFile,JSON.stringify({...app.record,runId:crypto.randomUUID()}));await assert.rejects(promisify(execFile)(process.execPath,[path.resolve('scripts/launch.mjs')],{env:cliEnv,timeout:5000,windowsHide:true}));await fs.writeFile(recordFile,JSON.stringify(app.record));
+
  const quotedRoot=path.join(base,'quoted-root');await fs.mkdir(quotedRoot);const added=await app.call('roots',{path:'"'+quotedRoot+'"',kind:'sfx'});assert.equal(added.status,200,await added.clone().text());assert.equal((await added.json()).root.path,await fs.realpath(quotedRoot));
  const project=await (await app.call('projects',{name:'原样访达标题'})).json();assert.ok(project.id);
 
