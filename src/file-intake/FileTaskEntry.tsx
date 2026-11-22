@@ -16,7 +16,8 @@ const ago = (at: number, now: number) => { const d = Math.max(0, now - at); retu
 type InstallError = {kind: 'refused' | 'unknown'; message: string};
 const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
 type SettingsState = {state: 'idle'} | {state: 'opening'} | {state: 'opened'; target: string} | {state: 'error'; message: string};
-export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView: IntakeView}) {
+/** onSummary：只给「新样子（试用）」顶栏的「后台任务」入口汇总用；不传时行为不变。 */
+export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequest; onView: IntakeView; onSummary?: (s: {active: number; attention: number}) => void}) {
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(() => !document.hidden), [status, setStatus] = useState<IntakeStatus | null>(null);
   const [batches, setBatches] = useState<IntakeBatch[]>([]), [selection, setSelection] = useState(''), [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [readError, setReadError] = useState(''), [reading, setReading] = useState(false), [busy, setBusy] = useState('');
   const [history, setHistory] = useState(false), historyRef = useRef(false);
@@ -191,6 +192,8 @@ export function FileTaskEntry({request, onView}: {request: IntakeRequest; onView
     selectionRef.current = rows.current.find(b => !!b.acknowledged === value)?.id || ''; setSelection(selectionRef.current);
   }
   const upToDate = !!status?.supported && !!status.installed && !status.upgradeNeeded;
+  const summaryActive = status?.activeCount ?? 0, summaryAttention = status?.needsAttention ?? 0;
+  useEffect(() => { onSummary?.({active: summaryActive, attention: summaryAttention}); }, [onSummary, summaryActive, summaryAttention]);
   return <div className="fi-root fi-entry">
     <button className="fi-entry-button" ref={entry} aria-expanded={open} aria-controls="file-intake-tasks" onClick={() => setOpen(v => !v)}><FolderInput size={17}/><span>文件任务</span>{!!status?.activeCount && <span className="fi-count">{status.activeCount}</span>}{!!status?.needsAttention && <span className="fi-attention">{status.needsAttention} 待处理</span>}{installing ? <span className="fi-install-chip" role="img" aria-label="访达入口安装中"><span className="fi-spinner"/></span> : job && job.id !== seenJob && (job.finishedAt ?? 0) >= mountedAt.current ? <span className={'fi-install-chip ' + (job.stage === 'done' ? 'is-ok' : 'is-bad')} role="img" aria-label={job.stage === 'done' ? '访达入口已安装，未查看' : '访达入口安装没有完成，未查看'}>{job.stage === 'done' ? <Check size={13}/> : <AlertCircle size={13}/>}</span> : null}</button>
     {open && createPortal(<aside className="fi-root fi-drawer" role="dialog" aria-label="文件任务" id="file-intake-tasks">

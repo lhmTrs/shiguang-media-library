@@ -1,0 +1,239 @@
+/* 「新样子（试用）」：只在 <html data-sg-paper="on"> 时生效（开关见 src/paper/trial.ts）。关掉时这里一条规则都不匹配。
+   规格：开发统筹 20261122《界面审美偏好 · 拾光素材库》第三节；样稿 FullPage.dc.html（“适中”整页）、TopBar.dc.html ③。
+   - 颜色主要走 themes.css 末尾的试用 token 块（品牌色换成赭红，其他页面也跟着换）；这里只写版式、字体、密度，
+     和几处样稿里单独定的颜色（下面的 --sgp-*，取值就是规格里的那几个）。
+   - 只改了侧栏、顶栏和素材列表（全部素材等列表页）；其他页面只跟着换颜色。
+   - 字号守项目的档位（tests/font-scale.test.mjs：11/12/13/14/16/18/20/24）：样稿的 13.5/12.5/14.5/25px 就近取 14/12 或 13/14/24。 */
+
+html[data-sg-paper="on"] {
+  --sgp-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
+  --sgp-sans: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+  --sgp-bg: #f4f2ee;        /* 底 */
+  --sgp-sheet: #fdfcfa;     /* 内容卡 */
+  --sgp-ink: #26231f;       /* 正文 */
+  --sgp-muted: #645c51;     /* 次要文字 */
+  --sgp-rule: #ece7de;      /* 分隔线 */
+  --sgp-accent: #9a4a2b;    /* 强调：赭红 */
+  --sgp-field: #f2eee7;     /* 控件浅底（无边框） */
+  --sgp-pill-line: #e3d8c6; /* 顶栏两个入口的细边 */
+  --sgp-slash: #b5ab9c;     /* 路径里的斜杠，只是装饰 */
+  --sgp-running: #5b8a6f;   /* 后台任务在跑的小圆点 */
+  --sgp-shadow: 0 1px 2px rgba(40, 30, 20, 0.06), 0 8px 24px rgba(40, 30, 20, 0.05);
+  font-family: var(--sgp-sans);
+}
+
+/* ------------------------------------------------------------------ 侧栏 */
+/* 侧栏和页面同一块底，不另起颜色和竖线；密度和主区一致（“适中”）。 */
+html[data-sg-paper="on"] .library-workspace .sidebar { background: var(--sgp-bg); border-right: 0; padding: 22px 14px 16px; font-size: 14px; line-height: 1.5; }
+html[data-sg-paper="on"] .library-workspace .brand { padding: 0 8px 18px; gap: 8px; }
+html[data-sg-paper="on"] .app:not(.nav-collapsed) .brand-icon { display: none; }
+html[data-sg-paper="on"] .brand strong { font-family: var(--sgp-serif); font-weight: 600; font-size: 20px; line-height: 1.3; letter-spacing: 0.04em; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .brand span:not(.brand-icon) { margin-top: 0; font-size: 12px; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sidebar-controls { padding: 0 2px 10px; }
+html[data-sg-paper="on"] .sidebar-controls .icon-button { color: var(--sgp-muted); border-radius: 6px; }
+html[data-sg-paper="on"] .sidebar-controls .icon-button:hover { background: var(--sgp-field); color: var(--sgp-ink); }
+
+/* 分组标题：宋体小字，右边是“数量（收起时）＋箭头”。 */
+html[data-sg-paper="on"] .library-workspace .sidebar-nav-group { padding-top: 0; }
+html[data-sg-paper="on"] .library-workspace .sidebar-nav-group + .sidebar-nav-group { margin-top: 14px; }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-toggle {
+  min-height: 0; margin: 0; padding: 4px 8px; gap: 6px; border-radius: 6px;
+  font-family: var(--sgp-serif); font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--sgp-muted); background: transparent;
+}
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-toggle:hover { background: var(--sgp-field); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-workspace .nav-group-toggle.has-current { color: var(--sgp-accent); background: transparent; }
+html[data-sg-paper="on"] .library-workspace .nav-group-toggle > .sgp-group-count { flex: none; font-family: var(--sgp-sans); font-size: 12px; font-weight: 400; color: inherit; font-variant-numeric: tabular-nums; }
+html[data-sg-paper="on"] .library-workspace .nav-group-chevron { flex: none; transition: transform 0.18s; }
+html[data-sg-paper="on"] .app:not(.nav-collapsed) .sgp-rail-icon { display: none; }
+html[data-sg-paper="on"] .library-workspace .roots-heading .icon-button { color: var(--sgp-muted); }
+
+/* 分组里的栏目：不放图标（窄侧栏模式仍显示图标），右边是数量；当前页用浅底和赭红字。 */
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items:not([hidden]) { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; padding-left: 0; border-left: 0; }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items > .nav-item {
+  min-height: 0; margin: 0; padding: 7px 8px; gap: 8px; border-radius: 6px;
+  font-size: 14px; line-height: 1.5; font-weight: 400; color: var(--sgp-ink); box-shadow: none;
+}
+html[data-sg-paper="on"] .app:not(.nav-collapsed) .sidebar .nav-group-items > .nav-item > svg { display: none; }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items > .nav-item > small { font-size: 12px; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items > .nav-item:hover { background: var(--sgp-field); }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items > .nav-item.selected { background: var(--sgp-field); color: var(--sgp-accent); font-weight: 500; box-shadow: none; }
+html[data-sg-paper="on"] .library-workspace .sidebar .nav-group-items > .nav-item.selected > small { color: var(--sgp-accent); }
+html[data-sg-paper="on"] .library-workspace .sidebar .root-item { padding: 7px 8px; gap: 8px; border-radius: 6px; font-size: 14px; line-height: 1.5; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-workspace .sidebar .root-item:hover { background: var(--sgp-field); }
+html[data-sg-paper="on"] .library-workspace .sidebar .root-item.selected { background: var(--sgp-field); color: var(--sgp-accent); }
+html[data-sg-paper="on"] .app:not(.nav-collapsed) .sidebar .root-item > svg { display: none; }
+html[data-sg-paper="on"] .library-workspace .sidebar-bottom { padding-top: 16px; }
+html[data-sg-paper="on"] .library-workspace .sidebar-bottom button { padding: 6px 8px; border-radius: 6px; color: var(--sgp-muted); font-size: 13px; }
+html[data-sg-paper="on"] .library-workspace .sidebar-bottom button:hover { background: var(--sgp-field); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-workspace .sidebar-bottom div { margin: 12px 8px 0; color: var(--sgp-muted); font-size: 12px; }
+/* “在线”圆点是状态，不是品牌色：保持绿色（试用配色会把品牌绿一族换成赭红）。离线点不变。 */
+html[data-sg-paper="on"] .online-dot { background: var(--sgp-running); }
+
+/* ------------------------------------------------------------------ 顶栏 ③ 合并分区 */
+/* 左边“项目 / 当前页面”路径；右边只留“待处理”和“后台任务”（再加添加素材目录、详情开关和原样不动的账户入口）。 */
+html[data-sg-paper="on"] .library-workspace .library-topbar {
+  min-height: 60px; padding: 12px 20px 10px 10px; gap: 12px;
+  background: var(--sgp-bg); border-bottom: 0; backdrop-filter: none; font-size: 14px;
+}
+html[data-sg-paper="on"] .sgp-path { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; font-family: var(--sgp-serif); font-size: 16px; line-height: 1.5; }
+html[data-sg-paper="on"] .library-topbar .sgp-path .topbar-project-slot { flex: 0 1 auto; width: auto; min-width: 0; max-width: 60%; }
+@media (max-width: 1100px) {
+  html[data-sg-paper="on"] .library-topbar .sgp-path { flex: 1 1 100%; }
+}
+html[data-sg-paper="on"] .sgp-path-sep { flex: none; color: var(--sgp-slash); }
+html[data-sg-paper="on"] .sgp-path-page { flex: none; color: var(--sgp-ink); font-weight: 500; white-space: nowrap; }
+/* 项目选择：像一段可以点开的路径，不要框。 */
+html[data-sg-paper="on"] .sgp-path .ppb { font-family: var(--sgp-serif); }
+html[data-sg-paper="on"] .sgp-path .ppb-crumbs { height: 30px; padding: 0; border: 0; background: transparent; }
+html[data-sg-paper="on"] .sgp-path .ppb-seg { height: 30px; padding: 0 4px; font: 400 16px var(--sgp-serif); color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sgp-path .ppb-seg:hover:not(:disabled), html[data-sg-paper="on"] .sgp-path .ppb-seg[aria-expanded=true] { background: var(--sgp-field); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .sgp-path .ppb-sep { color: var(--sgp-slash); }
+html[data-sg-paper="on"] .sgp-path .ppb-step { width: 26px; height: 28px; border: 0; background: transparent; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sgp-path .ppb-step:hover:not(:disabled) { background: var(--sgp-field); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .sgp-path .ppb-pop { font-family: var(--sgp-sans); }
+/* 后台读取指示：没在更新时不占位置，更新时才出现。 */
+html[data-sg-paper="on"] .library-topbar .library-read-indicator:not([data-updating=true]) { display: none; }
+
+/* 两个圆角入口：细边、透明底，数字用赭红。 */
+html[data-sg-paper="on"] .library-workspace .library-topbar .topbar-actions > .sgn-entry,
+html[data-sg-paper="on"] .library-topbar .sgp-pill {
+  height: 32px; min-height: 32px; padding: 0 12px; gap: 8px;
+  border: 1px solid var(--sgp-pill-line); border-radius: 999px; background: transparent;
+  color: var(--sgp-ink); font-family: var(--sgp-sans); font-size: 13px; line-height: 1;
+}
+html[data-sg-paper="on"] .library-topbar .sgn-entry > svg:first-child { display: none; }
+html[data-sg-paper="on"] .library-topbar .sgn-entry:hover, html[data-sg-paper="on"] .library-topbar .sgp-pill:hover,
+html[data-sg-paper="on"] .library-topbar .sgn-entry[aria-expanded="true"], html[data-sg-paper="on"] .library-topbar .sgp-pill[aria-expanded="true"] { background: var(--sgp-field); border-color: var(--sgp-pill-line); }
+html[data-sg-paper="on"] .library-topbar .sgn-count { min-width: 0; padding: 0; background: transparent; color: var(--sgp-accent); font-size: 13px; font-weight: 600; line-height: 1; }
+html[data-sg-paper="on"] .library-topbar .sgp-pill > svg { color: var(--sgp-muted); flex: none; }
+html[data-sg-paper="on"] .sgp-dot { width: 7px; height: 7px; flex: none; border-radius: 4px; background: transparent; box-shadow: inset 0 0 0 1.5px var(--sgp-slash); }
+html[data-sg-paper="on"] .sgp-pill[data-state="active"] .sgp-dot { background: var(--sgp-running); box-shadow: none; }
+html[data-sg-paper="on"] .sgp-pill[data-state="attention"] .sgp-dot { background: var(--sgp-accent); box-shadow: none; }
+html[data-sg-paper="on"] .sgp-tasks-status { color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sgp-tasks-attention { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--sgp-accent); color: #ffffff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
+
+/* 后台任务弹出框：三类任务的原有入口排成一列，点开的还是原来的面板；文件检查放在最下面。 */
+html[data-sg-paper="on"] .sgp-tasks { position: relative; flex: none; }
+html[data-sg-paper="on"] .sgp-tasks-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+  display: flex; flex-direction: column; gap: 4px; width: 280px; padding: 6px; box-sizing: border-box;
+  border-radius: 8px; background: var(--sgp-sheet); box-shadow: 0 1px 2px rgba(40, 30, 20, 0.08), 0 12px 32px rgba(40, 30, 20, 0.14);
+  font-family: var(--sgp-sans); font-size: 13px; line-height: 1.5;
+}
+html[data-sg-paper="on"] .sgp-tasks-menu[hidden] { display: none; }
+html[data-sg-paper="on"] .sgp-tasks-entries { display: flex; flex-direction: column; gap: 2px; }
+html[data-sg-paper="on"] .sgp-tasks-entries > .fi-entry { display: flex; }
+html[data-sg-paper="on"] .sgp-tasks-menu .ud-entry,
+html[data-sg-paper="on"] .sgp-tasks-menu .codex-tasks-entry,
+html[data-sg-paper="on"] .sgp-tasks-menu .fi-root .fi-entry-button,
+html[data-sg-paper="on"] .sgp-tasks-menu .file-check-button {
+  justify-content: flex-start; width: 100%; min-width: 0; height: auto; min-height: 36px; padding: 6px 10px; gap: 8px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--sgp-ink); font: inherit; font-size: 13px; box-shadow: none;
+}
+html[data-sg-paper="on"] .sgp-tasks-menu .ud-entry:hover, html[data-sg-paper="on"] .sgp-tasks-menu .codex-tasks-entry:hover,
+html[data-sg-paper="on"] .sgp-tasks-menu .fi-root .fi-entry-button:hover, html[data-sg-paper="on"] .sgp-tasks-menu .file-check-button:hover:not(:disabled) { background: var(--sgp-field); }
+html[data-sg-paper="on"] .sgp-tasks-menu .ud-entry > svg, html[data-sg-paper="on"] .sgp-tasks-menu .codex-tasks-entry > svg,
+html[data-sg-paper="on"] .sgp-tasks-menu .fi-entry-button > svg, html[data-sg-paper="on"] .sgp-tasks-menu .file-check-button > svg { color: var(--sgp-muted); }
+html[data-sg-paper="on"] .sgp-tasks-menu .ud-entry-label { display: inline; }
+html[data-sg-paper="on"] .sgp-tasks-empty { display: flex; align-items: center; min-height: 36px; padding: 6px 10px; color: var(--sgp-muted); font-size: 13px; }
+html[data-sg-paper="on"] .sgp-tasks-menu .ud-entry-short { display: none; }
+html[data-sg-paper="on"] .sgp-tasks-footer { padding-top: 4px; border-top: 1px solid var(--sgp-rule); }
+html[data-sg-paper="on"] .sgp-tasks-menu .file-check-entry { position: static; display: flex; flex-direction: column; gap: 6px; }
+html[data-sg-paper="on"] .sgp-tasks-menu .file-check-label { display: inline; }
+html[data-sg-paper="on"] .sgp-tasks-menu .file-check-feedback { position: static; width: auto; box-shadow: none; border-color: var(--sgp-rule); background: var(--sgp-bg); }
+
+/* 其余还留在顶栏的：详情开关安静一点；“添加素材目录”是唯一的实心按钮。 */
+html[data-sg-paper="on"] .library-topbar .topbar-actions > .details-toggle { width: 32px; height: 32px; min-height: 32px; padding: 7px; border-radius: 6px; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-topbar .topbar-actions > .details-toggle:hover { background: var(--sgp-field); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-workspace .library-topbar .topbar-actions > .add-root-button { height: 32px; min-height: 32px; padding: 0 14px; border-radius: 6px; font-size: 13px; font-weight: 500; }
+@media (min-width: 1101px) {
+  html[data-sg-paper="on"] .library-topbar .add-root-button > svg { display: none; }
+}
+html[data-sg-paper="on"] .library-topbar .work-pill { font-size: 12px; }
+
+/* ------------------------------------------------------------------ 素材列表（全部素材等） */
+/* 整块内容放在一张浅色卡片上，四周是底色。 */
+html[data-sg-paper="on"] .library-workspace .library-browser {
+  margin: 0 20px 24px 4px; padding-bottom: 8px;
+  border-radius: 8px; background: var(--sgp-sheet); box-shadow: var(--sgp-shadow);
+  color: var(--sgp-ink); font-size: 14px; line-height: 1.5;
+}
+html[data-sg-paper="on"] .library-workspace .library-heading { padding: 22px 26px 12px; align-items: flex-end; }
+html[data-sg-paper="on"] .library-workspace .library-heading h1 { margin: 0; font-family: var(--sgp-serif); font-size: 24px; font-weight: 600; line-height: 1.35; letter-spacing: 0; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-workspace .library-heading p { margin: 2px 0 0; font-size: 14px; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-workspace .library-heading p strong { font-weight: 400; color: inherit; }
+
+/* 控件统一成浅底、无边框。 */
+html[data-sg-paper="on"] .library-browser .heading-tools > .plain,
+html[data-sg-paper="on"] .library-browser .filters .plain,
+html[data-sg-paper="on"] .library-browser .advanced-filters .plain { border: 0; background: var(--sgp-field); color: var(--sgp-ink); box-shadow: none; }
+html[data-sg-paper="on"] .library-browser .heading-tools > .plain:hover:not(:disabled),
+html[data-sg-paper="on"] .library-browser .filters .plain:hover:not(:disabled) { background: var(--sgp-rule); }
+html[data-sg-paper="on"] .library-browser .heading-tools .icon-button { color: var(--sgp-muted); border-radius: 6px; }
+html[data-sg-paper="on"] .library-workspace .filters.search-toolbar { margin-inline: 26px; gap: 8px; }
+html[data-sg-paper="on"] .library-browser .filters input:not([type="checkbox"]):not([type="range"]),
+html[data-sg-paper="on"] .library-browser .filters select,
+html[data-sg-paper="on"] .library-browser .filters .search,
+html[data-sg-paper="on"] .library-browser .filters .category-filter-control,
+html[data-sg-paper="on"] .library-browser .filters .tag-rule-filter > button,
+html[data-sg-paper="on"] .library-browser .filters .advanced-filter-trigger { border: 0; border-radius: 6px; background: var(--sgp-field); color: var(--sgp-ink); box-shadow: none; }
+html[data-sg-paper="on"] .library-browser .filters .search input,
+html[data-sg-paper="on"] .library-browser .filters .category-filter-control input { background: transparent; }
+html[data-sg-paper="on"] .library-browser .filters input::placeholder { color: var(--sgp-muted); }
+
+/* 统计、平铺/分组、排序、视图切换。 */
+html[data-sg-paper="on"] .library-workspace .content-toolbar { margin: 12px 26px 6px; padding: 0; color: var(--sgp-muted); font-size: 12px; }
+html[data-sg-paper="on"] .library-browser .result-count { color: var(--sgp-muted); font-size: 12px; }
+html[data-sg-paper="on"] .library-browser .segmented { gap: 2px; padding: 2px; border: 0; border-radius: 6px; background: var(--sgp-field); }
+html[data-sg-paper="on"] .library-browser .segmented > button:not(.icon-button) { height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--sgp-muted); font-size: 12px; }
+html[data-sg-paper="on"] .library-browser .segmented > button[aria-pressed="true"] { background: var(--sgp-sheet); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-browser .segmented .icon-button { width: 26px; height: 24px; border-radius: 5px; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-browser .segmented .icon-button.active { background: var(--sgp-sheet); color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-browser .content-toolbar select { color: var(--sgp-muted); font-size: 12px; }
+html[data-sg-paper="on"] .library-browser .content-toolbar .toolbar-popover > button { color: var(--sgp-muted); }
+
+/* 表格：去掉整块分隔，靠行间细线；行上下 8px、行距 1.5。 */
+html[data-sg-paper="on"] .library-browser .workspace { border-top: 0; }
+html[data-sg-paper="on"] .library-browser .results { background: transparent; }
+html[data-sg-paper="on"] .library-browser .table-head { background: transparent; color: var(--sgp-muted); font-size: 12px; border-bottom: 1px solid var(--sgp-rule); }
+html[data-sg-paper="on"] .library-browser .asset-row { border-bottom: 1px solid var(--sgp-rule); line-height: 1.5; }
+html[data-sg-paper="on"] .library-browser .asset-row:hover { background: var(--sgp-field); }
+html[data-sg-paper="on"] .library-browser .asset-row.selected { background: var(--sgp-field); box-shadow: inset 2px 0 0 var(--sgp-accent); }
+@media (min-width: 1151px) {
+  html[data-sg-paper="on"] .library-browser .table-head { height: auto; margin: 0 18px; padding: 6px 8px; }
+  html[data-sg-paper="on"] .library-browser .asset-row { height: auto; min-height: 0; margin: 0 18px; padding: 8px; }
+  html[data-sg-paper="on"] .library-browser .asset-row:hover,
+  html[data-sg-paper="on"] .library-browser .asset-row.selected { border-radius: 6px; }
+}
+html[data-sg-paper="on"] .library-browser .file-cell { gap: 10px; }
+/* 声音素材：细边圆形试听键；照片和视频：小缩略图（读不到时是类型图标）。 */
+html[data-sg-paper="on"] .library-browser .file-icon { width: 48px; height: 32px; border-radius: 4px; overflow: hidden; background: var(--sgp-field); color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-browser .file-icon.sfx,
+html[data-sg-paper="on"] .library-browser .file-icon.music { width: 28px; height: 28px; margin-right: 20px; border: 1px solid var(--sgp-rule); border-radius: 14px; background: transparent; color: var(--sgp-accent); }
+html[data-sg-paper="on"] .library-browser .file-icon.sfx:hover,
+html[data-sg-paper="on"] .library-browser .file-icon.music:hover { border-color: var(--sgp-accent); }
+html[data-sg-paper="on"] .library-browser .file-icon > svg { width: 14px; height: 14px; }
+html[data-sg-paper="on"] .library-browser .file-icon.sfx > svg,
+html[data-sg-paper="on"] .library-browser .file-icon.music > svg { width: 11px; height: 11px; }
+html[data-sg-paper="on"] .sgp-row-thumb { display: block; width: 100%; height: 100%; object-fit: cover; }
+html[data-sg-paper="on"] .library-browser .asset-name-button { font-family: var(--sgp-serif); font-size: 14px; font-weight: 500; line-height: 1.5; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-browser .file-cell span { margin-top: 0; gap: 5px; font-size: 12px; line-height: 1.5; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-browser .file-cell i { color: var(--sgp-slash); }
+html[data-sg-paper="on"] .library-browser .category-cell { gap: 0; }
+html[data-sg-paper="on"] .library-browser .category-cell span { font-size: 13px; line-height: 1.5; color: var(--sgp-ink); }
+html[data-sg-paper="on"] .library-browser .category-cell small { font-size: 13px; line-height: 1.5; color: var(--sgp-muted); }
+html[data-sg-paper="on"] .library-browser .asset-row .mono { font-size: 13px; color: var(--sgp-ink); font-variant-numeric: tabular-nums; }
+html[data-sg-paper="on"] .library-browser .size-cell { font-size: 13px; color: var(--sgp-muted); font-variant-numeric: tabular-nums; }
+
+/* 每行的操作按钮平时淡显；鼠标停在哪一行（或键盘焦点在这一行、这一行被选中、菜单开着），哪一行才完全显示。
+   已收藏的星标是信息，不淡显。没有鼠标的设备一直完全显示。 */
+html[data-sg-paper="on"] .library-browser .asset-row .asset-quick-actions > .icon-button { color: var(--sgp-muted); opacity: 0.35; transition: opacity 0.12s, background-color 0.14s; }
+html[data-sg-paper="on"] .library-browser .asset-row .asset-quick-actions > .icon-button.saved { color: var(--c-ad9254); opacity: 1; }
+html[data-sg-paper="on"] .library-browser .asset-row:hover .asset-quick-actions > .icon-button,
+html[data-sg-paper="on"] .library-browser .asset-row:focus-within .asset-quick-actions > .icon-button,
+html[data-sg-paper="on"] .library-browser .asset-row.selected .asset-quick-actions > .icon-button,
+html[data-sg-paper="on"] .library-browser .asset-quick-actions:has([aria-expanded="true"]) > .icon-button { opacity: 1; }
+html[data-sg-paper="on"] .library-browser .asset-quick-actions > .icon-button:hover { background: var(--sgp-sheet); color: var(--sgp-ink); }
+@media (hover: none) {
+  html[data-sg-paper="on"] .library-browser .asset-row .asset-quick-actions > .icon-button { opacity: 1; }
+}

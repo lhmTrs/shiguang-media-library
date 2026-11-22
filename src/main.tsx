@@ -122,12 +122,19 @@ import { readStoryboardAppearance, storyboardAppearanceKey } from "./storyboard/
 import type {ShotFocus} from "./storyboard/shot-navigation";
 import { initialView, viewFromHash, viewHash, viewPaths, readMemory, memoryKey, readGroups, groupDefaults, navigationGroupsKey, readLayouts, defaultLayout, readSearchPreferences, readVolume, saveStored, removeStored } from "./browser-preferences";
 import { clearProjectLocations, emptyProjectLocation, readProjectLocation, recentProjectLimit, saveProjectLocation } from "./browser-preferences";
+import { usePaperTrial } from "./paper/trial";
+import { BackgroundTasks, type TaskSummary } from "./paper/BackgroundTasks";
+import { RowThumb } from "./paper/RowThumb";
+import "./paper/paper.css";
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
   { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"] },
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
+/** 「新样子（试用）」里一次只开一组的两组，以及各自的名字（剪辑时用素材，做漫剧时用项目）。 */
+const paperGroupLabels: Record<string, string> = { find: "素材 · 剪辑时用", design: "项目 · 做漫剧时用" };
+const paperGroupOf = (view: string) => navigationGroups.find(group => group.id in paperGroupLabels && group.items.includes(view))?.id ?? null;
 
 export type Asset = {
   id: string;
@@ -713,6 +720,14 @@ function App() {
   // 界面风格：值由 localStorage 驱动、写在 <html data-theme> 上，切换只影响 CSS 变量。
   const [theme, setTheme] = useState<ThemeId>(() => readTheme());
   useEffect(() => { applyTheme(theme); }, [theme]);
+  // 「新样子（试用）」：只记在本浏览器（src/paper/trial.ts）。关着时下面这些都不参与渲染。
+  const [paperTrial, setPaperTrial] = usePaperTrial();
+  // 侧栏「素材」「项目」两组一次只开一组；当前页面所在的组自动展开。两组都能收起。
+  const [paperGroup, setPaperGroup] = useState<string | null>(() => paperGroupOf(view) ?? "find");
+  useEffect(() => { const group = paperGroupOf(view); if (group) setPaperGroup(group); }, [view]);
+  const [taskSummaries, setTaskSummaries] = useState<{ updream: TaskSummary; file: TaskSummary }>({ updream: { active: 0, attention: 0 }, file: { active: 0, attention: 0 } });
+  const onUpdreamSummary = useCallback((summary: TaskSummary) => setTaskSummaries(previous => ({ ...previous, updream: summary })), []);
+  const onFileSummary = useCallback((summary: TaskSummary) => setTaskSummaries(previous => ({ ...previous, file: summary })), []);
   useEffect(() => { try { if (memory.navigation) localStorage.setItem("shiguang.navCollapsed", String(navCollapsed)); } catch {} }, [navCollapsed, memory.navigation]);
   useEffect(() => { try { localStorage.setItem("shiguang.hiddenNav", JSON.stringify(hiddenNav)); } catch {} }, [hiddenNav]);
   const [compactActions, setCompactActions] = useState(() => { try { return localStorage.getItem("shiguang.assetActions") !== "full"; } catch { return true; } });
@@ -1920,13 +1935,40 @@ function App() {
         onOpenUploadTasks={openUploadTasks}
       />
     ) : null;
+  // 顶栏里这几样在「新样子（试用）」里换了位置（项目路径进左边，三类任务和文件检查收进「后台任务」），内容不变。
+  const projectPathBar = <ProjectPathBar projects={projects} series={projectDirectory?.series ?? []}
+              value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
+              disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
+              onSelect={selectKnownProject} onManage={() => navigate("projects")}/>;
+  const updreamTaskEntry = <UpdreamTaskEntry request={api} onSummary={paperTrial ? onUpdreamSummary : undefined} onView={async(projectId:string,videoId?:string)=>{
+            if(!projectId||!selectKnownProject(projectId))return;
+            if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));
+            navigate('projectVideos');
+          }}/>;
+  const fileTaskEntry = <FileTaskEntry request={api} onSummary={paperTrial ? onFileSummary : undefined} onView={async(projectId,videoId)=>{
+            if(projectId){if(!selectKnownProject(projectId))return;if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
+            else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
+          }}/>;
+  const fileCheckEntry = (
+          <div className="file-check-entry">
+            <button className="plain file-check-button" aria-label="检查文件状态" aria-busy={fileChecking || undefined} aria-describedby={fileCheckFeedback ? 'file-check-feedback' : undefined} disabled={!ready || fileChecking} title={fileChecking ? '正在核对整个素材库，可切换栏目；请勿重复发起。' : '手动完整检查整个素材库的文件状态，可能耗时；不会删除原文件或记录。'} onClick={() => void checkFiles()}>
+              <RefreshCw size={16} className={fileChecking ? 'spin' : ''} aria-hidden="true"/>
+              <span className="file-check-label">{fileChecking ? '检查中…' : '检查文件状态'}</span>
+            </button>
+            {fileCheckFeedback && <div id="file-check-feedback" className="file-check-feedback" data-kind={fileCheckFeedback.kind} role={fileCheckFeedback.kind === 'error' ? 'alert' : 'status'}>
+              {fileCheckFeedback.kind === 'success' ? <Check size={17} aria-hidden="true"/> : <CircleAlert size={17} aria-hidden="true"/>}
+              <p>{fileCheckFeedback.message}</p>
+              <IconButton icon={X} title="关闭文件检查提示" onClick={() => setFileCheckFeedback(null)}/>
+            </div>}
+          </div>
+  );
   return (
     <><div hidden={!!specialPage} className={"app library-workspace" + (navCollapsed ? " nav-collapsed" : "") + (detailsHidden ? " details-hidden" : "")} style={{ "--details-width": `${detailsWidth}px`, "--player-height": `${playerHeight}px`, "--inspector-top": `${topbarHeight}px` } as React.CSSProperties}>
       {mobileNav && <button className="navigation-scrim" aria-label="关闭导航" onClick={() => setMobileNav(false)}/>}
       {navSettings && <NavigationSettings items={[...navs.map(([id, label]): [string, string] => [id, label]), ["roots", "素材目录"]]} hidden={hiddenNav}
         toggle={id => { setHiddenNav(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]); if (view === id) navigate("all"); }}
         memory={memory} setMemory={setMemory} resetBrowserPreferences={resetBrowserPreferences}
-        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} refreshSeconds={refreshSeconds} setRefreshSeconds={setRefreshSeconds} storyboardAppearance={storyboardAppearance} setStoryboardAppearance={setStoryboardAppearance} close={closeNavSettings}/>}
+        reset={() => setHiddenNav([])} theme={theme} setTheme={setTheme} paperTrial={paperTrial} setPaperTrial={setPaperTrial} refreshSeconds={refreshSeconds} setRefreshSeconds={setRefreshSeconds} storyboardAppearance={storyboardAppearance} setStoryboardAppearance={setStoryboardAppearance} close={closeNavSettings}/>}
       <aside className={"sidebar " + (mobileNav ? "visible" : "")}>
         <div className="brand">
           <span className="brand-icon">
@@ -1945,17 +1987,25 @@ function App() {
         {(globalStats.error||globalStats.reading&&!stats)&&<div className="sidebar-statistics" role={globalStats.error?'alert':'status'}><span>{globalStats.error?(stats?'数量暂未更新，保留上次确认值':'数量未读到，请重试'):'正在读取数量…'}</span>{globalStats.error&&<button disabled={globalStats.reading} title={globalStats.error} aria-label={globalStats.identityChanged?'刷新页面核对素材库':'重试侧栏数量'} onClick={()=>globalStats.identityChanged?location.reload():void globalStats.refresh()}><RefreshCw size={14}/><span>{globalStats.identityChanged?'核对素材库':'重试'}</span></button>}</div>}
         <div className="sidebar-scroll">
         <nav aria-label="主导航">
-          {navigationGroups.map(({ id, label, icon: GroupIcon, items }) => {
+          {navigationGroups.map(({ id, label: groupLabel, icon: GroupIcon, items }) => {
             const visibleItems = navs.filter(([value]) => items.includes(value) && !hiddenNav.includes(value));
             if (!visibleItems.length) return null;
-            const expanded = expandedNavGroups[id];
+            const paired = paperTrial && id in paperGroupLabels, label = paired ? paperGroupLabels[id] : groupLabel;
+            const expanded = paired ? paperGroup === id : expandedNavGroups[id];
             return <section key={id} className="sidebar-nav-group" aria-label={label}>
               <button type="button" className={"nav-item nav-group-toggle" + (!expanded && items.includes(view) ? " has-current" : "")}
                 title={label} aria-label={label} aria-expanded={expanded} aria-controls={`navigation-${id}`}
-                onClick={() => setExpandedNavGroups(previous => ({ ...previous, [id]: !previous[id] }))}>
+                onClick={() => paired ? setPaperGroup(current => current === id ? null : id) : setExpandedNavGroups(previous => ({ ...previous, [id]: !previous[id] }))}>
+                {paperTrial ? <>
+                  <GroupIcon size={18} className="sgp-rail-icon" aria-hidden="true"/>
+                  <span>{label}</span>
+                  {!expanded && <small className="sgp-group-count">{visibleItems.length}</small>}
+                  <ChevronRight size={13} className="nav-group-chevron" aria-hidden="true"/>
+                </> : <>
                 <ChevronRight size={14} className="nav-group-chevron" aria-hidden="true"/>
                 <GroupIcon size={18} aria-hidden="true"/>
                 <span>{label}</span>
+                </>}
               </button>
               <div id={`navigation-${id}`} className="nav-group-items" hidden={!expanded}>
                 {visibleItems.map(([value, itemLabel, Icon]) => <button key={value} type="button"
@@ -1974,7 +2024,8 @@ function App() {
         <div className="roots-heading">
           <button type="button" className="nav-item nav-group-toggle" aria-label="素材目录" aria-expanded={expandedNavGroups.roots} aria-controls="navigation-roots" title="素材目录"
             onClick={() => setExpandedNavGroups(previous => ({ ...previous, roots: !previous.roots }))}>
-            <ChevronRight size={14} className="nav-group-chevron" aria-hidden="true"/><FolderOpen size={18} aria-hidden="true"/><span>素材目录</span>
+            {paperTrial ? <><FolderOpen size={18} className="sgp-rail-icon" aria-hidden="true"/><span>素材目录</span>{!expandedNavGroups.roots && <small className="sgp-group-count">{roots.length}</small>}<ChevronRight size={13} className="nav-group-chevron" aria-hidden="true"/></>
+              : <><ChevronRight size={14} className="nav-group-chevron" aria-hidden="true"/><FolderOpen size={18} aria-hidden="true"/><span>素材目录</span></>}
           </button>
           <IconButton icon={FolderPlus} title="管理素材目录" onClick={() => void openModal("folders")}/>
         </div>
@@ -2027,44 +2078,38 @@ function App() {
             title={mobileNav ? "关闭导航" : "展开导航"}
             onClick={() => setMobileNav(!mobileNav)}
           />
-          <div className="breadcrumb">
+          {paperTrial ? <nav className="sgp-path" aria-label="位置">
+            <div className="topbar-project-slot">{projectPathBar}</div>
+            <span className="sgp-path-sep" aria-hidden="true">/</span>
+            <span className="sgp-path-page" aria-current="page">{title}</span>
+          </nav> : <div className="breadcrumb">
             {["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
-          </div>
+          </div>}
           <BackgroundReadStatus/>
           <div className="topbar-actions">
-          <div className="topbar-project-slot">
-            <ProjectPathBar projects={projects} series={projectDirectory?.series ?? []}
-              value={activeProject} recent={projectLocation.recent} lastInContainer={projectLocation.lastInContainer}
-              disabled={busy || projectVideoBusy || projectUsageBusy || !projectsKnown}
-              onSelect={selectKnownProject} onManage={() => navigate("projects")}/>
-          </div>
+          {!paperTrial && <div className="topbar-project-slot">
+            {projectPathBar}
+          </div>}
           <NoticesEntry request={api} onOpenLink={link=>{
             // 有没保存的改动时，切项目要先确认；确认后再切到对应页面。
             if(link.projectId&&!selectKnownProject(link.projectId,false,()=>navigate(link.view)))return false;
             navigate(link.view);
           }}/>
-          <UpdreamTaskEntry request={api} onView={async(projectId:string,videoId?:string)=>{
-            if(!projectId||!selectKnownProject(projectId))return;
-            if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));
-            navigate('projectVideos');
-          }}/>
+          {paperTrial ? <BackgroundTasks active={taskSummaries.updream.active + taskSummaries.file.active + (codexTasks.overview?.activeCount ?? 0)}
+            attention={taskSummaries.updream.attention + taskSummaries.file.attention + codexTasks.unread + (fileCheckFeedback && !fileChecking ? 1 : 0)}
+            busyLabel={fileChecking ? "正在检查文件" : undefined} footer={fileCheckEntry}>
+            {updreamTaskEntry}
+            {/* Updream 入口只在本机登记过任务时才出现（和原来顶栏一样）；收进这里以后留一行说明，免得找不到。 */}
+            {!taskSummaries.updream.shown && <span className="sgp-tasks-empty">Updream 视频任务 · 最近没有</span>}
+            <CodexTaskEntry controller={codexTasks}/>
+            {fileTaskEntry}
+          </BackgroundTasks> : <>
+          {updreamTaskEntry}
           <CodexTaskEntry controller={codexTasks}/>
-          <FileTaskEntry request={api} onView={async(projectId,videoId)=>{
-            if(projectId){if(!selectKnownProject(projectId))return;if(videoId)setFileTaskVideoFocus(p=>({projectId,videoId,request:(p?.request||0)+1}));navigate('projectVideos');}
-            else {navigate('all');const ticket=codexNavigation.current;if(videoId){try{const asset=await api<Asset>(`/assets/${encodeURIComponent(videoId)}`);if(ticket!==codexNavigation.current||viewRef.current!=='all')return;setSelected(asset);setDetailsHidden(false);}catch(e){if(ticket===codexNavigation.current)fail(e);}}}
-          }}/>
-          <div className="file-check-entry">
-            <button className="plain file-check-button" aria-label="检查文件状态" aria-busy={fileChecking || undefined} aria-describedby={fileCheckFeedback ? 'file-check-feedback' : undefined} disabled={!ready || fileChecking} title={fileChecking ? '正在核对整个素材库，可切换栏目；请勿重复发起。' : '手动完整检查整个素材库的文件状态，可能耗时；不会删除原文件或记录。'} onClick={() => void checkFiles()}>
-              <RefreshCw size={16} className={fileChecking ? 'spin' : ''} aria-hidden="true"/>
-              <span className="file-check-label">{fileChecking ? '检查中…' : '检查文件状态'}</span>
-            </button>
-            {fileCheckFeedback && <div id="file-check-feedback" className="file-check-feedback" data-kind={fileCheckFeedback.kind} role={fileCheckFeedback.kind === 'error' ? 'alert' : 'status'}>
-              {fileCheckFeedback.kind === 'success' ? <Check size={17} aria-hidden="true"/> : <CircleAlert size={17} aria-hidden="true"/>}
-              <p>{fileCheckFeedback.message}</p>
-              <IconButton icon={X} title="关闭文件检查提示" onClick={() => setFileCheckFeedback(null)}/>
-            </div>}
-          </div>
+          {fileTaskEntry}
+          {fileCheckEntry}
+          </>}
           {jobs.some(j=>j.type!=="codex-generation"&&["running","queued"].includes(j.status)) && (
             <span className="work-pill" role="status" aria-live="polite">
               <span className="spinner" aria-hidden="true" />
@@ -2634,6 +2679,8 @@ function App() {
                                 <Pause size={18} />
                               ) : audioAsset(a) ? (
                                 <Play size={17} />
+                              ) : paperTrial && ["photo", "video"].includes(a.kind) && a.online ? (
+                                <RowThumb id={a.id} version={a.mtime} fallback={<Icon size={18} />} />
                               ) : (
                                 <Icon size={18} />
                               )}

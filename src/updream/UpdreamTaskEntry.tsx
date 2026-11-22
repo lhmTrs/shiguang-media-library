@@ -185,7 +185,8 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
   </article>;
 }
 
-export function UpdreamTaskEntry({request, onView}: {request: UpdreamRequest; onView: UpdreamView}) {
+/** onSummary：只给「新样子（试用）」顶栏的「后台任务」入口汇总用；不传时行为不变。 */
+export function UpdreamTaskEntry({request, onView, onSummary}: {request: UpdreamRequest; onView: UpdreamView; onSummary?: (s: {active: number; attention: number; shown?: boolean}) => void}) {
   const [open, setOpen] = useState(false), [mode, setMode] = useState<Mode>('recent'), [tab, setTab] = useState<Tab | null>(null), [now, setNow] = useState(Date.now());
   const {recent, history, error, historyError, loadingMore, refresh, loadHistory, applyRead} = useUpdreamTasks(request, open, mode);
   const entry = useRef<HTMLButtonElement>(null), close = useRef<HTMLButtonElement>(null), returnFocus = useRef<HTMLElement | null>(null);
@@ -261,6 +262,8 @@ export function UpdreamTaskEntry({request, onView}: {request: UpdreamRequest; on
   const stale = !!error && !!recent;
   const queueBad = !!recent && (recent.queue.state === 'degraded' || recent.queue.state === 'unavailable');
   const visible = summary.showEntry;
+  const summaryActive = summary.active, summaryAttention = attentionUnread + doneUnread;
+  useEffect(() => { onSummary?.({active: summaryActive, attention: summaryAttention, shown: visible}); }, [onSummary, summaryActive, summaryAttention, visible]);
   const label = summary.active ? `Updream · 进行中 ${summary.active}` : 'Updream 视频任务';
   const list = mode === 'history' ? history?.tasks ?? [] : groups[current];
   const moreHistory = mode === 'history' && !!history && history.tasks.length < history.total;

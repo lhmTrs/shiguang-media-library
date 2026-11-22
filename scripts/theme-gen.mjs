@@ -279,6 +279,25 @@ export const THEMES = [
   { id: "ocean", name: "海洋青", desc: "青蓝点缀，明亮通透", swatch: ["#1f7d8c", "#f2f9fa", "#1d2c2f"], mode: "light", hue: 196, sat: 0.9, scheme: "light" },
 ];
 
+/**
+ * 「新样子（试用）」的配色：不进风格清单（界面风格里选不到），只在试用开关打开时生效，
+ * 写成 `html[data-sg-paper="on"]`，排在 6 套风格之后，所以开着时盖过用户选的风格，关掉时一条都不匹配。
+ * 底色、描边这类浅色往米色（hue）走；品牌绿那一族（饱和、偏深的绿）往赭红（accentHue）走：
+ * 换成赭红等于换品牌色，图标、主按钮、选中态都要跟着换。关键角色在 OVERRIDES["paper-trial"] 里按规格钉死。
+ * 规格：开发统筹 20261122《界面审美偏好 · 拾光素材库》第三节。
+ */
+export const TRIAL_THEME = {
+  id: "paper-trial", name: "新样子（试用）", desc: "纸本配色、赭红强调；只在试用开关打开时生效",
+  mode: "light", hue: 36, sat: 0.9, accentHue: 17, accentSat: 1.5, scheme: "light",
+  keepProtected: true, // 语义色（素材类型、危险、成功、提醒）原样保留：赭红本身偏红，危险色再褪色就分不清了
+  selector: 'html[data-sg-paper="on"]',
+};
+
+/** 品牌绿那一族：绿色系、有一定饱和度、不是很浅的底色。只对设了 accentHue 的配色生效。 */
+function isBrandFamily({ h, s, l }) {
+  return h >= 100 && h <= 200 && s >= 0.18 && l <= 0.62;
+}
+
 /** 亮度分段映射：浅色风格直接照抄原值；深色风格把亮度"折叠"到深色界面该有的区间。 */
 function mapLightness(l, mode) {
   if (mode !== "dark") return l;
@@ -295,13 +314,16 @@ export function derive(base, theme) {
   if (!rgb) return base;
   const hsl = rgbToHsl(rgb);
   const protectedColor = PROTECTED.has(String(base).toLowerCase());
+  if (protectedColor && theme.keepProtected) return base;
 
   let h = hsl.h;
+  const brand = theme.accentHue !== undefined && !protectedColor && isBrandFamily(hsl);
   if (theme.hue !== null && !protectedColor && hsl.s > 0.02) {
     // 以品牌绿 156° 为锚点做同比压缩，保住配色内部的相对色相关系
-    h = theme.hue + (hsl.h - 156) * 0.35;
+    h = (brand ? theme.accentHue : theme.hue) + (hsl.h - 156) * 0.35;
   }
   let s = hsl.s * theme.sat;
+  if (brand) s = Math.min(1, hsl.s * theme.accentSat);
   if (theme.sat === 0 && protectedColor) s = hsl.s; // 去色风格下语义色仍需保留色相
   const l = mapLightness(hsl.l, theme.mode);
   const out = hslToRgb({ h, s, l });
@@ -402,7 +424,7 @@ function themeBlock(theme) {
   const tune = Object.entries(overrides)
     .filter(([k]) => tokens.has(k) && !guarded.has(k))
     .map(([k, v]) => `  ${k}: ${v};`);
-  const head = `html[data-theme="${theme.id}"] {`;
+  const head = `${theme.selector ?? `html[data-theme="${theme.id}"]`} {`;
   return [
     `/* ${theme.name} —— ${theme.desc} */`,
     head,
@@ -417,7 +439,7 @@ function themeBlock(theme) {
 /** 校验生成结果：每套风格里用作文字的颜色（豁免项除外）对所有底色都 ≥ TEXT_MIN。返回不达标项。 */
 export function findLowContrastText() {
   const failures = [];
-  for (const theme of THEMES) {
+  for (const theme of [...THEMES, TRIAL_THEME]) {
     const values = themeValues(theme);
     for (const [k, v] of guardTextContrast(values, theme.mode, textTokens)) values.set(k, v);
     for (const token of textTokens) {
@@ -438,6 +460,24 @@ export function findLowContrastText() {
  * 其余 500 个 token 全部交给 derive()。
  */
 export const OVERRIDES = {
+  "paper-trial": {
+    "--c-white-bg": "#fdfcfa", // 内容卡
+    "--c-fff": "#fdfcfa",
+    "--c-ffffff": "#fdfcfa",
+    "--c-ffffffed": "#fdfcfaed",
+    "--c-f7f9fa": "#f4f2ee", // 页面底
+    "--c-f0f4f3": "#f4f2ee", // 侧栏底：和页面连成一片，不另起一块
+    "--c-f4f7f6": "#f2eee7", // 表头、控件浅底
+    "--c-f8faf9": "#f8f6f2",
+    "--c-edf3ef": "#f2eee7", // --soft
+    "--c-e5e9e6": "#ece7de", // --line 分隔线
+    "--c-d9e2dd": "#e3d8c6",
+    "--c-24292c": "#26231f", // 正文
+    "--c-748179": "#645c51", // --muted 次要文字
+    "--c-356451": "#9a4a2b", // 品牌色：赭红
+    "--c-315d4b": "#7e3c22",
+    "--c-2a5443": "#82391f", // 主按钮悬停
+  },
   dark: {
     "--c-white-bg": "#1d2325",
     "--c-fff": "#1d2325",
@@ -536,6 +576,7 @@ function generateThemeCss() {
     if (theme.builtin) continue;
     parts.push(themeBlock(theme));
   }
+  parts.push(themeBlock(TRIAL_THEME));
   return parts.join("\n");
 }
 
