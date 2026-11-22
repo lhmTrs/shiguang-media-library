@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from '../background-process.mjs';
+import {spawnMedia as spawn} from '../media-process.mjs';
 import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { DOMParser } from '@xmldom/xmldom';

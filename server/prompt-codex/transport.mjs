@@ -12,11 +12,21 @@ export function connectionFailure(error) {
   const code=Object.hasOwn(messages,error?.code)?error.code:'CODEX_CONNECTION_FAILED';
   return {code,message:messages[code]||'Codex 连接未完成，请检查本机安装、登录和版本，再点击重新连接。'};
 }
-export async function findCodex() {
-  if (process.env.MEDIA_CODEX_BIN) return process.env.MEDIA_CODEX_BIN;
-  const names = process.platform==='win32'?['codex.exe','codex.cmd']:['codex'];
-  const candidates = (process.env.PATH||'').split(path.delimiter).flatMap(dir=>names.map(name=>path.join(dir,name)));
-  if (process.platform==='darwin') candidates.push(
+export async function findCodex({env=process.env,platform=process.platform,arch=process.arch}={}) {
+  if(env.MEDIA_CODEX_BIN){
+    if(platform!=='win32')return env.MEDIA_CODEX_BIN;
+    if(!path.isAbsolute(env.MEDIA_CODEX_BIN)||!/\.exe$/i.test(env.MEDIA_CODEX_BIN))throw codexError('CODEX_NATIVE_BINARY_REQUIRED','请配置原生 Codex 可执行文件，再点击重新连接。');
+    try{const real=await fs.realpath(env.MEDIA_CODEX_BIN);if(/\.exe$/i.test(real)&&(await fs.stat(real)).isFile())return real;}catch{}
+    throw codexError('CODEX_NOT_INSTALLED','未找到 Codex。请先安装并登录 Codex，然后重新连接。');
+  }
+  const names = platform==='win32'?['codex.exe']:['codex'];
+  const directories=(env.PATH||env.Path||'').split(platform==='win32'?';':path.delimiter).map(d=>platform==='win32'?d.replace(/^"(.*)"$/,'$1'):d).filter(d=>platform!=='win32'||path.isAbsolute(d));
+  const candidates = directories.flatMap(dir=>names.map(name=>path.join(dir,name)));
+  if (platform==='win32') {
+    const triple=arch==='x64'?'x86_64-pc-windows-msvc':arch==='arm64'?'aarch64-pc-windows-msvc':null;
+    if(triple)for(const dir of directories)for(const modules of [path.join(dir,'node_modules'),path.resolve(dir,'..')])for(const pkg of ['codex','codex-win32-'+arch])for(const bin of ['bin','codex'])candidates.push(path.join(modules,'@openai',pkg,'vendor',triple,bin,'codex.exe'));
+  }
+  if (platform==='darwin') candidates.push(
     '/Applications/Codex.app/Contents/Resources/codex',
     '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
   );

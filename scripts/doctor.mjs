@@ -1,3 +1,5 @@
+import {findCodex} from '../server/prompt-codex/transport.mjs';
+import {runMedia} from '../server/media-process.mjs';
 import {resolveVideoProbe,safeProbeDiagnostic,probeFailure} from '../server/storyboard-video/probe-tool.mjs';
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -17,9 +19,10 @@ try {
 try { await fs.access(path.join(project, "dist/index.html")); add("网页构建", true, true, "dist/index.html 存在"); }
 catch { add("网页构建", false, true, "请运行 npm run build"); }
 for (const [command, args, label] of [["ffmpeg", ["-version"], "FFmpeg（波形/视频缩略图/代理）"], ["ffprobe", ["-version"], "FFprobe（媒体参数）"], ["exiftool", ["-ver"], "ExifTool（拍摄日期）"]]) {
-  try { const executable=command==='ffprobe'?(await resolveVideoProbe({command:process.env.MEDIA_STORYBOARD_FFPROBE??'ffprobe',explicit:process.env.MEDIA_STORYBOARD_FFPROBE!==undefined})).command:command;await run(executable, args, { timeout: 6000, maxBuffer: 512000 }); add(label, true, false, "可用"); }
+  try { const executable=command==='ffprobe'?(await resolveVideoProbe({command:process.env.MEDIA_STORYBOARD_FFPROBE??'ffprobe',explicit:process.env.MEDIA_STORYBOARD_FFPROBE!==undefined})).command:command;await runMedia(executable, args, { timeout: 6000, maxBuffer: 512000 }); add(label, true, false, "可用"); }
   catch(e) { const fault=command==='ffprobe'?(e.code==='PROBE_UNAVAILABLE'?e:probeFailure(e)):e;add(label, false, false, command==='ffprobe'?fault.message:"未找到或不可执行；对应媒体功能可能不可用，见 START_HERE.md",safeProbeDiagnostic(fault.diagnostic)); }
 }
+if(process.platform==='win32'){try{await findCodex();add('Codex 原生程序',true,false,'已找到原生可执行文件（未连接账号或模型）');}catch{add('Codex 原生程序',false,false,'未找到 codex.exe；请安装本机 Codex 或配置 MEDIA_CODEX_BIN，不使用 .cmd 启动');}}
 if (process.platform === "darwin") {
   try { await run("xcrun", ["--find", "swiftc"], { timeout: 6000 }); add("Mac 废纸篓组件", true, false, "Swift 编译工具可用"); }
   catch { add("Mac 废纸篓组件", false, false, "未安装 Command Line Tools 时删除禁用，其他功能仍可使用"); }

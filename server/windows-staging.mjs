@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn} from './background-process.mjs';
 const stamp=s=>({dev:String(s.dev),ino:String(s.ino),size:s.size,mtimeMs:s.mtimeMs,ctimeMs:s.ctimeMs});
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 export async function allocateWindowsStage(target,prefix){
