@@ -19,6 +19,7 @@ import {
 import type { Asset } from "./main";
 import { QuickTagDialog } from "./QuickTagDialog";
 import { MusicTagQueue } from "./MusicTagQueue";
+import {usePlatformWords} from './platform-words';
 type TagItem = { id: string; name: string; n: number; total?: number };
 type Props = {
   trash: (a: Asset) => void;
@@ -35,6 +36,7 @@ type Props = {
   changed: () => void;
 };
 export function TagManager({ request, preview, stopPreview, changed, edit, revision, trash, canTrash }: Props) {
+  const words = usePlatformWords();
   const [queue, setQueue] = useState(false);
   const [sort, setSort] = useState("revealCount");
   const [tags, setTags] = useState<TagItem[]>([]),
@@ -397,7 +399,7 @@ export function TagManager({ request, preview, stopPreview, changed, edit, revis
             </select>
             <span>{total.toLocaleString()} 项</span>
             <select aria-label="标签素材排序" value={sort} onChange={e => setSort(e.target.value)}>
-              <option value="revealCount">访达次数：从多到少</option>
+              <option value="revealCount">{words.revealCount}：从多到少</option>
               <option value="name">名称排序</option>
               <option value="recent">最近修改</option>
             </select>
@@ -540,7 +542,7 @@ export function TagManager({ request, preview, stopPreview, changed, edit, revis
                   </div>
                 </div>
                 <span className="tag-kind">
-                  <small className="reveal-count">访达 {a.reveal_count || 0} 次</small>
+                  <small className="reveal-count">{words.revealTimes} {a.reveal_count || 0} 次</small>
                   {
                     (
                       {
@@ -562,12 +564,12 @@ export function TagManager({ request, preview, stopPreview, changed, edit, revis
                   >
                     <ListPlus size={17} />
                   </button>
-                  <button className="icon-button" title="在访达中显示"
+                  <button className="icon-button" title={words.reveal}
                     aria-label={"定位素材：" + a.name} disabled={busy}
                     onClick={() => void action(async () => { await request(`/assets/${a.id}/reveal`, {}); })}>
                     <ExternalLink size={15}/>
                   </button>
-                  <button className="icon-button" title="删除素材（移入废纸篓）"
+                  <button className="icon-button" title={`删除素材（移入${words.trash}）`}
                     aria-label={"删除素材：" + a.name} disabled={!a.online || busy || !canTrash}
                     onClick={() => trash(a)}><Trash2 size={16}/></button>
                   {isTag && (

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import {usePlatformWords} from '../platform-words';
 
 export type Crop = { x: number; y: number; zoom: number };
 type Rect = { left: number; top: number; w: number; h: number; base: number };
@@ -28,6 +29,7 @@ function toCrop(iw: number, ih: number, aspect: number, left: number, top: numbe
 }
 
 export function CropBox({ src, alt, crop, aspect, disabled, onChange }: { src: string; alt: string; crop: Crop; aspect: number; disabled?: boolean; onChange: (c: Crop) => void }) {
+  const words = usePlatformWords();
   const host = useRef<HTMLDivElement>(null), drag = useRef<{ mode: 'move' | Handle; px: number; py: number; rect: Rect } | null>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null), [size, setSize] = useState({ w: 0, h: 0 }), [failed, setFailed] = useState(false), [dragging, setDragging] = useState(false);
   useEffect(() => { const el = host.current; if (!el) return; const ro = new ResizeObserver(([e]) => setSize({ w: e.contentRect.width, h: e.contentRect.height })); ro.observe(el); return () => ro.disconnect(); }, []);
@@ -63,7 +65,7 @@ export function CropBox({ src, alt, crop, aspect, disabled, onChange }: { src: s
     else if (e.key === '-') { e.preventDefault(); onChange({ ...crop, zoom: clamp(Math.round((crop.zoom - .1) * 100) / 100, 1, 3) }); }
   }
   return <div className="ca-cropper" ref={host}>
-    {failed ? <span className="ca-preview-unavailable">此格式暂不能预览<br/>可在访达中打开原图</span>
+    {failed ? <span className="ca-preview-unavailable">此格式暂不能预览<br/>{words.openFallback}原图</span>
       : <div className={'ca-cropper-stage' + (dragging ? ' is-dragging' : '')} style={natural && scale ? { width: natural.w * scale, height: natural.h * scale } : undefined}>
         <img src={src} alt={alt} draggable={false} className={natural ? '' : 'is-loading'} onLoad={e => setNatural({ w: e.currentTarget.naturalWidth || 1, h: e.currentTarget.naturalHeight || 1 })} onError={() => setFailed(true)}/>
         {r && natural && <div className={'ca-crop-box' + (disabled ? ' is-disabled' : '')} role="group" tabIndex={disabled ? -1 : 0}

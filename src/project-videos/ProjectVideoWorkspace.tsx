@@ -23,6 +23,7 @@ import {actionPending, capability, revealDispatched, skippedText, useDesktopActi
 import {ContentChangeBanner, ContentChangeDialog, useContentChange} from './ContentChange';
 import {MAX_REJECT, RejectBanner, RejectDialog, rejectNeedsCheck, rejectSubtree, useRejectTask} from './RejectArea';
 import type {FolderView} from './types';
+import {pastedPath, serverIsMac, shortcut, usePlatformWords} from '../platform-words';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
 type PromptDraft = { mode: PromptInput['mode']; id: string; title: string; text: string };
@@ -107,11 +108,11 @@ function PromptFields({ value, prompts, disabled, onChange }: {
 function Player({ name, mediaUrl, thumbnailUrl, available = true }: {
   name: string; mediaUrl: string; thumbnailUrl?: string | null; available?: boolean;
 }) {
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState(false), words = usePlatformWords();
   return <div className="pv-player">
     {available && mediaUrl && !failed
       ? <video key={mediaUrl} src={mediaUrl} poster={thumbnailUrl || undefined} controls playsInline preload="metadata" aria-label={`预览：${name}`} onError={() => setFailed(true)}/>
-      : <div className="pv-player-empty"><Film size={36}/><p>{failed ? '浏览器无法播放此文件，可在访达中打开查看。' : '此视频当前无法在页面中预览。'}</p></div>}
+      : <div className="pv-player-empty"><Film size={36}/><p>{failed ? `浏览器无法播放此文件，${words.openFallback}查看。` : '此视频当前无法在页面中预览。'}</p></div>}
   </div>;
 }
 
@@ -146,6 +147,7 @@ export function ProjectVideoWorkspace(props: ProjectVideoWorkspaceProps) {
 function ProjectVideoSession({ active, projectId, projects, request, onStoryboard, importOwner, acquireImport, releaseImport, focusVideo, namePrefixFor }: ProjectVideoWorkspaceProps & {
   importOwner: string; acquireImport: (id: string) => boolean; releaseImport: (id: string) => void;
 }) {
+  const words = usePlatformWords(), fm = words.fileManager;
   const [collection, setCollection] = useState<ProjectVideoCollection | null>(null);
   // Names renamed by the intake rule start with this episode's 「剧名SxxEyy_」; cards show the rest, hover keeps the full name.
   // Only a title that is still the file name is shortened: a title typed by hand is shown exactly as typed.
@@ -494,7 +496,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         putTask({ kind: 'relink', requestId, queryId: requestId, receipt: null, uploadAttempted: false, error: '', api: frozenAPI(), folderId: 'root', folderName: '项目根目录' });
         try {
           const receipt = await api<Receipt>(`/videos/${encodeURIComponent(action.video.id)}/relink`, {
-            requestId, expectedRevision: action.video.revision, path: action.path.trim(),
+            requestId, expectedRevision: action.video.revision, path: pastedPath(action.path),
           }, 'POST');
           receive(receipt); setConfirmation(null);
         } catch (e) { taskError(e); }
@@ -723,8 +725,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   }
   function revealSelection(ids: string[]) {
     if (!ids.length) return;
-    if (ids.length === 1) { void run('正在访达中显示…', async () => { await api(`/videos/${encodeURIComponent(ids[0])}/reveal`, {}, 'POST'); }); return; }
-    if (!revealCap.available) { setError(`不能批量在访达中显示：${revealCap.reason}`); return; }
+    if (ids.length === 1) { void run(`正在${fm}中显示…`, async () => { await api(`/videos/${encodeURIComponent(ids[0])}/reveal`, {}, 'POST'); }); return; }
+    if (!revealCap.available) { setError(`不能批量${words.reveal}：${revealCap.reason}`); return; }
     if (ids.length > maxSelection) { setError(`一次最多定位 ${maxSelection} 个视频，当前已选 ${ids.length} 个。`); return; }
     if (!desktop.settled) { setError('上一笔桌面操作还没有结束或结果待核对，请先查看它的结果。'); return; }
     // 用户要求：所选视频能在同一个访达窗口里打开时，核对通过后直接打开，不再弹确认；分散在多个目录时才弹窗确认。
@@ -784,7 +786,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const desktopPending = actionPending(desktopAction);
   // 进行中或结果待核对时，不允许开始新的桌面操作（只能先查询原请求或确认收起）。
   const desktopBlocked = desktopPending || !!desktopAction?.unknown;
-  const clipboardTips = '能否粘贴由剪辑软件决定。在访达中请用 ⌘V 粘贴（⌘⌥V 会把原文件移出素材库）；用 Premiere 时建议在 首选项 → 媒体 中关闭“导入时将 XMP ID 写入文件”。';
+  // 访达粘贴说明（⌘V / ⌘⌥V）只在服务端是 Mac 时给；别的系统没有这一步，只留剪辑软件的说明。
+  const clipboardTips = (serverIsMac() ? '能否粘贴由剪辑软件决定。在访达中请用 ⌘V 粘贴（⌘⌥V 会把原文件移出素材库）；' : '能否粘贴由剪辑软件决定。') + '用 Premiere 时建议在 首选项 → 媒体 中关闭“导入时将 XMP ID 写入文件”。';
   const taskTone = !task ? '' : task.error || task.receipt?.status === 'unknown' || task.receipt?.status === 'duplicate' ? 'warn' : task.receipt?.status === 'failed' ? 'bad' : '';
   return <div className="pv-session" hidden={!active} ref={sessionRef}>
     <div className="pv-content" aria-hidden={modalOpen || undefined}>
@@ -821,7 +824,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               {dirBlocked && <p className="pv-menu-note">该文件夹或其子目录正在接收视频，等原导入结束后再操作。</p>}
               <hr/>
             </>}
-            {menuItem('刷新当前目录', () => void run('正在刷新当前目录…', async () => { await api('/folders/refresh', {folderId}, 'POST'); void refresh(); }), {disabled: locked || loading || folderId === 'all', hint: '重新认领访达中改过名的目录和文件'})}
+            {menuItem('刷新当前目录', () => void run('正在刷新当前目录…', async () => { await api('/folders/refresh', {folderId}, 'POST'); void refresh(); }), {disabled: locked || loading || folderId === 'all', hint: `重新认领${fm}中改过名的目录和文件`})}
           </>, 'left')}
         </nav>
       </div>
@@ -843,14 +846,14 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         </div>}
         {desktopAction && !(revealConfirm && desktopAction.kind !== 'clipboard') && <div className="pv-banner pv-desktop-banner" data-tone={desktopAction.unknown || desktopReceipt?.status === 'partial' || desktopReceipt?.status === 'unknown' ? 'warn' : desktopAction.error || desktopReceipt?.status === 'failed' ? 'bad' : undefined} role="status" aria-live="polite">
           {desktopPending ? <><RefreshCw size={14} className="pv-spin"/><span className="pv-banner-text">{desktopAction.kind === 'clipboard' ? '正在核验并复制' : '正在核对'}所选 {desktopAction.ids.length} 个视频{desktopReceipt?.total ? `（${desktopReceipt.processed || 0} / ${desktopReceipt.total}）` : '…'}</span>{!!desktopReceipt?.total && <progress value={desktopReceipt.processed || 0} max={desktopReceipt.total}/>}</>
-          : desktopAction.unknown ? <><AlertTriangle size={15}/><span className="pv-banner-text">{desktopAction.kind === 'clipboard' ? '复制' : '在访达中显示'}结果待核对。{desktopAction.error || desktopReceipt?.error || ''} <code>{desktopAction.requestId}</code></span><button type="button" onClick={() => void desktop.query()}><RefreshCw size={13}/>查询原请求</button><button type="button" onClick={() => desktop.clear(true)}>已核对，收起</button></>
+          : desktopAction.unknown ? <><AlertTriangle size={15}/><span className="pv-banner-text">{desktopAction.kind === 'clipboard' ? '复制' : words.reveal}结果待核对。{desktopAction.error || desktopReceipt?.error || ''} <code>{desktopAction.requestId}</code></span><button type="button" onClick={() => void desktop.query()}><RefreshCw size={13}/>查询原请求</button><button type="button" onClick={() => desktop.clear(true)}>已核对，收起</button></>
           : desktopAction.error ? <><AlertCircle size={15}/><span className="pv-banner-text">{desktopAction.code === 'CLIPBOARD_CHANGED' ? '剪贴板在核验期间被其他内容改变，没有覆盖。需要时请再点一次复制。' : desktopAction.error}</span><button type="button" className="pv-banner-close" aria-label="收起提示" onClick={() => desktop.clear()}><X size={13}/></button></>
           : desktopReceipt && <><Check size={15}/><span className="pv-banner-text">
               {desktopAction.kind === 'clipboard'
                 ? desktopReceipt.code === 'CLIPBOARD_CHANGED' ? '剪贴板在核验期间被其他内容改变，没有覆盖。需要时请再点一次复制。'
                   : desktopReceipt.count ? `已将 ${desktopReceipt.count} 个视频文件复制到系统剪贴板。` : `没有复制：${desktopReceipt.error || '所选视频都不能复制'}。`
-                : desktopAction.kind === 'reveal-preview' ? `已核对 ${desktopReceipt.eligible?.length ?? 0} 个文件，尚未在访达中显示。`
-                : revealDispatched(desktopReceipt) ? `已请求在访达显示 ${desktopReceipt.count ?? desktopReceipt.requested?.length ?? 0} 个文件${desktopReceipt.folderCount ? `（${desktopReceipt.folderCount} 个目录）` : ''}。` : '没有打开访达：所选文件都不能定位。'}
+                : desktopAction.kind === 'reveal-preview' ? `已核对 ${desktopReceipt.eligible?.length ?? 0} 个文件，尚未${words.reveal}。`
+                : revealDispatched(desktopReceipt) ? `已请求在${fm}显示 ${desktopReceipt.count ?? desktopReceipt.requested?.length ?? 0} 个文件${desktopReceipt.folderCount ? `（${desktopReceipt.folderCount} 个目录）` : ''}。` : `没有打开${fm}：所选文件都不能定位。`}
               {!!desktopReceipt.skipped?.length && ` 跳过 ${desktopReceipt.skipped.length} 个。`}
               {desktopAction.kind === 'clipboard' && !!desktopReceipt.copied?.some(item => item.managed === false) && ' 其中包含原位置的旧视频文件。'}</span>
               {desktopAction.kind === 'reveal-preview' && !!desktopReceipt.eligible?.length && !!desktopReceipt.previewToken && <button type="button" onClick={() => setRevealConfirm(true)}>继续确认…</button>}
@@ -885,7 +888,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               onContextMenu={e => { e.preventDefault(); if (!picked.includes(video.id)) { anchorRef.current = video.id; applyPick([video.id]); } openContext(e.clientX, e.clientY); }}
               onKeyDown={e => {
                 if ((e.key === 'ContextMenu' || e.key === 'F10' && e.shiftKey)) { e.preventDefault(); if (!picked.includes(video.id)) { anchorRef.current = video.id; applyPick([video.id]); } const r = e.currentTarget.getBoundingClientRect(); openContext(r.left + 24, r.top + 24); return; }
-                if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); if (!e.repeat) { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); } } }} aria-haspopup="dialog" aria-keyshortcuts="Enter" title="单击查看资料；⌘ 单击多选、⇧ 单击连选、空白处拖动框选；右键可复制或在访达中显示；双击或按 Enter 查看原视频">
+                if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); if (!e.repeat) { anchorRef.current = video.id; applyPick([video.id]); setExpandedId(video.id); } } }} aria-haspopup="dialog" aria-keyshortcuts="Enter" title={`单击查看资料；${shortcut('mod')} 单击多选、${shortcut('shift')} 单击连选、空白处拖动框选；右键可复制或${words.reveal}；双击或按 Enter 查看原视频`}>
               <span className="pv-thumbnail">{(video.thumbnailUrl || video.thumbUrl) ? <img src={video.thumbnailUrl || video.thumbUrl} alt="" loading="lazy" onError={e => { e.currentTarget.hidden = true; }}/> : null}<Film size={30} aria-hidden="true"/>
                 <span className={`pv-adoption-badge${video.adoptedShots?.length ? ' is-adopted' : ''}`}>{adoptionBadge(video.adoptedShots)}</span><span className="pv-duration">{duration(video.durationMs)}</span></span>
               <span className="pv-card-body"><strong title={video.name || video.fileName}>{shownName(video)}</strong>
@@ -896,8 +899,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
           </section>)}
           {marquee && <div className="pv-marquee" aria-hidden="true" style={{left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h}}/>}
           {multi && <div className="pv-selection-bar" role="toolbar" aria-label="已选视频操作"><strong>已选 {picked.length} 个视频</strong>
-            <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} title={copyDisabledReason || '复制到系统剪贴板（⌘C）'} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制</button>
-            <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} title={revealDisabledReason || '在访达中定位这些文件'} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>在访达中显示</button>
+            <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} title={copyDisabledReason || `复制到系统剪贴板（${shortcut('mod', 'C')}）`} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制</button>
+            <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} title={revealDisabledReason || `在${fm}中定位这些文件`} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>{words.reveal}</button>
             {folderId !== 'reject' && <button type="button" disabled={locked || readOnly || protectionBlocked} title={protectionHint ?? (operationPending ? moveBusyNote : '移动到项目内的其他文件夹，会先核对影响；拖动其中任一个也会带着整组一起拖')} onClick={() => moveVideosTo(pickedOrdered)}><FolderInput size={14}/>移动到…</button>}
             {folderId !== 'reject' && <button type="button" disabled={rejectBlocked} title={`移入废片收纳处（一次最多 ${MAX_REJECT} 个），会先核对影响`} onClick={() => markReject(pickedOrdered)}><Archive size={14}/>标记为废片</button>}
             <button type="button" onClick={() => applyPick([])}>取消选择</button>
@@ -918,7 +921,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             <ul className="pv-picked-list">{pickedVideos.slice(0, 12).map(v => <li key={v.id}><span title={v.name || v.fileName}>{shownName(v)}</span><small>{cardFolder(v)}</small></li>)}{pickedVideos.length > 12 && <li className="pv-muted">另外 {pickedVideos.length - 12} 个…</li>}</ul>
             <div className="pv-actions">
               <button type="button" className="pv-primary" disabled={!!copyDisabledReason || desktopBlocked} onClick={() => copySelection(pickedOrdered)}><Copy size={14}/>复制到剪贴板</button>
-              <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>在访达中显示</button>
+              <button type="button" disabled={!!revealDisabledReason || desktopBlocked || locked} onClick={() => revealSelection(pickedOrdered)}><FolderOpen size={14}/>{words.reveal}</button>
             </div>
             {(copyDisabledReason || revealDisabledReason) && <p className="pv-muted">{copyDisabledReason || revealDisabledReason}</p>}
             <p className="pv-muted">复制的是素材库里的原文件，不另外生成副本。{clipboardTips}</p>
@@ -931,7 +934,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               {selected.inRejectArea
                 ? menuItem('移回…', () => { setExpandedId(''); setFolderAction({kind: 'move-video', sourceId: selected.id, destinationFolderId: 'root', label: selected.name}); }, {disabled: rejectBlocked || !selected.managed, hint: '不会自动恢复采用'})
                 : menuItem('标记为废片…', () => markReject([selected.id]), {disabled: rejectBlocked || !selected.managed, hint: protectionHint ?? (selected.adoptedShots?.length ? '会先确认解除采用' : '移入废片收纳处')})}
-              {menuItem('复制到剪贴板', () => copySelection([selected.id]), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : '⌘C'})}
+              {menuItem('复制到剪贴板', () => copySelection([selected.id]), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : shortcut('mod', 'C')})}
               {['changed', 'untrusted'].includes(selected.status) && menuItem('处理内容变化…', () => openContentChange(selected), {disabled: locked || unresolved || protectionBlocked, hint: protectionHint})}
               {menuItem('重新定位…', () => openRelink(selected), {disabled: locked || unresolved})}
               <hr/>
@@ -940,13 +943,13 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
             <button type="button" className="pv-icon-button pv-ghost" aria-label="关闭详情" onClick={() => setSelectedId('')}><X size={17}/></button>
           </header>
           <div className="pv-detail-meta"><span className={`pv-pill${selected.adoptedShots?.length ? ' is-adopted' : ''}`}>{adoptionBadge(selected.adoptedShots)}</span><span className="pv-pill" data-status={selected.status}>{selected.verification?.metadataChanged && selected.status === 'available' ? '仅元数据变化，内容一致' : statusLabel[selected.status]}</span>{!selected.managed && <span className="pv-pill" data-tone="warn">旧视频 · 待升级</span>}
-            <span className="pv-meta-actions"><button type="button" className="pv-view-button" disabled={locked} title="在访达中定位这个文件，可直接拖进剪辑软件" onClick={() => revealSelection([selected.id])}><FolderOpen size={13}/>在访达中显示</button>
+            <span className="pv-meta-actions"><button type="button" className="pv-view-button" disabled={locked} title={`在${fm}中定位这个文件，可直接拖进剪辑软件`} onClick={() => revealSelection([selected.id])}><FolderOpen size={13}/>{words.reveal}</button>
             <button type="button" className="pv-view-button" title="也可以双击卡片或按 Enter" onClick={() => setExpandedId(selected.id)}><Play size={13}/>查看原视频</button></span></div>
           <div className="pv-detail-scroll">
             {draft.expectedRevision !== selected.revision && <div className="pv-callout" data-tone="bad" role="alert"><strong>资料已被其他操作更新，草稿仍保留。</strong><span>请核对最新资料后重新编辑保存；当前草稿不能直接覆盖。</span><button type="button" onClick={() => discardDraft(selected.id)}>放弃草稿，使用当前资料</button></div>}
             {['missing', 'changed', 'untrusted'].includes(selected.status) && <div className="pv-callout" data-tone={selected.status === 'missing' ? 'bad' : 'warn'}><strong>{selected.status === 'missing' ? '原视频文件缺失' : selected.verification?.state === 'content_changed' ? '视频内容已发生变化' : '文件状态待核验'}</strong><span>{selected.status === 'missing' ? '指定同一内容文件的新位置，后台核验一致后复制回项目托管位置；原采用关系保持。' : selected.verification?.state === 'content_changed' ? '位置和名称没变，但画面或声音与登记时不同。可以预览当前内容，再决定继续使用还是不再使用；在你决定前，原采用关系保持。' : '文件状态与登记时不一致，需要核验后预览。这不一定代表内容改变，原采用关系保持。可以先核对并预览当前内容。'}</span>
               <span className="pv-callout-actions">{selected.status !== 'missing' && <button type="button" disabled={locked || unresolved || protectionBlocked} title={protectionHint} onClick={() => openContentChange(selected)}>处理内容变化…</button>}<button type="button" ref={relinkButton} disabled={locked || unresolved} onClick={() => openRelink(selected)}>重新定位…</button></span></div>}
-            {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，可在访达中打开。采用不受影响。</span></div>}
+            {selected.status === 'unsupported' && <div className="pv-callout" data-tone="warn"><span>浏览器不支持此视频格式（{selected.codec || '未知编码'}）的预览，{words.openFallback}。采用不受影响。</span></div>}
             {!selected.managed && <div className="pv-callout" data-tone="warn"><span>旧视频保留既有采用。建议先升级为项目托管副本，再右键选「对应到分镜镜头…」。</span>{needsUpgrade && <button type="button" disabled={upgradeBlocked} onClick={() => void previewUpgrade()}>核对并升级…</button>}</div>}
             <form id={formId} className="pv-detail-form" onSubmit={e => { e.preventDefault(); if (!locked) void saveVideo(selected, draft); }}>
               <fieldset disabled={locked}><legend className="pv-sr-only">编辑视频资料</legend>
@@ -968,8 +971,8 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     </div>
     {openMenu === 'ctx' && ctxPos && actionTargets.length > 0 && <div data-pv-menu-wrap="ctx" className="pv-context-host" style={{left: ctxPos.x, top: ctxPos.y}}>
       <div className="pv-menu pv-context-menu" role="menu" aria-label="视频操作" data-pv-menu="ctx" onKeyDown={e => menuKeys(e, 'ctx')}>
-        {menuItem(`复制 ${actionTargets.length} 个视频文件`, () => copySelection(actionTargets), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : '⌘C'})}
-        {menuItem(actionTargets.length > 1 ? `在访达中显示 ${actionTargets.length} 个` : '在访达中显示', () => revealSelection(actionTargets), {disabled: !!revealDisabledReason || desktopBlocked || locked})}
+        {menuItem(`复制 ${actionTargets.length} 个视频文件`, () => copySelection(actionTargets), {disabled: !!copyDisabledReason || desktopBlocked, hint: copyDisabledReason ? '不可用' : shortcut('mod', 'C')})}
+        {menuItem(actionTargets.length > 1 ? `${words.reveal} ${actionTargets.length} 个` : words.reveal, () => revealSelection(actionTargets), {disabled: !!revealDisabledReason || desktopBlocked || locked})}
         {actionTargets.length === 1 && <>
           <hr/>
           {menuItem('查看原视频', () => setExpandedId(actionTargets[0]))}
@@ -1032,26 +1035,26 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
       </>}
       {task?.kind === 'upgrade' && terminal(task.receipt) && <ModalActions><button type="button" onClick={() => setUpgradeOpen(false)}>返回视频列表</button>{needsUpgrade && <button type="button" className="pv-primary" onClick={() => { putTask(null); void previewUpgrade(); }}>重新核对剩余旧视频</button>}</ModalActions>}
     </Modal>}
-    {active && revealConfirm && <Modal title="在访达中显示所选视频" locked={false} onClose={() => { const a = desktopAction; if (a?.kind === 'reveal-preview' && !actionPending(a) && !a.unknown) desktop.clear(); setRevealConfirm(false); }}>
+    {active && revealConfirm && <Modal title={`${words.reveal}所选视频`} locked={false} onClose={() => { const a = desktopAction; if (a?.kind === 'reveal-preview' && !actionPending(a) && !a.unknown) desktop.clear(); setRevealConfirm(false); }}>
       {(() => {
         const a = desktopAction, r = desktopReceipt;
         if (!a) return <p className="pv-muted">没有进行中的核对。</p>;
-        if (actionPending(a)) return <div className="pv-task" role="status"><strong>{a.kind === 'reveal' ? '正在请求访达显示…' : `正在核对所选 ${a.ids.length} 个视频…`}</strong>{!!r?.total && <progress value={r.processed || 0} max={r.total}/>}<p className="pv-muted">关闭窗口不会取消，结果会显示在页面顶部。</p></div>;
+        if (actionPending(a)) return <div className="pv-task" role="status"><strong>{a.kind === 'reveal' ? `正在请求${fm}显示…` : `正在核对所选 ${a.ids.length} 个视频…`}</strong>{!!r?.total && <progress value={r.processed || 0} max={r.total}/>}<p className="pv-muted">关闭窗口不会取消，结果会显示在页面顶部。</p></div>;
         if (a.unknown) return <div className="pv-task" role="status"><strong>结果待核对</strong><p>{a.error || r?.error}</p><code>{a.requestId}</code><ModalActions><button type="button" onClick={() => { desktop.clear(true); setRevealConfirm(false); }}>已核对，关闭</button><button type="button" className="pv-primary" onClick={() => void desktop.query()}>查询原请求</button></ModalActions></div>;
-        if (a.error) return <><p className="pv-error" role="alert">{a.code === 'PREVIEW_STALE' ? '所选文件在核对之后发生了变化，没有打开访达。请重新核对。' : a.error}</p>
+        if (a.error) return <><p className="pv-error" role="alert">{a.code === 'PREVIEW_STALE' ? `所选文件在核对之后发生了变化，没有打开${fm}。请重新核对。` : a.error}</p>
           <ModalActions><button type="button" onClick={() => { desktop.clear(); setRevealConfirm(false); }}>关闭</button>{a.kind === 'reveal' || a.code === 'PREVIEW_STALE' ? <button type="button" className="pv-primary" onClick={() => { const ids = a.ids; desktop.clear(); void desktop.start('reveal-preview', ids); }}>重新核对</button> : null}</ModalActions></>;
         if (a.kind === 'reveal-preview' && r) {
           const eligible = r.eligible || [];
           return <>
-            {eligible.length ? <p>将在 <strong>{r.folderCount ?? r.folders?.length ?? 1}</strong> 个目录中定位 <strong>{eligible.length}</strong> 个文件。</p> : <p className="pv-error">所选视频都不能在访达中显示。</p>}
+            {eligible.length ? <p>将在 <strong>{r.folderCount ?? r.folders?.length ?? 1}</strong> 个目录中定位 <strong>{eligible.length}</strong> 个文件。</p> : <p className="pv-error">所选视频都不能{words.reveal}。</p>}
             {!!r.folders?.length && <ul className="pv-picked-list">{r.folders.map(f => <li key={f.key}><span>{f.label}</span><small>{f.count} 个</small></li>)}</ul>}
             {!!r.skipped?.length && <details open><summary>跳过 {r.skipped.length} 个</summary><ul>{skippedText(r.skipped).map(line => <li key={line}>{line}</li>)}</ul></details>}
-            <p className="pv-muted">访达会尽量在这些目录中选中文件；能否打开新窗口由访达决定。</p>
+            <p className="pv-muted">{fm}会尽量在这些目录中选中文件；能否打开新窗口由{fm}决定。</p>
             <ModalActions><button type="button" onClick={() => { desktop.clear(); setRevealConfirm(false); }}>取消</button>
-              <button type="button" className="pv-primary" disabled={!eligible.length || !r.previewToken} onClick={() => { const ids = a.ids, token = r.previewToken; desktop.clear(); void desktop.start('reveal', ids, {previewToken: token}); }}><FolderOpen size={15}/>在访达中定位 {eligible.length} 个文件</button></ModalActions>
+              <button type="button" className="pv-primary" disabled={!eligible.length || !r.previewToken} onClick={() => { const ids = a.ids, token = r.previewToken; desktop.clear(); void desktop.start('reveal', ids, {previewToken: token}); }}><FolderOpen size={15}/>在{fm}中定位 {eligible.length} 个文件</button></ModalActions>
           </>;
         }
-        if (a.kind === 'reveal' && r) return <>{revealDispatched(r) ? <p>已请求在访达显示 {r.count ?? r.requested?.length ?? 0} 个文件{r.folderCount ? `（${r.folderCount} 个目录）` : ''}。</p> : <p className="pv-error" role="alert">没有打开访达：所选文件都不能定位。</p>}{!!r.skipped?.length && <details><summary>跳过 {r.skipped.length} 个</summary><ul>{skippedText(r.skipped).map(line => <li key={line}>{line}</li>)}</ul></details>}
+        if (a.kind === 'reveal' && r) return <>{revealDispatched(r) ? <p>已请求在{fm}显示 {r.count ?? r.requested?.length ?? 0} 个文件{r.folderCount ? `（${r.folderCount} 个目录）` : ''}。</p> : <p className="pv-error" role="alert">没有打开{fm}：所选文件都不能定位。</p>}{!!r.skipped?.length && <details><summary>跳过 {r.skipped.length} 个</summary><ul>{skippedText(r.skipped).map(line => <li key={line}>{line}</li>)}</ul></details>}
           <ModalActions><button type="button" className="pv-primary" onClick={() => { desktop.clear(); setRevealConfirm(false); }}>完成</button></ModalActions></>;
         return null;
       })()}
@@ -1073,7 +1076,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         <p className="pv-path">记录位置：{confirmation.video.path}</p>
         <label className="pv-field">同内容视频文件的绝对路径<input value={confirmation.path} disabled={locked || task?.kind === 'relink' && unresolved} placeholder="粘贴文件的完整路径" onChange={e => setConfirmation({ ...confirmation, path: e.target.value })}/></label>
         {task?.kind === 'relink' && taskPanel(task)}
-        <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !confirmation.path.trim() || task?.kind === 'relink' && unresolved} onClick={() => void confirmAction()}>确认核验并复制</button></ModalActions>
+        <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !pastedPath(confirmation.path) || task?.kind === 'relink' && unresolved} onClick={() => void confirmAction()}>确认核验并复制</button></ModalActions>
       </>}
     </Modal>}
   </div>;

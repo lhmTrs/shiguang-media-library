@@ -5,6 +5,7 @@ import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {BatchDetails} from './BatchDetails';
 import {INTAKE_API, batchLabel, encoded, errorMessage, knownRefusal, type IntakeBatch, type IntakeItem, type IntakeRequest, type IntakeStatus, type IntakeView, type InstallJob, type ResolveInput} from './types';
 import './file-intake.css';
+import {useServerPlatform} from '../platform-words';
 
 type Uncertain = {itemId: string; status: IntakeItem['status']};
 // 访达入口安装反馈（INSTALL-FEEDBACK）：状态显示在按钮正下方；>3 秒展开真实阶段和已用时间；>2 分钟提示可能卡在编译器。
@@ -192,6 +193,8 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     selectionRef.current = rows.current.find(b => !!b.acknowledged === value)?.id || ''; setSelection(selectionRef.current);
   }
   const upToDate = !!status?.supported && !!status.installed && !status.upgradeNeeded;
+  // 访达右键收纳只有 Mac 有：服务端不是 Mac、且能力字段没说支持时，安装区和空白页的教程都不显示（Mac 上照旧）。
+  const intakeHidden = useServerPlatform() !== 'darwin' && !status?.supported;
   const summaryActive = status?.activeCount ?? 0, summaryAttention = status?.needsAttention ?? 0;
   useEffect(() => { onSummary?.({active: summaryActive, attention: summaryAttention}); }, [onSummary, summaryActive, summaryAttention]);
   return <div className="fi-root fi-entry">
@@ -205,16 +208,16 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
         <div className="fi-task-tabs" role="group" aria-label="文件任务分类"><button aria-pressed={!history} onClick={() => switchHistory(false)}>最近任务</button><button aria-pressed={history} onClick={() => switchHistory(true)}>已处理</button></div>
         <div className="fi-task-toolbar"><label>最近批次<select aria-label="选择文件收纳批次" value={selected?.id || ''} onChange={e => {selectionRef.current = e.target.value; setSelection(e.target.value);}}><option value="" disabled>暂无收纳批次</option>{shown.map(b => <option key={b.id} value={b.id}>{b.projectName} / {b.folderName || '根目录'} · {batchLabel[b.status]} · {b.items.length} 项</option>)}</select></label><button disabled={reading || !!busy} aria-label="刷新文件任务" onClick={() => void readBatches()}><RefreshCw size={15}/></button></div>
         {busy && <p className="fi-muted" role="status">{busy}…</p>}
-        {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3><p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择素材，右键“收纳素材到拾光”，确认目标后在这里查看。'}</p></div>}
+        {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3>{(history || !intakeHidden) && <p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择素材，右键“收纳素材到拾光”，确认目标后在这里查看。'}</p>}</div>}
         {selected?.canAcknowledge && <div className="fi-acknowledge"><span>{selected.acknowledged ? '原始结果保留，可随时恢复。' : '已知结果可收起，不再计入待处理；不会重试或移除文件。'}</span><button disabled={!!busy || !!uncertain[selected.id]} onClick={() => void mutate(selected, null, '/acknowledge', {acknowledged: !selected.acknowledged, resultKey: selected.resultKey}, selected.acknowledged ? '正在恢复待处理' : '正在标记已处理')}>{selected.acknowledged ? '恢复待处理' : '标记已处理'}</button></div>}
         {selected && <BatchDetails batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
-        <section className="fi-install"><h3>访达右键入口</h3><p className={upToDate ? 'fi-install-latest' : undefined}>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.upgradeNeeded ? '右键入口有新版本，点下面升级。升级后重新打开收纳窗口生效。' : status.installed ? <><Check size={14} aria-hidden="true"/>已是最新版</> : '安装后可从访达右键收纳图片、视频、音乐和音效。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p>
+        {!intakeHidden && <section className="fi-install"><h3>访达右键入口</h3><p className={upToDate ? 'fi-install-latest' : undefined}>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.upgradeNeeded ? '右键入口有新版本，点下面升级。升级后重新打开收纳窗口生效。' : status.installed ? <><Check size={14} aria-hidden="true"/>已是最新版</> : '安装后可从访达右键收纳图片、视频、音乐和音效。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p>
           {/* Up to date: nothing to press; reinstall stays as a quiet repair link (menu gone after a system change). */}
           {upToDate && !installing && !starting && !verifying && job?.stage !== 'failed'
             ? <p className="fi-install-help">菜单不出现？先<button type="button" className="fi-link" onClick={() => void openSettings()}>打开系统设置</button>启用「收纳素材到拾光」，仍不行再<button type="button" className="fi-link fi-reinstall" disabled={!!statusError} onClick={() => void install()}>重新安装</button></p>
             : <button className={status?.upgradeNeeded || !status?.installed ? 'fi-primary' : undefined} disabled={!status?.supported || !!statusError || installing || starting || verifying} aria-busy={installing || starting || verifying} onClick={() => void install()}>{installing || starting || verifying ? <><span className="fi-spinner"/>正在安装…</> : <><Download size={14}/>{job?.stage === 'failed' ? '重试安装' : status?.upgradeNeeded ? '升级访达入口' : status?.installed ? '重新安装访达入口' : '安装访达入口'}</>}</button>}
           <InstallState job={job} starting={starting} verifying={verifying} error={installError} now={now} settings={settings} onSettings={() => void openSettings()}/>
-        </section>
+        </section>}
       </div>
     </aside>, document.body)}
   </div>;

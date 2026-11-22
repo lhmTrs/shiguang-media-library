@@ -1,6 +1,7 @@
 import {useFeedbackToast} from './global-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, CheckCircle2, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react";
+import {usePlatformWords} from './platform-words';
 
 type Request = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
 type Root = { id: string; name: string; path: string; management_order: number; managed_added_ms: number | null; retired: number };
@@ -12,6 +13,7 @@ export function DuplicateCleanupDialog({ scope, reportId, request, close, change
   scope: string; reportId: string; request: Request; close: () => void; changed: (ids: string[]) => void;
   stopAudio?: () => void; runTask?: (label: string, fn: () => Promise<void>) => Promise<void>;
 }) {
+  const words = usePlatformWords();
   const [preview, setPreview] = useState<Preview | null>(null), [roots, setRoots] = useState<Root[]>([]);
   const [busy, setBusy] = useState(true), [error, setError] = useState(""), [result, setResult] = useState<Result | null>(null);
   useFeedbackToast(error, {source: '素材管理'});
@@ -79,12 +81,12 @@ export function DuplicateCleanupDialog({ scope, reportId, request, close, change
         </details>}
         {preview && !result && <>
           <div className="duplicate-cleanup-total"><strong>{preview.removeCount} 份副本</strong><span>{preview.groups.length} 组 · {(preview.bytes / 1e6).toFixed(2)} MB</span></div>
-          <p className="duplicate-cleanup-warning">仅移入废纸篓，每组保留一份。剪辑工程引用的旧路径可能失效；项目引用、独立标签或备注冲突的组会跳过。</p>
+          <p className="duplicate-cleanup-warning">仅移入{words.trash}，每组保留一份。剪辑工程引用的旧路径可能失效；项目引用、独立标签或备注冲突的组会跳过。</p>
           {preview.requiresOrderConfirmation && <label className="duplicate-order-ack"><input type="checkbox" disabled={busy || dirty} checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)}/>我已确认上述素材库保留顺序</label>}
-          <div className="duplicate-cleanup-groups">{preview.groups.slice(0, visible).map(g => <details key={g.sha256}><summary><CheckCircle2 size={15}/><strong>保留 {g.keep.rootName} / {g.keep.name}</strong><span>清理 {g.remove.length} 份</span></summary><div className="duplicate-keep"><b>保留 · {g.keep.rootName}</b><p>{g.keep.path}</p></div>{g.remove.map(f => <div key={f.id} className="duplicate-remove"><b>移入废纸篓 · {f.rootName}</b><p>{f.path}</p></div>)}</details>)}</div>
+          <div className="duplicate-cleanup-groups">{preview.groups.slice(0, visible).map(g => <details key={g.sha256}><summary><CheckCircle2 size={15}/><strong>保留 {g.keep.rootName} / {g.keep.name}</strong><span>清理 {g.remove.length} 份</span></summary><div className="duplicate-keep"><b>保留 · {g.keep.rootName}</b><p>{g.keep.path}</p></div>{g.remove.map(f => <div key={f.id} className="duplicate-remove"><b>移入{words.trash} · {f.rootName}</b><p>{f.path}</p></div>)}</details>)}</div>
           {preview.groups.length > visible && <button className="text-button" onClick={() => setVisible(n => n + 20)}>显示更多（剩余 {preview.groups.length - visible} 组）</button>}
         </>}
-        {result && <p className="duplicate-cleanup-total" role="status"><CheckCircle2 size={20}/>已移入废纸篓 {result.removed} 份，跳过 {result.skipped.length} 组</p>}
+        {result && <p className="duplicate-cleanup-total" role="status"><CheckCircle2 size={20}/>已移入{words.trash} {result.removed} 份，跳过 {result.skipped.length} 组</p>}
         {!!(result?.skipped.length || preview?.skipped.length) && <details className="duplicate-cleanup-skipped"><summary>跳过的重复组 · {(result?.skipped || preview?.skipped || []).length}</summary>{(result?.skipped || preview?.skipped || []).map((item, i) => <p key={item.sha256 + i}><strong>{item.name}</strong><small>{item.reason}</small></p>)}</details>}
         {result?.warnings.map(w => <p className="banner" key={w}>{w}</p>)}
         {error && <p className="banner error" role="alert">{error}</p>}

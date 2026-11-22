@@ -4,6 +4,7 @@ import { Modal, ModalActions } from './Modal';
 import { actionPending, useDesktopAction, type DesktopReceipt } from './desktop-actions';
 import { adoptedShotsText, unbindConfirmation } from './shot-binding-model.mjs';
 import type { AdoptedShot, ProjectVideo, ProjectVideoCollection, ProjectVideoRequest } from './types';
+import {platformWords, usePlatformWords} from '../platform-words';
 
 /*
  * 合同 D（#52）：视频内容确实变化时，由用户预览后决定“继续使用”或“不再使用”。
@@ -22,8 +23,8 @@ const size = (n?: number) => !n ? '未知' : n < 1024 * 1024 ? `${Math.round(n /
 const shots = (list?: AdoptedShot[]) => adoptedShotsText(list || []);
 // 按证据表述文件处理结果：kept 只说明本次没有移动文件，不断言文件仍在原位置
 const fileText = (f?: DesktopReceipt['file']) => f?.status === 'kept' ? '本次没有移动或删除文件'
-  : f?.status === 'trashed' ? '已移到系统废纸篓'
-  : f?.status === 'failed' ? `没有移到废纸篓，本次没有移动文件${f.reason ? `（${f.reason}）` : ''}`
+  : f?.status === 'trashed' ? `已移到${platformWords().systemTrash}`
+  : f?.status === 'failed' ? `没有移到${platformWords().trash}，本次没有移动文件${f.reason ? `（${f.reason}）` : ''}`
   : '处理结果待核对';
 
 export type ContentChangeController = ReturnType<typeof useContentChange>;
@@ -120,12 +121,13 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
 
 /** 页面顶部的入口：弹窗收起后，未结清的任务仍可重新打开或查询原请求。 */
 export function ContentChangeBanner({ ctl }: { ctl: ContentChangeController }) {
+  const words = usePlatformWords();
   if (!ctl.video || ctl.visible || !ctl.attention) return null;
   const a = ctl.act.action, r = a?.receipt;
   const state = actionPending(a) ? '处理中'
     : ctl.recordRemoved && (ctl.fileUnknown || a?.unknown) ? '记录已移除，文件处理结果待核对'
     : a?.unknown ? '结果待核对'
-    : ctl.recordRemoved && r?.file?.status === 'failed' ? '记录已移除，文件没有移到废纸篓，请查看结果'
+    : ctl.recordRemoved && r?.file?.status === 'failed' ? `记录已移除，文件没有移到${words.trash}，请查看结果`
     : a?.error ? '没有完成，请查看原因'
     : '已有结果，请查看';
   return <div className="pv-banner" data-tone="warn" role="status">
@@ -136,6 +138,7 @@ export function ContentChangeBanner({ ctl }: { ctl: ContentChangeController }) {
 }
 
 export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
+  const words = usePlatformWords();
   const { resultKey, markSeen } = ctl;
   useEffect(() => { markSeen(resultKey); }, [resultKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const video = ctl.video; if (!video) return null;
@@ -166,7 +169,7 @@ export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
     body = <div className="pv-callout" data-tone={r?.status === 'partial' ? 'warn' : undefined} role="status"><strong>{r?.record?.removed ? '已移除视频记录' : '视频记录未移除'}</strong>
       <span>{r?.record?.unboundShotIds?.length ? `解除 ${r.record.unboundShotIds.length} 个镜号的采用（镜号本身保留）。` : '没有需要解除的采用。'}</span>
       <span>文件：{fileText(f)}</span>
-      {ctl.fileUnknown && <span>请求编号：<code>{a.requestId}</code>。记录已经移除；文件是否已移到废纸篓还不确定，只会查询原请求，不会再次移动。</span>}</div>;
+      {ctl.fileUnknown && <span>请求编号：<code>{a.requestId}</code>。记录已经移除；文件是否已移到{words.trash}还不确定，只会查询原请求，不会再次移动。</span>}</div>;
     actions = ctl.fileUnknown
       ? <><button type="button" onClick={() => ctl.setVisible(false)}>稍后处理</button><button type="button" onClick={ctl.forget}>已核对，收起</button><button type="button" className="pv-primary" onClick={() => void ctl.act.query()}><RefreshCw size={14}/>查询原请求</button></>
       : <button type="button" className="pv-primary" onClick={ctl.hide}>完成</button>;
@@ -187,7 +190,7 @@ export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
         </dl>
         <div className="pv-change-player">
           {ctl.playing && c.mediaUrl && c.supported !== false ? <video src={c.mediaUrl} controls autoPlay playsInline preload="metadata" aria-label={`当前内容：${video.name}`}/>
-            : c.supported === false ? <p className="pv-muted">浏览器无法播放此编码，请在访达中用本机播放器核对。</p>
+            : c.supported === false ? <p className="pv-muted">浏览器无法播放此编码，请在{words.fileManager}中用本机播放器核对。</p>
             : <button type="button" onClick={() => ctl.setPlaying(true)}><Play size={14}/>播放当前内容</button>}
         </div>
         <p className="pv-muted">{affected.length ? `当前被采用：${shots(affected)}。` : '当前没有被分镜采用。'}核对结果 10 分钟内有效。</p>
@@ -206,14 +209,14 @@ export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
       <p>不再使用“{video.name}”：移除这条视频记录{removeShots.length ? `，并解除 ${shots(removeShots)} 的采用（镜号本身保留，之后可以重新选择别的视频）` : ''}。</p>
       <fieldset className="pv-change-file"><legend>这个文件怎么处理？（每次都需要选择）</legend>
         <label className="pv-check"><input type="radio" name={`file-${video.id}`} checked={ctl.fileAction === 'keep'} onChange={() => ctl.setFileAction('keep')}/>只移除记录，不移动文件</label>
-        <label className="pv-check"><input type="radio" name={`file-${video.id}`} disabled={!rp.canTrash} checked={ctl.fileAction === 'trash'} onChange={() => ctl.setFileAction('trash')}/>移到系统废纸篓（不是永久删除，可从废纸篓找回）</label>
-        {!rp.canTrash && <small className="pv-muted">{others ? '其他视频记录仍在使用这个文件，不能移到废纸篓。' : rp.reasons?.length ? `不能移到废纸篓：${rp.reasons.join('、')}` : '当前环境不能移到废纸篓。'}</small>}
+        <label className="pv-check"><input type="radio" name={`file-${video.id}`} disabled={!rp.canTrash} checked={ctl.fileAction === 'trash'} onChange={() => ctl.setFileAction('trash')}/>移到{words.systemTrash}（不是永久删除，可从{words.trash}找回）</label>
+        {!rp.canTrash && <small className="pv-muted">{others ? `其他视频记录仍在使用这个文件，不能移到${words.trash}。` : rp.reasons?.length ? `不能移到${words.trash}：${rp.reasons.join('、')}` : `当前环境不能移到${words.trash}。`}</small>}
       </fieldset>
       {!!removeShots.length && <label className="pv-check"><input type="checkbox" checked={ctl.removeOk} onChange={e => ctl.setRemoveOk(e.target.checked)}/>确认解除 {shots(removeShots)} 的采用</label>}
     </>;
     actions = <>
       <button type="button" onClick={() => { ctl.act.clear(); ctl.setView('review'); }} disabled={!p}>返回</button>
-      <button type="button" className="pv-danger" disabled={!ctl.fileAction || !!removeShots.length && !ctl.removeOk} onClick={ctl.remove}>{ctl.fileAction === 'trash' ? '移除记录并移到废纸篓' : '移除记录'}</button>
+      <button type="button" className="pv-danger" disabled={!ctl.fileAction || !!removeShots.length && !ctl.removeOk} onClick={ctl.remove}>{ctl.fileAction === 'trash' ? `移除记录并移到${words.trash}` : '移除记录'}</button>
     </>;
   }
   // 关闭（✕ / Esc）= 收起：已结清的任务清除，未结清的保留在页面顶部

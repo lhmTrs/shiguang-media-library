@@ -11,8 +11,14 @@ import {classificationParent} from './import-presets.mjs';
 type Request = <T = unknown>(url: string, body?: unknown, method?: string) => Promise<T>;
 type Root = { id: string; name: string; path: string; online: number };
 type Child = { name: string; directory: string; direct: number; total: number };
-type Branch = { root: { id: string; name: string }; directory: string; state: string; direct: number; total: number; children: Child[] };
+type Branch = { root: { id: string; name: string }; directory: string; path?: string; state: string; direct: number; total: number; children: Child[] };
 const pendingDirectory = "\u0000pending";
+/** 展开前没有服务端给的 branch.path：按登记目录自己的分隔符拼（Windows 的 D:\素材 用 \，Mac 照旧用 /）。 */
+const joinShown = (rootPath: string, directory: string) => {
+  if (!directory) return rootPath;
+  const sep = !rootPath.startsWith("/") && rootPath.includes("\\") ? "\\" : "/";
+  return rootPath + sep + (sep === "/" ? directory : directory.split("/").join(sep));
+};
 const branchUrl = (root: string, directory: string) => "/folder-browser?" + new URLSearchParams({ root, directory, classification: "1" });
 
 function FolderPreview({ asset, playing, click }: { asset: Asset; playing: boolean; click: () => void }) {
@@ -46,7 +52,7 @@ function FolderNode({ root, directory = "", name, active, choose, request, revis
   return <div className="folder-tree-node">
     <div className={"folder-tree-row" + (selected ? " selected" : "")} style={{ paddingLeft: Math.min(level, 8) * 12 }}>
       <button className="icon-button" disabled={leaf} title={(open ? "收起目录：" : "展开目录：") + name} aria-label={(open ? "收起目录：" : "展开目录：") + name} aria-expanded={leaf ? undefined : open} onClick={() => setOpen(v => !v)}>{leaf ? <Folder size={14}/> : open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button>
-      <button title={root.path + (directory ? "/" + (directory === pendingDirectory ? "待确认" : directory) : "")} aria-label={"选择文件夹：" + label} aria-current={selected ? "location" : undefined} onClick={() => choose(root.id, directory)}><Folder size={16}/><span>{label}</span>{branch && <small>{branch.total}</small>}</button>
+      <button title={directory && directory !== pendingDirectory && branch?.path || joinShown(root.path, directory === pendingDirectory ? "待确认" : directory)} aria-label={"选择文件夹：" + label} aria-current={selected ? "location" : undefined} onClick={() => choose(root.id, directory)}><Folder size={16}/><span>{label}</span>{branch && <small>{branch.total}</small>}</button>
     </div>
     {open && !leaf && <div>{error ? <p className="folder-tree-status" role="alert">{error}</p> : !branch ? <p className="folder-tree-status">读取中…</p> : branch.children.map(child => <FolderNode key={child.directory} root={root} directory={child.directory} name={child.name} active={active} choose={choose} request={request} revision={revision} level={level + 1} categories={categories}/>)}</div>}
   </div>;

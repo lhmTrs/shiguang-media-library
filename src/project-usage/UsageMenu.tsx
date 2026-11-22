@@ -5,12 +5,14 @@ import { createPortal } from "react-dom";
 import { Copy, FolderSearch } from "lucide-react";
 import type { ProjectRequest } from "../ProjectManager";
 import { notifyFeedback } from "../global-feedback";
+import {usePlatformWords} from '../platform-words';
 
 export type MenuTarget = { x: number; y: number; name: string; assetId: string | null; returnFocus?: HTMLElement | null };
 
 const NO_ASSET = "这条没对上素材库，不知道文件在哪";
 
 export function UsageMenu({ target, request, close }: { target: MenuTarget; request: ProjectRequest; close: () => void }) {
+  const words = usePlatformWords();
   const box = useRef<HTMLDivElement>(null);
   const done = () => { close(); target.returnFocus?.focus(); };
   useEffect(() => {
@@ -31,7 +33,7 @@ export function UsageMenu({ target, request, close }: { target: MenuTarget; requ
     if (!target.assetId) return;
     done();
     try { await request(`/assets/${target.assetId}/reveal`, {}); }
-    catch (e) { notifyFeedback({ message: (e as Error).message || "没能在访达中显示", kind: "error", source: "素材使用" }); }
+    catch (e) { notifyFeedback({ message: (e as Error).message || `没能${words.reveal}`, kind: "error", source: "素材使用" }); }
   }
   const keys = (e: React.KeyboardEvent) => {
     const items = [...(box.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
@@ -43,7 +45,7 @@ export function UsageMenu({ target, request, close }: { target: MenuTarget; requ
   const left = Math.max(8, Math.min(target.x, window.innerWidth - 248)), top = Math.max(8, Math.min(target.y, window.innerHeight - 120));
   return createPortal(<div ref={box} className="usage-menu" role="menu" aria-label={`操作：${target.name}`} style={{ left, top }} onKeyDown={keys} onContextMenu={e => e.preventDefault()}>
     <button type="button" role="menuitem" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />复制文件名</button>
-    <button type="button" role="menuitem" disabled={!target.assetId} title={target.assetId ? undefined : NO_ASSET} onClick={() => void reveal()}><FolderSearch size={14} aria-hidden="true" />在访达中显示</button>
+    <button type="button" role="menuitem" disabled={!target.assetId} title={target.assetId ? undefined : NO_ASSET} onClick={() => void reveal()}><FolderSearch size={14} aria-hidden="true" />{words.reveal}</button>
     {!target.assetId && <small>{NO_ASSET}</small>}
   </div>, document.body);
 }
