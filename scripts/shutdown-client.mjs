@@ -15,7 +15,7 @@ async function boundedJSON(response){
 
 // Import/construction do not read server.json, open paths or call fetch.
 // readReceipt is a trusted integration adapter, NOT a request-supplied file path.
-// This preparation module has no production cross-process receipt reader yet.
+// stop-windows.mjs supplies the guarded production cross-process reader.
 export function createShutdownClient({fetchImpl=globalThis.fetch,readReceipt,budgetMs=10000,pollMs=25}={}){
  if(!Number.isInteger(budgetMs)||budgetMs<20||budgetMs>30000||!Number.isInteger(pollMs)||pollMs<5||pollMs>1000)throw Error('INVALID_CLIENT_CONFIG');
  let current=null,pending=null;

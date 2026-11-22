@@ -33,7 +33,7 @@ export function observeShutdownResource(resource){
 }
 
 // This proves only work admitted through THIS gate. It does not discover an
-// App's hidden manifest/afterCommit/database work; that integration is unbuilt.
+// App's hidden manifest/afterCommit/database work; index.mjs integrates real owners.
 export function createShutdownWorkGate(){
  let sealed=false,pending=0,failed=false,resolve,reject;
  const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
@@ -58,8 +58,8 @@ export function verifyShutdownReceipt(envelope,expected,token,now=Date.now()){
  }catch{return false;}
 }
 
-// No import/construction IO. Only a real POSIX host is supported. An injected
-// platform may deny support but can never make a real Windows host supported.
+// No import/construction IO. POSIX uses directory fsync; Windows uses a flushed
+// ordinary file and guarded readback. An injected platform can only deny support.
 export function createShutdownReceiptStore({root,platform=process.platform}={}){
  const supported=['darwin','linux','win32'].includes(process.platform)&&platform===process.platform;
  let committed=null,anchor=null;
