@@ -14,6 +14,7 @@ import { MysqlDatabase } from '../server/mysql-db.mjs';
 import { Projects } from '../server/projects.mjs';
 import { ProjectAssets } from '../server/project-assets/store.mjs';
 import { reconcilePaths, reconcileRoot } from '../server/reconcile.mjs';
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 
 const evidence = path.resolve(process.env.CREATIVE_MYSQL_EVIDENCE || 'collab/results/MYSQL-UNSAFE-INODE-20261104/mysql'); await fs.mkdir(evidence, { recursive: true });
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creative-mysql-'))), data = path.join(base, 'mysql'); await fs.mkdir(data, { mode: 0o700 });
@@ -37,7 +38,7 @@ try {
  const root=await lib.addRoot(photoDir,'photo');
  async function scan(){const job=lib.scan(root.id);for(let i=0;i<300&&job.status==='running';i++)await new Promise(r=>setTimeout(r,10));assert.equal(job.status,'done',JSON.stringify(job));assert.deepEqual(job.errors,[]);}
  await scan();const oldId=lib.list().items[0].id;
- await storage.activate(config);assert.equal(lib.db.kind,'mysql');
+ ({lib,storage}=await activateAndRestart({storage,lib,config}));lib.enqueue=()=>{};assert.equal(lib.db.kind,'mysql');
  await check('真实MySQL复现原始BIGINT溢出且原行未改写',async()=>{
   assert.throws(()=>lib.db.prepare('UPDATE assets SET ino=? WHERE id=?').run(18446744073709550000,oldId),e=>e.errno===1264);
   assert.ok(Number.isSafeInteger(lib.asset(oldId).ino));

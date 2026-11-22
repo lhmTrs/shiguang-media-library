@@ -10,6 +10,7 @@ import {Library} from '../server/library.mjs';
 import {Projects} from '../server/projects.mjs';
 import {MysqlStorage} from '../server/mysql.mjs';
 import {ownedRenderMysql,bounded} from './render-startup-mysql-fixture.mjs';
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 
 const env=await ownedRenderMysql({tcp:true});
 let lib,child,exited,logs='',control;
@@ -21,7 +22,7 @@ try {
  lib.db.prepare('INSERT INTO project_timelines VALUES(?,?,?,?,?,?,?)').run(timeline,project.id,'合成时间线',JSON.stringify({fps:25,duration:2,refs:[],warnings:[]}),randomUUID(),randomUUID(),Date.now());
  const payload=JSON.stringify({schemaVersion:2,link:null,sourceId:null,offset:0,linkedTimelineRevision:null,linkedSourceRevision:null,proof:null,snapshot:null,updatedAt:1});
  lib.db.prepare('INSERT INTO project_renders VALUES(?,?,?,?)').run(timeline,project.id,payload,1);
- await storage.activate(env.tcpConfig);
+ ({lib}=await activateAndRestart({storage,lib,config:env.tcpConfig}));
  // The general importer emits nullable columns. Build the exact recognized
  // native legacy table in this owned synthetic target; do not loosen recognition.
  lib.db.exec('DROP TABLE project_renders');
