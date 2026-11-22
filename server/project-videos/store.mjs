@@ -146,7 +146,7 @@ export class ProjectVideos{
   if(result.discarded!==true)fail('VIDEO_COPY_UNSETTLED','未确认副本移除',409);
  }
 
- async cleanupWindowsReceive(s){
+ async cleanupWindowsReceive(s){return this.serial(async()=>{
   if(s.status!=='ready'||s.instance!==this.instance||!s.windowsCacheIdentity||s.stageCleanup?.complete)return;
   try{
    s.stageCleanup=await cleanupWindowsStage({cache:s.cache,cacheIdentity:s.windowsCacheIdentity,stage:s.stage,stageStat:s.stageStat,target:s.state.target,verify:async()=>{
@@ -155,8 +155,7 @@ export class ProjectVideos{
     const copied=await this.hash(source.path,source.identity);if(copied.hash!==s.hash)throw Error('STAGE_RESULT_UNVERIFIED');
     const row=this.db.prepare('SELECT path,sha256 FROM assets WHERE id=?').get(m.data.mediaAssetId);if(row?.path!==source.path||row.sha256!==s.hash)throw Error('STAGE_RESULT_UNVERIFIED');
    }});this.persist(s);
-  }catch{s.stageCleanup={complete:false,code:'STAGE_CLEANUP_UNCONFIRMED'};this.persist(s);}
- }
+  }catch{s.stageCleanup={complete:false,code:'STAGE_CLEANUP_UNCONFIRMED'};this.persist(s);} });}
  async cleanupIntakeStage(id,requestId){return this.serial(async()=>{
   const s=this.receipt(id,requestId);
   // Never sweep historical, partial, duplicate or unknown attempts. Proof is
