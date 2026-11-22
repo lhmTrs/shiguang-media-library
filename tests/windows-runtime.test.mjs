@@ -58,6 +58,7 @@ async function startOwned(t,base){
 test('Windows actual application: private identity, denied commands, 202 is not closure, real HTTP/DB drain receipt and restart readback',{skip:process.platform!=='win32',timeout:90000},async t=>{
  const base=await temporary(t),app=await startOwned(t,base);assert.equal(app.identity.platform,'win32');assert.ok(!('runId' in app.identity));assert.deepEqual(Object.keys(app.identity).sort(),['app','folderPickerAvailable','instanceId','platform','token','trashAvailable'].sort());
  assert.equal((await fetch(app.origin+'/api/application/identity')).status,401);
+ const quotedRoot=path.join(base,'quoted-root');await fs.mkdir(quotedRoot);const added=await app.call('roots',{path:'"'+quotedRoot+'"',kind:'sfx'});assert.equal(added.status,200,await added.clone().text());assert.equal((await added.json()).root.path,await fs.realpath(quotedRoot));
  const project=await (await app.call('projects',{name:'原样访达标题'})).json();assert.ok(project.id);
 
  // Actual project publication and DB readback, not just the cleanup adapter.
@@ -78,6 +79,7 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  const held=net.connect(Number(new URL(app.origin).port),'127.0.0.1');await once(held,'connect');held.write(`GET /api/stats HTTP/1.1\r\nHost: ${new URL(app.origin).host}\r\n`);t.after(()=>held.end());
  const accepted=await app.call('application/shutdown',command);assert.equal(accepted.status,202);await accepted.json();await pause(100);assert.equal(await app.readReceipt(),null,'live HTTP connection must not mint completion');held.end();
  const receipt=await until(()=>app.readReceipt(),30000);assert.equal(verifyShutdownReceipt(receipt,{libraryId:app.record.instanceId,...command},app.identity.token),true);assert.deepEqual(await app.exited,{code:0,signal:null});
+ const manifest=JSON.parse(await fs.readFile(path.join(quotedRoot,'.shiguang','manifest.json'),'utf8'));assert.ok(manifest);
  const db=new Database(path.join(app.data,'library.sqlite'),{readonly:true});assert.equal(db.prepare('SELECT name FROM media_projects WHERE id=?').get(project.id).name,'原样访达标题');db.close();
  const restarted=await startOwned(t,base);assert.notEqual(restarted.record.runId,app.record.runId);const readback=await (await restarted.call('projects')).json();assert.equal(readback.find(p=>p.id===project.id).name,'原样访达标题');
  const stopped=await promisify(execFile)(process.execPath,[path.resolve('scripts/stop-portable.mjs')],{env:{...process.env,MEDIA_DATA_DIR:restarted.data},timeout:35000,windowsHide:true});assert.match(stopped.stdout,/已正常停止/);assert.deepEqual(await restarted.exited,{code:0,signal:null});
