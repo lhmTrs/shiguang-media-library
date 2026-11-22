@@ -1,3 +1,4 @@
+import {heldInput} from '../held-input.mjs';
 import {pipeline} from 'node:stream/promises';
 import {syncDir} from '../fs-platform.mjs';
 import fs from '../fs-platform.mjs';
@@ -128,7 +129,7 @@ async function audioDuration(file,{signal}={}) {
         '-probesize','5000000','-analyzeduration','5000000','-select_streams','a',
         '-show_entries','format=duration:stream=codec_type','-of','json','-i',
         process.platform==='win32'?'pipe:0':'/dev/fd/3'],{stdio:process.platform==='win32'?['pipe','pipe','ignore']:['ignore','pipe','ignore',handle.fd],windowsHide:true,env});
-      if(process.platform==='win32'){const input=handle.createReadStream({autoClose:false,start:0});child.once('close',()=>input.destroy());feeding=pipeline(input,child.stdin).catch(e=>{if(!['EPIPE','ERR_STREAM_PREMATURE_CLOSE'].includes(e.code))child.kill('SIGTERM');});}
+      if(process.platform==='win32'){const input=heldInput(handle);child.once('close',()=>input.destroy());feeding=pipeline(input,child.stdin).catch(e=>{if(!['EPIPE','ERR_STREAM_PREMATURE_CLOSE'].includes(e.code))child.kill('SIGTERM');});}
       let output='',stopped=false;
       const stop=()=>{stopped=true;child.kill('SIGKILL');};
       const timer=setTimeout(stop,2000);

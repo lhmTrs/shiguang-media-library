@@ -7,10 +7,9 @@ const options=args=>{
  else result.splice(index,0,{windowsHide:true});
  return result;
 };
-const wrap=fn=>{
- if(process.platform!=='win32')return fn;
- const wrapped=function(...args){return Reflect.apply(fn,this,options(args));};
- if(fn[promisify.custom])Object.defineProperty(wrapped,promisify.custom,{value:(...args)=>fn[promisify.custom](...options(args))});
- return wrapped;
-};
-export const spawn=wrap(native.spawn),execFile=wrap(native.execFile),spawnSync=wrap(native.spawnSync);
+// Delegate through live native exports so existing observers and test seams
+// retain ownership of child creation after this module has been imported.
+export function spawn(...args){return native.spawn(...options(args));}
+export function spawnSync(...args){return native.spawnSync(...options(args));}
+export function execFile(...args){return native.execFile(...options(args));}
+Object.defineProperty(execFile,promisify.custom,{value:(...args)=>promisify(native.execFile)(...options(args))});
