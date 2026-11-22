@@ -5,10 +5,9 @@ import path from 'node:path';
 import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {once} from 'node:events';
-import {fileURLToPath} from 'node:url';
 const exec=promisify(execFile);
 const safeError=e=>({code:/^[A-Z0-9_]+$/.test(String(e.code))?e.code:'PROBE_ERROR'});
-export async function probe({output=path.resolve('reports/windows-probe')}={}) {
+async function probe({output=path.resolve('reports/windows-probe')}={}) {
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-win-probe-')));
  const results=[];
  const check=async(id,fn)=>{try{results.push({id,status:'observed',result:await fn()});}catch(e){results.push({id,status:'failed',error:safeError(e)});}};
@@ -41,4 +40,4 @@ export async function probe({output=path.resolve('reports/windows-probe')}={}) {
  }
  return results.some(r=>r.status==='failed')?1:0;
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))probe({output:process.argv[2]||undefined}).then(code=>{process.exitCode=code;}).catch(()=>{console.error('WINDOWS_PROBE_FAILED');process.exitCode=1;});
+probe({output:process.argv[2]||undefined}).then(code=>{process.exitCode=code;}).catch(()=>{console.error('WINDOWS_PROBE_FAILED');process.exitCode=1;});
