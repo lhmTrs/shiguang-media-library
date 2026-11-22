@@ -46,7 +46,7 @@ npm run portable
 
 `setup` 检查 Node 版本，缺少运行或构建依赖时执行 `npm ci --include=dev`（即使环境为 production 也安装构建工具），随后始终构建当前源码，再检查媒体工具。首次安装需要联网。不要复制其他电脑的 `node_modules`。
 
-`portable` 使用本项目 `data/` 保存独立数据，默认 SQLite，并打开浏览器。若终端已有 `MEDIA_DATA_DIR` 环境变量，它会覆盖默认数据位置，启动前应确认它是否属于本次使用，不能指向原作者或其他项目的库。源码版 `npm start` 保留旧库入口，首次使用不要用它替代 `portable`。
+`portable` 使用本项目 `data/` 保存独立数据，默认 SQLite，并打开浏览器。Windows 新装默认 `%LOCALAPPDATA%\ShiguangMedia`；已确认旧 `data/` 库继续保留，两处均有库时须明确选择，详见 START_HERE。若终端已有 `MEDIA_DATA_DIR` 环境变量，它会覆盖默认数据位置，启动前应确认它是否属于本次使用，不能指向原作者或其他项目的库。源码版 `npm start` 保留旧库入口，首次使用不要用它替代 `portable`。
 
 打开终端实际输出的地址，通常是 `http://127.0.0.1:4317/`。端口占用时自动尝试后续端口，不要杀死占用端口的其他程序。不能直接打开 `index.html` 或 `dist/index.html` 代替运行服务，也不要监听公网。
 

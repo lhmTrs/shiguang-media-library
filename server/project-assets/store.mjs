@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -110,7 +111,7 @@ export class ProjectAssets {
     catch { return { state: 'missing', label: '引用失效：素材记录不存在' }; }
     const info = { name: a.name, media_asset_id: a.id, path: a.path };
     if (a.kind !== 'photo') return { ...info, state: 'invalid', label: '仅支持图片素材' };
-    if (a.trashed) return { ...info, state: 'trashed', label: '素材已移入废纸篓' };
+    if (a.trashed) return { ...info, state: 'trashed', label: platformWords('素材已移入废纸篓') };
     if (!root || root.retired) return { ...info, state: 'retired', label: '素材目录已注销' };
     if (root.online === 0) return { ...info, state: 'offline', label: '素材目录离线' };
     let handle;

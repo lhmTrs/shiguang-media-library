@@ -737,11 +737,14 @@ export function startWatcher(lib, options = {}) {
   const watchers = new Map();
   const pending = new Map();
   let timer = null;
-  let running = false;
+  let running = false,stopped=false;
+  const work=new Set(),nativeClosures=new Map();
+  const track=promise=>{if(process.platform==='win32'){work.add(promise);promise.finally(()=>work.delete(promise)).catch(()=>{});}return promise;};
   let needFull = false;
 
   const busy = () => lib.locks.size > 0 || [...lib.jobs.values()].some((j) => j.status === "running") || running;
   const schedule = () => {
+    if(process.platform==='win32'&&stopped)return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void flush(), debounceMs);
   };
@@ -749,7 +752,8 @@ export function startWatcher(lib, options = {}) {
     for (const root of lib.roots()) await reconcileRoot(lib, root, { ...options, hashBudgetFiles: 0, hashBudgetBytes: 0 });
   };
 
-  async function flush() {
+  function flush(){if(process.platform==='win32'&&stopped)return Promise.resolve();return track(flushWork());}
+  async function flushWork() {
     timer = null;
     if (busy()) {
       schedule(); // 应用正在做文件操作/扫描：等它做完再对账，避免互相干扰
@@ -792,6 +796,7 @@ export function startWatcher(lib, options = {}) {
   }
 
   function onEvent(root, filename) {
+    if(process.platform==='win32'&&stopped)return;
     if (filename == null) {
       needFull = true; // 个别平台不报具体名字，只能全量
       schedule();
@@ -806,8 +811,10 @@ export function startWatcher(lib, options = {}) {
   }
 
   function watchRoot(root) {
+    if(process.platform==='win32'&&stopped)return null;
     try {
       const watcher = watch(root.path, { recursive: true }, (_event, filename) => onEvent(root, filename));
+      if(process.platform==='win32'){const ended=new Promise(resolve=>watcher.once('close',resolve));nativeClosures.set(watcher,ended);ended.then(()=>nativeClosures.delete(watcher));}
       watcher.on?.("error", () => {
         watchers.delete(root.id);
         try {
@@ -831,6 +838,7 @@ export function startWatcher(lib, options = {}) {
   }
 
   async function refresh() {
+    if(process.platform==='win32'&&stopped)return;
     const roots = lib.roots();
     const ids = new Set(roots.map((r) => r.id));
     const byId = new Map(roots.map((r) => [r.id, r]));
@@ -848,7 +856,7 @@ export function startWatcher(lib, options = {}) {
       const watcher = watchRoot(root);
       if (watcher) {
         watchers.set(root.id, { watcher, path: root.path });
-        void ensureManifest(root); // 新监听的根立即补一份清单，别等下一次全量对账
+        void track(ensureManifest(root)); // 新监听的根立即补一份清单，别等下一次全量对账
       }
     }
   }
@@ -859,7 +867,9 @@ export function startWatcher(lib, options = {}) {
 
   return {
     refresh,
+    async close(){this.stop();await Promise.all([...nativeClosures.values()]);while(work.size)await Promise.all([...work]);},
     stop() {
+      if(process.platform==='win32')stopped=true;
       if (timer) clearTimeout(timer);
       clearInterval(refreshTimer);
       for (const entry of watchers.values()) {
@@ -920,7 +930,9 @@ export function createManifestSync(lib, options = {}) {
     await writeManifest(root, built);
   }
 
+  let closing=false,writingDone=Promise.resolve(),finishWrite,lastError=null;
   const schedule = () => {
+    if(closing)return;
     if (timer) return;
     timer = setTimeout(() => void flush(), debounceMs);
   };
@@ -932,7 +944,7 @@ export function createManifestSync(lib, options = {}) {
     all = false;
     dirty.clear();
     if (!roots.length) return;
-    writing = true;
+    writing = true;writingDone=new Promise(resolve=>{finishWrite=resolve;});
     const deferred = [];
     try {
       for (const root of roots) {
@@ -940,12 +952,14 @@ export function createManifestSync(lib, options = {}) {
           const result = await writeRoot(root);
           if (result?.deferred) { dirty.add(root.id); deferred.push({ rootId: root.id, code: result.code }); } // no new timer
         } catch (e) {
+          if(process.platform==='win32')lastError=e;
           log(`[manifest] ${root.path} 清单同步失败：${e.code || e.message}`);
         }
       }
     } finally {
-      writing = false;
+      writing = false;finishWrite();
     }
+    if (closing&&(lastError||deferred.length))throw Object.assign(Error('MANIFEST_WORK_UNSETTLED'),{code:'MANIFEST_WORK_UNSETTLED'});
     if (deferred.length) return { deferred: true, repairPending: true, roots: deferred };
   }
 
@@ -957,6 +971,7 @@ export function createManifestSync(lib, options = {}) {
       schedule();
     },
     flush,
+    async close(){closing=true;if(timer)clearTimeout(timer);await writingDone;if(lastError)throw Object.assign(Error('MANIFEST_WORK_UNSETTLED'),{code:'MANIFEST_WORK_UNSETTLED'});await flush();},
     stop() {
       if (timer) clearTimeout(timer);
     },

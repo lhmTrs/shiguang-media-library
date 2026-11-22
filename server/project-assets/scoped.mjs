@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { scoreValue } from './character-merge-plan.mjs';
 import { canonical, digest, fault, idOK } from './model.mjs';
@@ -373,7 +374,7 @@ export class ScopedProjectAssets {
       FROM assets a LEFT JOIN roots r ON r.id=a.root_id WHERE a.id=?`).get(binding.media_asset_id);
     const [state, label] = !media ? ['missing', '素材记录不存在']
       : media.kind !== 'photo' ? ['invalid', '仅支持图片素材']
-        : Number(media.trashed) ? ['trashed', '素材已移入废纸篓']
+        : Number(media.trashed) ? ['trashed', platformWords('素材已移入废纸篓')]
           : !media.root_id || Number(media.retired) ? ['retired', '素材目录已注销']
             : Number(media.online) === 0 && media.online !== null ? ['offline', '素材目录离线']
               : ['unchecked', '尚未检查文件'];

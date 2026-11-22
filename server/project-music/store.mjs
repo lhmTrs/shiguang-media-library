@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 // 项目音乐：一首歌 › 多轮 › 每轮若干版本。
 // PR3（SPEC 第十一节）：全部版本都放进 personal_item/music（音乐库根目录「AI生成」）并登记进全库索引；
 // 定稿只在项目里标记并加入本项目候选，不再复制进 system_music。同内容复用音乐库已有记录，不另存一份。
@@ -358,7 +359,7 @@ export class ProjectMusic {
     try {
       this.db.transaction(() => {
         this.db.prepare('INSERT INTO project_music_rounds(id,project_id,song_id,round_no,data_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(id, projectId, song.id, roundNo, M.canonical(data), 1, at, at);
-        if (pending) this.saveRow('project_music_rounds', pending.last, {...pending.last.data, pendingAgentNotes: {at, missing: pending.missing, reason: '从访达收纳开了第 ' + roundNo + ' 轮'}});
+        if (pending) this.saveRow('project_music_rounds', pending.last, {...pending.last.data, pendingAgentNotes: {at, missing: pending.missing, reason: platformWords('从访达收纳开了第 ') + roundNo + ' 轮'}});
       })();
     } catch (e) {
       if (/UNIQUE|Duplicate/i.test(String(e.message))) fail('REVISION_CONFLICT', '同时有另一轮刚被创建，请刷新后再试', 409);
@@ -867,7 +868,7 @@ export class ProjectMusic {
 
   assetFile(assetId) {
     const a = this.db.prepare('SELECT id,root_id,path,trashed FROM assets WHERE id=?').get(assetId);
-    if (!a || a.trashed) fail('MUSIC_FILE_MISSING', '这个版本在音乐库里的记录已删除或移入废纸篓；项目里的记录保留', 404);
+    if (!a || a.trashed) fail('MUSIC_FILE_MISSING', platformWords('这个版本在音乐库里的记录已删除或移入废纸篓；项目里的记录保留'), 404);
     const root = this.lib.roots().find(r => r.id === a.root_id);
     if (!root || !within(root.path, a.path)) fail('MUSIC_FILE_MISSING', '这个版本所在的音乐目录已注销', 404);
     return a.path;
@@ -1197,23 +1198,23 @@ export class ProjectMusic {
   // 没有「JS 核对完到真正移动」之间的空当。核对不通过就不移，原件留在原处。
   async trash(file, expected) {
     if (this.trashFile) return this.trashFile(file, expected);
-    if (!this.lib.trashBin) fail('TRASH_UNAVAILABLE', '系统废纸篓不可用，旧副本没有删除', 409);
+    if (!this.lib.trashBin) fail('TRASH_UNAVAILABLE', platformWords('系统废纸篓不可用，旧副本没有删除'), 409);
     let stdout;
     try { ({stdout} = await run(this.lib.trashBin, [file, JSON.stringify(expected)], {timeout: 60000})); }
     catch (e) {
       const why = String(e.stderr || e.message || '').trim().slice(0, 400);
-      if (/UNKNOWN/.test(why)) fail('TRASH_UNSETTLED', '废纸篓结果待核对，请到废纸篓看一下：' + why, 409);
+      if (/UNKNOWN/.test(why)) fail('TRASH_UNSETTLED', platformWords('废纸篓结果待核对，请到废纸篓看一下：') + why, 409);
       fail('TRASH_REFUSED', '移动前再核对一遍没通过，旧副本没有移动：' + why, 409);
     }
     const target = JSON.parse(stdout);
-    if (typeof target !== 'string' || !path.isAbsolute(target) || !/(^|\/)\.Trash(es)?\//.test(target)) fail('TRASH_UNSETTLED', '废纸篓结果尚未核清，请到废纸篓核对', 409);
+    if (typeof target !== 'string' || !path.isAbsolute(target) || !/(^|\/)\.Trash(es)?\//.test(target)) fail('TRASH_UNSETTLED', platformWords('废纸篓结果尚未核清，请到废纸篓核对'), 409);
     return target;
   }
 
   // 用户确认后：新位置能正常读出、旧副本内容也没变，才把旧副本移到废纸篓。逐个核对，不通过的保留并说明原因。
   async trashLegacy(projectId, input) {
     M.onlyKeys(input, ['confirm']);
-    if (input.confirm !== true) fail('CONFIRM_REQUIRED', '请确认要把旧副本移到废纸篓', 400);
+    if (input.confirm !== true) fail('CONFIRM_REQUIRED', platformWords('请确认要把旧副本移到废纸篓'), 400);
     this.project(projectId);
     return this.serial(async () => {
       const out = {trashed: 0, skipped: []};

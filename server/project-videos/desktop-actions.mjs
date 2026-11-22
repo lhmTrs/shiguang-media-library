@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import {mediaContentFingerprintCapability} from './content-identity.mjs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -71,7 +72,7 @@ export class ProjectVideoDesktopActions {
   revealPreview(id,input){
     const ids=idsFor(input);
     return this.journal.start(id,'reveal-preview',input,async s=>{
-      const cap=await this.native.capabilities();if(!cap.revealMany.available)fail(cap.revealMany.code||'REVEAL_UNAVAILABLE',cap.revealMany.reason||'访达不可用',409);
+      const cap=await this.native.capabilities();if(!cap.revealMany.available)fail(cap.revealMany.code||'REVEAL_UNAVAILABLE',cap.revealMany.reason||platformWords('访达不可用'),409);
       const {eligible,skipped}=await this.eligible(id,ids,s);
       await this.validate(id,eligible);
       const folders=[...new Set(eligible.map(v=>path.dirname(v.path)))].map((p,i)=>({key:String(i),label:eligible.find(v=>path.dirname(v.path)===p)?.managed?(path.relative(this.catalog.directory,p)||'项目根目录'):'原位置目录'+(i+1),count:eligible.filter(v=>path.dirname(v.path)===p).length}));
@@ -81,19 +82,19 @@ export class ProjectVideoDesktopActions {
   }
   reveal(id,input){
     const ids=idsFor(input);
-    if(!idOK(input.previewToken))fail('PREVIEW_REQUIRED','请先核对访达操作影响',409);
+    if(!idOK(input.previewToken))fail('PREVIEW_REQUIRED',platformWords('请先核对访达操作影响'),409);
     return this.journal.start(id,'reveal',input,async s=>{
       const rows=this.catalog.db.prepare('SELECT * FROM project_video_operations WHERE project_id=?').all(id);
       const preview=rows.map(r=>JSON.parse(r.data_json)).find(p=>p.namespace==='video-desktop-v1'&&p.action==='reveal-preview'&&p.preview?.token===input.previewToken)?.preview;
-      if(!preview||preview.expiresAt<Date.now()||canonical(preview.ids)!==canonical(ids))fail('PREVIEW_STALE','访达预览已过期或选择变化，请重新核对',409);
-      const cap=await this.native.capabilities();if(!cap.revealMany.available)fail('REVEAL_UNAVAILABLE','访达当前不可用',409);
+      if(!preview||preview.expiresAt<Date.now()||canonical(preview.ids)!==canonical(ids))fail('PREVIEW_STALE',platformWords('访达预览已过期或选择变化，请重新核对'),409);
+      const cap=await this.native.capabilities();if(!cap.revealMany.available)fail('REVEAL_UNAVAILABLE',platformWords('访达当前不可用'),409);
       try{await this.validate(id,preview.eligible);}catch(e){if(e.code==='VIDEO_CLOSING')throw e;fail('PREVIEW_STALE','视频、读取授权或目录在核对后变化，请重新核对',409);}
       if(!preview.eligible.length)return {requestId:s.requestId,projectId:id,action:'reveal',status:'failed',requested:[],count:0,folderCount:0,skipped:preview.skipped,code:'NO_VALID_FILES'};
       s.status='running';s.dispatched=true;this.journal.save(s);
       let result;
       try{result=await this.native.revealFiles(preview.eligible.map(v=>v.path),{beforeDispatch:()=>this.validate(id,preview.eligible)});}
       catch(e){if(e.effectUnknown===false){s.dispatched=false;this.journal.save(s);}throw e;}
-      if(result.ack!=='dispatched')fail('REVEAL_ACK_UNKNOWN','访达请求结果尚未确认',409);
+      if(result.ack!=='dispatched')fail('REVEAL_ACK_UNKNOWN',platformWords('访达请求结果尚未确认'),409);
       return {requestId:s.requestId,projectId:id,action:'reveal',status:preview.skipped.length?'partial':'completed',requested:preview.eligible.map(({id,name})=>({id,name})),count:preview.eligible.length,folderCount:preview.folders.length,ack:'dispatched',skipped:preview.skipped};
     });
   }

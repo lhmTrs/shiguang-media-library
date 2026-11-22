@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import {heldInput} from '../held-input.mjs';
 import {pipeline} from 'node:stream/promises';
 import {syncDir} from '../fs-platform.mjs';
@@ -27,7 +28,7 @@ export async function privateDirectory(dir) {
 export async function inspectSelection(files) {
   // Keep the legacy error code for existing callers; the accepted types expand.
   if (!Array.isArray(files) || !files.length || files.some(p => typeof p !== 'string' || !path.isAbsolute(p) || p.includes('\0')))
-    throw error('INTAKE_VIDEO_ONLY','请在访达选择一个或多个照片、视频或音频文件');
+    throw error('INTAKE_VIDEO_ONLY',platformWords('请在访达选择一个或多个照片、视频或音频文件'));
   const result = [];
   for (const file of [...new Set(files)]) {
     const st = await fs.lstat(file), ext=path.extname(file).slice(1).toLowerCase();
@@ -83,10 +84,10 @@ async function firstSelectionProof(file,{signal}) {
 
 const preparationMessages={
   permission:'没有权限读取原文件，未开始收纳；请检查文件访问权限后重新选择。',
-  missing:'找不到原文件，未开始收纳；请检查文件位置后从访达重新选择。',
-  'source-changed':'原文件在选择后发生变化，未开始收纳；请从访达重新选择。',
+  missing:platformWords('找不到原文件，未开始收纳；请检查文件位置后从访达重新选择。'),
+  'source-changed':platformWords('原文件在选择后发生变化，未开始收纳；请从访达重新选择。'),
   cancelled:'原文件核验已取消，未开始收纳。',
-  unknown:'原文件核验未完成，未开始收纳；请从访达重新选择。',
+  unknown:platformWords('原文件核验未完成，未开始收纳；请从访达重新选择。'),
 };
 
 function preparationFailure(cause,stage,file) {
@@ -102,7 +103,7 @@ function preparationFailure(cause,stage,file) {
   let message=preparationMessages[reason];
   if(receiptStage&&reason!=='cancelled')message=reason==='permission'
     ?'没有权限访问文件任务回执，未开始收纳；请检查文件任务目录的访问权限。'
-    :'无法保存或读取文件任务回执，未开始收纳；请从访达重新选择。';
+    :platformWords('无法保存或读取文件任务回执，未开始收纳；请从访达重新选择。');
   const diagnostic={reason,code,stage,...(file?{fileId:file.id,fileName:file.name}:{})};
   const failure=Object.assign(new Error(message),{code:code??'INTAKE_PREPARATION_FAILED',diagnostic});
   if(reason==='cancelled')failure.name='AbortError';

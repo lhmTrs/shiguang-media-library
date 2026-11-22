@@ -1,3 +1,4 @@
+import {probeRuntimeBinding} from '../server/runtime-binding.mjs';
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -9,33 +10,47 @@ const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const data = dataDirectory(project);
 function openBrowser(url) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
-  const child = spawn(command, process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url], { stdio: "ignore" });
+  const child = spawn(command, process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url], { stdio: "ignore",windowsHide:true });
   child.on("error", () => console.log("请手动打开：" + url));
 }
 await fsp.mkdir(data, { recursive: true });
 async function running(record) {
   try {
+    if(process.platform==='win32'){
+      if(record.runId===undefined){
+        if(!Number.isSafeInteger(record.pid)||record.pid<1)throw Object.assign(Error('旧运行记录未核清'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+        try{process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')return false;throw e;}
+        throw Object.assign(Error('旧实例仍在运行或需要核对，未另起服务'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+      }
+      await probeRuntimeBinding(record);return true;
+    }
     process.kill(record.pid, 0);
     const r = await fetch(record.url + "/api/session", {
       signal: AbortSignal.timeout(1500),
     });
     const identity = await r.json();
     return r.ok && identity.app === 'shiguang-local-media' && (!record.instanceId || identity.instanceId === record.instanceId);
-  } catch {
+  } catch(error) {
+    if(process.platform==='win32'){
+      if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;
+      // Liveness is only a reason to refuse another startup, never closure proof.
+      try{if(!Number.isSafeInteger(record.pid)||record.pid<1)throw error;process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')return false;throw Object.assign(Error('运行记录未能核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});}
+      throw Object.assign(Error('原实例仍需核对，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});
+    }
     return false;
   }
 }
 try {
-  const record = JSON.parse(
-    await fsp.readFile(path.join(data, "server.json"), "utf8"),
-  );
+  const recordFile=path.join(data,'server.json');
+  if(process.platform==='win32'){const st=await fsp.lstat(recordFile);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size>8192)throw Object.assign(Error('运行记录无法核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});}
+  const record = JSON.parse(await fsp.readFile(recordFile,'utf8'));
   if (await running(record)) {
     console.log(record.url);
     if (process.argv.includes("--open"))
       openBrowser(record.url);
     process.exit(0);
   }
-} catch {}
+} catch(error) {if(process.platform==='win32'&&error.code!=='ENOENT')throw Object.assign(Error('运行记录无法核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;}
 try {
   await fsp.access(path.join(project, "dist/index.html"));
 } catch {
@@ -48,7 +63,8 @@ const child = spawn(
   {
     cwd: project,
     detached: true,
-    env: { ...process.env, NODE_ENV: "production", MEDIA_CODEX_AUTOCONNECT: process.env.MEDIA_CODEX_AUTOCONNECT ?? "1" },
+    windowsHide:process.platform==='win32',
+    env: { ...process.env, ...(process.platform==='win32'?{MEDIA_DATA_DIR:data}:{}), NODE_ENV: "production", MEDIA_CODEX_AUTOCONNECT: process.env.MEDIA_CODEX_AUTOCONNECT ?? "1" },
     stdio: ["ignore", log, log],
   },
 );

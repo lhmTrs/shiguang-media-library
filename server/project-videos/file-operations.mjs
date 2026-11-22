@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import {confirmUnbind} from '../storyboard-video-v2/confirmation.mjs';
 import fs from '../fs-platform.mjs';
 import path from 'node:path';
@@ -27,7 +28,7 @@ const abandonedCode = 'OPERATION_ABANDONED';
 const abandonedMessage = '已放下原移动请求，请重新核对';
 
 export class ProjectVideoFileOperations {
- constructor(catalog,{trash}={}) {this.catalog=catalog;this.trash=trash||(async(file)=>{if(!catalog.lib.trashBin)fail('TRASH_UNAVAILABLE','系统废纸篓不可用，未执行永久删除',409);const {stdout}=await run(catalog.lib.trashBin,[file],{timeout:30000});const target=JSON.parse(stdout);if(typeof target!=='string'||!path.isAbsolute(target)||!/(^|\/)\.Trash(es)?\//.test(target))fail('TRASH_UNSETTLED','废纸篓结果尚未核清，请核对原操作',409);return target;});this.active=new Set();}
+ constructor(catalog,{trash}={}) {this.catalog=catalog;this.trash=trash||(async(file)=>{if(!catalog.lib.trashBin)fail('TRASH_UNAVAILABLE',platformWords('系统废纸篓不可用，未执行永久删除'),409);const {stdout}=await run(catalog.lib.trashBin,[file],{timeout:30000});const target=JSON.parse(stdout);if(typeof target!=='string'||!path.isAbsolute(target)||!/(^|\/)\.Trash(es)?\//.test(target))fail('TRASH_UNSETTLED',platformWords('废纸篓结果尚未核清，请核对原操作'),409);return target;});this.active=new Set();}
  get db(){return this.catalog.db;}
  readOperation(id, requestId) {
   if (!idOK(requestId)) fail('INVALID_REQUEST_ID', '文件操作编号无效');
@@ -61,7 +62,7 @@ export class ProjectVideoFileOperations {
   for(const m of s.moves||[])if(m.overwrite)c.assertRenderUnusedFile(m.overwrite,s.nodes?.find(n=>n.path===m.overwrite)?.identity);
   if(trash||reject)for(const n of s.nodes||[])if(n.kind==='file')c.assertRenderUnusedFile(n.path,n.identity);
  }
- async snapshot(file){const root=await fs.lstat(file);if(root.isSymbolicLink())fail('SYMLINK_REJECTED','目录操作不处理符号链接，请先在访达中核对',409);const nodes=[];const visit=async p=>{const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory()&&!st.isFile())fail('UNSUPPORTED_ENTRY','目录中有链接或特殊文件，未开始操作',409);nodes.push({path:p,kind:st.isDirectory()?'directory':'file',identity:stamp(st)});if(st.isDirectory())for(const name of (await fs.readdir(p)).sort()){if(name.startsWith('.shiguang-video-'))fail('OPERATION_UNSETTLED','目录内仍有未结清操作，未开始整理',409);await visit(path.join(p,name));}};await visit(file);return nodes;}
+ async snapshot(file){const root=await fs.lstat(file);if(root.isSymbolicLink())fail('SYMLINK_REJECTED',platformWords('目录操作不处理符号链接，请先在访达中核对'),409);const nodes=[];const visit=async p=>{const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory()&&!st.isFile())fail('UNSUPPORTED_ENTRY','目录中有链接或特殊文件，未开始操作',409);nodes.push({path:p,kind:st.isDirectory()?'directory':'file',identity:stamp(st)});if(st.isDirectory())for(const name of (await fs.readdir(p)).sort()){if(name.startsWith('.shiguang-video-'))fail('OPERATION_UNSETTLED','目录内仍有未结清操作，未开始整理',409);await visit(path.join(p,name));}};await visit(file);return nodes;}
  async unchanged(nodes){for(const n of nodes){const st=await exists(n.path);const changed=!st||st.isSymbolicLink()||(n.kind==='directory'?(!st.isDirectory()||String(st.dev)!==n.identity.dev||String(st.ino)!==n.identity.ino):!equal(stamp(st),n.identity));if(changed)fail('FILE_OPERATION_CONFLICT','文件或目录在确认后发生变化，请重新预览',409);}const dirs=nodes.filter(n=>n.kind==='directory');for(const n of dirs){const expected=nodes.filter(x=>path.dirname(x.path)===n.path).map(x=>path.basename(x.path)).sort();if(!equal((await fs.readdir(n.path)).sort(),expected))fail('FILE_OPERATION_CONFLICT','目录内容在确认后变化，请重新预览',409);}}
  async preview(id,input){
   this.catalog.project(id,true);
@@ -113,7 +114,7 @@ export class ProjectVideoFileOperations {
     moves=[{source,target:destination,key:'item',kind:'move'}];
    }
   }else fail('INVALID_OPERATION','未知目录操作');
-  if(input.kind==='delete-folder'&&mode==='trash'&&!this.catalog.lib.trashBin&&!this.catalog.trashInjected)fail('TRASH_UNAVAILABLE','系统废纸篓不可用，不能执行全部删除',409);
+  if(input.kind==='delete-folder'&&mode==='trash'&&!this.catalog.lib.trashBin&&!this.catalog.trashInjected)fail('TRASH_UNAVAILABLE',platformWords('系统废纸篓不可用，不能执行全部删除'),409);
   for(const m of moves){folders.busyOperations(id,m.source);if(m.target)folders.busyOperations(id,m.target);}
   const conflicts=[],reserved=new Set(),selectedPaths=new Set(moves.map(m=>m.source));
   for(const move of moves){
@@ -148,7 +149,7 @@ export class ProjectVideoFileOperations {
   if(input.kind==='move-folder'&&folders.inRejectArea(id,input.destinationFolderId||'root',rows)&&shotUnion(adoption,sourceRows.map(v=>v.id)).length)fail('ADOPTED_FOLDER_MOVE_REJECTED','文件夹内有已采用视频，请逐项选择视频并确认解除采用',409);
   const sourceUnbindIds=videoMove&&explicitUnbind?movingIds:[],sourceUnbindShots=shotUnion(adoption,sourceUnbindIds),overwriteTargetUnbindShots=shotUnion(adoption,[...removeIds]),affected=shotUnion(adoption,[...new Set([...sourceUnbindIds,...removeIds])]);
   this.renderGuards(id,{input,source,folderId:folder?.id,moves,nodes,sourceRows,removeIds:[...removeIds]});
-  const description=videoMove?(batch?'批量移动视频':'移动视频'):input.kind==='rename-folder'?'重命名文件夹':input.kind==='move-folder'?'移动文件夹':mode==='trash'?'将文件夹及全部内容移入废纸篓':'将内容移回项目根目录后删除文件夹';
+  const description=videoMove?(batch?'批量移动视频':'移动视频'):input.kind==='rename-folder'?'重命名文件夹':input.kind==='move-folder'?'移动文件夹':mode==='trash'?platformWords('将文件夹及全部内容移入废纸篓'):'将内容移回项目根目录后删除文件夹';
   const plan={requestId:input.requestId,description,conflicts,affectedShots:affected,sourceUnbindShots,overwriteTargetUnbindShots,willUnbindAdoptions:explicitUnbind||affected.length>0,adoptionStamp:adoption.stamp,rolesRevision:roles.revision,destinationFolderId:input.destinationFolderId||'root',files:nodes.filter(n=>n.kind==='file').length,folders:nodes.filter(n=>n.kind==='directory').length,ready:conflicts.every(c=>['rename','overwrite'].includes(c.choice))};
   const data={args,input,plan,roles,databaseToken,root:root.target,source,folderId:folder?.id,nodes,parents,moves,sourceRows:sourceRows.map(s=>({id:s.id,path:s.path,identity:s.identity,revision:this.catalog.metadata(id,s).row?.revision||0})),folderRows:rows,folderStamp:digest(rows),removeIds:[...removeIds],sourceUnbindIds,strictUnbind:batch||explicitUnbind,adoptionStamp:adoption.stamp,status:'preview',description,steps:[],created:Date.now()};
   plan.previewHash=digest(data);data.plan=plan;

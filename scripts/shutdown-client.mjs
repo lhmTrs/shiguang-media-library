@@ -1,3 +1,4 @@
+import {runtimeIdentityMatches} from '../server/runtime-binding.mjs';
 import {verifyShutdownReceipt} from '../server/application-shutdown.mjs';
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const safeFailure=()=>({phase:'UNKNOWN',code:'SHUTDOWN_UNCONFIRMED'});
@@ -15,7 +16,7 @@ async function boundedJSON(response){
 
 // Import/construction do not read server.json, open paths or call fetch.
 // readReceipt is a trusted integration adapter, NOT a request-supplied file path.
-// This preparation module has no production cross-process receipt reader yet.
+// stop-windows.mjs supplies the guarded production cross-process reader.
 export function createShutdownClient({fetchImpl=globalThis.fetch,readReceipt,budgetMs=10000,pollMs=25}={}){
  if(!Number.isInteger(budgetMs)||budgetMs<20||budgetMs>30000||!Number.isInteger(pollMs)||pollMs<5||pollMs>1000)throw Error('INVALID_CLIENT_CONFIG');
  let current=null,pending=null;
@@ -42,8 +43,9 @@ export function createShutdownClient({fetchImpl=globalThis.fetch,readReceipt,bud
   pending=(async()=>{
    try{
     const session=await requestJSON('/api/session');const identity=session.json;
-    if(session.status!==200||identity.app!=='shiguang-local-media'||identity.instanceId!==expected.libraryId||identity.runId!==expected.runId||typeof identity.token!=='string'||!/^[A-Za-z0-9_-]{32,256}$/.test(identity.token))throw Error('WRONG_IDENTITY');
+    if(session.status!==200||identity.app!=='shiguang-local-media'||identity.instanceId!==expected.libraryId||typeof identity.token!=='string'||!/^[A-Za-z0-9_-]{32,256}$/.test(identity.token))throw Error('WRONG_IDENTITY');
     const token=identity.token;const cookie=session.headers.get('set-cookie')?.split(';')[0];if(!cookie||!/^media_session=[A-Za-z0-9_-]{16,256}$/.test(cookie))throw Error('INVALID_SESSION');
+    const binding=await requestJSON('/api/application/identity',{headers:{cookie,origin}});if(binding.status!==200||!runtimeIdentityMatches(expected,identity,binding.json))throw Error('WRONG_IDENTITY');
     const result=await requestJSON('/api/application/shutdown',{method:'POST',headers:{'content-type':'application/json','x-local-token':token,cookie,origin},body:JSON.stringify({runId:expected.runId,requestId:expected.requestId})});
     if(result.status!==202||result.json.phase!=='ACCEPTED'||result.json.runId!==expected.runId||result.json.requestId!==expected.requestId)throw Error('NOT_ACCEPTED');
     while(performance.now()<deadline){

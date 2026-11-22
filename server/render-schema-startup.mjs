@@ -84,7 +84,7 @@ async function readState(dir,key){
 async function mysqlDomain(dir,identity){
  if(!dir)throw error('unknown_outcome');
  const st=await fs.lstat(dir);
- if(!st.isDirectory()||st.isSymbolicLink()||await fs.realpath(dir)!==dir||st.mode&0o077)throw error('unknown_outcome');
+ if(!st.isDirectory()||st.isSymbolicLink()||await fs.realpath(dir)!==dir||process.platform!=='win32'&&(st.mode&0o077))throw error('unknown_outcome');
  return 'render-schema-startup-v2:'+digest(JSON.stringify({identity,dev:String(st.dev),ino:String(st.ino),birthtimeMs:st.birthtimeMs}));
 }
 async function verifyDomain(shape,dir,identity,state){

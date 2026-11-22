@@ -1,8 +1,9 @@
+import {platformWords} from '../platform-words.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {spawn} from '../background-process.mjs';
 
-const failure=(code,message)=>Object.assign(new Error(message+'；原文件仍保留，可在访达中打开'),{code,status:503});
+const failure=(code,message)=>Object.assign(new Error(message+platformWords('；原文件仍保留，可在访达中打开')),{code,status:503});
 export const previewSourceLimit=128*1024*1024;
 const outputLimit=4*1024*1024;
 
