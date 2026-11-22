@@ -17,10 +17,11 @@ test('Windows Codex skips earlier cmd, chooses native PATH, then npm vendor with
  const options={platform:'win32',arch:'x64',env:{PATH:[early,late].join(';')}};
  assert.equal(await findCodex(options),native);await fs.unlink(native);
  const vendor=await put(path.join(early,'node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe'));
- assert.equal(await findCodex(options),vendor);
+ assert.equal(await findCodex(options),vendor);await fs.unlink(vendor);
+ const nested=await put(path.join(early,'node_modules','@openai','codex','node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe'));assert.equal(await findCodex(options),nested);
  await assert.rejects(findCodex({...options,env:{MEDIA_CODEX_BIN:path.join(early,'codex.cmd')}}),{code:'CODEX_NATIVE_BINARY_REQUIRED'});
  await assert.rejects(findCodex({...options,env:{MEDIA_CODEX_BIN:path.join(early,'absent.exe')}}),{code:'CODEX_NOT_INSTALLED'});
- assert.equal(await findCodex({...options,env:{MEDIA_CODEX_BIN:vendor}}),await fs.realpath(vendor));
+ assert.equal(await findCodex({...options,env:{MEDIA_CODEX_BIN:nested}}),await fs.realpath(nested));
 });
 test('media discovery resolves exe and explicit paths, rejects shim/missing override, keeps Mac route',async t=>{
  const dir=await temporary(t),early=path.join(dir,'early'),late=path.join(dir,'late');await put(path.join(early,'ffmpeg.cmd'));

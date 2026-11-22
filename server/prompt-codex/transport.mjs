@@ -24,7 +24,10 @@ export async function findCodex({env=process.env,platform=process.platform,arch=
   const candidates = directories.flatMap(dir=>names.map(name=>path.join(dir,name)));
   if (platform==='win32') {
     const triple=arch==='x64'?'x86_64-pc-windows-msvc':arch==='arm64'?'aarch64-pc-windows-msvc':null;
-    if(triple)for(const dir of directories)for(const modules of [path.join(dir,'node_modules'),path.resolve(dir,'..')])for(const pkg of ['codex','codex-win32-'+arch])for(const bin of ['bin','codex'])candidates.push(path.join(modules,'@openai',pkg,'vendor',triple,bin,'codex.exe'));
+    if(triple)for(const dir of directories)for(const modules of [path.join(dir,'node_modules'),path.resolve(dir,'..')]){
+      for(const pkg of ['codex','codex-win32-'+arch])for(const bin of ['bin','codex'])candidates.push(path.join(modules,'@openai',pkg,'vendor',triple,bin,'codex.exe'));
+      for(const bin of ['bin','codex'])candidates.push(path.join(modules,'@openai','codex','node_modules','@openai','codex-win32-'+arch,'vendor',triple,bin,'codex.exe'));
+    }
   }
   if (platform==='darwin') candidates.push(
     '/Applications/Codex.app/Contents/Resources/codex',
