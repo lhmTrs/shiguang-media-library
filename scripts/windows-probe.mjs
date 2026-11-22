@@ -2,16 +2,27 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {spawn,execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-const exec=promisify(execFile);
 const safeError=e=>({code:/^[A-Z0-9_]+$/.test(String(e.code))?e.code:'PROBE_ERROR'});
 async function probe({output=path.resolve('reports/windows-probe')}={}) {
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-win-probe-')));
  const results=[];
  const check=async(id,fn)=>{try{results.push({id,status:'observed',result:await fn()});}catch(e){results.push({id,status:'failed',error:safeError(e)});}};
- const command=async(exe,args,options={})=>{if(options.stdio)return new Promise(resolve=>{const child=spawn(exe,args,{...options,windowsHide:true});let stdout='',done=false;const timer=setTimeout(()=>child.kill('SIGTERM'),20000);const finish=result=>{if(done)return;done=true;clearTimeout(timer);resolve(result);};child.stdout.on('data',b=>{if(stdout.length<1024*1024)stdout+=b;});child.stderr.on('data',()=>{});child.once('error',e=>finish({ok:false,...safeError(e)}));child.once('close',(code,signal)=>finish(code===0&&!signal?{ok:true,stdout}:{ok:false,code:signal?'TOOL_TIMEOUT':'TOOL_FAILED'}));});try{const r=await exec(exe,args,{timeout:20000,maxBuffer:1024*1024,windowsHide:true,...options});return{ok:true,stdout:r.stdout};}catch(e){return{ok:false,...safeError(e)};}};
+ const command=async(exe,args,options={})=>new Promise(resolve=>{
+  let child;try{child=spawn(exe,args,{stdio:['ignore','pipe','pipe'],...options,windowsHide:true});}catch(e){resolve({ok:false,...safeError(e)});return;}
+  let stdout='',streamError=null,done=false;
+  const timer=setTimeout(()=>child.kill('SIGTERM'),20000);
+  const finish=result=>{if(done)return;done=true;clearTimeout(timer);resolve(result);};
+  // Windows may expose an inherited regular descriptor as a disconnected Socket.
+  // Record that observation, rather than allowing an unhandled stream error to
+  // prevent every report from being written.
+  for(const stream of child.stdio)stream?.on?.('error',e=>{streamError=safeError(e);});
+  child.stdout.on('data',b=>{if(stdout.length<1024*1024)stdout+=b;});
+  child.stderr.on('data',()=>{});
+  child.once('error',e=>finish({ok:false,...safeError(e)}));
+  child.once('close',(code,signal)=>finish(streamError?{ok:false,...streamError}:code===0&&!signal?{ok:true,stdout}:{ok:false,code:signal?'TOOL_TIMEOUT':'TOOL_FAILED'}));
+ });
  try {
   await check('directory-fsync',async()=>{let h;try{h=await fs.open(root,'r');await h.sync();return{supported:true};}catch(e){return{supported:false,...safeError(e)};}finally{await h?.close();}});
   await check('stat-and-inode',async()=>{const f=path.join(root,'identity');await fs.writeFile(f,'synthetic');const normal=await fs.stat(f),big=await fs.stat(f,{bigint:true});return{mode:normal.mode,uid:normal.uid,getuidAvailable:typeof process.getuid==='function',inodeExact:BigInt(normal.ino)===big.ino,inodeBeyondSafeInteger:big.ino>BigInt(Number.MAX_SAFE_INTEGER)};});
