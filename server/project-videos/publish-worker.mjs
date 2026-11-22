@@ -58,8 +58,13 @@ async function copyWithProof(stage,stageIdentity,name){
     try{await output?.close();}finally{await source.close();}
   }
 }
+async function syncWindowsCopy(name){
+  const before=await fs.lstat(name);if(!regular(before)||before.nlink!==1)throw Error('副本身份变化，未清理暂存');
+  const h=await fs.open(name,constants.O_RDWR|(constants.O_NOFOLLOW||0));
+  try{if(identity(await h.stat())!==identity(before))throw Error('副本身份变化，未清理暂存');await h.sync();if(identity(await fs.lstat(name))!==identity(await h.stat()))throw Error('副本位置变化，未清理暂存');return identity(await h.stat());}finally{await h.close();}
+}
 async function publish(name,{stage,stageIdentity,st,copyOnly,reportIdentity}){
-  if(copyOnly===true){await fs.copyFile(stage,name,constants.COPYFILE_EXCL);return;}
+  if(copyOnly===true){await fs.copyFile(stage,name,constants.COPYFILE_EXCL);if(process.platform==='win32'){const proof=await syncWindowsCopy(name);return reportIdentity?proof:undefined;}return;}
   try{await fs.link(stage,name);}catch(e){
     if(e.code!=='EXDEV')throw e;
     if(reportIdentity)return copyWithProof(stage,stageIdentity,name);

@@ -5,11 +5,16 @@ import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
 const identity=s=>[s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs].join(':');
+async function syncWindowsCopy(name){
+ const before=await fs.lstat(name);if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1)throw Error('副本身份变化，未清理暂存');
+ const h=await fs.open(name,constants.O_RDWR|(constants.O_NOFOLLOW||0));try{if(identity(await h.stat())!==identity(before))throw Error('副本身份变化，未清理暂存');await h.sync();if(identity(await fs.lstat(name))!==identity(await h.stat()))throw Error('副本位置变化，未清理暂存');}finally{await h.close();}
+}
+
 try{
   const {directory,stage,stageIdentity,fileName,suffixed}=JSON.parse(process.argv[2]);
   if(typeof stage!=='string'||!path.isAbsolute(stage)||path.basename(stage)!=='original.partial'||!(path.basename(path.dirname(stage)).startsWith('shiguang-reference-import-')||process.platform==='win32'&&path.basename(path.dirname(stage)).startsWith('.shiguang-reference-import-'))||typeof fileName!=='string'||!fileName||path.basename(fileName)!==fileName||/[\\/\x00-\x1f]/.test(fileName))throw Error('Invalid publication metadata');
   const dir=await fs.stat('.');if(!dir.isDirectory()||dir.dev!==directory.dev||dir.ino!==directory.ino)throw Error('项目图片文件夹已变化');
   const st=await fs.lstat(stage);if(!st.isFile()||st.isSymbolicLink()||identity(st)!==stageIdentity)throw Error('待导入图片已变化');
   const ext=path.extname(fileName),stem=fileName.slice(0,fileName.length-ext.length);let number=0,rename=suffixed;
-  while(true){const name=rename?stem+'_'+(number++)+ext:fileName;try{if(process.platform==='win32')await fs.copyFile(stage,name,constants.COPYFILE_EXCL);else try{await fs.link(stage,name);}catch(e){if(e.code!=='EXDEV')throw e;await fs.copyFile(stage,name,constants.COPYFILE_EXCL);}process.stdout.write(JSON.stringify({fileName:name}));break;}catch(e){if(e.code!=='EEXIST')throw e;rename=true;}}
+  while(true){const name=rename?stem+'_'+(number++)+ext:fileName;try{if(process.platform==='win32'){await fs.copyFile(stage,name,constants.COPYFILE_EXCL);await syncWindowsCopy(name);}else try{await fs.link(stage,name);}catch(e){if(e.code!=='EXDEV')throw e;await fs.copyFile(stage,name,constants.COPYFILE_EXCL);}process.stdout.write(JSON.stringify({fileName:name}));break;}catch(e){if(e.code!=='EEXIST')throw e;rename=true;}}
 }catch(e){process.stderr.write(e.message);process.exitCode=1;}
