@@ -34,16 +34,16 @@ async function running(record) {
   }
 }
 try {
-  const record = JSON.parse(
-    await fsp.readFile(path.join(data, "server.json"), "utf8"),
-  );
+  const recordFile=path.join(data,'server.json');
+  if(process.platform==='win32'){const st=await fsp.lstat(recordFile);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size>8192)throw Object.assign(Error('运行记录无法核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});}
+  const record = JSON.parse(await fsp.readFile(recordFile,'utf8'));
   if (await running(record)) {
     console.log(record.url);
     if (process.argv.includes("--open"))
       openBrowser(record.url);
     process.exit(0);
   }
-} catch(error) {if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;}
+} catch(error) {if(process.platform==='win32'&&error.code!=='ENOENT')throw Object.assign(Error('运行记录无法核清，未启动另一个实例'),{code:'RUNTIME_IDENTITY_UNCONFIRMED'});if(error.code==='RUNTIME_IDENTITY_UNCONFIRMED')throw error;}
 try {
   await fsp.access(path.join(project, "dist/index.html"));
 } catch {
