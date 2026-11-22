@@ -1,11 +1,12 @@
-import fs from 'node:fs/promises';
+import {syncDir,posixPrivate} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import {constants} from 'node:fs';
 import path from 'node:path';
 export const failure=code=>Object.assign(Error(code),{code});
 const same=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
 export async function directory(file,{privateMode=false}={}){
  const s=await fs.lstat(file);
- if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==process.getuid?.()||privateMode&&(s.mode&0o077)||await fs.realpath(file)!==file)throw failure('unsafe_record');
+ if(!s.isDirectory()||s.isSymbolicLink()||process.platform!=='win32'&&(s.uid!==process.getuid?.()||privateMode&&(s.mode&0o077))||await fs.realpath(file)!==file)throw failure('unsafe_record');
  return s;
 }
 export async function readJson(file,{limit=8*1024*1024,budget={left:32*1024*1024},privateMode=false}={}){
@@ -14,7 +15,7 @@ export async function readJson(file,{limit=8*1024*1024,budget={left:32*1024*1024
  const h=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
  try{
   const before=await h.stat();
-  if(!before.isFile()||before.uid!==process.getuid?.()||privateMode&&(before.mode&0o077))throw failure('unsafe_record');
+  if(!before.isFile()||process.platform!=='win32'&&(before.uid!==process.getuid?.()||privateMode&&(before.mode&0o077)))throw failure('unsafe_record');
   if(before.size>limit||before.size>budget.left)throw failure('read_limit');budget.left-=before.size;
   const buffer=Buffer.alloc(before.size+1);let size=0;
   while(size<buffer.length){const r=await h.read(buffer,size,buffer.length-size,size);if(!r.bytesRead)break;size+=r.bytesRead;}
@@ -38,7 +39,7 @@ export async function writePrivate(file,value){
   h=await fs.open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
   await h.writeFile(JSON.stringify(value));await h.sync();await h.close();h=null;
   if(!same(parent,await directory(folder,{privateMode:true})))throw failure('unsafe_record');
-  try{const old=await fs.lstat(file);if(!old.isFile()||old.isSymbolicLink()||old.uid!==process.getuid?.()||old.mode&0o077)throw failure('unsafe_record');}catch(e){if(e.code!=='ENOENT')throw e;}
-  await fs.rename(temp,file);const d=await fs.open(folder,constants.O_RDONLY);try{await d.sync();}finally{await d.close();}
+  try{const old=await fs.lstat(file);if(!old.isFile()||old.isSymbolicLink()||!posixPrivate(old))throw failure('unsafe_record');}catch(e){if(e.code!=='ENOENT')throw e;}
+  await fs.rename(temp,file);await syncDir(folder);
  }finally{await h?.close();await fs.unlink(temp).catch(()=>{});}
 }

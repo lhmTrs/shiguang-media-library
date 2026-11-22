@@ -10,7 +10,7 @@
 //
 // 服务启动早期（应用还没注册自己的关闭处理）收到 SIGTERM/SIGINT/SIGHUP：先结束编译，再按系统默认
 // 行为退出。应用已经注册了处理时，只结束编译，退出交给应用。
-import {execFile, spawn, spawnSync} from 'node:child_process';
+import {execFile, spawn, spawnSync} from './background-process.mjs';
 import {promisify} from 'node:util';
 
 const execFileAsync = promisify(execFile);

@@ -1,4 +1,4 @@
-import {execFile,spawn} from 'node:child_process';
+import {execFile,spawn} from './background-process.mjs';
 import {promisify} from 'node:util';
 import {mediaCommand} from './media-tool.mjs';
 const nativeRun=promisify(execFile);

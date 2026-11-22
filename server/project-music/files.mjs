@@ -1,8 +1,9 @@
+import {syncDir} from '../fs-platform.mjs';
 // 项目音乐文件（PR3，SPEC 第十一节）：<personal_item>/music/<项目>--<id>/歌曲/<歌名>/第NN轮/<歌名>-第NN轮-<标签>.<扩展名>
 // personal_item/music 由 store 登记成音乐库根目录（显示名「AI生成」），全部版本都进全库索引。
 // PR1、PR2 时期的旧位置 <数据目录>/project-music/… 只读：用来搬迁，旧副本等用户确认后再移到废纸篓。
 // 文件身份：保存 dev/ino/size/mtime/ctime 与 SHA-256；读取前核对，变了就拒绝，不悄悄换内容。
-import fs from 'node:fs/promises';
+import fs from '../fs-platform.mjs';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import {constants} from 'node:fs';
@@ -176,8 +177,7 @@ export class MusicFiles {
         }
       }
       await fs.unlink(stage);
-      const handle = await fs.open(folder, constants.O_RDONLY | constants.O_DIRECTORY);
-      try { await handle.sync(); } finally { await handle.close(); }
+      await syncDir(folder,{flags:constants.O_RDONLY|constants.O_DIRECTORY});
       const file = path.join(folder, name);
       return {rel: `${folderRel}/${name}`, fileName: name, identity: stamp(await fs.lstat(file))};
     }

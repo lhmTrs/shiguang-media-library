@@ -1,4 +1,7 @@
-import fs from 'node:fs/promises';
+import {heldInput} from '../held-input.mjs';
+import {pipeline} from 'node:stream/promises';
+import {syncDir} from '../fs-platform.mjs';
+import fs from '../fs-platform.mjs';
 import path from 'node:path';
 import {constants} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
@@ -116,6 +119,7 @@ async function audioDuration(file,{signal}={}) {
     if(!same(stamp(await handle.stat()),file.identity))throw error('INTAKE_SOURCE_CHANGED','读取时长期间原文件已变化');
     await parentUnchanged(file);await unchanged(file.path,file.identity);
   };
+  let feeding;
   try {
     await verify();
     const seconds=await new Promise(resolve=>{
@@ -124,7 +128,8 @@ async function audioDuration(file,{signal}={}) {
         '-format_whitelist','mp3,wav,mov,mp4,m4a,3gp,3g2,mj2,aac,aiff,flac,ogg',
         '-probesize','5000000','-analyzeduration','5000000','-select_streams','a',
         '-show_entries','format=duration:stream=codec_type','-of','json','-i',
-        process.platform==='win32'?'pipe:3':'/dev/fd/3'],{stdio:['ignore','pipe','ignore',handle.fd],windowsHide:true,env});
+        process.platform==='win32'?'pipe:0':'/dev/fd/3'],{stdio:process.platform==='win32'?['pipe','pipe','ignore']:['ignore','pipe','ignore',handle.fd],windowsHide:true,env});
+      if(process.platform==='win32'){const input=heldInput(handle);child.once('close',()=>input.destroy());feeding=pipeline(input,child.stdin).catch(e=>{if(!['EPIPE','ERR_STREAM_PREMATURE_CLOSE'].includes(e.code))child.kill('SIGTERM');});}
       let output='',stopped=false;
       const stop=()=>{stopped=true;child.kill('SIGKILL');};
       const timer=setTimeout(stop,2000);
@@ -143,7 +148,7 @@ async function audioDuration(file,{signal}={}) {
     });
     signal?.throwIfAborted();await verify();
     return seconds;
-  } finally {await handle.close();}
+  } finally {if(feeding)await feeding;await handle.close();}
 }
 
 export async function revalidateSelection(file) {
@@ -191,8 +196,7 @@ export class Receipts {
       published=true;stage='verify-publication';
       if(JSON.stringify(await this.read(kind,id))!==JSON.stringify(value))throw error('INTAKE_RECEIPT_INVALID','发布后的回执与本次请求不一致');
       stage='directory-sync';
-      const dir=await fs.open(path.dirname(target),'r');
-      try {await dir.sync();} finally {await dir.close();}
+      await syncDir(path.dirname(target));
     } catch(cause) {
       // Publication may have happened even if its observation failed. Never
       // unlink the target, adopt it as accepted, or schedule work in that case.
