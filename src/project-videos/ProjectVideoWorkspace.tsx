@@ -23,7 +23,7 @@ import {actionPending, capability, revealDispatched, skippedText, useDesktopActi
 import {ContentChangeBanner, ContentChangeDialog, useContentChange} from './ContentChange';
 import {MAX_REJECT, RejectBanner, RejectDialog, rejectNeedsCheck, rejectSubtree, useRejectTask} from './RejectArea';
 import type {FolderView} from './types';
-import {pastedPath, serverIsMac, shortcut, usePlatformWords} from '../platform-words';
+import {hasPastedPath, pastedPath, serverIsMac, shortcut, usePlatformWords} from '../platform-words';
 
 type MenuName = 'more' | 'dir' | 'detail' | 'ctx';
 type PromptDraft = { mode: PromptInput['mode']; id: string; title: string; text: string };
@@ -1076,7 +1076,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         <p className="pv-path">记录位置：{confirmation.video.path}</p>
         <label className="pv-field">同内容视频文件的绝对路径<input value={confirmation.path} disabled={locked || task?.kind === 'relink' && unresolved} placeholder="粘贴文件的完整路径" onChange={e => setConfirmation({ ...confirmation, path: e.target.value })}/></label>
         {task?.kind === 'relink' && taskPanel(task)}
-        <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !pastedPath(confirmation.path) || task?.kind === 'relink' && unresolved} onClick={() => void confirmAction()}>确认核验并复制</button></ModalActions>
+        <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !hasPastedPath(confirmation.path) || task?.kind === 'relink' && unresolved} onClick={() => void confirmAction()}>确认核验并复制</button></ModalActions>
       </>}
     </Modal>}
   </div>;

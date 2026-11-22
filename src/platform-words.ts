@@ -77,8 +77,11 @@ export function shortcut(...keys: string[]) {
 export const modKey = () => (browserIsMac() ? MAC_KEYS : PC_KEYS).mod;
 
 // ---- 粘贴进来的路径 ----
-/** 去掉首尾空白和首尾成对的引号：Windows「复制为路径」会带双引号（"D:\素材\音乐"）。两边都对的修正，不分系统。 */
+/** 去掉首尾空白和首尾成对的引号：Windows「复制为路径」会带双引号（"D:\素材\音乐"）。两边都对的修正，不分系统。
+ *  引号里面的字一个不动：目录名可以以空格开头或结尾（「所选目录 」和「所选目录」是两个目录），trim 掉就会选到另一个。 */
 export function pastedPath(value: string) {
   const text = value.trim();
-  return text.length >= 2 && (text[0] === '"' || text[0] === "'") && text[text.length - 1] === text[0] ? text.slice(1, -1).trim() : text;
+  return text.length >= 2 && (text[0] === '"' || text[0] === "'") && text[text.length - 1] === text[0] ? text.slice(1, -1) : text;
 }
+/** 按钮能不能点：去掉引号后还有非空白字符。只管禁用，不改要提交的路径。 */
+export const hasPastedPath = (value: string) => !!pastedPath(value).trim();

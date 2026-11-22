@@ -126,7 +126,7 @@ import { usePaperTrial } from "./paper/trial";
 import { BackgroundTasks, type TaskSummary } from "./paper/BackgroundTasks";
 import { RowThumb } from "./paper/RowThumb";
 import "./paper/paper.css";
-import { pastedPath, setServerPlatform, usePlatformWords } from "./platform-words";
+import { hasPastedPath, pastedPath, setServerPlatform, usePlatformWords } from "./platform-words";
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
@@ -3398,7 +3398,7 @@ function App() {
                       {busy ? "等待文件夹选择…" : "选择文件夹"}
                     </button>
                   </div>
-                  <div className="folder-path-entry"><label className="library-folder-path-field"><span>文件夹绝对路径</span><input aria-label="素材文件夹绝对路径" dir="ltr" placeholder="例如 D:\素材\音乐 或 /Volumes/素材" value={folderPath} onChange={e => setFolderPath(e.target.value)}/></label><button className="plain" disabled={busy || !pastedPath(folderPath)} onClick={() => void run(async () => { await api("/roots", { path: pastedPath(folderPath), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
+                  <div className="folder-path-entry"><label className="library-folder-path-field"><span>文件夹绝对路径</span><input aria-label="素材文件夹绝对路径" dir="ltr" placeholder="例如 D:\素材\音乐 或 /Volumes/素材" value={folderPath} onChange={e => setFolderPath(e.target.value)}/></label><button className="plain" disabled={busy || !hasPastedPath(folderPath)} onClick={() => void run(async () => { await api("/roots", { path: pastedPath(folderPath), kind: folderKind }); setFolderPath(""); await refresh(); await loadAllRoots(); setNotice("已登记目录，开始扫描"); })}><FolderPlus size={16}/>添加路径</button></div>
                   {allRoots.map((r) => (
                     <div className={"folder-record" + (r.retired ? " is-retired" : "")} key={r.id}>
                       <FolderOpen size={21} />
@@ -3543,7 +3543,7 @@ function App() {
                           <div className="folder-edit-actions">
                             <button
                               className="primary"
-                              disabled={busy || !rootEdit.name.trim() || !pastedPath(rootEdit.path)}
+                              disabled={busy || !rootEdit.name.trim() || !hasPastedPath(rootEdit.path)}
                               onClick={() =>
                                 void runWith("正在迁移目录位置…", async () => {
                                   const next = pastedPath(rootEdit.path);

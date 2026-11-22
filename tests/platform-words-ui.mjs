@@ -84,6 +84,24 @@ try {
       await expect(drawer(page).getByRole('heading', { name: '访达右键入口' })).toBeVisible();
       await drawer(page).getByRole('button', { name: '关闭文件任务', exact: true }).click();
     });
+    await check('粘贴路径：只去外侧空白和成对引号，引号里的首尾空格保留，不会选到并排的另一个目录；拦下请求不写库', async () => {
+      // 并排的合成目录：名字只差首尾一个空格，在 macOS / POSIX 上是三个不同的目录
+      const plain = path.join(temp, '所选目录'), trailing = plain + ' ', leading = path.join(temp, ' 所选目录');
+      for (const dir of [plain, trailing, leading]) await fs.mkdir(dir);
+      const real = await Promise.all([plain, trailing, leading].map(d => fs.realpath(d))); assert.equal(new Set(real).size, 3);
+      const sent = [];
+      await page.route(url => url.pathname === '/api/roots', route => { if (route.request().method() !== 'POST') return route.fallback(); sent.push(route.request().postDataJSON().path); return route.fulfill({ status: 400, json: { error: '测试拦截，未登记' } }); });
+      await page.getByRole('button', { name: '管理素材目录' }).click();
+      const input = page.getByRole('textbox', { name: '素材文件夹绝对路径' }), add = page.getByRole('button', { name: '添加路径' });
+      for (const [typed, expected] of [['"' + trailing + '"', trailing], ['  "' + leading + '"  ', leading], ["'" + trailing + "'", trailing], ['  ' + plain + '  ', plain], ['"' + plain + '"', plain]]) {
+        await input.fill(typed); await add.click(); await expect.poll(() => sent.length).toBeGreaterThan(0);
+        assert.equal(sent.pop(), expected, '输入 ' + JSON.stringify(typed));
+      }
+      for (const blank of ['""', '"   "', '   ']) { await input.fill(blank); await expect(add).toBeDisabled(); }
+      assert.equal((await api('/roots')).length, 1, '只有开头登记的合成照片目录');
+      await page.unroute(url => url.pathname === '/api/roots');
+      await page.locator('.modal-head').getByRole('button', { name: '关闭窗口' }).click();
+    });
     await check('Mac：素材列表的定位按钮悬停写「在访达中显示」', async () => {
       await page.goto(origin + '/#/photos'); await expect(page.getByRole('button', { name: '定位素材：甲.png' })).toHaveAttribute('title', '在访达中显示');
     });
