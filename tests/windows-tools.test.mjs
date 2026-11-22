@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {readExiftool} from '../server/exiftool-read.mjs';
 import {EventEmitter} from 'node:events';
+import {spawn} from 'node:child_process';
 import {tempDirectories} from './helpers/temp-cleanup.mjs';
 import {mediaCommand} from '../server/media-tool.mjs';
 import {findCodex} from '../server/prompt-codex/transport.mjs';
@@ -45,4 +46,14 @@ test('Windows installed media tools read a synthetic Unicode filename', {skip:pr
  await runMedia('ffmpeg',['-v','error','-nostdin','-f','lavfi','-i','color=c=green:s=64x64:r=5:d=1','-c:v','mpeg4',file],{timeout:20000});
  const {stdout}=await runMedia('ffprobe',['-v','error','-show_entries','format=duration','-of','json',file],{timeout:10000});assert.ok(Number(JSON.parse(stdout).format.duration)>0);
  try{const {stdout}=await readExiftool(file,['-j','-FileType'],{timeout:10000});assert.equal(JSON.parse(stdout)[0].FileType,'MP4');}catch(e){console.log('Synthetic ExifTool diagnostic:',String(e.stderr||e.code).replaceAll(dir,'<owned-fixture>').slice(0,1000));throw Error('WINDOWS_EXIFTOOL_UNICODE_FAILED');}
+});
+
+test('Windows actual Node stdin consumer exits early without invalidating the held source handle',{skip:process.platform!=='win32'},async t=>{
+ const dir=await temporary(t),file=path.join(dir,'large-owned.bin');const h=await fs.open(file,'wx');await h.truncate(32*1024*1024);await h.close();
+ const initial=await fs.stat(file);let closed=false,exitCode;
+ const spawnImpl=(command,args,options)=>{assert.equal(command,process.execPath);assert.equal(options.shell,false);const child=spawn(process.execPath,['-e','process.stdout.write(JSON.stringify([{FileType:"MP4"}]))'],options);child.once('close',code=>{closed=true;exitCode=code;});return child;};
+ const result=await readExiftool(file,['-j'],{env:{...process.env,MEDIA_EXIFTOOL_BIN:process.execPath},spawnImpl,timeout:5000});
+ assert.equal(JSON.parse(result.stdout)[0].FileType,'MP4');assert.equal(closed,true);assert.equal(exitCode,0);assert.equal((await fs.stat(file)).size,initial.size);
+ // This is an actual Windows FileHandle/pipe/Node exit regression; the custom
+ // consumer is not claimed to be ExifTool metadata validation.
 });
