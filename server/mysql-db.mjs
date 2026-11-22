@@ -164,6 +164,13 @@ export class MysqlDatabase {
     } catch (error) { this.worker.unref(); this.port.unref(); throw error; }
     finally { clearTimeout(timer); }
   }
+  async closeNormally() {
+    if(this.closed)throw Error('数据库关闭身份未知');
+    const exited=new Promise((resolve,reject)=>{this.worker.once('exit',code=>code===0?resolve():reject(Error('数据库Worker退出未知')));this.worker.once('error',reject);});
+    // No terminate/kill: request a real connection.end and require ACK + exit.
+    if(this.request('',[],'close')!==true)throw Error('数据库关闭ACK未知');this.closed=true;this.port.close();
+    let timer;try{await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('数据库Worker关闭未确认')),10000);})]);}finally{clearTimeout(timer);}
+  }
   close() {
     if (migrationConnections.has(this)) throw Error("迁移连接必须等待正常关闭回执");
     if (this.closed) return;

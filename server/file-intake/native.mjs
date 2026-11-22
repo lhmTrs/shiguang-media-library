@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -157,7 +158,7 @@ export class IntakeNative {
     }catch(cause){return ['ENOENT','ENOTDIR','ELOOP','INTAKE_INSTALL_CONFLICT'].includes(cause.code)?false:null;}
   }
   async finishInstall(job,previous,failure,result){
-    const problem=failure?installError(failure,'访达入口安装失败，请核对后重试'):null;
+    const problem=failure?installError(failure,platformWords('访达入口安装失败，请核对后重试')):null;
     const terminal={
       ...job,stage:failure?'failed':'done',finishedAt:Date.now(),error:problem,
       message:problem?.message??result.message,previousKept:failure?await this.previousKept(previous):null,
@@ -170,7 +171,7 @@ export class IntakeNative {
   }
   assertInstallAllowed(){
     if(this.closing)throw error('APPLICATION_CLOSING','服务正在关闭，未安装右键入口',503);
-    if(!this.supported())throw error('INTAKE_MAC_ONLY','访达右键入口目前仅支持本机 Mac',400);
+    if(!this.supported())throw error('INTAKE_MAC_ONLY',platformWords('访达右键入口目前仅支持本机 Mac'),400);
   }
   async ownedWorkflow(target) {
     let st;

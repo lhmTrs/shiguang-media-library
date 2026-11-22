@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {canonical,fault,idOK} from './model.mjs';
@@ -18,7 +19,7 @@ function selection(input, withToken=false){
     input.items.some(x=>!x||Object.keys(x).length!==2||!idOK(x.bindingId)||!Number.isSafeInteger(x.bindingRevision)||x.bindingRevision<1)||
     new Set(input.items.map(x=>x.bindingId.toLowerCase())).size!==input.items.length)
     reject('IMAGE_SELECTION_INVALID','请选择 1 至 50 条带当前版本的图片绑定',400);
-  if(withToken&&!idOK(input.previewToken))reject('PREVIEW_REQUIRED','请先核对访达操作影响');
+  if(withToken&&!idOK(input.previewToken))reject('PREVIEW_REQUIRED',platformWords('请先核对访达操作影响'));
   return {...input,items:input.items.map(({bindingId,bindingRevision})=>({bindingId,bindingRevision}))};
 }
 
@@ -154,11 +155,11 @@ export class ProjectAssetDesktopActions {
     const input=selection(body,true);
     return this.journal.start(id,'reveal',input,async s=>{
       let original;
-      try{original=this.journal.row(id,input.previewToken);}catch{reject('PREVIEW_STALE','访达核对已失效，请重新核对');}
+      try{original=this.journal.row(id,input.previewToken);}catch{reject('PREVIEW_STALE',platformWords('访达核对已失效，请重新核对'));}
       const preview=original.preview;
       if(original.action!=='reveal-preview'||!['completed','partial'].includes(original.status)||!preview||
         preview.expiresAt<=Date.now()||preview.selection!==canonical([input.mode,input.items]))
-        reject('PREVIEW_STALE','访达核对已过期或选择变化，请重新核对');
+        reject('PREVIEW_STALE',platformWords('访达核对已过期或选择变化，请重新核对'));
       await this.require(id,'revealMany');
       try{await this.recheck(id,input,preview.eligible);}catch(e){
         if(e.code==='ASSET_DESKTOP_CLOSING')throw e;

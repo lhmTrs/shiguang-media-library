@@ -1,3 +1,4 @@
+import {platformWords} from './platform-words.mjs';
 /**
  * T-LOCAL-013B：本地音频分析任务队列（内存态、单 worker）。
  *
@@ -86,7 +87,7 @@ const MESSAGES = Object.freeze({
   ASSET_BUSY: "素材正被其它操作占用",
   UNSUPPORTED_ASSET: "素材类型不支持音频分析",
   SOURCE_OFFLINE: "素材已离线",
-  SOURCE_TRASHED: "素材在废纸篓",
+  SOURCE_TRASHED: platformWords("素材在废纸篓"),
   SOURCE_RETIRED: "素材已注销",
   ROOT_RETIRED: "素材根已注销",
   SOURCE_MISSING: "源文件不存在",

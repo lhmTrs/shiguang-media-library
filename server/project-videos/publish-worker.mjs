@@ -81,7 +81,7 @@ try{
     discardFile(discard.fileName,discard.identity);
     process.stdout.write(JSON.stringify({discarded:true}));
   }else{
-    if(typeof stage!=='string'||!path.isAbsolute(stage)||path.basename(stage)!=='original.partial'||!path.basename(path.dirname(stage)).startsWith('shiguang-project-video-import-')||!validName(fileName))throw Error('Invalid publication metadata');
+    if(typeof stage!=='string'||!path.isAbsolute(stage)||path.basename(stage)!=='original.partial'||!(path.basename(path.dirname(stage)).startsWith('shiguang-project-video-import-')||process.platform==='win32'&&path.basename(path.dirname(stage)).startsWith('.shiguang-project-video-import-'))||!validName(fileName))throw Error('Invalid publication metadata');
     const st=await fs.lstat(stage);
     if(!regular(st)||identity(st)!==stageIdentity)throw Error('待导入视频已变化');
     const ext=path.extname(fileName),stem=fileName.slice(0,fileName.length-ext.length);

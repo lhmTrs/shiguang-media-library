@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
@@ -60,30 +61,31 @@ export function verifyShutdownReceipt(envelope,expected,token,now=Date.now()){
 // No import/construction IO. Only a real POSIX host is supported. An injected
 // platform may deny support but can never make a real Windows host supported.
 export function createShutdownReceiptStore({root,platform=process.platform}={}){
- const supported=process.platform!=='win32'&&['darwin','linux'].includes(process.platform)&&['darwin','linux'].includes(platform);
+ const supported=['darwin','linux','win32'].includes(process.platform)&&platform===process.platform;
  let committed=null,anchor=null;
  const rootCheck=async()=>{
   if(!supported)throw failure('RECEIPT_STORAGE_UNSUPPORTED');
   if(typeof root!=='string'||root.length>4096||!path.isAbsolute(root)||await fs.realpath(root)!==root)throw failure('RECEIPT_ROOT_UNSAFE');
-  const stat=await fs.lstat(root);if(!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o777)!==0o700||stat.uid!==process.getuid())throw failure('RECEIPT_ROOT_UNSAFE');if(anchor&&(anchor.dev!==stat.dev||anchor.ino!==stat.ino))throw failure('RECEIPT_ROOT_CHANGED');anchor??=stat;return stat;
+  const stat=await fs.lstat(root);if(!stat.isDirectory()||stat.isSymbolicLink()||process.platform!=='win32'&&((stat.mode&0o777)!==0o700||stat.uid!==process.getuid()))throw failure('RECEIPT_ROOT_UNSAFE');if(anchor&&(anchor.dev!==stat.dev||anchor.ino!==stat.ino))throw failure('RECEIPT_ROOT_CHANGED');anchor??=stat;return stat;
  };
  const same=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
  const target=typeof root==='string'?path.join(root,'shutdown-receipt.json'):null;
  const api=Object.freeze({supported,
   async readCommitted(){
    if(!committed||committed.body.expiresAt<=Date.now())return null;await rootCheck();const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
-   try{const s=await handle.stat();if(!s.isFile()||s.nlink!==1||(s.mode&0o777)!==0o600||s.uid!==process.getuid()||s.size>4096)throw failure('RECEIPT_FILE_UNSAFE');const buffer=Buffer.alloc(4097);const {bytesRead}=await handle.read(buffer,0,buffer.length,0);if(bytesRead>4096)throw failure('RECEIPT_FILE_UNSAFE');const value=JSON.parse(buffer.subarray(0,bytesRead).toString('utf8'));if(value.mac!==committed.mac)return null;return value;}finally{await handle.close();}
+   try{const s=await handle.stat();if(!s.isFile()||s.nlink!==1||process.platform!=='win32'&&((s.mode&0o777)!==0o600||s.uid!==process.getuid())||s.size>4096)throw failure('RECEIPT_FILE_UNSAFE');const buffer=Buffer.alloc(4097);const {bytesRead}=await handle.read(buffer,0,buffer.length,0);if(bytesRead>4096)throw failure('RECEIPT_FILE_UNSAFE');const value=JSON.parse(buffer.subarray(0,bytesRead).toString('utf8'));if(value.mac!==committed.mac)return null;return value;}finally{await handle.close();}
   }
  });
  stores.set(api,{supported,async write(envelope){
   committed=null;const initial=await rootCheck();
-  try{const s=await fs.lstat(target);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid()||(s.mode&0o777)!==0o600)throw failure('RECEIPT_FILE_UNSAFE');}catch(e){if(e.code!=='ENOENT')throw e;}
+  try{const s=await fs.lstat(target);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||process.platform!=='win32'&&(s.uid!==process.getuid()||(s.mode&0o777)!==0o600))throw failure('RECEIPT_FILE_UNSAFE');}catch(e){if(e.code!=='ENOENT')throw e;}
   const raw=JSON.stringify(envelope);if(Buffer.byteLength(raw)>4096)throw failure('RECEIPT_TOO_LARGE');
   const temp=path.join(root,'shutdown-'+crypto.randomUUID()+'.tmp');const handle=await fs.open(temp,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
   try{await handle.writeFile(raw);await handle.sync();}finally{await handle.close();}
   if(!same(initial,await rootCheck()))throw failure('RECEIPT_ROOT_CHANGED');
-  await fs.rename(temp,target);const directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-  try{if(!same(initial,await directory.stat()))throw failure('RECEIPT_ROOT_CHANGED');await directory.sync();}finally{await directory.close();}
+  await fs.rename(temp,target);if(process.platform!=='win32'){const directory=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  try{if(!same(initial,await directory.stat()))throw failure('RECEIPT_ROOT_CHANGED');await directory.sync();}finally{await directory.close();}}
+  const named=await fs.lstat(target);if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||await fs.realpath(target)!==target||await fs.readFile(target,'utf8')!==raw)throw failure('RECEIPT_FILE_UNSAFE');
   if(!same(initial,await rootCheck()))throw failure('RECEIPT_ROOT_CHANGED');
   committed=envelope; // Readers only expose a receipt after all syncs succeed.
  }});
@@ -99,7 +101,7 @@ export function createApplicationShutdown({runId,libraryId,stages=[],receiptStor
  // Capture capabilities before any await; caller mutation cannot erase coverage.
  stages=stages.map(s=>Object.freeze({group:s.group,stop:s.stop,witnesses:Array.isArray(s.witnesses)?[...s.witnesses]:[]}));
  const allWitnesses=stages.flatMap(s=>s.witnesses);
- const configured=allWitnesses.length<=256&&new Set(allWitnesses).size===allWitnesses.length&&store?.supported&&stages.length===SHUTDOWN_GROUPS.length&&stages.every((s,i)=>s.group===SHUTDOWN_GROUPS[i]&&typeof s.stop==='function'&&Array.isArray(s.witnesses)&&s.witnesses.length>0&&s.witnesses.every(w=>{const kind=witnesses.get(w)?.kind;return i<3?kind==='work':i===3?['worker','http','stream'].includes(kind):i===4?kind==='worker':kind==='http';}));
+ const configured=allWitnesses.length<=256&&new Set(allWitnesses).size===allWitnesses.length&&store?.supported&&stages.length===SHUTDOWN_GROUPS.length&&stages.every((s,i)=>s.group===SHUTDOWN_GROUPS[i]&&typeof s.stop==='function'&&Array.isArray(s.witnesses)&&s.witnesses.length>0&&s.witnesses.every(w=>{const kind=witnesses.get(w)?.kind;return i<3?kind==='work':i===3?['worker','http','stream'].includes(kind):i===4?['worker','sqlite'].includes(kind):kind==='http';}));
  let phase='IDLE',requestId=null,completion=null,accepted=null;
  const state=()=>({phase,runId,requestId});
  function request(command,token){
@@ -124,4 +126,25 @@ export function createApplicationShutdown({runId,libraryId,stages=[],receiptStor
   })();return {accepted,completion};
  }
  return Object.freeze({request,state});
+}
+
+// This capability requires an actual native SQLite instance and calls the
+// native close method itself; a callback return or a boolean cannot mint it.
+export function observeSqliteShutdown(database) {
+ if(!(database instanceof Database)||!database.open)throw failure('DATABASE_NOT_OBSERVABLE');
+ let resolve,reject;const ended=new Promise((yes,no)=>{resolve=yes;reject=no;});
+ const close=database.close;
+ database.close=function(){try{const value=close.call(database);if(database.open)throw failure('DATABASE_CLOSE_UNKNOWN');resolve();return value;}catch(e){reject(e);throw e;}};
+ return witness(ended,'sqlite');
+}
+// Cross-process reader, bounded and guarded. Authenticity is checked against
+// instance/request identity and the ephemeral session token by the client.
+export async function readShutdownReceipt(root) {
+ if(typeof root!=='string'||!path.isAbsolute(root)||await fs.realpath(root)!==root)throw failure('RECEIPT_ROOT_UNSAFE');
+ const before=await fs.lstat(root),file=path.join(root,'shutdown-receipt.json');
+ if(!before.isDirectory()||before.isSymbolicLink())throw failure('RECEIPT_ROOT_UNSAFE');
+ let named;try{named=await fs.lstat(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}
+ if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.size>4096||await fs.realpath(file)!==file)throw failure('RECEIPT_FILE_UNSAFE');
+ const h=await fs.open(file,constants.O_RDONLY|(constants.O_NOFOLLOW||0));
+ try{const opened=await h.stat();const raw=await h.readFile('utf8');const after=await fs.lstat(file),parent=await fs.lstat(root);if(raw.length>4096||[opened,after].some(v=>v.dev!==named.dev||v.ino!==named.ino||v.size!==named.size||v.mtimeMs!==named.mtimeMs)||parent.dev!==before.dev||parent.ino!==before.ino)throw failure('RECEIPT_FILE_UNSAFE');return JSON.parse(raw);}finally{await h.close();}
 }

@@ -18,7 +18,7 @@ const objects = [{ name: 'asset_metadata_clock', type: 'table', sql: clockSQL },
 const observers = new WeakMap(), instances = new WeakMap();
 function observe(db) {
     if (observers.has(db)) return observers.get(db);
-    const state = { frames: [] }, original = db.transaction.bind(db);
+    const state = { frames: [], pending:new Set(), failed:false }, original = db.transaction.bind(db);
     db.transaction = fn => {
         const tx = original(fn);
         const wrap = action => function (...args) {
@@ -36,7 +36,7 @@ function observe(db) {
             } else {
                 let failed = false;
                 for (const effect of frame.effects.values()) {
-                    try { effect(); } catch { failed = true; }
+                    try { runEffect(state,effect); } catch { failed = true;if(process.platform==='win32')state.failed=true; }
                 }
                 if (failed) throw Object.assign(Error('元数据已保存，后续任务未确认'), {
                     code: 'METADATA_POST_COMMIT_FAILED', committed: true,
@@ -53,6 +53,9 @@ function observe(db) {
     };
     observers.set(db, state);
     return state;
+}
+function runEffect(state,effect){
+ const result=effect();if(process.platform==='win32'&&result&&typeof result.then==='function'){const work=Promise.resolve(result);state.pending.add(work);work.catch(()=>{state.failed=true;}).finally(()=>state.pending.delete(work));}return result;
 }
 export function metadataVersionsFor(lib) { let value = instances.get(lib); if (!value || value.db !== lib.db) {
     value = new AssetMetadataVersions(lib);
@@ -107,6 +110,11 @@ export class AssetMetadataVersions {
         const tx = this.db.transaction(invoke);
         return !this.db.inTransaction && tx.immediate ? tx.immediate() : tx();
     }
+    async drain(){
+      if(this.observer.frames.length||this.db.inTransaction)fail('METADATA_POST_COMMIT_UNSETTLED');
+      while(this.observer.pending.size)await Promise.all([...this.observer.pending]);
+      if(this.observer.failed)fail('METADATA_POST_COMMIT_UNSETTLED');
+    }
     afterCommit(effect, key = Symbol()) { const frame = this.observer.frames.at(-1); if (frame) {
         if (frame.effects.size >= 1000)
             fail('METADATA_EFFECT_LIMIT');
@@ -115,7 +123,7 @@ export class AssetMetadataVersions {
     else {
         if (this.db.inTransaction)
             fail('UNOBSERVED_TRANSACTION');
-        effect();
+        runEffect(this.observer,effect);
     } }
     values(id) { if (!UUID.test(id || ''))
         fail('INVALID_METADATA_ASSET'); const size = this.db.prepare('SELECT COALESCE(length(note),0)+COALESCE(length(tags),0)+COALESCE(length(capture_source),0) n FROM assets WHERE id=?').get(id); if (!size || !Number.isSafeInteger(size.n) || size.n > 16384)

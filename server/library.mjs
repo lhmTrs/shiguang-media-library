@@ -1,3 +1,4 @@
+import {platformWords} from './platform-words.mjs';
 import {unquotePath} from './path-input.mjs';
 import Database from "better-sqlite3";
 import fs from "node:fs/promises";
@@ -372,7 +373,7 @@ export class Library {
     if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(k => k !== "readOnly") || options.readOnly !== undefined && typeof options.readOnly !== "boolean") throw Object.assign(Error("INVALID_SOURCE_OPTIONS"), { code: "INVALID_SOURCE_OPTIONS" });
     if (options.readOnly === true) return this.readOnlySource(assetId);
     let a = this.asset(assetId);
-    if (a.trashed) throw Error("素材已移入废纸篓");
+    if (a.trashed) throw Error(platformWords("素材已移入废纸篓"));
     if (this.fileChecker) { await this.fileChecker.verify(a); a = this.asset(assetId); }
     const real = await this.checked(a.path, a.root_id);
     const stat = await fs.stat(real);
@@ -660,7 +661,7 @@ export class Library {
           "UPDATE assets SET probe='error',error=? WHERE id=? AND mtime=?",
         )
         .run(
-          "NCM 格式暂不支持直接试听，原文件保留，可搜索、分类及在访达中定位。",
+          platformWords("NCM 格式暂不支持直接试听，原文件保留，可搜索、分类及在访达中定位。"),
           assetId,
           a.mtime,
         );
@@ -1056,7 +1057,7 @@ export class Library {
         if(this.storyboardVideos?.catalog?.ownsMediaAsset(assetId))throw Error("项目托管视频请在生成视频页面整理，以保留分镜与文件夹关联");
         let target = "";
         if (input.action === "trash") {
-          if (!this.trashBin) throw Error("废纸篓组件不可用，操作已禁止");
+          if (!this.trashBin) throw Error(platformWords("废纸篓组件不可用，操作已禁止"));
         } else if (input.action === "rename") {
           const name =
             input.ids.length === 1
@@ -1225,7 +1226,7 @@ export class Library {
           changed = true;
           this.assertOperationDatabase(admittedDb,{operationId:operation,fileChanged:true});
           if (!path.isAbsolute(trash) || !/(^|\/)\.Trash(es)?\//.test(trash))
-            throw Error("废纸篓返回位置异常，请查看操作记录");
+            throw Error(platformWords("废纸篓返回位置异常，请查看操作记录"));
           admittedDb
             .prepare("UPDATE assets SET trashed=1,online=0 WHERE id=?")
             .run(p.id);
@@ -1306,7 +1307,7 @@ export class Library {
       if (target !== op.target) throw Error("目标路径变化，不能自动恢复");
       if (op.action === "trash") {
         if (!a.trashed || !/(^|\/)\.Trash(es)?\//.test(target))
-          throw Error("废纸篓记录无效");
+          throw Error(platformWords("废纸篓记录无效"));
       } else {
         if (a.path !== target) throw Error("素材位置已经改变");
         await this.checked(target, a.root_id);

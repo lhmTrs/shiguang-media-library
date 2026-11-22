@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 // GET /api/project-music/schema：给 AI 看的字段规则（SPEC 3.3、3.5）。项目使用说明只放三行入口，细节在这里。
 export const AGENT_SCHEMA = {
   version: '2026-11-20.5',
@@ -22,7 +23,7 @@ export const AGENT_SCHEMA = {
       'lyricTimes 给对比页用：按版本写歌词每句的开始时间（毫秒，非递减），并写 method 说明怎么得出的（例如人工听写、某工具识别）。只能写这一轮的版本；没有把握就不写。',
       'userIssues、userDirection 是用户自己写的问题整理和下一轮方向，AI 不能写；「先补上一轮」只看问题整理和下一轮方向是否为空，AI 写的或用户写的任一有内容即可。',
       'AI 不能删除版本，不能改用户的听感原文；改版本状态只能走 decisions，并附用户原话。',
-      '只能由用户在网页上做的操作（PATCH …/rounds/<id>、PATCH …/versions/<id>、PATCH …/songs/<id>、页面上的定稿与撤回定稿、改回 AI 的改动、把旧副本移到废纸篓）要求浏览器自带的 Sec-Fetch-Site: same-origin。AI 不得伪造这个请求头，也不得调用这些接口；这条限制是防误用约定，不是技术上的安全边界。',
+      platformWords('只能由用户在网页上做的操作（PATCH …/rounds/<id>、PATCH …/versions/<id>、PATCH …/songs/<id>、页面上的定稿与撤回定稿、改回 AI 的改动、把旧副本移到废纸篓）要求浏览器自带的 Sec-Fetch-Site: same-origin。AI 不得伪造这个请求头，也不得调用这些接口；这条限制是防误用约定，不是技术上的安全边界。'),
     ],
     example: {
       expectedRevision: 3,
@@ -51,7 +52,7 @@ export const AGENT_SCHEMA = {
   },
   pendingNotes: {
     request: 'GET /api/project-music/pending-notes（全部项目）或 ?projectId=<项目>：「待补写」清单。开始做项目音乐相关的工作时先看这里',
-    why: '用户从访达右键把新生成的歌收进某首歌时，可以直接开新一轮，不用等上一轮的记录写完；上一轮会标成「待 AI 补写」。分工是用户只管上传，每轮的记录由 AI 写。',
+    why: platformWords('用户从访达右键把新生成的歌收进某首歌时，可以直接开新一轮，不用等上一轮的记录写完；上一轮会标成「待 AI 补写」。分工是用户只管上传，每轮的记录由 AI 写。'),
     rules: [
       '照 items[] 逐条补：用 PATCH …/rounds/<roundId>/agent-notes 写 issues 和 nextDirection（带该条的 revision 作为 expectedRevision）。补完这一条就自动从清单里消失。',
       '依据只用三种：用户在对话里说过的话（原话照录，注明出处，听感用 listeningTranscripts）；你自己听过、测过的结果（标 objective_check，或在 causeGuess 里写成猜测）；两轮提示词之间的差别。',
@@ -69,7 +70,7 @@ export const AGENT_SCHEMA = {
       '放文件（比如剪好的版本）：POST …/files/imports {requestId, folder, fileName, bytes, session} → PUT …/files/imports/<requestId>/content（原始字节）。同一文件夹里已有同样内容时回执是 duplicate，由用户决定 POST …/files/imports/<requestId>/resolve {choice:"keep"|"cancel"}',
       '加入歌曲：POST …/files/add-to-song {requestId, path, roundId, label?, session}；文件不挪，新版本复用这条音乐库记录。项目里已有同样内容时返回 409 DUPLICATE_IN_PROJECT，由用户决定要不要带 keep:true 再加',
       '放好以后，在对话里告诉用户放在哪个文件夹、叫什么名字。',
-      '复制给剪辑软件、在访达中显示会动用户的桌面，只能由用户在网页上点（POST …/files/clipboard、…/files/reveal 要求 Sec-Fetch-Site: same-origin）。',
+      platformWords('复制给剪辑软件、在访达中显示会动用户的桌面，只能由用户在网页上点（POST …/files/clipboard、…/files/reveal 要求 Sec-Fetch-Site: same-origin）。'),
     ],
   },
   upload: {

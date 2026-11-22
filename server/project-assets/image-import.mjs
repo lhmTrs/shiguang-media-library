@@ -1,3 +1,5 @@
+import {platformWords} from '../platform-words.mjs';
+import {allocateWindowsStage,cleanupWindowsStage} from '../windows-staging.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
@@ -85,8 +87,8 @@ export async function streamImage(file,expected,res,{media,verifySource}={}){
   try{
     signal.throwIfAborted();if(compatible)release=imagePreviewCache.acquire();
     ({handle,before}=await checkedFile(file));
-    const mime=compatible?'image/jpeg':mimeFor(file);if(!mime)throw fault('此格式暂不能在浏览器预览，原文件仍保留，可在访达中打开',415);
-    if(compatible&&before.size>previewSourceLimit)throw fault('HEIC 原图过大，暂不能生成预览；原文件仍保留，可在访达中打开',413);
+    const mime=compatible?'image/jpeg':mimeFor(file);if(!mime)throw fault(platformWords('此格式暂不能在浏览器预览，原文件仍保留，可在访达中打开'),415);
+    if(compatible&&before.size>previewSourceLimit)throw fault(platformWords('HEIC 原图过大，暂不能生成预览；原文件仍保留，可在访达中打开'),413);
     temp=await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-reference-preview-'));
     temp=await fs.realpath(temp);
     retained=path.join(temp,compatible?'snapshot.heic':'snapshot');snapshot=await fs.open(retained,constants.O_RDWR|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
@@ -202,7 +204,7 @@ export class ReferenceImageImports{
     s.running=true;s.status='uploading';let handle;
     try{
       await this.pictures.current(s.state);this.guard(s);
-      s.cache=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-reference-import-')));s.stage=path.join(s.cache,'original.partial');handle=await fs.open(s.stage,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+      if(process.platform==='win32'){const owned=await allocateWindowsStage(s.state.target,'shiguang-reference-import-');s.cache=owned.cache;s.windowsCacheIdentity=owned.identity;}else s.cache=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'shiguang-reference-import-')));s.stage=path.join(s.cache,'original.partial');handle=await fs.open(s.stage,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       await this.pictures.current(s.state);this.guard(s);s.stageInode=await handle.stat();
       let size=0;const hash=createHash('sha256');
       for await(const chunk of stream){size+=chunk.length;if(size>s.bytes)throw fault('文件长度与所选原图不一致',409);await this.pictures.current(s.state);this.guard(s);await handle.writeFile(chunk);hash.update(chunk);}
@@ -260,7 +262,13 @@ export class ReferenceImageImports{
     };
     const mediaId = s.target.seriesId ? this.store.tx(register) : register();
     s.mediaId=mediaId;s.finalName=path.basename(file);s.status='ready';s.error=null;
-    // No pathname-based deletion: completed files and private receive caches are retained.
+    if(process.platform==='win32'&&s.windowsCacheIdentity){
+      try{s.stageCleanup=await cleanupWindowsStage({cache:s.cache,cacheIdentity:s.windowsCacheIdentity,stage:s.stage,stageStat:s.stageStat,target:s.state.target,verify:async()=>{
+        await this.pictures.current(s.state);this.guard(s);const saved=this.lib.db.prepare('SELECT path,sha256 FROM assets WHERE id=?').get(mediaId);
+        const readback=await imageDigest(file);if(saved?.path!==file||saved.sha256!==s.hash||readback.hash!==s.hash)throw Error('STAGE_RESULT_UNVERIFIED');
+      }});}catch{s.stageCleanup={complete:false,code:'STAGE_CLEANUP_UNCONFIRMED'};}
+    }
+    // Completed files stay; Mac receive-cache retention remains unchanged.
     return this.dto(s);
   }
   async cancel(id){

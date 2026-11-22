@@ -920,7 +920,9 @@ export function createManifestSync(lib, options = {}) {
     await writeManifest(root, built);
   }
 
+  let closing=false,writingDone=Promise.resolve(),finishWrite,lastError=null;
   const schedule = () => {
+    if(closing)return;
     if (timer) return;
     timer = setTimeout(() => void flush(), debounceMs);
   };
@@ -932,7 +934,7 @@ export function createManifestSync(lib, options = {}) {
     all = false;
     dirty.clear();
     if (!roots.length) return;
-    writing = true;
+    writing = true;writingDone=new Promise(resolve=>{finishWrite=resolve;});
     const deferred = [];
     try {
       for (const root of roots) {
@@ -940,12 +942,14 @@ export function createManifestSync(lib, options = {}) {
           const result = await writeRoot(root);
           if (result?.deferred) { dirty.add(root.id); deferred.push({ rootId: root.id, code: result.code }); } // no new timer
         } catch (e) {
+          if(process.platform==='win32')lastError=e;
           log(`[manifest] ${root.path} 清单同步失败：${e.code || e.message}`);
         }
       }
     } finally {
-      writing = false;
+      writing = false;finishWrite();
     }
+    if (closing&&(lastError||deferred.length))throw Object.assign(Error('MANIFEST_WORK_UNSETTLED'),{code:'MANIFEST_WORK_UNSETTLED'});
     if (deferred.length) return { deferred: true, repairPending: true, roots: deferred };
   }
 
@@ -957,6 +961,7 @@ export function createManifestSync(lib, options = {}) {
       schedule();
     },
     flush,
+    async close(){closing=true;if(timer)clearTimeout(timer);await writingDone;if(lastError)throw Object.assign(Error('MANIFEST_WORK_UNSETTLED'),{code:'MANIFEST_WORK_UNSETTLED'});await flush();},
     stop() {
       if (timer) clearTimeout(timer);
     },

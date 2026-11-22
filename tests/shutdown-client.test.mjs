@@ -10,8 +10,9 @@ async function peer(t,options={}){
   res.setHeader('content-type','application/json');
   if(req.url==='/api/session'){
    if(options.redirect){res.writeHead(302,{location:'http://127.0.0.1:1/'});res.end();return;}
-   res.setHeader('set-cookie',cookie+'; HttpOnly; SameSite=Strict');res.end(JSON.stringify({app:'shiguang-local-media',instanceId:libraryId,runId,token,...options.identity}));return;
+   res.setHeader('set-cookie',cookie+'; HttpOnly; SameSite=Strict');res.end(JSON.stringify({app:'shiguang-local-media',instanceId:libraryId,token,...options.identity}));return;
   }
+  if(req.url==='/api/application/identity'){res.end(JSON.stringify({app:'shiguang-local-media',libraryId,runId,...(options.identity?.runId?{runId:options.identity.runId}:{})}));return;}
   if(req.url==='/api/application/shutdown'){
    assert.equal(req.method,'POST');assert.equal(req.headers.cookie,cookie);assert.equal(req.headers['x-local-token'],token);assert.equal(req.headers.origin,`http://127.0.0.1:${server.address().port}`);assert.deepEqual(JSON.parse(body),{runId,requestId});
    if(options.disconnect){req.socket.destroy();return;}
@@ -40,7 +41,7 @@ test('W04 real private peer: authenticated command once, same request idempotent
 
 test('W04 wrong app/library/run/token or redirect never reaches shutdown POST',async t=>{
  for(const options of [{identity:{app:'other-app'}},{identity:{instanceId:'other-library'}},{identity:{runId:crypto.randomUUID()}},{identity:{token:'bad'}},{redirect:true}]){
-  const p=await peer(t,options);const c=createShutdownClient({budgetMs:100,readReceipt:async()=>signed(p)});assert.deepEqual(await c.stop(p.command),{phase:'UNKNOWN',code:'SHUTDOWN_UNCONFIRMED'});assert.equal(p.requests.length,1);
+  const p=await peer(t,options);const c=createShutdownClient({budgetMs:100,readReceipt:async()=>signed(p)});assert.deepEqual(await c.stop(p.command),{phase:'UNKNOWN',code:'SHUTDOWN_UNCONFIRMED'});assert.equal(p.requests.filter(r=>r.method==='POST').length,0);
  }
 });
 

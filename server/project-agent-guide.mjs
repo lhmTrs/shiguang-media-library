@@ -1,3 +1,4 @@
+import {platformWords} from './platform-words.mjs';
 export const AGENT_GUIDE_VERSION = '2026-11-20.1';
 
 export function projectAgentGuide({ project, origin, instanceId }) {
@@ -48,7 +49,7 @@ GET/HEAD 不要求写 token；后续请求建议携带 \`X-Shiguang-Library-Id: 
 | 下载已知素材 | \`GET /api/media/<media_id>/original\` | 已知全库媒体 ID；不猜编号或本机路径 |
 | 浏览和导入项目视频 | \`GET ${videos}?folderId=root\` | 现有列表非分页轻量搜索；导入是写操作 |
 | 列出项目音乐和每轮记录 | \`GET ${music}\` | 只读；歌曲 › 轮次 › 版本，每轮带 revision 和开新一轮前还缺的字段；字段规则见 \`GET /api/project-music/schema\` |
-| 项目音乐「待补写」清单（先看这里） | \`GET /api/project-music/pending-notes?projectId=${projectId}\` | 用户从访达收新一轮时，上一轮的问题整理和下一轮方向留给 AI 补；依据和写法见 \`GET /api/project-music/schema\` 的 pendingNotes 一节 |
+| 项目音乐「待补写」清单（先看这里） | \`GET /api/project-music/pending-notes?projectId=${projectId}\` | ${platformWords('用户从访达收新一轮时，')}上一轮的问题整理和下一轮方向留给 AI 补；依据和写法见 \`GET /api/project-music/schema\` 的 pendingNotes 一节 |
 | 项目音乐的「文件」区（存放和传递） | \`GET ${music}/files?folder=<文件夹>\` | 列出文件夹和文件；取文件、放剪好的文件、加入歌曲的接口见 \`GET /api/project-music/schema\` 的 files 一节 |
 | 下载某个项目音乐版本 | \`GET ${music}/versions/<versionId>/media?download=1\` | 只读，支持 Range；409 MUSIC_FILE_CHANGED 表示文件被改过，不要换成别的文件重试 |
 | 写入某一轮的 AI 整理部分 | \`PATCH ${music}/rounds/<roundId>/agent-notes\` | 只写改了什么、问题整理、客观检查、下一轮方向、测量结果，追加逐字转录；用户在对话里说了时，可以用 decisions 改版本状态，必须附用户原话；带 expectedRevision 与 session；不能改提示词和用户听感原文；不得伪造 Sec-Fetch-Site 请求头，也不得调用只有用户能用的接口 |

@@ -9,7 +9,7 @@ const project = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const data = dataDirectory(project);
 function openBrowser(url) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
-  const child = spawn(command, process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url], { stdio: "ignore" });
+  const child = spawn(command, process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url], { stdio: "ignore",windowsHide:true });
   child.on("error", () => console.log("请手动打开：" + url));
 }
 await fsp.mkdir(data, { recursive: true });
@@ -48,7 +48,8 @@ const child = spawn(
   {
     cwd: project,
     detached: true,
-    env: { ...process.env, NODE_ENV: "production", MEDIA_CODEX_AUTOCONNECT: process.env.MEDIA_CODEX_AUTOCONNECT ?? "1" },
+    windowsHide:process.platform==='win32',
+    env: { ...process.env, ...(process.platform==='win32'?{MEDIA_DATA_DIR:data}:{}), NODE_ENV: "production", MEDIA_CODEX_AUTOCONNECT: process.env.MEDIA_CODEX_AUTOCONNECT ?? "1" },
     stdio: ["ignore", log, log],
   },
 );

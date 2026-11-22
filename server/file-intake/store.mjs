@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import {safeProbeDiagnostic} from '../storyboard-video/probe-tool.mjs';
 import fs from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -60,7 +61,7 @@ export class FileIntake {
       }
       let revealInterrupted=false;
       for(const i of b.items)if(i.revealAttemptedAt&&!i.reveal){
-        i.reveal={status:'unknown',at:i.revealAttemptedAt,error:{code:'INTAKE_DESKTOP_UNKNOWN',message:'上次访达显示结果待核对'}};
+        i.reveal={status:'unknown',at:i.revealAttemptedAt,error:{code:'INTAKE_DESKTOP_UNKNOWN',message:platformWords('上次访达显示结果待核对')}};
         revealInterrupted=true;
       }
       if(removalInterrupted||b.items.some(i=>pending.has(i.status))) {
@@ -302,16 +303,16 @@ export class FileIntake {
     this.assertOpen();
     if(!uuid(input.requestId)||!uuid(input.projectId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length)
       throw error('INTAKE_INVALID_INPUT','请选择视频、项目、目标文件夹与收纳方式',400);
-    if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE','废纸篓组件不可用；请使用保留原文件的复制方式');
+    if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE',platformWords('废纸篓组件不可用；请使用保留原文件的复制方式'));
     const h=await this.receipts.read('handoffs',handoffId), ids=[...new Set(input.fileIds)];
-    if(ids.length!==input.fileIds.length||ids.some(id=>!h.files.some(f=>f.id===id)))throw error('INTAKE_INVALID_INPUT','所选文件不属于这次访达选择',400);
+    if(ids.length!==input.fileIds.length||ids.some(id=>!h.files.some(f=>f.id===id)))throw error('INTAKE_INVALID_INPUT',platformWords('所选文件不属于这次访达选择'),400);
     if(h.files.some(f=>ids.includes(f.id)&&(f.mediaKind||'video')!=='video'))throw error('INTAKE_INVALID_INPUT','旧版入口只处理视频，请升级入口后确认其他素材',400);
     const args=stable({handoffId,projectId:input.projectId,folderId:input.folderId||'root',mode:input.mode,fileIds:ids});
     const existing=[...this.batches.values()].find(b=>b.id===input.requestId||b.handoffId===handoffId);
     if(existing){if(existing.id!==input.requestId||existing.args!==args)throw error('INTAKE_ALREADY_ACCEPTED','这次选择已接收，请查看原文件任务');return this.dto(existing);}
     if(h.preparation==='checking')throw error('INTAKE_SELECTION_CHECKING','正在后台核验原文件，完成后即可确认收纳',422);
     if(h.preparation==='failed')throw error('INTAKE_SELECTION_FAILED',h.preparationError,422);
-    if(h.preparation==='ready'&&h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_FAILED','本次选择的内容证明不完整，请从访达重新选择',422);
+    if(h.preparation==='ready'&&h.files.some(f=>!/^[a-f0-9]{64}$/.test(f.selectionSha256||'')))throw error('INTAKE_SELECTION_FAILED',platformWords('本次选择的内容证明不完整，请从访达重新选择'),422);
     const project=this.catalog.project(input.projectId,true);
     const target=await this.prepareVideoFolder(project.id,input.folderId==='all'?'root':input.folderId||'root');
     const folder=target.row;
@@ -346,13 +347,13 @@ export class FileIntake {
     this.assertOpen();
     if(!this.generic||!input||(input.standardNames!==undefined&&typeof input.standardNames!=='boolean')||!uuid(input.requestId)||!['copy','move'].includes(input.mode)||!Array.isArray(input.fileIds)||!input.fileIds.length||!Array.isArray(input.targets)||input.targets.length!==input.fileIds.length||input.targets.some(t=>!t||typeof t!=='object'))
       throw error('INTAKE_INVALID_INPUT','请逐项确认素材类型与收纳目标',400);
-    if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE','废纸篓组件不可用，请使用复制方式');
+    if(input.mode==='move'&&!this.canTrash)throw error('TRASH_UNAVAILABLE',platformWords('废纸篓组件不可用，请使用复制方式'));
     const h=await this.receipts.read('handoffs',handoffId),ids=[...new Set(input.fileIds)];
     if(ids.length!==input.fileIds.length||new Set(input.targets.map(t=>t.fileId)).size!==ids.length||ids.some(id=>!h.files.some(f=>f.id===id)||!input.targets.some(t=>t.fileId===id)))throw error('INTAKE_INVALID_INPUT','文件清单与目标不匹配',400);
     const singleVideo=ids.length===1&&(h.files.find(f=>f.id===ids[0]).mediaKind||'video')==='video';
     const {revealWhenDone}=input;
     if((revealWhenDone!==undefined&&typeof revealWhenDone!=='boolean')||(revealWhenDone&&!singleVideo))
-      throw error('INTAKE_INVALID_INPUT','只有单个视频可以选择收纳完成后在访达中显示',400);
+      throw error('INTAKE_INVALID_INPUT',platformWords('只有单个视频可以选择收纳完成后在访达中显示'),400);
     const hasPrompt=Object.hasOwn(input,'prompt');
     const prompt=hasPrompt?this.confirmPrompt(input.prompt,input.targets):undefined;
     const args=stable({version:2,handoffId,mode:input.mode,fileIds:ids,targets:input.targets,standardNames:input.standardNames,
@@ -457,10 +458,10 @@ export class FileIntake {
     }
   }
   desktopError(cause) {
-    if(cause.effectUnknown)return error('INTAKE_DESKTOP_UNKNOWN','未收到访达回执，请查看桌面后再操作',502);
+    if(cause.effectUnknown)return error('INTAKE_DESKTOP_UNKNOWN',platformWords('未收到访达回执，请查看桌面后再操作'),502);
     if(desktopUnavailable.has(cause.code))return error('INTAKE_DESKTOP_UNAVAILABLE','当前本机桌面不可用',503);
     if(cause.code==='TARGET_CHANGED'||cause.code==='FOLDER_UNAVAILABLE')return videoFolderChanged();
-    return error('INTAKE_DESKTOP_FAILED','未能在访达中显示，请核对目标后重试',409);
+    return error('INTAKE_DESKTOP_FAILED',platformWords('未能在访达中显示，请核对目标后重试'),409);
   }
   assertDesktop() {
     if(!this.desktop||process.env.MEDIA_DISABLE_DESKTOP_NATIVE==='1'||process.env.MEDIA_READONLY_FILES==='1')
@@ -659,8 +660,8 @@ export class FileIntake {
     this.catalog.media.exits.set(child,closed);child.once('error',e=>{spawnError=e;});
     child.stdout.on('data',b=>{if(out.length<16384)out+=b;});child.stderr.on('data',b=>{if(stderr.length<16384)stderr+=b;});
     try{const end=await closed;
-      if(spawnError||end.code!==0||end.signal)throw error('INTAKE_TRASH_UNSETTLED',stderr.trim()||'废纸篓组件未正常完成，原结果保留待核对');
-      const destination=JSON.parse(out);if(typeof destination!=='string'||!destination.startsWith('/'))throw error('INTAKE_TRASH_UNKNOWN','废纸篓结果待核对');return destination;
+      if(spawnError||end.code!==0||end.signal)throw error('INTAKE_TRASH_UNSETTLED',stderr.trim()||platformWords('废纸篓组件未正常完成，原结果保留待核对'));
+      const destination=JSON.parse(out);if(typeof destination!=='string'||!destination.startsWith('/'))throw error('INTAKE_TRASH_UNKNOWN',platformWords('废纸篓结果待核对'));return destination;
     }finally{this.catalog.media.children.delete(child);this.catalog.media.exits.delete(child);}
   }
   async finishMove(b,i) {
@@ -691,7 +692,7 @@ export class FileIntake {
       const target=await this.trash(i.path,{identity:i.identity,parent:i.parentIdentity,sha256:i.sha256});i.trashPath=target;await this.save(b);
       const st=await fs.lstat(target);
       if(st.isSymbolicLink()||String(st.dev)!==i.identity.dev||String(st.ino)!==i.identity.ino||st.size!==i.bytes||st.mtimeMs!==i.identity.mtimeMs)
-        throw error('INTAKE_TRASH_UNKNOWN','废纸篓结果待核对');
+        throw error('INTAKE_TRASH_UNKNOWN',platformWords('废纸篓结果待核对'));
       const exists=await fs.lstat(i.path).catch(e=>e.code==='ENOENT'?null:Promise.reject(e));
       if(exists)throw error('INTAKE_TRASH_UNKNOWN','原位置出现文件，未再移除');
       i.removal='complete';i.error=undefined;

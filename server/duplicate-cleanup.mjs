@@ -1,3 +1,4 @@
+import {platformWords} from './platform-words.mjs';
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -7,7 +8,7 @@ export class DuplicateCleanup {
   roots() { return this.lib.allRoots().sort((a, b) => Number(a.management_order) - Number(b.management_order) || a.id.localeCompare(b.id)); }
   rootKey() { return JSON.stringify(this.roots().map(r => [r.id, r.path, r.management_order, r.managed_added_ms, r.retired])); }
   begin(label) {
-    if (process.env.MEDIA_READONLY_FILES === "1" || !this.lib.trashBin) throw Error("当前环境不能移入废纸篓，未删除任何文件");
+    if (process.env.MEDIA_READONLY_FILES === "1" || !this.lib.trashBin) throw Error(platformWords("当前环境不能移入废纸篓，未删除任何文件"));
     if (this.active || this.detector.active || this.detector.marking || this.detector.busy() || this.lib.locks.size || [...this.lib.jobs.values()].some(j => j.status === "running")) throw Error("其他素材任务进行中，请稍后清理");
     const job = { id: crypto.randomUUID(), type: "duplicate-cleanup", label, status: "running", count: 0, total: 0, errors: [] };
     this.active = job; this.lib.jobs.set(job.id, job); return job;
@@ -93,10 +94,10 @@ export class DuplicateCleanup {
               await this.verify(file, group.sha256, file.signature);
               const input = { action: "trash", ids: [file.id] };
               const expected = await this.lib.plan(input, job.id);
-              if (!expected[0]?.ok) throw Error(expected[0]?.error || "无法准备废纸篓操作");
+              if (!expected[0]?.ok) throw Error(expected[0]?.error || platformWords("无法准备废纸篓操作"));
               const [operation] = await this.lib.execute(input, expected, job.id);
               result.results.push(operation);
-              if (!operation.ok) throw Error(operation.error || "移入废纸篓失败");
+              if (!operation.ok) throw Error(operation.error || platformWords("移入废纸篓失败"));
               result.removed++; result.bytes += group.size;
               await fs.writeFile(path.join(dir, "results.json"), JSON.stringify(result), { mode: 0o600 });
             }
@@ -105,7 +106,7 @@ export class DuplicateCleanup {
         finally { job.count++; }
       }
       try { await this.detector.reconcileTrash(result.results.filter(r => r.ok).map(r => r.id)); }
-      catch (e) { result.warnings.push("文件已移入废纸篓，但重复标签清理失败：" + e.message); }
+      catch (e) { result.warnings.push(platformWords("文件已移入废纸篓，但重复标签清理失败：") + e.message); }
       await fs.writeFile(path.join(dir, "results.json"), JSON.stringify(result), { mode: 0o600 });
       return result;
     } catch (e) { this.end(job, e); throw e; }

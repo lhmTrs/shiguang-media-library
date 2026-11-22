@@ -1,3 +1,4 @@
+import {platformWords} from './platform-words.mjs';
 import crypto from "node:crypto";
 import { TimelineImports } from "./timeline-imports.mjs";
 import { ProjectRenders } from "./project-renders.mjs";
@@ -95,7 +96,7 @@ export class Projects {
   add(projectId, input) {
     this.get(projectId);
     const assets = this.ids(input.ids).map(id => this.lib.asset(id));
-    if (assets.some(a => a.trashed)) throw Error("不能添加已移入废纸篓的素材");
+    if (assets.some(a => a.trashed)) throw Error(platformWords("不能添加已移入废纸篓的素材"));
     let added = 0;
     this.lib.db.transaction(() => {
       const now = Date.now();

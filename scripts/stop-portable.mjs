@@ -1,8 +1,8 @@
-// Windows signal delivery cannot establish application resource settlement.
-// Refuse before importing runtime/config helpers or performing any IO.
+// Windows uses authenticated instance-bound shutdown and a flushed read-back receipt.
+// The original POSIX signal route remains below.
 if (process.platform === "win32") {
-  console.error("WINDOWS_SAFE_SHUTDOWN_UNSUPPORTED：当前尚不支持 Windows 安全停止，未读取运行记录或向任何进程发送信号。");
-  process.exitCode = 1;
+  const {stopWindows}=await import('./stop-windows.mjs');
+  await stopWindows();
 } else {
   const { default: fs } = await import("node:fs/promises");
   const { default: path } = await import("node:path");

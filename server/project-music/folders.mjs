@@ -1,3 +1,4 @@
+import {platformWords} from '../platform-words.mjs';
 import {descendantLike} from '../path-input.mjs';
 // 项目音乐 ·「文件」区（SPEC 第十三节）：存储和传递用的文件夹，和「歌曲」（采用和对比）并列。
 // 磁盘就是真相：personal_item/music/<项目>--<id>/<用户文件夹>/…，访达里看到的和页面一致，不另建表。
@@ -65,7 +66,7 @@ export class MusicFolders {
     for (const part of rel ? rel.split('/') : []) {
       at = path.join(at, part);
       const st = await fs.lstat(at).catch(() => null);
-      if (!st) fail('FOLDER_NOT_FOUND', '这个文件夹不见了，可能在访达里改了名或挪走了；请刷新', 404);
+      if (!st) fail('FOLDER_NOT_FOUND', platformWords('这个文件夹不见了，可能在访达里改了名或挪走了；请刷新'), 404);
       if (!st.isDirectory() || st.isSymbolicLink()) fail('FOLDER_NOT_FOUND', '这个位置不是文件夹', 404);
     }
     return {rel, abs: at};
@@ -79,7 +80,7 @@ export class MusicFolders {
     const folder = await this.folderAt(dir, path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel), {allowSongs});
     const file = path.join(folder.abs, path.posix.basename(rel));
     const st = await fs.lstat(file).catch(() => null);
-    if (!st || !st.isFile() || st.isSymbolicLink()) fail('FILE_NOT_FOUND', '这个文件不见了，可能在访达里改了名或挪走了；请刷新', 404);
+    if (!st || !st.isFile() || st.isSymbolicLink()) fail('FILE_NOT_FOUND', platformWords('这个文件不见了，可能在访达里改了名或挪走了；请刷新'), 404);
     return {rel, file, st, dir};
   }
 

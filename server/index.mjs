@@ -1,3 +1,5 @@
+import {platformWords} from './platform-words.mjs';
+import {createApplicationShutdown,createShutdownWorkGate,createShutdownReceiptStore,observeShutdownResource,observeSqliteShutdown} from './application-shutdown.mjs';
 import {videoBindingV2AgentGuide} from './storyboard-video-v2/agent-guide.mjs';
 import {v2ErrorEnvelope} from './storyboard-video-v2/router.mjs';
 import {UpdreamProgress} from './updream-progress/store.mjs';
@@ -119,7 +121,7 @@ if (process.platform === "darwin") {
       nativeTrash = trashBin;
     } catch (e) {
       await fs.rm(trashPartial, { force: true }).catch(() => {});
-      console.warn("废纸篓组件不可用，删除操作已禁用：", e.message);
+      console.warn(platformWords("废纸篓组件不可用，删除操作已禁用："), e.message);
     }
   }
 }
@@ -211,6 +213,10 @@ let taskEntry = null;
 let taskRuntime = null;
 let taskClosing = false;
 let applicationClosing = false;
+const applicationRunId=crypto.randomUUID();
+let applicationShutdown=null;
+let shutdownRoot=null;
+const shutdownInflight=createShutdownWorkGate(),shutdownManifest=createShutdownWorkGate(),shutdownAfterCommit=createShutdownWorkGate();
 let identityChanging = false;
 const lifecycleReads = new Set();
 let viteServer = null;
@@ -459,6 +465,7 @@ app.get("/api/session", (req, res) => {
     folderPickerAvailable: folderPickerAvailable(),
     instanceId: mysqlStorage.sourceId,
     app: "shiguang-local-media",
+    platform:process.platform,
   });
 });
 // This local discovery document carries project identity and API instructions.
@@ -486,7 +493,7 @@ app.use("/api", (req, res, next) => {
   if (!["GET","HEAD"].includes(req.method) && req.headers["x-local-token"] !== token)
     return res.status(403).json({ error: "本机会话校验失败" });
   res.locals.localSessionId = cookie;
-  if (mysqlStorage.restartRequired && !["GET", "HEAD"].includes(req.method))
+  if (mysqlStorage.restartRequired && !["GET", "HEAD"].includes(req.method) && req.path!=="/application/shutdown")
     return res.status(423).json({code: "MYSQL_RESTART_REQUIRED", error: "数据已迁移，请正常关闭并重新启动拾光后使用 MySQL；重启前仅可读取"});
   // A different tab can establish a valid cookie while this page still belongs to its old library.
   const expectedLibrary = req.get("X-Shiguang-Library-Id");
@@ -498,6 +505,18 @@ app.use("/api", (req, res, next) => {
   if (uploadHost.exclusive) return res.status(423).json({ error: "HOST_BUSY", code: "HOST_BUSY" });
   res.setHeader("Cache-Control", "no-store");
   next();
+});
+// Private instance binding; the public session DTO only gained platform.
+app.get('/api/application/identity',(_req,res)=>res.json({app:'shiguang-local-media',libraryId:mysqlStorage.sourceId,runId:applicationRunId}));
+app.post('/api/application/shutdown',(req,res)=>{
+ if(process.platform!=='win32'||!applicationShutdown)return res.status(503).json({code:'SHUTDOWN_UNSUPPORTED'});
+ if(req.headers.origin!==`http://127.0.0.1:${port}`||!['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress))return res.status(403).json({code:'SHUTDOWN_REFUSED'});
+ try{
+  const token=sessions.get(res.locals.localSessionId);
+  const result=applicationShutdown.request(req.body,token);
+  void result.completion.then(state=>{if(state.phase==='CLOSED_KNOWN'&&process.connected)process.disconnect();});
+  res.status(202).json(result.accepted);
+ }catch{return res.status(409).json({code:'SHUTDOWN_CONFLICT'});}
 });
 // Platform refusal follows the original local session/token gates and precedes
 // any cloud operation, old-history observation, or host/field registration.
@@ -1130,7 +1149,7 @@ app.post(
         const sync = await duplicateAudio.reconcileTrash(results.filter(r => r.ok).map(r => r.id));
         for (const result of results) if (result.ok) result.duplicateTagsRemoved = sync.removed;
       } catch (e) {
-        for (const result of results) if (result.ok) result.warning = "文件已移入废纸篓，但重复标签同步失败：" + e.message;
+        for (const result of results) if (result.ok) result.warning = platformWords("文件已移入废纸篓，但重复标签同步失败：") + e.message;
       }
     }
     res.json(results);
@@ -1527,6 +1546,7 @@ async function shutdownApplication() {
   projectAssetHeadBox.beginClose();
   storyboard.beginClose();
   concierge.beginClose();
+  if(process.platform==='win32')storyboardGeneration.service.beginClose();
   shutdownWork = (async () => {
     await fileIntake.close();
     await intakeNative.close();
@@ -1535,6 +1555,7 @@ async function shutdownApplication() {
     await storyboardVideo.close();
     await projectVideos.changes.cleanup(true);
     await codexService.close();
+    if(process.platform==='win32'){await storyboardGeneration.service.close();await audioAnalysis?.dispose();audioEngine?.dispose();}
     reconcileWatcher?.stop(); manifestSync.stop();
     await drainTaskEntry({ allowNeverStarted: true });
     manifestSync.stop();
@@ -1551,6 +1572,7 @@ async function shutdownApplication() {
       if (Date.now() >= end) throw taskError("APPLICATION_WORK_UNSETTLED");
       await new Promise(resolve => setTimeout(resolve, 10));
     }
+    if(process.platform==='win32'&&(lib.locks.size||lib.metadataVersions.observer.frames.length))throw taskError('APPLICATION_WORK_UNSETTLED');
     const activity = cloudAudio.currentActivity();
     if ((activity.known !== true || activity.allowed !== true) && !(cloudAudio.neverStartedIO() === true && cloudUpload.neverStartedIO() === true) || cacheJobs.size) throw taskError("RECEIVER_WORK_UNSETTLED");
     const uploaded = await cloudUpload.dispose({ timeoutMs: 10000 });
@@ -1559,10 +1581,15 @@ async function shutdownApplication() {
     if (downloaded?.closed !== true) throw taskError("RECEIVER_WORK_UNSETTLED");
     const hostExit = await uploadHost.dispose();
     if (hostExit.closed !== true) throw taskError("HOST_WORK_UNSETTLED");
-    cloudTags.close(); cloudAuth.dispose(); lib.db.close();
+    if(process.platform==='win32'){
+      await shutdownAfterCommit.run(()=>lib.metadataVersions.drain());shutdownAfterCommit.seal();
+      await shutdownManifest.run(()=>manifestSync.close());shutdownManifest.seal();
+    }
+    cloudTags.close(); cloudAuth.dispose();
+    if(process.platform==='win32'&&lib.db.kind==='mysql')await lib.db.closeNormally();else lib.db.close();
     console.log("APPLICATION_CLOSED_KNOWN");
-    if (process.connected) process.disconnect();
-  })().catch(error => { console.error(/^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "APPLICATION_CLOSE_UNKNOWN"); shutdownWork = null; });
+    if (process.platform!=='win32'&&process.connected) process.disconnect();
+  })().catch(error => { console.error(/^[A-Z_]{1,64}$/.test(error.code || "") ? error.code : "APPLICATION_CLOSE_UNKNOWN"); shutdownWork = null;if(process.platform==='win32')throw error; });
   return shutdownWork;
 }
 process.on("SIGTERM", () => { void shutdownApplication(); });
@@ -1578,10 +1605,23 @@ for (let p = startPort; p < startPort + 30; p++) {
   }
 }
 if (!server) throw Error("没有可用端口");
+if(process.platform==='win32'){
+ shutdownRoot=await fs.realpath(await fs.mkdtemp(path.join(dataDir,'shutdown-')));
+ const receiptStore=createShutdownReceiptStore({root:shutdownRoot});
+ const databaseWitness=lib.db.kind==='mysql'?observeShutdownResource(lib.db.worker):observeSqliteShutdown(lib.db);
+ applicationShutdown=createApplicationShutdown({runId:applicationRunId,libraryId:mysqlStorage.sourceId,receiptStore,budgetMs:30000,stages:[
+  {group:'inflight',witnesses:[shutdownInflight.witness],stop(){const work=shutdownInflight.run(()=>shutdownApplication());shutdownInflight.seal();return work;}},
+  {group:'manifest',witnesses:[shutdownManifest.witness],stop(){}},
+  {group:'afterCommit',witnesses:[shutdownAfterCommit.witness],stop(){}},
+  {group:'services',witnesses:[observeShutdownResource(server)],stop(){}},
+  {group:'database',witnesses:[databaseWitness],stop(){}},
+  {group:'http',witnesses:[observeShutdownResource(server)],stop(){}},
+ ]});
+}
 console.log(`拾光素材库 http://127.0.0.1:${port}`);
 await fs.writeFile(
   path.join(dataDir, "server.json"),
-  JSON.stringify({ pid: process.pid, port, url: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId }),
+  JSON.stringify({ pid: process.pid, port, url: `http://127.0.0.1:${port}`, instanceId: mysqlStorage.sourceId, ...(process.platform==='win32'?{runId:applicationRunId,receiptDirectory:path.basename(shutdownRoot)}:{}) }),
 );
 // Prepare only local account/model catalogs, once and outside the global work gate.
 // The HTTP service stays responsive; failure is retained in status, never retried by reads/sends.
