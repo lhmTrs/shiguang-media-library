@@ -21,7 +21,7 @@ import {allocateWindowsStage,cleanupWindowsStage} from '../server/windows-stagin
 const temporary=tempDirectories(test,'windows-runtime-');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;while(Date.now()<end){const result=await fn();if(result)return result;await pause(20);}throw Error('OWNED_OPERATION_TIMEOUT');}
-const sqlite=async dir=>{await fs.mkdir(dir,{recursive:true});const db=new Database(path.join(dir,'library.sqlite'));db.exec('CREATE TABLE owned(value TEXT);INSERT INTO owned VALUES(\'keep\')');db.close();};
+const sqlite=async dir=>{await fs.mkdir(dir,{recursive:true});const db=new Database(path.join(dir,'library.sqlite'));db.exec('CREATE TABLE roots(id TEXT,path TEXT);CREATE TABLE assets(id TEXT,root_id TEXT,path TEXT);CREATE TABLE owned(value TEXT);INSERT INTO owned VALUES(\'keep\')');db.close();};
 test('Windows directory selection preserves the only old library, defaults new installs locally, conflicts fail without moving data',async t=>{
  const base=await temporary(t),project=path.join(base,'project'),home=path.join(base,'home'),local=path.join(base,'local'),old=path.join(project,'data'),next=path.join(local,'ShiguangMedia'),env={MEDIA_PORTABLE:'1',LOCALAPPDATA:local};
  assert.equal(dataDirectory(project,env,'win32',home),next);
@@ -30,6 +30,7 @@ test('Windows directory selection preserves the only old library, defaults new i
  assert.equal(dataDirectory(project,{...env,MEDIA_DATA_DIR:old},'win32',home),old);assert.deepEqual(await fs.readFile(path.join(old,'library.sqlite')),before);
  await fs.writeFile(path.join(next,'library.sqlite'),'corrupt');assert.throws(()=>dataDirectory(project,env,'win32',home),{code:'DATA_DIRECTORY_UNCONFIRMED'});
  assert.equal(dataDirectory(project,{MEDIA_PORTABLE:'1'},'darwin',home),old);
+ await fs.unlink(path.join(next,'library.sqlite'));const unrelated=new Database(path.join(next,'library.sqlite'));unrelated.exec('CREATE TABLE unrelated(value TEXT)');unrelated.close();assert.throws(()=>dataDirectory(project,env,'win32',home),{code:'DATA_DIRECTORY_UNCONFIRMED'});
 });
 test('platform messages preserve Mac byte-for-byte and do not translate user content',()=>{
  const message='在访达中显示 · 系统废纸篓 · 这台 Mac · Mac 原生组件';assert.equal(platformWords(message,'darwin'),message);

@@ -1,6 +1,6 @@
 # Windows 运行与正常停止
 
-新安装默认 LOCALAPPDATA\ShiguangMedia。若原分享版 project\data 中有有效 SQLite 文件头或现有本机 MySQL 配置，继续原目录；新旧两份都有效或任一库标记无法核清时，拒绝启动并要求明确 MEDIA_DATA_DIR。显式选择优先，不移动、合并或删除任何库。启动、停止和 doctor 共用同一选择函数；Windows 启动器将本次已选目录传给服务，避免选完后又改选。Mac 目录与信号停止路线保持。
+新安装默认 LOCALAPPDATA\ShiguangMedia。若原分享版 project\data 中有可只读核验的素材库 SQLite 结构或现有本机 MySQL 配置，继续原目录；新旧两份都有效或任一库标记无法核清时，拒绝启动并要求明确 MEDIA_DATA_DIR。显式选择优先，不移动、合并或删除任何库。启动、停止和 doctor 共用同一选择函数；Windows 启动器将本次已选目录传给服务，避免选完后又改选。Mac 目录与信号停止路线保持。
 
 Windows 后台启动：npm run portable；正常停止：npm run stop:portable。前台窗口关闭仍不能保证安全，不支持 Windows foreground。停止脚本不使用 PID 信号或 taskkill：它读取自选数据目录的受保护运行记录，建立本机会话，再经受保护 GET /api/application/identity 绑定 libraryId/runId，用同源 POST /api/application/shutdown 提交唯一 requestId。公共 GET /api/session 仅新增 platform。
 
