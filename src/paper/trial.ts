@@ -18,7 +18,11 @@ export function applyPaperTrial(on: boolean) {
 
 export function usePaperTrial(): [boolean, (on: boolean) => void] {
   const [on, setOn] = useState(readPaperTrial);
-  useLayoutEffect(() => { applyPaperTrial(on); }, [on]);
+  useLayoutEffect(() => {
+    applyPaperTrial(on);
+    // 打包的宋体只在打开时才加载；加载失败时字体栈回落到系统宋体（Songti SC），界面照常。
+    if (on) void import('./fonts').catch(() => {});
+  }, [on]);
   useEffect(() => {
     try { if (on) localStorage.setItem(PAPER_TRIAL_KEY, 'on'); else localStorage.removeItem(PAPER_TRIAL_KEY); } catch { /* 存不下就只在本次页面生效 */ }
   }, [on]);

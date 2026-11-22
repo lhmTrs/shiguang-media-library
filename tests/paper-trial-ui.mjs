@@ -27,7 +27,9 @@ await ff('-f', 'lavfi', '-i', 'color=c=0xe2a36f:s=480x320:d=1', '-frames:v', '1'
 
 const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r));
 const origin = `http://127.0.0.1:${port}`;
-let logs = '', browser, page, passed = false, cookie, token; const checks = [], errors = [], external = [];
+let logs = '', browser, page, passed = false, cookie, token; const checks = [], errors = [], external = [], requests = [];
+/** 打包宋体的请求：字体文件本身，或者装着它的那一块（fonts-*.css / fonts-*.js）。开关关着时一个都不能有。 */
+const fontRequests = () => requests.filter(u => /\.woff2?$|\/fonts-[^/]+\.(css|js)$/.test(u));
 const child = spawn(process.execPath, ['server/index.mjs'], {cwd: root, env: {...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temporary, 'data'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', MEDIA_READONLY_FILES: '1', MEDIA_DISABLE_DESKTOP_NATIVE: '1', SHIGUANG_AUDIO_ANALYSIS: '0'}});
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body) { const r = await fetch(origin + '/api' + p, {method: body ? 'POST' : 'GET', headers: {cookie, origin, 'x-local-token': token, 'content-type': 'application/json'}, ...(body ? {body: JSON.stringify(body)} : {})}); assert.ok(r.ok, p); return r.json(); }
@@ -82,7 +84,7 @@ try {
   browser = await chromium.launch({executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
   const context = await browser.newContext({viewport: {width: 1440, height: 960}});
   await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
-  context.on('request', r => { const url = new URL(r.url()); if (url.protocol.startsWith('http') && url.origin !== origin) external.push(url.origin + url.pathname); });
+  context.on('request', r => { const url = new URL(r.url()); if (url.protocol.startsWith('http') && url.origin !== origin) external.push(url.origin + url.pathname); if (url.protocol.startsWith('http')) requests.push(url.pathname); });
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   await page.goto(origin + '/#/materials');
   await expect(rows()).toHaveCount(4);
@@ -101,10 +103,13 @@ try {
     for (const name of ['素材查找', '项目设计和管理']) await expect(groupButton(name)).toHaveAttribute('aria-expanded', 'true');
     assert.equal(await style(page.locator('.sidebar'), 'backgroundColor'), 'rgb(240, 244, 243)');
     assert.ok(!(await style(page.locator('.library-heading h1'), 'fontFamily')).includes('Noto Serif SC'));
+    assert.deepEqual(fontRequests(), [], 'no bundled font is requested while the trial is off');
+    assert.equal(await page.evaluate(() => [...document.fonts].some(f => f.family.replace(/["']/g, '') === 'Noto Serif SC')), false);
     await page.screenshot({path: path.join(evidence, 'off-materials.png'), animations: 'disabled'});
   });
 
   await check('OFF in all 6 themes: theme colours are the themes\' own, trial rules still match nothing', async () => {
+    requests.length = 0;
     // 每套风格的品牌色取自生成好的 themes.css（含对比度保护后的值）；试用块的赭红不能漏进来。
     const css = await fs.readFile(path.join(root, 'src/themes.css'), 'utf8'), brand = {};
     for (const [, selector, id, body] of css.matchAll(/(:root|html\[data-theme="([a-z]+)"\])\s*\{([\s\S]*?)\n\}/g)) {
@@ -120,6 +125,7 @@ try {
       assert.deepEqual((await paperRuleHits()).hits, [], theme);
     }
     await page.evaluate(() => localStorage.setItem('shiguang.theme', 'forest')); await page.reload(); await expect(rows()).toHaveCount(4);
+    assert.deepEqual(fontRequests(), [], 'no bundled font is requested in any theme while the trial is off');
   });
 
   await check('ON via settings: switch is remembered only in this browser and survives reload', async () => {
@@ -141,6 +147,10 @@ try {
     const name = rows().first().locator('.asset-name-button');
     assert.match(await style(name, 'fontFamily'), /Noto Serif SC/); assert.equal(await style(name, 'fontSize'), '14px');
     assert.match(await style(page.locator('.result-count'), 'fontFamily'), /Noto Sans SC/);
+    // 打包的 Noto Serif SC 真的加载上了，而且是从本机拿的（同源 woff2）。
+    await expect.poll(() => page.evaluate(() => [...document.fonts].some(f => f.family.replace(/["']/g, '') === 'Noto Serif SC' && f.status === 'loaded')), {timeout: 15000}).toBe(true);
+    assert.ok(fontRequests().some(u => u.endsWith('.woff2')), 'a bundled woff2 slice was fetched from this machine');
+    assert.ok(!fontRequests().some(u => u.endsWith('.woff')), 'only woff2 is shipped');
     assert.equal(await style(rows().first(), 'paddingTop'), '8px'); assert.equal(await style(rows().first(), 'paddingBottom'), '8px');
     assert.equal(await style(rows().first().locator('.file-cell span').first(), 'lineHeight'), '18px'); // 12px × 1.5
     assert.equal(await style(rows().first(), 'borderBottomColor'), 'rgb(236, 231, 222)');
@@ -268,8 +278,9 @@ try {
     await expect(groupButton('素材查找')).toBeVisible();
     assert.deepEqual((await paperRuleHits()).hits, []);
     assert.equal(await style(page.locator('.sidebar'), 'backgroundColor'), 'rgb(240, 244, 243)');
-    await page.reload(); await expect(rows()).toHaveCount(4);
+    requests.length = 0; await page.reload(); await expect(rows()).toHaveCount(4);
     assert.equal(await page.evaluate(() => document.documentElement.hasAttribute('data-sg-paper')), false);
+    assert.deepEqual(fontRequests(), [], 'after turning it off, a reload requests no bundled font');
     await page.mouse.move(5, 950); await page.screenshot({path: path.join(evidence, 'off-again-materials.png'), animations: 'disabled'});
   });
 
