@@ -17,6 +17,7 @@ import {Projects} from '../server/projects.mjs';
 import {ProjectMusic} from '../server/project-music/store.mjs';
 import {Notices} from '../server/notices/store.mjs';
 import {projectMusicSource} from '../server/notices/project-music-source.mjs';
+import {activateAndRestart} from './helpers/mysql-activate.mjs';
 
 process.env.MEDIA_SKIP_IMPORT = '1'; process.env.MEDIA_SKIP_RECONCILE = '1'; process.env.MEDIA_NO_WATCH = '1'; process.env.SHIGUANG_AUDIO_ANALYSIS = '0';
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sg-notices-mysql-')));
@@ -79,7 +80,7 @@ const result = {sqlite: null, mysql: null, mysqlRun: false, version: null};
 let server, connection, mysqlDb, sqliteLib, passed = false, logs = '';
 try {
   const sqliteApp = path.join(base, 'sqlite-app');
-  const storage = await new MysqlStorage(sqliteApp).init();
+  let storage = await new MysqlStorage(sqliteApp).init();
   sqliteLib = await new Library(sqliteApp, {directoryClassification: true}).init();
   storage.attach(sqliteLib);
   result.sqlite = (await scenario(sqliteLib, sqliteApp)).out;
@@ -101,10 +102,11 @@ try {
     result.version = (await connection.query('SELECT VERSION() v'))[0][0].v;
     // 和正式环境一样：先起一个全新的 SQLite 库，再切到 MySQL，然后跑同一场景。
     const appDir = path.join(base, 'mysql-app'); await fs.mkdir(appDir);
-    const mysqlStorage = await new MysqlStorage(appDir).init();
-    const mysqlLib = await new Library(appDir, {directoryClassification: true}).init();
+    let mysqlStorage = await new MysqlStorage(appDir).init();
+    let mysqlLib = await new Library(appDir, {directoryClassification: true}).init();
     mysqlStorage.attach(mysqlLib);
-    await mysqlStorage.activate({...config, database: 'notices_check'});
+    // #134 的合同：切库后要重启，旧进程里的 lib.db 还是 SQLite；照其他 MySQL 测试用 activateAndRestart。
+    ({lib: mysqlLib, storage: mysqlStorage} = await activateAndRestart({storage: mysqlStorage, lib: mysqlLib, config: {...config, database: 'notices_check'}}));
     assert.equal(mysqlLib.db.kind, 'mysql');
     mysqlDb = mysqlLib.db;
     result.mysql = (await scenario(mysqlLib, appDir)).out;
@@ -118,7 +120,7 @@ try {
     assert.deepEqual(result.mysql, result.sqlite, 'SQLite 与 MySQL 的行为不一致');
     // 一次性迁移（server/mysql.mjs）：SQLite 里的待处理原样进 MySQL，读出来和迁移前一致。
     const before = new Notices({lib: sqliteLib}).init().list({endedLimit: 500});
-    await storage.activate({...config, database: 'notices_migration'});
+    ({lib: sqliteLib, storage} = await activateAndRestart({storage, lib: sqliteLib, config: {...config, database: 'notices_migration'}}));
     assert.equal(sqliteLib.db.kind, 'mysql');
     const after = new Notices({lib: sqliteLib}).init().list({endedLimit: 500});
     assert.deepEqual(after.notices, before.notices, '迁移到 MySQL 后待处理数据不一致');
