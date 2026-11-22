@@ -60,7 +60,7 @@ test('Windows actual application: private identity, denied commands, 202 is not 
  assert.equal((await app.call('application/shutdown',command,{'x-local-token':'wrong'})).status,403);
  assert.equal((await app.call('application/shutdown',command,{origin:'http://example.invalid'})).status,403);
  assert.equal((await app.call('application/shutdown',{...command,runId:crypto.randomUUID()})).status,409);assert.equal((await app.call('stats')).status,200);
- const held=net.connect(Number(new URL(app.origin).port),'127.0.0.1');await once(held,'connect');t.after(()=>held.end());
+ const held=net.connect(Number(new URL(app.origin).port),'127.0.0.1');await once(held,'connect');held.write(`GET /api/stats HTTP/1.1\r\nHost: ${new URL(app.origin).host}\r\n`);t.after(()=>held.end());
  const accepted=await app.call('application/shutdown',command);assert.equal(accepted.status,202);await accepted.json();await pause(100);assert.equal(await app.readReceipt(),null,'live HTTP connection must not mint completion');held.end();
  const receipt=await until(()=>app.readReceipt(),30000);assert.equal(verifyShutdownReceipt(receipt,{libraryId:app.record.instanceId,...command},app.identity.token),true);assert.deepEqual(await app.exited,{code:0,signal:null});
  const db=new Database(path.join(app.data,'library.sqlite'),{readonly:true});assert.equal(db.prepare('SELECT name FROM media_projects WHERE id=?').get(project.id).name,'原样访达标题');db.close();
