@@ -326,6 +326,35 @@ test('待处理先筛再分页，批数文件数吻合，原文件变化只提�
   assert.deepEqual(f.intake.list({scope:'attention'}).batches.map(batch=>batch.id),[waiting.id]);
 });
 
+test('待处理批次等量替换或结果变化时更新修订，普通完成批次不影响修订',async t=>{
+  const f=await fixture(t);
+  const addBatch=(createdAt,itemStatus)=>{
+    const item={id:randomUUID(),name:'合成.mp4',status:itemStatus};
+    const batch={id:randomUUID(),libraryId:f.intake.libraryId,mode:'copy',createdAt,status:'completed',items:[item]};
+    f.intake.batches.set(batch.id,batch);
+    return batch;
+  };
+  const first=addBatch(1,'failed');
+  const second=addBatch(2,'failed');
+  const mark=(batch,acknowledged)=>f.intake.acknowledge(batch.id,{acknowledged,resultKey:f.intake.resultKey(batch)});
+  await mark(second,true);
+  const before=f.intake.status();
+  assert.equal(f.intake.status().attentionRevision,before.attentionRevision);
+  addBatch(3,'ready');
+  assert.equal(f.intake.status().attentionRevision,before.attentionRevision);
+
+  await mark(first,true);
+  await mark(second,false);
+  const after=f.intake.status();
+  assert.equal(after.needsAttentionBatches,before.needsAttentionBatches);
+  assert.equal(after.needsAttentionFiles,before.needsAttentionFiles);
+  assert.notEqual(after.attentionRevision,before.attentionRevision);
+  assert.deepEqual(f.intake.list({scope:'attention'}).batches.map(batch=>batch.id),[second.id]);
+
+  second.items[0].code='INTAKE_SOURCE_CHANGED';
+  assert.notEqual(f.intake.status().attentionRevision,after.attentionRevision);
+});
+
 test('相同回执目录切到另一素材库不改写旧批次或统计旧任务',async t=>{
   const f=await fixture(t),id=randomUUID(),row={id,libraryId:f.intake.libraryId,mode:'move',status:'running',projectId:f.project.id,folderId:'root',items:[{id:randomUUID(),status:'ready',removal:'planned',bytes:1}]};
   await f.intake.receipts.write('batches',id,row);const file=path.join(f.intake.receipts.base,'batches',id+'.json'),before=await fs.readFile(file);
