@@ -122,7 +122,12 @@ async function routeApi(route) {
     if (!fixture.split) return respond({batches: fixture.batches});
     // 任务入口两件（11-24 锁定字段）：默认只给最近批次（older 的不在里面）；scope=attention 先筛选再分页。
     const pending = fixture.batches.filter(b => b.attention), attentionTotal = pending.length, attentionFiles = pending.reduce((n, b) => n + b.attention.items, 0);
-    if (url.searchParams.get('scope') === 'attention') {const offset = +url.searchParams.get('offset'), limit = +url.searchParams.get('limit'); return respond({batches: pending.slice(offset, offset + limit), total: fixture.batches.length, attentionTotal, attentionFiles, offset, limit});}
+    if (url.searchParams.get('scope') === 'attention') {
+      const offset = +url.searchParams.get('offset'), limit = +url.searchParams.get('limit'), body = clone({batches: pending.slice(offset, offset + limit), total: fixture.batches.length, attentionTotal, attentionFiles, offset, limit});
+      // 竞态反例用：深页响应按发出时的数据算好，再故意慢一段时间才回
+      if (offset > 0 && fixture.deepDelay) {const wait = fixture.deepDelay; fixture.deepDelay = 0; fixture.slowDeepStarted = true; await pause(wait);}
+      return respond(body);
+    }
     return respond({batches: fixture.batches.filter(b => !b.older), attentionTotal, attentionFiles});
   }
   const match = endpoint.match(/^\/batches\/([^/]+)(.*)$/), batch = fixture.batches.find(b => b.id === match?.[1]);
@@ -336,6 +341,24 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     await expect(select().locator('option[value="b-older-44"]')).toHaveCount(1);
     const all = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
     assert.equal(new Set(all).size, all.length); assert.equal(all.length, 47 + 2);
+  });
+  await check('attention a new revision that arrives while a full refresh is still reading is not lost when that older read finishes', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); for (let n = 0; n < 45; n++) {const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older-' + n, projectName: '合成较早项目 ' + n, older: true}); f.batches.push(older);} splitStatus(); f.status.attentionRevision = 'rev-1';});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint'), select = () => drawer().getByLabel('选择文件收纳批次');
+    const start = requests.length, scoped = () => requests.slice(start).filter(r => r.query?.includes('scope=attention')).map(r => r.query.replace('?scope=attention&', ''));
+    await entryButton.click(); await expect(select().locator('option[value="b-older-17"]')).toHaveCount(1);
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect(select().locator('option[value="b-older-37"]')).toHaveCount(1);
+    // 点刷新：整页重读开始，第二页的回应慢 6 秒，而且是点刷新那一刻的旧数据
+    fixture.deepDelay = 6000; await drawer().getByRole('button', {name: '刷新文件任务', exact: true}).click();
+    await expect.poll(() => fixture.slowDeepStarted === true).toBe(true);
+    // 这期间别处标掉第二页的 b-older-25、恢复另一批：计数不变、指纹变；状态轮询（5 秒一次）会在慢读取结束前读到新指纹
+    const gone = fixture.batches.find(b => b.id === 'b-older-25'); gone.acknowledged = true; gone.attention = null;
+    const back = structuredClone(gone); Object.assign(back, {id: 'b-older-50', projectName: '合成恢复项目', acknowledged: false, attention: back.pendingAttention}); fixture.batches.splice(fixture.batches.findIndex(b => b.id === 'b-older-26'), 0, back);
+    splitStatus(); fixture.status.attentionRevision = 'rev-2';
+    // 慢读取带回的是旧第二页；读完以后要按读取期间收到的新指纹再整页读一次，最后对上
+    await expect(select().locator('option[value="b-older-25"]')).toHaveCount(0, {timeout: 14000}); await expect(select().locator('option[value="b-older-50"]')).toHaveCount(1);
+    assert.ok(scoped().filter(q => q === 'offset=20&limit=20').length >= 3, '慢读取之后还要再读一次第二页：' + scoped().join(','));
+    const values = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value)); assert.equal(new Set(values).size, values.length);
   });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
