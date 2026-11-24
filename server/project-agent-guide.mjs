@@ -1,5 +1,5 @@
 import {platformWords} from './platform-words.mjs';
-export const AGENT_GUIDE_VERSION = '2026-11-20.1';
+export const AGENT_GUIDE_VERSION = '2026-11-24.1';
 
 export function projectAgentGuide({ project, origin, instanceId }) {
   const projectId = project.id;
@@ -46,8 +46,10 @@ GET/HEAD 不要求写 token；后续请求建议携带 \`X-Shiguang-Library-Id: 
 | 查旧版、对比和改动 | \`GET ${storyboard}/versions?offset=0&limit=20\`、\`GET ${storyboard}/changes?limit=20\` | 看旧版不等于恢复；恢复会写新版本 |
 | 看待看事项 | \`GET ${storyboard}/pending\` | 读取不清提醒；清除须另有明确指示 |
 | 人物、场景、道具 | \`GET ${assets}?project_id=${projectId}&kind=character&page=1\` | 创作资产 ID 与全库媒体 ID 不通用 |
+| 按名字查全库媒体 | \`GET /api/assets?q=<关键词>&qField=name&page=1&pageSize=20\` | 仅用于已有本机全库读取权限的会话；用结果里的媒体 ID 下载，详见下文 |
 | 下载已知素材 | \`GET /api/media/<media_id>/original\` | 已知全库媒体 ID；不猜编号或本机路径 |
 | 浏览和导入项目视频 | \`GET ${videos}?folderId=root\` | 现有列表非分页轻量搜索；导入是写操作 |
+| 生成前核对分镜、入库后查绑定 | \`GET ${storyboard}/segments\`、\`GET /api/storyboard-video/v2/projects/${projectId}/state\` | 见「分镜视频绑定 v2」；只读查询不提交生成、绑定或采用 |
 | 列出项目音乐和每轮记录 | \`GET ${music}\` | 只读；歌曲 › 轮次 › 版本，每轮带 revision 和开新一轮前还缺的字段；字段规则见 \`GET /api/project-music/schema\` |
 | 项目音乐「待补写」清单（先看这里） | \`GET /api/project-music/pending-notes?projectId=${projectId}\` | ${platformWords('用户从访达收新一轮时，')}上一轮的问题整理和下一轮方向留给 AI 补；依据和写法见 \`GET /api/project-music/schema\` 的 pendingNotes 一节 |
 | 项目音乐的「文件」区（存放和传递） | \`GET ${music}/files?folder=<文件夹>\` | 列出文件夹和文件；取文件、放剪好的文件、加入歌曲的接口见 \`GET /api/project-music/schema\` 的 files 一节 |
@@ -136,7 +138,9 @@ ${example({'分段':[{'段':'A','起始镜号':'01'}],'分割模式':{'模式':'
 - 已知全库媒体 ID：带本机会话 Cookie 请求 \`GET /api/media/<media_id>/original\`，按响应流保存，保留服务端的缺失/离线/权限错误。可发送 Range 分段读取。\`thumb/proxy/wave\` 是预览/转码缓存，可能按需生成，不是原文件；需要原件就用 original。
 - 项目视频：\`GET ${videos}?folderId=root\` 列项目根目录，\`folderId=all\` 聚合普通视频；具体目录使用响应 folders 中的 ID，不把目录名或磁盘路径当 ID。现有列表不承诺轻量分页，不添加无效 offset/limit 来假装分页。废片查看须用户确有需要，再用 folderId=reject 或 includeRejected=true。
 - 使用项目视频响应中的 \`mediaUrl\` 下载/预览；相对 URL 以绑定 origin 为基址。不要把 videoId 拼到全库 original 接口，\`thumbnailUrl\` 也不是原视频。
-- 按名字查素材的轻量分页搜索尚未提供，本文不虚构搜索或按文件夹名查询接口。没有媒体 ID 时先取得用户提供的编号或核实已有入口，不猜编号、不拉全库、不绕过登记根读取任意文件。
+- 只知道全库媒体名称时，用 \`GET /api/assets?q=<URL编码的关键词>&qField=name&qMode=all&kind=video&page=1&pageSize=20\`。\`qField=all\` 可查名称、标签和备注；\`qMode=any\` 匹配任一关键词。\`kind\` 可省略，或用 \`photo\`、\`video\`、\`music\`、\`sfx\`（音效）。用非空关键词和小页先查，从第 1 页开始，读 \`items[].id\`、\`total\`、\`page\`、\`pages\`，有需要再翻页。同名时先核类型、目录和版本，确认目标后才下载。
+- \`/api/assets\` 是本机全库索引入口，搜索结果可能带本机路径等内部字段。只在用户已授权查全库的本机会话使用，汇报时只给任务所需的信息。项目分享链接不授予全库权限，也不要用 \`/api/workspace\` 扫全库。专用的项目内分页名称搜索接口目前没有提供。
+- 只知道项目视频的标题或文件名时，先查该项目的目标文件夹；需要确认文件夹 ID 时从列表的 \`folders\` 读取。按 \`videos[].name\` 或 \`fileName\` 核对，使用该条的 \`id\`（项目视频编号）和 \`mediaUrl\`。人物、场景和道具按下文的创作资产接口查询，并核实具体造型或图片用途。
 
 只有实际收到完整字节，才报告下载完成；下载到本地不代表已经归入项目。
 
