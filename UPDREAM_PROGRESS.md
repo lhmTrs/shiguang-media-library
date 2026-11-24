@@ -18,7 +18,8 @@
 
 全部路径在 `/api/updream-progress` 下，使用原 Host/Origin、cookie、写token和素材库实例校验，返回 `Cache-Control: no-store`。
 
-- `GET /?scope=all|active|history&offset=0&limit=50`：limit为1到100。返回schemaVersion、readAt、queue、preferences、summary、tasks、total、offset、limit。summary的activeCount/unreadCount/attentionCount不受分页和scope影响，但受明确报告的读取上限限制。showEntry在有活跃/未读任务或队列异常时为true。
+- `GET /?scope=all|active|history&offset=0&limit=50`：limit 为 1 到 100。返回 schemaVersion、readAt、queue、preferences、summary、diagnostics、tasks、total、offset、limit。summary 的 activeCount、unreadCount、attentionCount、attentionUnreadCount、doneUnreadCount、diagnosticCount 全部基于已核对的有界快照，不随分页和 scope 改变。showEntry 在有进行中、未读、待处理、可查看的诊断或当前读取异常时为 true。
+- `diagnostics` 单独统计无法核对的记录，包含 count、byReason、legacyStatus、最多 50 条 items，以及明细截断标志 truncated。明细只提供可确认的编号、原因、历史阶段和登记时间。诊断不计入任务列表、待处理或新结果。状态文件缺失时，历史队列中的完成或失败只当未核实线索。历史终态的状态文件缺失仍使 queue.state 为 degraded，但 queue.warning 为 false；当前队列不可用、读取截断或其他无法核对的记录仍明确警告。
 - `GET /tasks/:id`：仅返回相同白名单Task，作为查看本机任务记录的入口；不提供原始JSON/路径。
 - `POST /read {items:[{id,version}]}`：1到100项，version必须是该Task.eventVersion。只标指定的、版本仍吻合的项目，返回marked/skipped。未存在或版本改变的任务跳过；后续新结果/异常仍会提醒。无清空所有任务/控制队列接口。
 

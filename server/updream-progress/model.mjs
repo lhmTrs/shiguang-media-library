@@ -6,12 +6,23 @@ const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}
 const text=(value,max=240)=>typeof value==='string'&&value.length<=max&&!/[\x00-\x1f\x7f]|https?:|bearer\s|token=/i.test(value)?value:null;
 const folder=value=>text(value,300)&&!value.startsWith('/')&&!/^[A-Za-z]:|^\\\\/.test(value)&&!value.split(/[\\/]/).includes('..')?value:null;
 const timestamp=value=>Number.isFinite(value)&&value>0&&value<=Date.now()+86400000?Math.floor(value):null;
+export const registeredAt=q=>typeof q?.created==='number'?timestamp(q.created*1000):null;
 const activeStages=new Set(['monitoring','waiting_library','notifying']);
 const stages=new Set([...activeStages,'done','failed','cancelled','needs_user']);
+const terminalStages=new Set(['done','failed','cancelled']);
+const diagnosticReasons=new Set(['state_missing','read_limit','record_changed','unsafe_record']);
 const notificationStates=new Set(['unprepared','prepared','sending','send_uncertain','queued','delivered','answered','failed']);
+export function taskDiagnostic(id, reason, queueEntry) {
+ const stage = stages.has(queueEntry?.stage) ? queueEntry.stage : null;
+ return {
+  id, reason: diagnosticReasons.has(reason) ? reason : 'invalid_record',
+  legacyStatus: stage, registeredAt: registeredAt(queueEntry),
+  historicalMissing: reason === 'state_missing' && terminalStages.has(stage),
+ };
+}
 export function degradedTask(id,reason='invalid_record'){
  const eventVersion=hash(JSON.stringify({id,reason}));
- return {id,name:'任务记录待核对',eventVersion,phase:'needs_review',active:false,attention:{code:reason,message:'本机任务记录暂不可核对，原任务未改动'},unread:true,createdAt:null,upstreamUpdatedAt:null,localRecordUpdatedAt:null,progress:null,lastCompletedPhase:null,stale:null,target:{projectId:null,projectName:null,folderLabel:null,folderId:null,identity:'unconfirmed'},delivery:null,notification:{state:'unknown'},recordUrl:'/api/updream-progress/tasks/'+encodeURIComponent(id)};
+ return {id,name:'任务记录待核对',eventVersion,phase:'needs_review',active:false,attention:{code:reason,message:'本机任务记录暂不可核对，原任务未改动'},unread:false,createdAt:null,upstreamUpdatedAt:null,localRecordUpdatedAt:null,progress:null,lastCompletedPhase:null,stale:null,target:{projectId:null,projectName:null,folderLabel:null,folderId:null,identity:'unconfirmed'},delivery:null,notification:{state:'unknown'},recordUrl:'/api/updream-progress/tasks/'+encodeURIComponent(id)};
 }
 export function projectTask(q,s,mtime,{libraryId,resolveVideo=()=>false,projectName=()=>null}={}){
  if(q.version!==1||!taskId(q.task_id)||!stages.has(q.stage)||!s?.generation||s.generation.task_id!==q.task_id||s.count!==1||(s.version!==undefined&&s.version!==1))throw Error('invalid_record');
@@ -51,5 +62,5 @@ export function projectTask(q,s,mtime,{libraryId,resolveVideo=()=>false,projectN
  const lastCompletedPhase=recorded?'imported':s.download_result?.probe?'validating':g.status==='completed'?'generating':null;
  const stale=active&&Number.isFinite(mtime)&&Date.now()-mtime>120000?{since:Math.floor(mtime),reason:'local_record_old'}:null;
  const semantic={id:q.task_id,name:text(s.name)||text(t.filename)||'Updream 视频任务',phase,active,attention,target,delivery};
- return {...semantic,eventVersion:hash(JSON.stringify({...semantic,attentionRevision:attention?hash(String(q.attention??g.error_code??'').slice(0,1000)):null,deliverySignature:recorded?deliverySignature:null})),unread:!!attention||['imported','failed','cancelled'].includes(phase),createdAt:timestamp(q.created*1000),upstreamUpdatedAt:null,localRecordUpdatedAt:timestamp(mtime),progress,lastCompletedPhase,stale,notification,recordUrl:'/api/updream-progress/tasks/'+encodeURIComponent(q.task_id)};
+ return {...semantic,eventVersion:hash(JSON.stringify({...semantic,attentionRevision:attention?hash(String(q.attention??g.error_code??'').slice(0,1000)):null,deliverySignature:recorded?deliverySignature:null})),unread:!!attention||['imported','failed','cancelled'].includes(phase),createdAt:registeredAt(q),upstreamUpdatedAt:null,localRecordUpdatedAt:timestamp(mtime),progress,lastCompletedPhase,stale,notification,recordUrl:'/api/updream-progress/tasks/'+encodeURIComponent(q.task_id)};
 }

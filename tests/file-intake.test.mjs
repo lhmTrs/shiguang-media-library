@@ -295,6 +295,66 @@ test('已处理：拒绝在途、不确定、移除未结清和旧结果；写�
   b.libraryId='other library';await assert.rejects(f.intake.acknowledge(id,input()),e=>e.code==='LOCAL_INSTANCE_CHANGED');
 });
 
+test('待处理先筛再分页，批数文件数吻合，原文件变化只提供重新选择',async t=>{
+  const f=await fixture(t);
+  const makeItem=(status,extra={})=>({id:randomUUID(),name:'合成.mp4',bytes:1,status,...extra});
+  const makeBatch=(createdAt,status,items)=>{
+    const row={id:randomUUID(),libraryId:f.intake.libraryId,projectId:f.project.id,folderId:'root',mode:'copy',createdAt,status,items};
+    f.intake.batches.set(row.id,row);
+    return row;
+  };
+  const settled=makeBatch(1,'partial',[makeItem('failed',{code:'INTAKE_SOURCE_CHANGED'}),makeItem('source_retained',{videoId:randomUUID()})]);
+  const waiting=makeBatch(2,'waiting',[makeItem('duplicate'),makeItem('unknown'),makeItem('failed',{code:'INTAKE_NOT_STARTED'})]);
+  for(let index=3;index<55;index++)makeBatch(index,'completed',[makeItem('ready')]);
+  assert.equal(f.intake.list().batches.length,50);
+  assert.ok(!f.intake.list().batches.some(batch=>batch.id===settled.id||batch.id===waiting.id));
+  const first=f.intake.list({scope:'attention',offset:'0',limit:'1'});
+  assert.equal(first.attentionTotal,2);assert.equal(first.total,2);assert.equal(first.attentionFiles,5);
+  assert.equal(first.batches[0].id,waiting.id);assert.equal(first.batches[0].attention.items,3);
+  assert.deepEqual(first.batches[0].items.map(item=>item.actions),[['resolve_duplicate'],['reconcile'],['retry']]);
+  const second=f.intake.list({scope:'attention',offset:'1',limit:'1'});
+  assert.equal(second.batches[0].id,settled.id);assert.equal(second.batches[0].attention.codes.INTAKE_SOURCE_CHANGED,1);
+  assert.deepEqual(second.batches[0].items.map(item=>item.actions),[['reselect'],['view']]);
+  await assert.rejects(f.intake.retry(settled.id,settled.items[0].id),{code:'INTAKE_SOURCE_CHANGED'});
+  const status=f.intake.status();
+  assert.equal(status.needsAttention,5);assert.equal(status.needsAttentionFiles,5);assert.equal(status.needsAttentionBatches,2);
+  for(const query of [{offset:'0'},{scope:'unknown'},{scope:'attention',offset:'-1'},{scope:'attention',limit:'101'},{scope:'attention',limit:['1','2']}]){
+    assert.throws(()=>f.intake.list(query),{code:'INTAKE_INVALID_INPUT',status:400});
+  }
+  const dto=await f.intake.acknowledge(settled.id,{acknowledged:true,resultKey:second.batches[0].resultKey});
+  assert.equal(dto.attention,null);assert.equal(f.intake.status().needsAttentionBatches,1);assert.equal(f.intake.status().needsAttentionFiles,3);
+  assert.deepEqual(f.intake.list({scope:'attention'}).batches.map(batch=>batch.id),[waiting.id]);
+});
+
+test('待处理批次等量替换或结果变化时更新修订，普通完成批次不影响修订',async t=>{
+  const f=await fixture(t);
+  const addBatch=(createdAt,itemStatus)=>{
+    const item={id:randomUUID(),name:'合成.mp4',status:itemStatus};
+    const batch={id:randomUUID(),libraryId:f.intake.libraryId,mode:'copy',createdAt,status:'completed',items:[item]};
+    f.intake.batches.set(batch.id,batch);
+    return batch;
+  };
+  const first=addBatch(1,'failed');
+  const second=addBatch(2,'failed');
+  const mark=(batch,acknowledged)=>f.intake.acknowledge(batch.id,{acknowledged,resultKey:f.intake.resultKey(batch)});
+  await mark(second,true);
+  const before=f.intake.status();
+  assert.equal(f.intake.status().attentionRevision,before.attentionRevision);
+  addBatch(3,'ready');
+  assert.equal(f.intake.status().attentionRevision,before.attentionRevision);
+
+  await mark(first,true);
+  await mark(second,false);
+  const after=f.intake.status();
+  assert.equal(after.needsAttentionBatches,before.needsAttentionBatches);
+  assert.equal(after.needsAttentionFiles,before.needsAttentionFiles);
+  assert.notEqual(after.attentionRevision,before.attentionRevision);
+  assert.deepEqual(f.intake.list({scope:'attention'}).batches.map(batch=>batch.id),[second.id]);
+
+  second.items[0].code='INTAKE_SOURCE_CHANGED';
+  assert.notEqual(f.intake.status().attentionRevision,after.attentionRevision);
+});
+
 test('相同回执目录切到另一素材库不改写旧批次或统计旧任务',async t=>{
   const f=await fixture(t),id=randomUUID(),row={id,libraryId:f.intake.libraryId,mode:'move',status:'running',projectId:f.project.id,folderId:'root',items:[{id:randomUUID(),status:'ready',removal:'planned',bytes:1}]};
   await f.intake.receipts.write('batches',id,row);const file=path.join(f.intake.receipts.base,'batches',id+'.json'),before=await fs.readFile(file);

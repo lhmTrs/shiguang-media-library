@@ -311,3 +311,9 @@
 .fi-root .fi-install .fi-install-latest{display:flex;align-items:center;gap:6px;color:var(--fi-accent);font-weight:600}
 .fi-root .fi-install .fi-install-help{font-size:12px;color:var(--fi-muted);margin:4px 0 0}
 .fi-root .fi-install .fi-install-help .fi-link{min-height:24px;padding:0 3px;border:0;background:transparent;font-size:12px;text-decoration:underline;text-underline-offset:2px;display:inline}
+/* 任务入口两件（11-24）：抽屉标题旁的待处理批数、「还有 K 批待处理」提示行、要回文件管理器重新选择的提示。提示行最多两行。 */
+.fi-heading-title{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}.fi-heading-title h2{margin:0}.fi-heading-attention{font-size:12px;color:var(--c-f59e0b);font-weight:600}
+.fi-pending-hint{margin:0 0 10px;font-size:12px;color:var(--c-f59e0b);line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.fi-root .fi-pending-hint .fi-link{display:inline;min-height:0;padding:0 2px;border:0;background:transparent;color:var(--fi-accent);font-size:12px;text-decoration:underline;text-underline-offset:2px;text-align:left}
+.fi-root .fi-pending-hint .fi-link:hover:not(:disabled){background:transparent}
+.fi-reselect{margin:6px 0 0}

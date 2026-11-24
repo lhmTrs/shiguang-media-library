@@ -3,7 +3,9 @@ export type IntakeCompletion = {id: string; updatedAt: number; projectName: stri
 /** 访达入口安装任务（POST/GET /install/job，status.installJob）。时间为毫秒；previousKept 只在失败且核对过时为布尔值。 */
 export type InstallStage = 'checking' | 'preparing-window' | 'writing' | 'done' | 'failed';
 export type InstallJob = {id: string; stage: InstallStage; window: 'compiling' | 'skipped' | null; startedAt: number; finishedAt: number | null; message: string | null; error: {code: string; message: string} | null; previousKept: boolean | null};
-export type IntakeStatus = {supported: boolean; installed: boolean; upgradeNeeded?: boolean; canTrash: boolean; activeCount: number; needsAttention: number; latestCompletion: IntakeCompletion | null; installJob?: InstallJob | null};
+/** needsAttention 是旧字段（文件数，给旧页面）；needsAttentionBatches / needsAttentionFiles 是任务入口两件（11-24）新增，顶栏按批数。旧后台没有这两个字段时退回旧显示。
+ *  attentionRevision（可选）：待处理批次和内容的指纹，批数文件数不变的替换也会变；抽屉用它决定要不要重读已加载的待处理页。 */
+export type IntakeStatus = {supported: boolean; installed: boolean; upgradeNeeded?: boolean; canTrash: boolean; activeCount: number; needsAttention: number; needsAttentionBatches?: number; needsAttentionFiles?: number; attentionRevision?: string; latestCompletion: IntakeCompletion | null; installJob?: InstallJob | null};
 export type MediaKind = 'photo' | 'video' | 'music' | 'sfx';
 export type ImageProposal = {projectId:string;characterId:string|null;characterRevision:number|null;lookId:string|null;lookRevision:number|null;newCharacter:boolean;newLook:boolean;characterName:string;lookName:string};
 export type AssetKind = 'character' | 'scene' | 'prop';
@@ -39,13 +41,23 @@ export type IntakeItem = {
   destination?:IntakeDestination;destinationLabel?:string;mediaKind?:string;creativeAssetId?:string;lookId?:string|null;bindingId?:string;error?: string; code?: string; videoId?: string; managedProjectId?: string; managedProjectName?: string;
   assetId?: string; adoptionStamp?: string; candidates?: Candidate[]; plannedFileName?: string; resultFileName?: string; nameMode?: NameMode;
   resolvedFolder?: {id: string; name: string; relativePath: string}; reveal?: {status: 'dispatched' | 'failed' | 'unknown'; at?: number; error?: {code: string; message: string}};
+  /** 后端声明的现在能做的动作（任务入口两件）。有这个字段时，文件任务抽屉只画这里列出的动作；没有时照旧按状态判断。 */
+  actions?: IntakeItemAction[];
 };
+export type IntakeItemAction = 'resolve_duplicate' | 'retry' | 'reselect' | 'reconcile' | 'view';
+/** 每批待处理摘要：和 status.needsAttentionBatches 同一条规则；null 表示这批不需要处理。 */
+export type IntakeBatchAttention = {items: number; codes?: Record<string, number>};
 export type IntakeBatch = {
   version?:2;id: string; projectId: string; projectName: string; folderId: string; folderName: string; mode: 'copy' | 'move';
   createdAt: number | string; updatedAt: number | string;
   canAcknowledge?: boolean; acknowledged?: boolean; acknowledgedAt?: number; resultKey?: string;
   status: 'queued' | 'running' | 'waiting' | 'completed' | 'partial' | 'interrupted'; items: IntakeItem[]; revealWhenDone?: boolean; prompt?: IntakePrompt;
+  attention?: IntakeBatchAttention | null;
 };
+/** GET /batches?scope=attention&offset&limit（待处理先筛选再分页）；不带参数时照旧只有 batches（新后台也可能带上合计）。 */
+export type IntakeBatchPage = {batches: IntakeBatch[]; total?: number; attentionTotal?: number; attentionFiles?: number; offset?: number; limit?: number};
+/** 这批算不算待处理：只认后端给的 attention，已处理的不算。 */
+export const batchNeedsAttention = (b: IntakeBatch) => !b.acknowledged && !!b.attention;
 export type LegacyConfirmInput = {version?:undefined;requestId: string; projectId: string; folderId: string; mode: 'copy' | 'move'; fileIds: string[]};
 export type UnifiedConfirmInput = {version:2;requestId:string;mode:'copy'|'move';fileIds:string[];targets:{fileId:string;destination:IntakeDestination;nameMode?:NameMode}[];standardNames?:boolean;revealWhenDone?:boolean;prompt?:IntakePrompt};
 export type ConfirmInput = LegacyConfirmInput | UnifiedConfirmInput;

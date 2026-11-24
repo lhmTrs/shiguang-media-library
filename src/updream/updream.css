@@ -60,6 +60,7 @@
  .ud-step[aria-current] span{display:block;position:absolute;top:19px;white-space:nowrap}
  .ud-steps:has([aria-current]){margin-bottom:16px}
  .ud-drawer{width:100vw}
+ .ud-diag-table :is(th,td):nth-child(4){display:none}
 }
 /* 生成视频页标题栏右侧的轻量历史入口 */
 .pv-header .pv-updream-history{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:7px;background:var(--c-fff);color:var(--muted);padding:5px 9px;font-size:12px}
@@ -70,3 +71,20 @@
 .ud-attention code{font-size:11px;color:var(--muted)}
 .is-cancelled .ud-state{color:var(--muted)}
 .ud-steps.is-unplaced{opacity:.55}
+/* 任务入口两件：列表底部的诊断行（不计数、不出卡片、没有操作按钮）。文字最多两行；展开的表超过高度在表里滚动，窄屏只留三列（见上面 620px 一段）。 */
+.ud-diag{margin-top:12px;border:1px dashed var(--line);border-radius:9px;background:var(--soft)}
+.ud-drawer .ud-diag-line{width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border:0;background:transparent;padding:9px 12px;color:var(--muted);font-size:12px;line-height:1.6;text-align:left}
+.ud-drawer .ud-diag-line:hover{background:transparent;color:var(--c-24292c)}
+.ud-drawer .ud-diag-line:focus-visible{outline:2px solid var(--green);outline-offset:-2px}
+.ud-diag-line>svg{flex-shrink:0;margin-top:3px}
+.ud-diag-text{min-width:0;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ud-diag-body{border-top:1px solid var(--line);padding:8px 12px 10px}
+.ud-diag-scroll{max-height:240px;overflow:auto;overscroll-behavior:contain}
+.ud-diag-table{width:100%;border-collapse:collapse;font-size:11px}
+.ud-diag-table th{position:sticky;top:0;background:var(--soft);color:var(--muted);font-weight:600;text-align:left}
+.ud-diag-table :is(th,td){padding:4px 6px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}
+.ud-diag-table td:nth-child(4){white-space:normal}
+.ud-diag-table code{font-size:11px}
+.ud-diag-table .ud-diag-code{color:var(--muted)}
+.ud-diag-table .is-failed{color:var(--c-b94f49)}
+.ud-diag-note{margin:6px 0 0;font-size:11px;color:var(--muted)}

@@ -3,10 +3,10 @@
 // 网页只读本机接口：面板展开 3 秒一次，收起 15 秒一次，标签页隐藏时暂停；不会触发平台查询。
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Check, CircleAlert, Clapperboard, Copy, FolderOpen, History, X} from 'lucide-react';
+import {Check, ChevronDown, ChevronRight, CircleAlert, Clapperboard, Copy, FolderOpen, History, X} from 'lucide-react';
 import {notifyFeedback} from '../global-feedback';
 import {markUpdreamRead, readAllUpdreamTasks, readUpdreamTasks, UPDREAM_OPEN_EVENT} from './api';
-import {isFinished, needsAttention, STAGE_LABEL, UPDREAM_STAGES, type UpdreamRequest, type UpdreamStage, type UpdreamTask, type UpdreamTaskList, type UpdreamView} from './types';
+import {isFinished, needsAttention, STAGE_LABEL, UPDREAM_STAGES, type UpdreamDiagnostics, type UpdreamRequest, type UpdreamStage, type UpdreamSummary, type UpdreamTask, type UpdreamTaskList, type UpdreamView} from './types';
 import '../codex-task-drawer.css';
 import './updream.css';
 
@@ -22,6 +22,13 @@ function ago(v: number, now: number) {
   return d.toDateString() === today.toDateString() ? `今天 ${d.toLocaleTimeString('zh-CN', {hour12: false, hour: '2-digit', minute: '2-digit'})}` : d.toLocaleString('zh-CN', {hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
 }
 const ackKey = (id: string, version: string) => id + '@' + version;
+/** 本地刚确认已读的任务：从未读合计里减掉；新后台分开给的「待处理未读 / 新结果」也按任务所在分类各减各的。 */
+function lessUnread(summary: UpdreamSummary, cleared: UpdreamTask[]): UpdreamSummary {
+  const attention = cleared.filter(t => !t.active && needsAttention(t)).length, done = cleared.filter(t => !t.active && isFinished(t)).length;
+  return {...summary, unread: Math.max(0, summary.unread - cleared.length),
+    attentionUnread: summary.attentionUnread === null ? null : Math.max(0, summary.attentionUnread - attention),
+    doneUnread: summary.doneUnread === null ? null : Math.max(0, summary.doneUnread - done)};
+}
 type Tab = 'active' | 'attention' | 'done';
 type Mode = 'recent' | 'history';
 // 通知状态和视频结果互不影响；disabled / none 表示这项任务没有设通知，不显示。
@@ -44,14 +51,14 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
   // 确认之后发出的请求以服务端为准；新 eventVersion 的键不同，照常提醒。条目很少（只有看过的任务），不需要清理。
   const issued = useRef(0), acked = useRef(new Map<string, number>());
   const settle = useCallback(<L extends UpdreamTaskList>(list: L, at: number): L => {
-    let cleared = 0;
+    const cleared: UpdreamTask[] = [];
     const tasks = list.tasks.map(t => {
       if (!t.unread) return t;
       const ackAt = acked.current.get(ackKey(t.taskId, t.version));
       if (ackAt === undefined || at > ackAt) return t;
-      cleared++; return {...t, unread: false};
+      cleared.push(t); return {...t, unread: false};
     });
-    return cleared ? {...list, tasks, summary: {...list.summary, unread: Math.max(0, list.summary.unread - cleared)}} : list;
+    return cleared.length ? {...list, tasks, summary: lessUnread(list.summary, cleared)} : list;
   }, []);
   const [error, setError] = useState(''), [historyError, setHistoryError] = useState(''), [loadingMore, setLoadingMore] = useState(false);
   const seq = useRef(0), applied = useRef(0), historySeq = useRef(0);
@@ -94,9 +101,9 @@ function useUpdreamTasks(request: UpdreamRequest, open: boolean, mode: Mode) {
     for (const d of done) acked.current.set(ackKey(d.taskId, d.version), at);
     const clear = (list: UpdreamTaskList | null) => {
       if (!list) return list;
-      let cleared = 0;
-      const tasks = list.tasks.map(t => { if (t.unread && done.some(d => d.taskId === t.taskId && d.version === t.version)) { cleared++; return {...t, unread: false}; } return t; });
-      return {...list, tasks, summary: {...list.summary, unread: Math.max(0, list.summary.unread - cleared)}};
+      const cleared: UpdreamTask[] = [];
+      const tasks = list.tasks.map(t => { if (t.unread && done.some(d => d.taskId === t.taskId && d.version === t.version)) { cleared.push(t); return {...t, unread: false}; } return t; });
+      return {...list, tasks, summary: lessUnread(list.summary, cleared)};
     };
     setRecent(old => old && {...clear(old)!, complete: old.complete}); setHistory(clear);
   }, []);
@@ -185,6 +192,40 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
   </article>;
 }
 
+// 诊断行（任务入口两件）：本机记录无法核对的历史，不出卡片、不计数、不放操作按钮，只合成一行，展开是紧凑表。
+// 原因：state_missing 用定好的说法；其他（包括没见过的）都用通用说法，表格里另附原因代码，不漏掉。
+const STATE_MISSING = 'state_missing', MISSING_TEXT = '找不到对应的本地状态文件', GENERIC_TEXT = '记录无法读取或核对';
+const reasonText = (r: string) => r === STATE_MISSING ? MISSING_TEXT : GENERIC_TEXT;
+// 旧队列里记的阶段（后端原样给），一律标「未核实」。
+const LEGACY: Record<string, string> = {done: '完成', failed: '失败', cancelled: '已取消', needs_user: '待用户处理', monitoring: '跟进中', waiting_library: '等待入库', notifying: '通知中'};
+const legacyText = (v: string | null) => v ? `未核实：${LEGACY[v] ?? v}` : '未记录';
+const shortTime = (v: number | null) => v ? new Date(v).toLocaleString('zh-CN', {hour12: false, year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '未记录';
+function Diagnostics({d}: {d: UpdreamDiagnostics}) {
+  const [open, setOpen] = useState(false);
+  // 汇总行：只有 state_missing 一种原因时才写具体说法，混有其他原因时写通用说法。
+  const reasons = Object.keys(d.byReason);
+  const why = !reasons.length ? '' : reasons.length === 1 && reasons[0] === STATE_MISSING ? `（${MISSING_TEXT}）` : `（${GENERIC_TEXT}）`;
+  const failed = d.legacyStatus.failed ?? 0;
+  return <section className="ud-diag" aria-label="无法核对的本机任务记录">
+    <button type="button" className="ud-diag-line" aria-expanded={open} aria-controls="ud-diag-table" onClick={() => setOpen(v => !v)}>
+      <span className="ud-diag-text">{d.count} 条本机任务记录无法核对{why}{failed > 0 ? `${why ? '' : ' '}· 其中 ${failed} 条旧记录曾标为失败` : ''}</span>
+      {open ? <ChevronDown size={14} aria-hidden="true"/> : <ChevronRight size={14} aria-hidden="true"/>}
+    </button>
+    {open && <div className="ud-diag-body" id="ud-diag-table">
+      <div className="ud-diag-scroll"><table className="ud-diag-table">
+        <thead><tr><th scope="col">编号</th><th scope="col">旧队列状态</th><th scope="col">登记时间</th><th scope="col">原因</th></tr></thead>
+        <tbody>{d.items.map(i => <tr key={i.id}>
+          <td><code title={i.name ? `${i.name}\n${i.id}` : i.id}>{i.id.slice(0, 8)}</code></td>
+          <td className={i.legacyStatus === 'failed' ? 'is-failed' : undefined}>{legacyText(i.legacyStatus)}</td>
+          <td>{shortTime(i.registeredAt)}</td>
+          <td>{reasonText(i.reason)}{i.reason !== STATE_MISSING && <code className="ud-diag-code"> {i.reason}</code>}</td>
+        </tr>)}</tbody>
+      </table></div>
+      {d.truncated && <p className="ud-diag-note">只列出前 {d.items.length} 条（共 {d.count} 条）</p>}
+    </div>}
+  </section>;
+}
+
 /** onSummary：只给「新样子（试用）」顶栏的「后台任务」入口汇总用；不传时行为不变。 */
 export function UpdreamTaskEntry({request, onView, onSummary}: {request: UpdreamRequest; onView: UpdreamView; onSummary?: (s: {active: number; attention: number; shown?: boolean}) => void}) {
   const [open, setOpen] = useState(false), [mode, setMode] = useState<Mode>('recent'), [tab, setTab] = useState<Tab | null>(null), [now, setNow] = useState(Date.now());
@@ -248,7 +289,7 @@ export function UpdreamTaskEntry({request, onView, onSummary}: {request: Updream
     return () => window.removeEventListener('resize', measure);
   }, [open]);
 
-  const summary = recent?.summary ?? {active: 0, unread: 0, attention: 0, showEntry: false};
+  const summary: UpdreamSummary = recent?.summary ?? {active: 0, unread: 0, attention: 0, showEntry: false, attentionUnread: null, doneUnread: null, diagnostic: null};
   const tasks = recent?.tasks ?? [];
   const groups = useMemo(() => ({
     active: tasks.filter(t => t.active),
@@ -256,36 +297,43 @@ export function UpdreamTaskEntry({request, onView, onSummary}: {request: Updream
     done: tasks.filter(t => !t.active && isFinished(t)),
   }), [tasks]);
   const unreadIn = (list: UpdreamTask[]) => list.filter(t => t.unread).length;
-  const attentionUnread = unreadIn(groups.attention), doneUnread = Math.max(0, summary.unread - attentionUnread);
-  const defaultTab: Tab = groups.active.length ? 'active' : attentionUnread ? 'attention' : unreadIn(groups.done) ? 'done' : groups.attention.length ? 'attention' : 'done';
+  // 任务入口两件：新后台分开给「新结果」数（doneUnreadCount）时，「待处理」顶栏和页签都用 attentionCount，未读只在卡片上用小圆点；
+  // 旧后台没有这些字段时照旧：顶栏只数待处理里没看过的，「新」= 未读合计减掉它。
+  const split = summary.doneUnread !== null;
+  const attentionUnread = split ? summary.attentionUnread ?? unreadIn(groups.attention) : unreadIn(groups.attention);
+  const doneUnread = split ? summary.doneUnread! : Math.max(0, summary.unread - attentionUnread);
+  const attentionShown = split ? summary.attention : attentionUnread, attentionTab = split ? summary.attention : groups.attention.length, doneNew = split ? doneUnread : unreadIn(groups.done);
+  const defaultTab: Tab = groups.active.length ? 'active' : attentionUnread ? 'attention' : doneNew ? 'done' : attentionTab ? 'attention' : 'done';
   const current = tab ?? defaultTab;
   const stale = !!error && !!recent;
-  const queueBad = !!recent && (recent.queue.state === 'degraded' || recent.queue.state === 'unavailable');
+  // 系统警告：新后台给 queue.warning 时只看它（历史终态记录缺失不点亮）；没给时照旧按 degraded / unavailable。
+  const queueBad = !!recent && (recent.queue.warning ?? (recent.queue.state === 'degraded' || recent.queue.state === 'unavailable'));
   const visible = summary.showEntry;
-  const summaryActive = summary.active, summaryAttention = attentionUnread + doneUnread;
+  const summaryActive = summary.active, summaryAttention = attentionShown + doneUnread;
   useEffect(() => { onSummary?.({active: summaryActive, attention: summaryAttention, shown: visible}); }, [onSummary, summaryActive, summaryAttention, visible]);
   const label = summary.active ? `Updream · 进行中 ${summary.active}` : 'Updream 视频任务';
   const list = mode === 'history' ? history?.tasks ?? [] : groups[current];
   const moreHistory = mode === 'history' && !!history && history.tasks.length < history.total;
   return <>
-    {(visible || open) && <button ref={entry} type="button" className={'ud-entry' + (attentionUnread ? ' has-attention' : '')} aria-expanded={open} aria-controls="updream-task-drawer"
+    {(visible || open) && <button ref={entry} type="button" className={'ud-entry' + (attentionShown ? ' has-attention' : '')} aria-expanded={open} aria-controls="updream-task-drawer"
       title={stale ? '进度读取中断，显示最后已知状态' : queueBad ? '本机任务记录读取不完整' : 'Updream 视频任务'} onClick={() => open ? hide() : show('recent')}>
-      <Clapperboard size={15} aria-hidden="true"/><span className="ud-entry-label">{label}</span><span className="ud-entry-short" aria-hidden="true">{summary.active || summary.unread || ''}</span>
+      <Clapperboard size={15} aria-hidden="true"/><span className="ud-entry-label">{label}</span><span className="ud-entry-short" aria-hidden="true">{summary.active || (split ? attentionUnread + doneUnread : summary.unread) || ''}</span>
       {(stale || queueBad) && <span className="ud-stale-icon" role="img" aria-label="进度待确认"><CircleAlert size={13}/></span>}
-      {attentionUnread > 0 && <span className="ud-chip-att" aria-label={`${attentionUnread} 个待处理未查看`}>{attentionUnread} 待处理</span>}
+      {attentionShown > 0 && <span className="ud-chip-att" aria-label={split ? `${attentionShown} 个待处理` : `${attentionShown} 个待处理未查看`}>{attentionShown} 待处理</span>}
       {doneUnread > 0 && <span className="codex-task-unread ud-chip-new" aria-label={`${doneUnread} 个新结果未查看`}>{doneUnread} 新</span>}
     </button>}
     {open && createPortal(<aside className="codex-task-drawer ud-drawer" id="updream-task-drawer" aria-label="Updream 视频任务" style={top === undefined ? undefined : {top}}>
       <header><div><h2>{mode === 'history' ? 'Updream 任务记录' : 'Updream 视频任务'}</h2><small>只显示本机登记过的任务，不扫描账号里的全部历史</small></div><button ref={close} type="button" aria-label="关闭 Updream 视频任务" onClick={hide}><X size={18}/></button></header>
       {mode === 'recent' && <nav aria-label="任务分类">
-        {([['active', `进行中 ${groups.active.length}`], ['attention', `待处理 ${groups.attention.length}`], ['done', `已完成${unreadIn(groups.done) ? ` · ${unreadIn(groups.done)} 新` : ''}`]] as const).map(([key, text]) =>
+        {([['active', `进行中 ${groups.active.length}`], ['attention', `待处理 ${attentionTab}`], ['done', `已完成${doneNew ? ` · ${doneNew} 新` : ''}`]] as const).map(([key, text]) =>
           <button key={key} type="button" aria-pressed={current === key} onClick={() => setTab(key)}>{text}</button>)}
       </nav>}
       <p className="codex-task-observation">网页最近读取 {recent ? clock(recent.readAt) : '—'}{stale ? '（之后读取失败）' : ''} · 只读本机状态，多个窗口不会加快平台查询{recent?.preferences === 'unavailable' || readError ? ' · 已读状态暂时保存不了，提醒会继续显示' : ''}</p>
       {stale && <p className="codex-task-alert" role="alert"><CircleAlert size={15}/><span>本机进度读取中断：{error}。下面是最后已知状态，任务在后台照常进行，没有重复提交。</span></p>}
       {!recent && error && <p className="codex-task-alert" role="alert"><CircleAlert size={15}/><span>没有读到 Updream 任务：{error}</span></p>}
       {recent?.queue.state === 'unavailable' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>本机任务记录暂时读不了{recent.queue.reason ? `（${recent.queue.reason}）` : ''}。不影响素材库其他功能。</span></p>}
-      {recent?.queue.state === 'degraded' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>任务记录不完整{recent.queue.invalidCount ? `：有 ${recent.queue.invalidCount} 条读不了，已跳过` : ''}{recent.queue.truncated ? '；记录太多，只读了一部分' : ''}。下面的列表可能不全。</span></p>}
+      {recent?.queue.warning === true && recent.queue.state !== 'unavailable' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>本机任务记录有读不全的地方，需要核对{recent.queue.truncated ? '（记录太多，只读了一部分）' : ''}。下面的列表可能不全。</span></p>}
+      {recent?.queue.state === 'degraded' && recent.queue.warning === null && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>任务记录不完整{recent.queue.invalidCount ? `：有 ${recent.queue.invalidCount} 条读不了，已跳过` : ''}{recent.queue.truncated ? '；记录太多，只读了一部分' : ''}。下面的列表可能不全。</span></p>}
       {recent && !recent.complete && mode === 'recent' && <p className="codex-task-alert" role="status"><CircleAlert size={15}/><span>登记的任务太多，最近视图只读了前 {recent.tasks.length} 条（共 {recent.total} 条）；更早的请在「查看全部记录」里看。</span></p>}
       {mode === 'history' && historyError && <p className="codex-task-alert" role="alert"><CircleAlert size={15}/><span>任务记录读取失败：{historyError}</span></p>}
       <div className="codex-task-list">
@@ -293,6 +341,7 @@ export function UpdreamTaskEntry({request, onView, onSummary}: {request: Updream
           : mode === 'history' && !history ? <p>正在读取任务记录…</p>
           : !list.length ? <p>{mode === 'history' ? (recent?.queue.state === 'absent' ? '本机还没有 Updream 任务记录。' : '没有已结束的任务记录。') : current === 'active' ? '暂无进行中的任务' : current === 'attention' ? '最近没有需要处理的任务' : '最近没有已完成的任务'}</p>
           : list.map(t => <TaskCard key={t.taskId} t={t} now={now} stale={stale && mode === 'recent'} onView={onView} observe={observe}/>)}
+        {mode === 'recent' && !!recent?.diagnostics?.count && <Diagnostics d={recent.diagnostics}/>}
         {moreHistory && <button type="button" className="ud-load-more" disabled={loadingMore} onClick={() => void loadHistory(history!.tasks.length)}>{loadingMore ? '正在加载…' : '加载更早的记录'}</button>}
       </div>
       <div className="ud-drawer-foot">

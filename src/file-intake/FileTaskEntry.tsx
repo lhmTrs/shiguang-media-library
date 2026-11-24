@@ -3,7 +3,7 @@ import {createPortal} from 'react-dom';
 import {AlertCircle, Check, Download, FolderInput, RefreshCw, Settings, X} from 'lucide-react';
 import {notifyFeedback, useFeedbackToast} from '../global-feedback';
 import {BatchDetails} from './BatchDetails';
-import {INTAKE_API, batchLabel, encoded, errorMessage, knownRefusal, type IntakeBatch, type IntakeItem, type IntakeRequest, type IntakeStatus, type IntakeView, type InstallJob, type ResolveInput} from './types';
+import {INTAKE_API, batchLabel, batchNeedsAttention, encoded, errorMessage, knownRefusal, type IntakeBatch, type IntakeBatchPage, type IntakeItem, type IntakeRequest, type IntakeStatus, type IntakeView, type InstallJob, type ResolveInput} from './types';
 import './file-intake.css';
 import {useServerPlatform} from '../platform-words';
 
@@ -16,12 +16,24 @@ const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); 
 const ago = (at: number, now: number) => { const d = Math.max(0, now - at); return d < 60000 ? '刚刚' : d < 3600000 ? Math.floor(d / 60000) + ' 分钟前' : d < 86400000 ? Math.floor(d / 3600000) + ' 小时前' : new Date(at).toLocaleString(); };
 type InstallError = {kind: 'refused' | 'unknown'; message: string};
 const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
+/** 待处理批次每页批数：需要时自动读第一页，「加载更多」每次按 offset 再读一页（第一版不做分页界面）。 */
+const ATTENTION_PAGE = 20;
+const batchPlace = (b: IntakeBatch) => b.projectName + ' / ' + (b.folderName || '根目录');
+/** 待处理的排在前面（各自保持后端给的先后，新的在前）；旧后台没有 attention 字段时顺序不变。 */
+const attentionFirst = (list: IntakeBatch[]) => [...list.filter(batchNeedsAttention), ...list.filter(b => !batchNeedsAttention(b))];
+/** 默认落点：「最近任务」里有待处理就落在最新那一批待处理；没有才落在最新一批。 */
+const landing = (list: IntakeBatch[], history: boolean) => {const shown = list.filter(b => !!b.acknowledged === history); return (!history && shown.find(batchNeedsAttention)) || shown[0];};
 type SettingsState = {state: 'idle'} | {state: 'opening'} | {state: 'opened'; target: string} | {state: 'error'; message: string};
 /** onSummary：只给「新样子（试用）」顶栏的「后台任务」入口汇总用；不传时行为不变。 */
 export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequest; onView: IntakeView; onSummary?: (s: {active: number; attention: number}) => void}) {
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(() => !document.hidden), [status, setStatus] = useState<IntakeStatus | null>(null);
   const [batches, setBatches] = useState<IntakeBatch[]>([]), [selection, setSelection] = useState(''), [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [readError, setReadError] = useState(''), [reading, setReading] = useState(false), [busy, setBusy] = useState('');
   const [history, setHistory] = useState(false), historyRef = useRef(false);
+  // 三处来源分开记、合并后显示（同一批以靠前来源为准）：最近 50 批（默认列表）、待处理第一页（需要时随轮询刷新）、点「加载更多」读到的后续页。
+  // pagesLoaded：手上有几页待处理（含第一页）；下一页的 offset = 页数 × 每页批数，和服务端「先筛后分页」的前缀对齐，不用本地行数。
+  // 待处理有变化（有 status.attentionRevision 时看它，没有时看批数和文件数）就把已加载的每一页按原 offset 重读一遍，不再待处理的批次随之拿掉。
+  // 用户点「刷新」时不看指纹和计数，一律重读已加载的每一页（正在读取时留到下一次读取做）。
+  const recentRows = useRef<IntakeBatch[]>([]), firstPage = useRef<IntakeBatch[]>([]), morePages = useRef<IntakeBatch[]>([]), pagesLoaded = useRef(0), refreshWanted = useRef(0), refreshDone = useRef(0), attentionKey = useRef(''), [loadingMore, setLoadingMore] = useState(false), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
   const [uncertain, setUncertain] = useState<Record<string, Uncertain>>({});
   const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState<InstallError | null>(null), [verifying, setVerifying] = useState(false), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
   const jobRef = useRef<InstallJob | null>(null); jobRef.current = job;
@@ -44,24 +56,30 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     jobRef.current = next; setJob(next);
     if (isNewForAttempt(next)) { setVerifying(false); setInstallError(null); }
   }
-  const mountedAt = useRef(Date.now()), completionRead = useRef(false), completionKey = useRef('');
+  const statusRef = useRef<IntakeStatus | null>(null), mountedAt = useRef(Date.now()), completionRead = useRef(false), completionKey = useRef('');
   const api = useRef(request), alive = useRef(true), writing = useRef(false), batchRead = useRef(false), statusRead = useRef(false), readVersion = useRef(0), statusVersion = useRef(0), rows = useRef(batches), selectionRef = useRef(selection), openRef = useRef(open), entry = useRef<HTMLButtonElement>(null), close = useRef<HTMLButtonElement>(null), observed = useRef(new Map<string, string>());
-  api.current = request; rows.current = batches; selectionRef.current = selection; openRef.current = open; historyRef.current = history;
+  api.current = request; statusRef.current = status; rows.current = batches; selectionRef.current = selection; openRef.current = open; historyRef.current = history;
   useFeedbackToast(error, {source: '文件任务'}); useFeedbackToast(statusError, {source: '文件任务状态'}); useFeedbackToast(readError, {source: '文件任务读取'});
   useEffect(() => {alive.current = true; const changed = () => setVisible(!document.hidden); document.addEventListener('visibilitychange', changed); return () => {alive.current = false; readVersion.current++; statusVersion.current++; document.removeEventListener('visibilitychange', changed);};}, []);
   function installRows(next: IntakeBatch[]) {
     rows.current = next; setBatches(next);
     const shown = next.filter(b => !!b.acknowledged === historyRef.current);
-    if (!shown.some(b => b.id === selectionRef.current)) {selectionRef.current = shown[0]?.id || ''; setSelection(selectionRef.current);}
+    // 刚打开抽屉，或原来选中的批次不在当前分类里了（例如刚标为已处理）：落到最新一批待处理，没有才落到最新一批。
+    if (landPending.current || !shown.some(b => b.id === selectionRef.current)) {selectionRef.current = landing(next, historyRef.current)?.id || ''; setSelection(selectionRef.current);}
     for (const batch of next) for (const item of batch.items) {
       const key = batch.id + ':' + item.id, previous = observed.current.get(key);
       if (!batch.acknowledged && previous && previous !== item.status && ['failed', 'unknown', 'source_retained'].includes(item.status)) notifyFeedback({kind: item.status === 'source_retained' ? 'warning' : 'error', source: '文件任务', message: item.name + '：' + (item.error || ({failed: '收纳失败', unknown: '结果待核对', source_retained: '已收纳，原文件未移除'} as Record<string, string>)[item.status]), key: 'intake:' + key + ':' + item.status});
       observed.current.set(key, item.status);
     }
   }
+  /** 最近批次在前（后端顺序），待处理分页里读到、但不在最近 50 批里的接在后面。 */
+  const mergedRows = () => {const seen = new Set<string>(), out: IntakeBatch[] = []; for (const b of [...recentRows.current, ...firstPage.current, ...morePages.current]) if (!seen.has(b.id)) {seen.add(b.id); out.push(b);} return out;};
   function installBatch(value: IntakeBatch) {
     if (!value?.id || !Array.isArray(value.items)) throw Error('文件任务回执格式不符，请核对原任务');
-    installRows(rows.current.some(b => b.id === value.id) ? rows.current.map(b => b.id === value.id ? value : b) : [value, ...rows.current].slice(0, 50));
+    const replace = (list: IntakeBatch[]) => list.map(b => b.id === value.id ? value : b);
+    if ([recentRows, firstPage, morePages].some(list => list.current.some(b => b.id === value.id))) {recentRows.current = replace(recentRows.current); firstPage.current = replace(firstPage.current); morePages.current = replace(morePages.current);}
+    else recentRows.current = [value, ...recentRows.current].slice(0, 50);
+    installRows(mergedRows());
   }
   async function readStatus(signal?: AbortSignal) {
     if (statusRead.current) return; statusRead.current = true;
@@ -75,6 +93,9 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
           message: completion.status === 'completed' ? '素材已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
         });
         completionRead.current = true; completionKey.current = key;
+        // 有 attentionRevision 就用它（同数替换也会变）；没有才退回批数 + 文件数。
+        const nextKey = typeof value.attentionRevision === 'string' && value.attentionRevision ? 'rev:' + value.attentionRevision : typeof value.needsAttentionBatches === 'number' ? value.needsAttentionBatches + ':' + (value.needsAttentionFiles ?? '') : '';
+        if (attentionKey.current && nextKey !== attentionKey.current) refreshWanted.current++; attentionKey.current = nextKey;
         setStatus(value); setStatusError(''); acceptJob(value.installJob, seq);
       }
     }
@@ -84,7 +105,27 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
   async function readBatches(signal?: AbortSignal) {
     if (writing.current || batchRead.current) return; batchRead.current = true;
     const version = ++readVersion.current; setReading(true);
-    try {const value = await api.current<{batches: IntakeBatch[]}>(INTAKE_API + '/batches', undefined, undefined, {signal}); if (alive.current && version === readVersion.current) {installRows(value.batches); setReadError('');}}
+    try {
+      const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches', undefined, undefined, {signal});
+      // 待处理第一页（先筛选再分页）：status 说的待处理批数比最近列表里看到的多（较早的待处理被许多较新的批次压到 50 批以外），
+      // 或者手上已经有待处理页时，随轮询读第一页。待处理数变了就把已加载的每一页都重读（每页一次请求，页数有界）。旧后台没有批数字段时不读。
+      const known = statusRef.current?.needsAttentionBatches, recentPending = Array.isArray(value.batches) ? value.batches.filter(batchNeedsAttention).length : 0;
+      const wantFirst = pagesLoaded.current > 0 && known !== 0 || typeof known === 'number' && known > recentPending, full = refreshWanted.current > refreshDone.current && pagesLoaded.current > 1, wanted = refreshWanted.current;
+      const pages: IntakeBatchPage[] = [];
+      for (let k = 0; k < (full ? pagesLoaded.current : wantFirst ? 1 : 0); k++) pages.push(await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(k * ATTENTION_PAGE), limit: String(ATTENTION_PAGE)}), undefined, undefined, {signal}));
+      if (alive.current && version === readVersion.current) {
+        const rowsOf = (p?: IntakeBatchPage) => p && Array.isArray(p.batches) ? p.batches : [];
+        recentRows.current = value.batches; firstPage.current = rowsOf(pages[0]);
+        if (full) morePages.current = pages.slice(1).flatMap(rowsOf);
+        if (pages.length) pagesLoaded.current = Math.max(pagesLoaded.current, 1);
+        if (!wantFirst) {pagesLoaded.current = 0; morePages.current = [];}
+        // 只记到发出这次读取时的那一次要求；读取期间又来的变化（新指纹、又点了刷新）留给下一次读取。
+        refreshDone.current = Math.max(refreshDone.current, wanted);
+        const total = pages.at(-1)?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
+        // 状态还没读到时先不结束「找默认落点」，下一次读取再落一次。
+        installRows(mergedRows()); if (statusRef.current) landPending.current = false; setReadError('');
+      }
+    }
     catch (e) {if (alive.current && !signal?.aborted && version === readVersion.current) setReadError(errorMessage(e));}
     finally {batchRead.current = false; if (alive.current && version === readVersion.current) setReading(false);}
   }
@@ -107,6 +148,13 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
   // 抽屉打开时看到的结束结果，顶栏按钮上的 ✓ / ! 就收起
   useEffect(() => { if (open && job && !running(job)) setSeenJob(job.id); }, [open, job?.id, job?.stage]);
   useEffect(() => { if (!open) return; setNow(Date.now()); }, [open]);
+  // 每次打开抽屉都重新找默认落点：先按手上已有的批次落一次，第一次读到新列表后再落一次。
+  // 上次停在「已处理」、而现在有待处理批次时，打开就回到「最近任务」。
+  useEffect(() => {
+    if (!open) return; landPending.current = true;
+    if (historyRef.current && (statusRef.current?.needsAttentionBatches ?? 0) > 0) {historyRef.current = false; setHistory(false);}
+    if (rows.current.length) {selectionRef.current = landing(rows.current, historyRef.current)?.id || ''; setSelection(selectionRef.current);}
+  }, [open]);
   useEffect(() => {
     if (!open || !visible) return; let stopped = false, timer: ReturnType<typeof setTimeout>; const controller = new AbortController();
     const tick = async () => {if (stopped || document.hidden) return; await readBatches(controller.signal); if (!stopped) timer = setTimeout(tick, 1000);};
@@ -186,31 +234,55 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     try {await onView(projectId, videoId); if (alive.current) setOpen(false);}
     catch (e) {if (alive.current) setError(errorMessage(e));}
   }
-  const shown = batches.filter(b => !!b.acknowledged === history);
-  const selected = shown.find(b => b.id === selection) || shown[0];
+  const shown = attentionFirst(batches.filter(b => !!b.acknowledged === history));
+  const selected = shown.find(b => b.id === selection) || landing(shown, history);
   function switchHistory(value: boolean) {
     historyRef.current = value; setHistory(value);
-    selectionRef.current = rows.current.find(b => !!b.acknowledged === value)?.id || ''; setSelection(selectionRef.current);
+    selectionRef.current = landing(rows.current, value)?.id || ''; setSelection(selectionRef.current);
   }
+  function jump(id: string) {selectionRef.current = id; setSelection(id);}
+  /** 加载更多：固定每页 ATTENTION_PAGE 批，offset = 已加载页数 × 每页批数；读到的接在后面，按编号去重。
+   *  发出时作废正在进行的轮询读取，免得它带着旧的页数覆盖刚加载的这一页。 */
+  async function loadMoreAttention() {
+    if (loadingMore) return; setLoadingMore(true); readVersion.current++;
+    try {
+      const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(pagesLoaded.current * ATTENTION_PAGE), limit: String(ATTENTION_PAGE)}));
+      if (!alive.current) return;
+      const got = Array.isArray(value.batches) ? value.batches : [];
+      if (pagesLoaded.current === 0) firstPage.current = got; else morePages.current = [...morePages.current, ...got.filter(b => !morePages.current.some(o => o.id === b.id))];
+      pagesLoaded.current++;
+      if (typeof value.attentionTotal === 'number') setAttentionTotal(value.attentionTotal);
+      installRows(mergedRows()); setReadError('');
+    } catch (e) {if (alive.current) setReadError(errorMessage(e));}
+    finally {if (alive.current) setLoadingMore(false);}
+  }
+  // 待处理（任务入口两件）：新后台给批数 needsAttentionBatches；没有这个字段时照旧显示文件数 needsAttention。
+  const attentionBatches = typeof status?.needsAttentionBatches === 'number' ? status.needsAttentionBatches : null;
+  const attentionFiles = typeof status?.needsAttentionFiles === 'number' ? status.needsAttentionFiles : null;
+  const pendingShown = history ? [] : shown.filter(batchNeedsAttention), pendingOthers = pendingShown.filter(b => b.id !== selected?.id);
+  // 一共多少批待处理：以后端合计为准（列表里的 attentionTotal，其次 status），读到的比合计多时以读到的为准。
+  const pendingTotal = Math.max(attentionTotal ?? attentionBatches ?? 0, pendingShown.length), pendingRest = history ? 0 : pendingTotal - (selected && batchNeedsAttention(selected) ? 1 : 0);
+  const canLoadMore = !history && (attentionTotal ?? attentionBatches ?? 0) > pendingShown.length;
   const upToDate = !!status?.supported && !!status.installed && !status.upgradeNeeded;
   // 访达右键收纳只有 Mac 有：服务端不是 Mac、且能力字段没说支持时，安装区和空白页的教程都不显示（Mac 上照旧）。
   const intakeHidden = useServerPlatform() !== 'darwin' && !status?.supported;
-  const summaryActive = status?.activeCount ?? 0, summaryAttention = status?.needsAttention ?? 0;
+  const summaryActive = status?.activeCount ?? 0, summaryAttention = attentionBatches ?? status?.needsAttention ?? 0;
   useEffect(() => { onSummary?.({active: summaryActive, attention: summaryAttention}); }, [onSummary, summaryActive, summaryAttention]);
   return <div className="fi-root fi-entry">
-    <button className="fi-entry-button" ref={entry} aria-expanded={open} aria-controls="file-intake-tasks" onClick={() => setOpen(v => !v)}><FolderInput size={17}/><span>文件任务</span>{!!status?.activeCount && <span className="fi-count">{status.activeCount}</span>}{!!status?.needsAttention && <span className="fi-attention">{status.needsAttention} 待处理</span>}{installing ? <span className="fi-install-chip" role="img" aria-label="访达入口安装中"><span className="fi-spinner"/></span> : job && job.id !== seenJob && (job.finishedAt ?? 0) >= mountedAt.current ? <span className={'fi-install-chip ' + (job.stage === 'done' ? 'is-ok' : 'is-bad')} role="img" aria-label={job.stage === 'done' ? '访达入口已安装，未查看' : '访达入口安装没有完成，未查看'}>{job.stage === 'done' ? <Check size={13}/> : <AlertCircle size={13}/>}</span> : null}</button>
+    <button className="fi-entry-button" ref={entry} aria-expanded={open} aria-controls="file-intake-tasks" onClick={() => setOpen(v => !v)}><FolderInput size={17}/><span>文件任务</span>{!!status?.activeCount && <span className="fi-count">{status.activeCount}</span>}{attentionBatches !== null ? attentionBatches > 0 && <span className="fi-attention">{attentionBatches} 批待处理</span> : !!status?.needsAttention && <span className="fi-attention">{status.needsAttention} 待处理</span>}{installing ? <span className="fi-install-chip" role="img" aria-label="访达入口安装中"><span className="fi-spinner"/></span> : job && job.id !== seenJob && (job.finishedAt ?? 0) >= mountedAt.current ? <span className={'fi-install-chip ' + (job.stage === 'done' ? 'is-ok' : 'is-bad')} role="img" aria-label={job.stage === 'done' ? '访达入口已安装，未查看' : '访达入口安装没有完成，未查看'}>{job.stage === 'done' ? <Check size={13}/> : <AlertCircle size={13}/>}</span> : null}</button>
     {open && createPortal(<aside className="fi-root fi-drawer" role="dialog" aria-label="文件任务" id="file-intake-tasks">
-      <header className="fi-heading"><FolderInput size={21}/><div><h2>文件任务</h2><p>确认时的目标固定，关闭抽屉后仍在后台继续</p></div><button ref={close} aria-label="关闭文件任务" onClick={() => {setOpen(false); entry.current?.focus();}}><X size={18}/></button></header>
+      <header className="fi-heading"><FolderInput size={21}/><div><div className="fi-heading-title"><h2>文件任务</h2>{!!attentionBatches && <span className="fi-heading-attention">{attentionBatches} 批待处理{attentionFiles !== null ? ' · 共 ' + attentionFiles + ' 个文件' : ''}</span>}</div><p>确认时的目标固定，关闭抽屉后仍在后台继续</p></div><button ref={close} aria-label="关闭文件任务" onClick={() => {setOpen(false); entry.current?.focus();}}><X size={18}/></button></header>
       <div className="fi-drawer-body">
         {statusError && <p className="fi-error" role="alert">状态读取失败：{statusError}</p>}
         {readError && <p className="fi-error" role="alert">任务读取失败：{readError}</p>}
         {error && <p className="fi-error" role="alert">{error}</p>}
         <div className="fi-task-tabs" role="group" aria-label="文件任务分类"><button aria-pressed={!history} onClick={() => switchHistory(false)}>最近任务</button><button aria-pressed={history} onClick={() => switchHistory(true)}>已处理</button></div>
-        <div className="fi-task-toolbar"><label>最近批次<select aria-label="选择文件收纳批次" value={selected?.id || ''} onChange={e => {selectionRef.current = e.target.value; setSelection(e.target.value);}}><option value="" disabled>暂无收纳批次</option>{shown.map(b => <option key={b.id} value={b.id}>{b.projectName} / {b.folderName || '根目录'} · {batchLabel[b.status]} · {b.items.length} 项</option>)}</select></label><button disabled={reading || !!busy} aria-label="刷新文件任务" onClick={() => void readBatches()}><RefreshCw size={15}/></button></div>
+        {pendingRest > 0 && <p className="fi-pending-hint" role="status"><span>还有 {pendingRest} 批待处理{pendingOthers[0] ? '：' : ''}</span>{pendingOthers[0] && <button type="button" className="fi-link" title={batchPlace(pendingOthers[0])} onClick={() => jump(pendingOthers[0].id)}>{batchPlace(pendingOthers[0])} ▸</button>}{canLoadMore && <button type="button" className="fi-link" disabled={loadingMore} onClick={() => void loadMoreAttention()}>{loadingMore ? '正在加载…' : '加载更多'}</button>}</p>}
+        <div className="fi-task-toolbar"><label>最近批次<select aria-label="选择文件收纳批次" value={selected?.id || ''} onChange={e => {selectionRef.current = e.target.value; setSelection(e.target.value);}}><option value="" disabled>暂无收纳批次</option>{shown.map(b => <option key={b.id} value={b.id}>{b.projectName} / {b.folderName || '根目录'} · {batchLabel[b.status]} · {b.items.length} 项{batchNeedsAttention(b) ? ' · ' + b.attention!.items + ' 个文件待处理' : ''}</option>)}</select></label><button disabled={reading || !!busy} aria-label="刷新文件任务" onClick={() => {refreshWanted.current++; void readBatches();}}><RefreshCw size={15}/></button></div>
         {busy && <p className="fi-muted" role="status">{busy}…</p>}
         {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3>{(history || !intakeHidden) && <p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择素材，右键“收纳素材到拾光”，确认目标后在这里查看。'}</p>}</div>}
         {selected?.canAcknowledge && <div className="fi-acknowledge"><span>{selected.acknowledged ? '原始结果保留，可随时恢复。' : '已知结果可收起，不再计入待处理；不会重试或移除文件。'}</span><button disabled={!!busy || !!uncertain[selected.id]} onClick={() => void mutate(selected, null, '/acknowledge', {acknowledged: !selected.acknowledged, resultKey: selected.resultKey}, selected.acknowledged ? '正在恢复待处理' : '正在标记已处理')}>{selected.acknowledged ? '恢复待处理' : '标记已处理'}</button></div>}
-        {selected && <BatchDetails batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
+        {selected && <BatchDetails declared batch={selected} busy={!!busy} uncertain={!!uncertain[selected.id]} onView={view} resolve={(item, input: ResolveInput) => {if (item.status === 'duplicate') void mutate(selected, item, '/items/' + encoded(item.id) + '/resolve', input, '正在处理此重名项');}} retry={item => {if (item.status === 'failed') void mutate(selected, item, '/items/' + encoded(item.id) + '/retry', {}, '正在重试此失败项');}} reconcile={() => void mutate(selected, null, '/reconcile', {}, '正在核对原回执')}/>}
         {!intakeHidden && <section className="fi-install"><h3>访达右键入口</h3><p className={upToDate ? 'fi-install-latest' : undefined}>{status ? !status.supported ? '当前系统不支持访达快速操作。' : status.upgradeNeeded ? '右键入口有新版本，点下面升级。升级后重新打开收纳窗口生效。' : status.installed ? <><Check size={14} aria-hidden="true"/>已是最新版</> : '安装后可从访达右键收纳图片、视频、音乐和音效。首次使用需在系统设置中手动启用快速操作。' : '正在读取系统能力…'}</p>
           {/* Up to date: nothing to press; reinstall stays as a quiet repair link (menu gone after a system change). */}
           {upToDate && !installing && !starting && !verifying && job?.stage !== 'failed'

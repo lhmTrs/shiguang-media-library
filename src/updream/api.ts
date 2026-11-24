@@ -1,4 +1,4 @@
-import type {ApiList, ApiReadResult, ApiTask, UpdreamRequest, UpdreamStage, UpdreamStatus, UpdreamTask, UpdreamTaskList} from './types';
+import type {ApiDiagnostics, ApiList, ApiReadResult, ApiTask, UpdreamDiagnostics, UpdreamRequest, UpdreamStage, UpdreamStatus, UpdreamTask, UpdreamTaskList} from './types';
 
 export const UPDREAM_API = '/updream-progress';
 /** 打开 Updream 面板（例如从生成视频页的轻入口）。宿主不需要额外接线。 */
@@ -32,14 +32,26 @@ export function toTask(t: ApiTask): UpdreamTask {
     stale: t.stale ? {since: num(t.stale.since), reason: str(t.stale.reason)} : null,
   };
 }
+const count = (v: unknown) => { const n = num(v); return n !== null && n >= 0 ? Math.floor(n) : null; };
+const counts = (v: unknown): Record<string, number> => v && typeof v === 'object' && !Array.isArray(v)
+  ? Object.fromEntries(Object.entries(v as Record<string, unknown>).flatMap(([k, n]) => { const c = count(n); return c ? [[k, c]] : []; })) : {};
+const time = (v: unknown) => num(v) ?? (typeof v === 'string' && v ? (Number.isFinite(Date.parse(v)) ? Date.parse(v) : null) : null);
+/** 诊断：只收认得出的字段；格式不对就当没有，不影响任务列表。 */
+export function toDiagnostics(d: ApiDiagnostics | undefined | null): UpdreamDiagnostics | null {
+  if (!d || typeof d !== 'object') return null;
+  const items = Array.isArray(d.items) ? d.items.filter(i => i && str(i.id)).map(i => ({id: String(i.id), reason: str(i.reason) ?? 'unknown', legacyStatus: str(i.legacyStatus), registeredAt: time(i.registeredAt), name: str(i.name)})) : [];
+  return {count: count(d.count) ?? items.length, byReason: counts(d.byReason), legacyStatus: counts(d.legacyStatus), items, truncated: !!d.truncated};
+}
 export function toList(d: ApiList): UpdreamTaskList {
   return {
     readAt: num(d.readAt) ?? Date.now(),
-    queue: {state: str(d.queue?.state) ?? 'unavailable', reason: str(d.queue?.reason), truncated: !!d.queue?.truncated, invalidCount: num(d.queue?.invalidCount) ?? 0},
+    queue: {state: str(d.queue?.state) ?? 'unavailable', reason: str(d.queue?.reason), truncated: !!d.queue?.truncated, invalidCount: num(d.queue?.invalidCount) ?? 0, warning: typeof d.queue?.warning === 'boolean' ? d.queue.warning : null},
     preferences: str(d.preferences?.state) ?? 'unavailable',
-    summary: {active: num(d.summary?.activeCount) ?? 0, unread: num(d.summary?.unreadCount) ?? 0, attention: num(d.summary?.attentionCount) ?? 0, showEntry: !!d.summary?.showEntry},
+    summary: {active: num(d.summary?.activeCount) ?? 0, unread: num(d.summary?.unreadCount) ?? 0, attention: num(d.summary?.attentionCount) ?? 0, showEntry: !!d.summary?.showEntry,
+      attentionUnread: count(d.summary?.attentionUnreadCount), doneUnread: count(d.summary?.doneUnreadCount), diagnostic: count(d.summary?.diagnosticCount)},
     total: num(d.total) ?? 0, offset: num(d.offset) ?? 0, limit: num(d.limit) ?? 0,
     tasks: Array.isArray(d.tasks) ? d.tasks.map(toTask) : [],
+    diagnostics: toDiagnostics(d.diagnostics),
   };
 }
 

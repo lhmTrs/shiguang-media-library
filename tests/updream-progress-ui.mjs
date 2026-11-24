@@ -39,7 +39,14 @@ const T = {
 };
 const summary = tasks => { const activeCount = tasks.filter(t => t.active).length, unreadCount = tasks.filter(t => t.unread).length; return { activeCount, unreadCount, attentionCount: tasks.filter(t => t.attention || ['failed', 'needs_review'].includes(t.phase)).length, showEntry: activeCount > 0 || unreadCount > 0 || queue.state === 'degraded' || queue.state === 'unavailable' }; };
 let tasks = [], queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 }, fail = false, delays = [], reads = [], gets = [], foreign = [];
-const listBody = (scope, offset = 0, limit = 50) => { const list = scope === 'history' ? tasks.filter(t => !t.active) : scope === 'active' ? tasks.filter(t => t.active) : tasks; return { schemaVersion: 1, readAt: Date.now(), queue, preferences: { state: 'ready' }, summary: summary(tasks), total: list.length, offset, limit, tasks: list.slice(offset, offset + limit) }; };
+// 任务入口两件（11-24 锁定字段）：split 打开时替身多给 summary.attentionUnreadCount / doneUnreadCount / diagnosticCount、queue.warning 和 diagnostics；
+// 关着时就是旧后台（U1–U17 都在这种情况下跑，覆盖「没有新字段时照旧显示」）。
+let split = null;
+const isAttention = t => !t.active && (!!t.attention || ['failed', 'needs_review'].includes(t.phase)), isDone = t => !t.active && t.phase === 'imported' && !t.attention;
+const splitSummary = () => ({ ...summary(tasks), attentionCount: tasks.filter(isAttention).length, attentionUnreadCount: tasks.filter(t => isAttention(t) && t.unread).length, doneUnreadCount: tasks.filter(t => isDone(t) && t.unread).length, diagnosticCount: split.diagnostics.count, showEntry: true });
+const listBody = (scope, offset = 0, limit = 50) => { const list = scope === 'history' ? tasks.filter(t => !t.active) : scope === 'active' ? tasks.filter(t => t.active) : tasks; return { schemaVersion: 1, readAt: Date.now(), queue: split ? { ...queue, warning: split.warning } : queue, preferences: { state: 'ready' }, summary: split ? splitSummary() : summary(tasks), total: list.length, offset, limit, tasks: list.slice(offset, offset + limit), ...(split ? { diagnostics: split.diagnostics } : {}) }; };
+const diagItem = (n, legacyStatus) => ({ id: String(n).padStart(8, '0') + '-0000-4000-8000-' + '0'.repeat(12), reason: 'state_missing', legacyStatus, registeredAt: NOW - n * 86400e3, ...(n === 1 ? { name: '旧任务名称' } : {}) });
+const diag23 = () => ({ count: 23, byReason: { state_missing: 23 }, legacyStatus: { done: 21, failed: 2 }, items: [diagItem(1, 'failed'), diagItem(2, 'done'), diagItem(3, 'failed'), ...Array.from({ length: 17 }, (_, i) => diagItem(i + 4, 'done'))], truncated: true });
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -257,6 +264,85 @@ try {
     delays = []; await page.keyboard.press('Escape'); await expect(drawer()).toHaveCount(0);   // 关掉面板，免得新版本一出现就被看到
     const f = tasks.find(t => t.id === 'ud-1038'); f.eventVersion = '6'.repeat(64); f.unread = true;
     await expect(entry()).toContainText('1 待处理', { timeout: 20000 });   // 新版本照常提醒
+  });
+
+  await check('U18 新字段：「待处理」顶栏和页签同一个数（看过也照算），「新」用 doneUnreadCount；23 条无法核对的只在底部一行，不计数、不点亮警告', async () => {
+    split = { warning: false, diagnostics: diag23() };
+    tasks = [structuredClone(T.failed), structuredClone(T.done), structuredClone(T.old)]; reads = []; delays = [];
+    queue = { state: 'degraded', reason: 'invalid_records', truncated: false, invalidCount: 23 }; await load();
+    await expect(entry()).toContainText('1 待处理'); await expect(entry()).toContainText('1 新');
+    await expect(entry().getByRole('img', { name: '进度待确认' })).toHaveCount(0);
+    await entry().click(); await expect(drawer()).toBeVisible();
+    // 默认页签：没有进行中，有未读的待处理 → 待处理；页签和顶栏都是 1，不是 1+23
+    await expect(drawer().getByRole('button', { name: '待处理 1', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(drawer().getByRole('button', { name: '已完成 · 1 新', exact: true })).toBeVisible();
+    await expect(drawer().locator('.ud-card')).toHaveCount(1);
+    const line = drawer().locator('.ud-diag-line');
+    await expect(line).toHaveText('23 条本机任务记录无法核对（找不到对应的本地状态文件）· 其中 2 条旧记录曾标为失败');
+    await expect(drawer()).not.toContainText('有 23 条读不了'); await expect(drawer()).not.toContainText('读不全');
+    // 三个页签都看得见诊断行
+    for (const tab of [/^进行中/, /^已完成/, /^待处理/]) { await drawer().getByRole('button', { name: tab }).click(); await expect(line).toBeVisible(); }
+    // 展开：紧凑表，四列；只列出前 20 条；没有任何操作按钮
+    await expect(line).toHaveAttribute('aria-expanded', 'false'); await line.click(); await expect(line).toHaveAttribute('aria-expanded', 'true');
+    const table = drawer().locator('.ud-diag-table');
+    await expect(table.locator('thead th')).toHaveText(['编号', '旧队列状态', '登记时间', '原因']);
+    await expect(table.locator('tbody tr')).toHaveCount(20);
+    await expect(table.locator('tbody tr').first().locator('td')).toHaveText(['00000001', '未核实：失败', /\d/, '找不到对应的本地状态文件']);
+    await expect(table.locator('tbody tr').nth(1).locator('td').nth(1)).toHaveText('未核实：完成');
+    await expect(drawer().locator('.ud-diag-note')).toHaveText('只列出前 20 条（共 23 条）');
+    await expect(drawer().locator('.ud-diag').getByRole('button')).toHaveCount(1);
+    const scroll = await drawer().locator('.ud-diag-scroll').evaluate(e => ({ client: e.clientHeight, scroll: e.scrollHeight }));
+    assert.ok(scroll.scroll > scroll.client && scroll.client <= 241, '表格应在自己内部滚动 ' + JSON.stringify(scroll));
+    await shot('u18-diagnostics-1440');
+    // 看过待处理之后，顶栏「待处理」照算（未读只是卡片上的小圆点）
+    await expect.poll(() => reads.some(r => r.id === 'ud-1038'), { timeout: 4000 }).toBe(true);
+    await expect(card('D段 第2版').locator('.ud-new')).toHaveCount(0, { timeout: 6000 });
+    await expect(entry()).toContainText('1 待处理'); await expect(drawer().getByRole('button', { name: '待处理 1', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+  });
+
+  await check('U19 新字段：没有曾失败的旧记录时去掉后半句；queue.warning=true 才点亮警告；默认页签按 有未读的已完成 > 有待处理', async () => {
+    split = { warning: true, diagnostics: { count: 2, byReason: { state_missing: 1, invalid_record: 1 }, legacyStatus: { done: 2 }, items: [diagItem(5, 'done'), { ...diagItem(6, 'done'), reason: 'invalid_record' }], truncated: false } };
+    tasks = [{ ...structuredClone(T.failed), unread: false }, structuredClone(T.done)]; reads = [];
+    queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 }; await load();
+    await expect(entry().getByRole('img', { name: '进度待确认' })).toBeVisible();
+    await expect(entry()).toContainText('1 待处理'); await expect(entry()).toContainText('1 新');
+    await entry().click();
+    await expect(drawer().getByRole('button', { name: /^已完成/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(drawer().locator('.ud-diag-line')).toHaveText('2 条本机任务记录无法核对（记录无法读取或核对）');
+    await expect(drawer()).toContainText('本机任务记录有读不全的地方');
+    await drawer().locator('.ud-diag-line').click(); await expect(drawer().locator('.ud-diag-note')).toHaveCount(0);
+    await expect(drawer().locator('.ud-diag-table tbody tr').nth(1).locator('td').nth(3)).toHaveText('记录无法读取或核对 invalid_record'); await expect(drawer().locator('.ud-diag-table tbody tr').first().locator('td').nth(3)).toHaveText('找不到对应的本地状态文件');
+    await expect.poll(() => reads.some(r => r.id === 'ud-1039'), { timeout: 4000 }).toBe(true);
+    await expect(entry()).not.toContainText('新', { timeout: 6000 }); await expect(entry()).toContainText('1 待处理');
+    await page.keyboard.press('Escape');
+    // 窄屏：诊断行最多两行；展开的表只留三列
+    split.diagnostics = diag23(); split.warning = false;
+    await page.setViewportSize({ width: 390, height: 844 }); await load(); await entry().click(); await expect(drawer()).toBeVisible();
+    const lines = await drawer().locator('.ud-diag-text').evaluate(e => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight)));
+    assert.ok(lines <= 2, '诊断行占了 ' + lines + ' 行');
+    await drawer().locator('.ud-diag-line').click();
+    assert.equal(await drawer().locator('.ud-diag-table thead th:visible').count(), 3);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '横向溢出');
+    await shot('u19-diagnostics-390');
+    await page.keyboard.press('Escape'); await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  await check('U20 「新样子（试用）」后台任务汇总用同一套数字：Updream 待处理+新，文件任务按批数', async () => {
+    split = { warning: false, diagnostics: diag23() };
+    tasks = [structuredClone(T.failed), structuredClone(T.done), { ...structuredClone(T.unknown), unread: false }]; reads = [];
+    queue = { state: 'degraded', reason: 'invalid_records', truncated: false, invalidCount: 23 };
+    const statusUrl = u => new URL(u).pathname === '/api/file-intake/status';
+    await page.route(statusUrl, async route => { const res = await route.fetch(), body = await res.json(); await route.fulfill({ response: res, json: { ...body, needsAttention: 5, needsAttentionBatches: 2, needsAttentionFiles: 5 } }); });
+    await page.evaluate(() => localStorage.setItem('shiguang.paperTrial.v1', 'on')); await load();
+    const tasksButton = page.getByRole('button', { name: /^后台任务/ });
+    // Updream：待处理 2（失败 + 待核对，看没看过都算）+ 新 1；文件任务：2 批（不是 5 个文件）
+    await expect(tasksButton.locator('.sgp-tasks-attention')).toHaveText('5', { timeout: 20000 });
+    await tasksButton.click(); await expect(entry()).toContainText('2 待处理'); await expect(entry()).toContainText('1 新');
+    await expect(page.getByRole('button', { name: /^文件任务/ })).toContainText('2 批待处理');
+    await page.keyboard.press('Escape');
+    await page.unroute(statusUrl); await page.evaluate(() => localStorage.removeItem('shiguang.paperTrial.v1'));
+    split = null; queue = { state: 'ready', reason: null, truncated: false, invalidCount: 0 };
   });
 
   assert.deepEqual(errors, []);
