@@ -193,18 +193,18 @@ function TaskCard({t, now, stale, onView, observe}: {t: UpdreamTask; now: number
 }
 
 // 诊断行（任务入口两件）：本机记录无法核对的历史，不出卡片、不计数、不放操作按钮，只合成一行，展开是紧凑表。
-const REASON: Record<string, string> = {
-  state_missing: '找不到对应的本地状态文件', invalid_record: '记录内容无法解析', read_limit: '记录超过读取上限',
-  record_changed: '读取时记录正在变化', unsafe_record: '记录位置不安全',
-};
-const reasonText = (r: string) => REASON[r] ?? `原因代码 ${r}`;
-const LEGACY: Record<string, string> = {done: '完成', imported: '完成', failed: '失败', cancelled: '已取消'};
+// 原因：state_missing 用定好的说法；其他（包括没见过的）都用通用说法，表格里另附原因代码，不漏掉。
+const STATE_MISSING = 'state_missing', MISSING_TEXT = '找不到对应的本地状态文件', GENERIC_TEXT = '记录无法读取或核对';
+const reasonText = (r: string) => r === STATE_MISSING ? MISSING_TEXT : GENERIC_TEXT;
+// 旧队列里记的阶段（后端原样给），一律标「未核实」。
+const LEGACY: Record<string, string> = {done: '完成', failed: '失败', cancelled: '已取消', needs_user: '待用户处理', monitoring: '跟进中', waiting_library: '等待入库', notifying: '通知中'};
 const legacyText = (v: string | null) => v ? `未核实：${LEGACY[v] ?? v}` : '未记录';
 const shortTime = (v: number | null) => v ? new Date(v).toLocaleString('zh-CN', {hour12: false, year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '未记录';
 function Diagnostics({d}: {d: UpdreamDiagnostics}) {
   const [open, setOpen] = useState(false);
-  const reasons = Object.entries(d.byReason).sort((a, b) => b[1] - a[1]);
-  const why = !reasons.length ? '' : reasons.length === 1 ? `（${reasonText(reasons[0][0])}）` : `（${reasons.map(([r, n]) => `${reasonText(r)} ${n} 条`).join('；')}）`;
+  // 汇总行：只有 state_missing 一种原因时才写具体说法，混有其他原因时写通用说法。
+  const reasons = Object.keys(d.byReason);
+  const why = !reasons.length ? '' : reasons.length === 1 && reasons[0] === STATE_MISSING ? `（${MISSING_TEXT}）` : `（${GENERIC_TEXT}）`;
   const failed = d.legacyStatus.failed ?? 0;
   return <section className="ud-diag" aria-label="无法核对的本机任务记录">
     <button type="button" className="ud-diag-line" aria-expanded={open} aria-controls="ud-diag-table" onClick={() => setOpen(v => !v)}>
@@ -218,7 +218,7 @@ function Diagnostics({d}: {d: UpdreamDiagnostics}) {
           <td><code title={i.name ? `${i.name}\n${i.id}` : i.id}>{i.id.slice(0, 8)}</code></td>
           <td className={i.legacyStatus === 'failed' ? 'is-failed' : undefined}>{legacyText(i.legacyStatus)}</td>
           <td>{shortTime(i.registeredAt)}</td>
-          <td>{reasonText(i.reason)}</td>
+          <td>{reasonText(i.reason)}{i.reason !== STATE_MISSING && <code className="ud-diag-code"> {i.reason}</code>}</td>
         </tr>)}</tbody>
       </table></div>
       {d.truncated && <p className="ud-diag-note">只列出前 {d.items.length} 条（共 {d.count} 条）</p>}

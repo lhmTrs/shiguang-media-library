@@ -309,9 +309,10 @@ try {
     await expect(entry()).toContainText('1 待处理'); await expect(entry()).toContainText('1 新');
     await entry().click();
     await expect(drawer().getByRole('button', { name: /^已完成/ })).toHaveAttribute('aria-pressed', 'true');
-    await expect(drawer().locator('.ud-diag-line')).toHaveText('2 条本机任务记录无法核对（找不到对应的本地状态文件 1 条；记录内容无法解析 1 条）');
+    await expect(drawer().locator('.ud-diag-line')).toHaveText('2 条本机任务记录无法核对（记录无法读取或核对）');
     await expect(drawer()).toContainText('本机任务记录有读不全的地方');
     await drawer().locator('.ud-diag-line').click(); await expect(drawer().locator('.ud-diag-note')).toHaveCount(0);
+    await expect(drawer().locator('.ud-diag-table tbody tr').nth(1).locator('td').nth(3)).toHaveText('记录无法读取或核对 invalid_record'); await expect(drawer().locator('.ud-diag-table tbody tr').first().locator('td').nth(3)).toHaveText('找不到对应的本地状态文件');
     await expect.poll(() => reads.some(r => r.id === 'ud-1039'), { timeout: 4000 }).toBe(true);
     await expect(entry()).not.toContainText('新', { timeout: 6000 }); await expect(entry()).toContainText('1 待处理');
     await page.keyboard.press('Escape');

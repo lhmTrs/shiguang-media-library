@@ -16,7 +16,7 @@ const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); 
 const ago = (at: number, now: number) => { const d = Math.max(0, now - at); return d < 60000 ? '刚刚' : d < 3600000 ? Math.floor(d / 60000) + ' 分钟前' : d < 86400000 ? Math.floor(d / 3600000) + ' 小时前' : new Date(at).toLocaleString(); };
 type InstallError = {kind: 'refused' | 'unknown'; message: string};
 const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
-/** 待处理批次「加载更多」每次多读的批数（第一版不做分页界面）。 */
+/** 待处理批次「加载更多」每次多读的批数（第一版不做分页界面）；后端单页上限 100。 */
 const ATTENTION_PAGE = 20;
 const batchPlace = (b: IntakeBatch) => b.projectName + ' / ' + (b.folderName || '根目录');
 /** 待处理的排在前面（各自保持后端给的先后，新的在前）；旧后台没有 attention 字段时顺序不变。 */
@@ -224,7 +224,7 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     selectionRef.current = landing(rows.current, value)?.id || ''; setSelection(selectionRef.current);
   }
   function jump(id: string) {selectionRef.current = id; setSelection(id);}
-  function loadMoreAttention() {attentionLimitRef.current = Math.max(attentionLimitRef.current, pendingShown.length) + ATTENTION_PAGE; void readBatches();}
+  function loadMoreAttention() {attentionLimitRef.current = Math.min(100, Math.max(attentionLimitRef.current, pendingShown.length) + ATTENTION_PAGE); void readBatches();}
   // 待处理（任务入口两件）：新后台给批数 needsAttentionBatches；没有这个字段时照旧显示文件数 needsAttention。
   const attentionBatches = typeof status?.needsAttentionBatches === 'number' ? status.needsAttentionBatches : null;
   const attentionFiles = typeof status?.needsAttentionFiles === 'number' ? status.needsAttentionFiles : null;
