@@ -3,8 +3,9 @@ export type IntakeCompletion = {id: string; updatedAt: number; projectName: stri
 /** 访达入口安装任务（POST/GET /install/job，status.installJob）。时间为毫秒；previousKept 只在失败且核对过时为布尔值。 */
 export type InstallStage = 'checking' | 'preparing-window' | 'writing' | 'done' | 'failed';
 export type InstallJob = {id: string; stage: InstallStage; window: 'compiling' | 'skipped' | null; startedAt: number; finishedAt: number | null; message: string | null; error: {code: string; message: string} | null; previousKept: boolean | null};
-/** needsAttention 是旧字段（文件数，给旧页面）；needsAttentionBatches / needsAttentionFiles 是任务入口两件（11-24）新增，顶栏按批数。旧后台没有这两个字段时退回旧显示。 */
-export type IntakeStatus = {supported: boolean; installed: boolean; upgradeNeeded?: boolean; canTrash: boolean; activeCount: number; needsAttention: number; needsAttentionBatches?: number; needsAttentionFiles?: number; latestCompletion: IntakeCompletion | null; installJob?: InstallJob | null};
+/** needsAttention 是旧字段（文件数，给旧页面）；needsAttentionBatches / needsAttentionFiles 是任务入口两件（11-24）新增，顶栏按批数。旧后台没有这两个字段时退回旧显示。
+ *  attentionRevision（可选）：待处理批次和内容的指纹，批数文件数不变的替换也会变；抽屉用它决定要不要重读已加载的待处理页。 */
+export type IntakeStatus = {supported: boolean; installed: boolean; upgradeNeeded?: boolean; canTrash: boolean; activeCount: number; needsAttention: number; needsAttentionBatches?: number; needsAttentionFiles?: number; attentionRevision?: string; latestCompletion: IntakeCompletion | null; installJob?: InstallJob | null};
 export type MediaKind = 'photo' | 'video' | 'music' | 'sfx';
 export type ImageProposal = {projectId:string;characterId:string|null;characterRevision:number|null;lookId:string|null;lookRevision:number|null;newCharacter:boolean;newLook:boolean;characterName:string;lookName:string};
 export type AssetKind = 'character' | 'scene' | 'prop';

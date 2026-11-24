@@ -31,7 +31,7 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
   const [history, setHistory] = useState(false), historyRef = useRef(false);
   // 三处来源分开记、合并后显示（同一批以靠前来源为准）：最近 50 批（默认列表）、待处理第一页（需要时随轮询刷新）、点「加载更多」读到的后续页。
   // pagesLoaded：手上有几页待处理（含第一页）；下一页的 offset = 页数 × 每页批数，和服务端「先筛后分页」的前缀对齐，不用本地行数。
-  // 顶栏的待处理批数或文件数一变（另一个窗口标了已处理、新失败等），就把已加载的每一页按原 offset 重读一遍，不再待处理的批次随之拿掉。
+  // 待处理有变化（有 status.attentionRevision 时看它，没有时看批数和文件数）就把已加载的每一页按原 offset 重读一遍，不再待处理的批次随之拿掉。
   const recentRows = useRef<IntakeBatch[]>([]), firstPage = useRef<IntakeBatch[]>([]), morePages = useRef<IntakeBatch[]>([]), pagesLoaded = useRef(0), refreshPages = useRef(false), attentionKey = useRef(''), [loadingMore, setLoadingMore] = useState(false), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
   const [uncertain, setUncertain] = useState<Record<string, Uncertain>>({});
   const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState<InstallError | null>(null), [verifying, setVerifying] = useState(false), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
@@ -92,7 +92,8 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
           message: completion.status === 'completed' ? '素材已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
         });
         completionRead.current = true; completionKey.current = key;
-        const nextKey = typeof value.needsAttentionBatches === 'number' ? value.needsAttentionBatches + ':' + (value.needsAttentionFiles ?? '') : '';
+        // 有 attentionRevision 就用它（同数替换也会变）；没有才退回批数 + 文件数。
+        const nextKey = typeof value.attentionRevision === 'string' && value.attentionRevision ? 'rev:' + value.attentionRevision : typeof value.needsAttentionBatches === 'number' ? value.needsAttentionBatches + ':' + (value.needsAttentionFiles ?? '') : '';
         if (attentionKey.current && nextKey !== attentionKey.current) refreshPages.current = true; attentionKey.current = nextKey;
         setStatus(value); setStatusError(''); acceptJob(value.installJob, seq);
       }

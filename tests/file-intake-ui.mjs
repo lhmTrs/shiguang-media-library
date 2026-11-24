@@ -296,6 +296,21 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     const values = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
     assert.equal(new Set(values).size, values.length); assert.equal(values.length, 46 + 2); await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
   });
+  await check('attention revision: same counts but a different pending batch on a loaded later page still refreshes when status.attentionRevision changes', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); for (let n = 0; n < 45; n++) {const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older-' + n, projectName: '合成较早项目 ' + n, older: true}); f.batches.push(older);} splitStatus(); f.status.attentionRevision = 'rev-1';});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint'), select = () => drawer().getByLabel('选择文件收纳批次');
+    const start = requests.length, scoped = () => requests.slice(start).filter(r => r.query?.includes('scope=attention')).map(r => r.query.replace('?scope=attention&', ''));
+    await entryButton.click(); await expect(select().locator('option[value="b-older-17"]')).toHaveCount(1);
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect(select().locator('option[value="b-older-37"]')).toHaveCount(1);
+    // 别处在一次间隔里标掉第二页的 b-older-25、恢复一批 b-older-50：批数和文件数都不变，只有指纹变
+    const gone = fixture.batches.find(b => b.id === 'b-older-25'); gone.acknowledged = true; gone.attention = null;
+    const back = structuredClone(gone); Object.assign(back, {id: 'b-older-50', projectName: '合成恢复项目', acknowledged: false, attention: back.pendingAttention}); const at = fixture.batches.findIndex(b => b.id === 'b-older-26'); fixture.batches.splice(at, 0, back);
+    const counts = {...fixture.status}; splitStatus(); assert.deepEqual([fixture.status.needsAttentionBatches, fixture.status.needsAttentionFiles], [counts.needsAttentionBatches, counts.needsAttentionFiles]);
+    fixture.status.attentionRevision = 'rev-2'; const before = scoped().length;
+    await expect(select().locator('option[value="b-older-25"]')).toHaveCount(0, {timeout: 8000}); await expect(select().locator('option[value="b-older-50"]')).toHaveCount(1);
+    assert.ok(scoped().slice(before).includes('offset=20&limit=20'), scoped().slice(before).join(','));
+    await expect(entryButton).toContainText('47 批待处理');
+  });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
     fixture.batches[0].items.push({id:'recoverable',name:'recoverable.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'TRANSIENT_IO_ERROR'});
