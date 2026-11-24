@@ -53,4 +53,6 @@ Mac 原生运行时，顶栏「文件任务」中提供「安装访达入口」�
 
 确定结束的批次可以「标记已处理」，不再计入顶栏待处理数；原失败、结果、完成时间和文件均保留。可恢复待处理。正在运行、重名待选择、结果未知或原件移除未结清时不能标记；之后结果变化会重新提示，不能用旧标记遮住新问题。
 
+`GET /api/file-intake/status` 中 `needsAttention` 沿用待处理文件数，新增 `needsAttentionFiles` 和 `needsAttentionBatches`。`GET /api/file-intake/batches?scope=attention&offset=0&limit=20` 先筛出还没有收起的待处理批次，再分页，返回 `attentionTotal`（批数）和 `attentionFiles`（文件数）；不带参数仍返回最近 50 批。批次 `attention` 为 `null` 或 `{items,codes}`。文件 `actions` 表示当前适用的已有操作。`reselect` 表示要回访达重新选择原件，不会提交重试；「标记已处理」始终在批次层。
+
 Windows、Linux、Docker 暂无访达入口。此功能不调用真实模型或云端，不要求 MySQL，不替代素材备份。验证范围、真实 Finder 系统菜单和不同平台支持须按实际结果分别声明。
