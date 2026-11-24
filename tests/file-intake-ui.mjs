@@ -311,6 +311,32 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     assert.ok(scoped().slice(before).includes('offset=20&limit=20'), scoped().slice(before).join(','));
     await expect(entryButton).toContainText('47 批待处理');
   });
+  await check('attention explicit refresh re-reads every loaded page even when revision and counts stay the same; page boundary shift has no gaps or duplicates', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); for (let n = 0; n < 45; n++) {const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older-' + n, projectName: '合成较早项目 ' + n, older: true}); f.batches.push(older);} splitStatus(); f.status.attentionRevision = 'rev-fixed';});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint'), select = () => drawer().getByLabel('选择文件收纳批次');
+    const start = requests.length, scoped = () => requests.slice(start).filter(r => r.query?.includes('scope=attention')).map(r => r.query.replace('?scope=attention&', ''));
+    await entryButton.click(); await expect(select().locator('option[value="b-older-17"]')).toHaveCount(1);
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect(select().locator('option[value="b-older-37"]')).toHaveCount(1);
+    await select().selectOption('b-older-30');
+    // 别处：标掉第二页的 b-older-25，同时在第一页靠前插入一批恢复的（第一页末尾一批被挤到第二页）；指纹故意不变，模拟还没读到新 status
+    const gone = fixture.batches.find(b => b.id === 'b-older-25'); gone.acknowledged = true; gone.attention = null;
+    const back = structuredClone(gone); Object.assign(back, {id: 'b-restored', projectName: '合成恢复项目', acknowledged: false, attention: back.pendingAttention}); fixture.batches.splice(fixture.batches.findIndex(b => b.id === 'b-older-0'), 0, back);
+    splitStatus(); fixture.status.attentionRevision = 'rev-fixed';
+    // 没点刷新时，后台零变化不该读深页
+    const quiet = scoped().length; await pause(1500); assert.ok(scoped().slice(quiet).every(q => q === 'offset=0&limit=20'), '数字和指纹都没变时只读第一页：' + scoped().slice(quiet).join(','));
+    const before = scoped().length; await drawer().getByRole('button', {name: '刷新文件任务', exact: true}).click();
+    await expect(select().locator('option[value="b-older-25"]')).toHaveCount(0, {timeout: 3000}); await expect(select().locator('option[value="b-restored"]')).toHaveCount(1);
+    assert.ok(scoped().slice(before).includes('offset=20&limit=20'), '点刷新要重读第二页：' + scoped().slice(before).join(','));
+    await expect(select()).toHaveValue('b-older-30');
+    const values = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.equal(new Set(values).size, values.length, '不能重复');
+    // 前两页应正好是服务端前 40 批待处理（边界被挤过来的那一批也在）
+    const serverFirst40 = fixture.batches.filter(b => b.attention).slice(0, 40).map(b => b.id); assert.ok(serverFirst40.every(id => values.includes(id)), '边界批次漏了');
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect.poll(() => scoped().at(-1)).toBe('offset=40&limit=20');
+    await expect(select().locator('option[value="b-older-44"]')).toHaveCount(1);
+    const all = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.equal(new Set(all).size, all.length); assert.equal(all.length, 47 + 2);
+  });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
     fixture.batches[0].items.push({id:'recoverable',name:'recoverable.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'TRANSIENT_IO_ERROR'});
