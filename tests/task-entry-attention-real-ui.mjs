@@ -3,7 +3,8 @@
 //   ① 52 个较新的成功批次压住两个较早的待处理批次 → 顶栏按批数，打开直接落在待处理，标为已处理后跳下一批；
 //   ② 23 条找不到本地状态文件的历史记录（21 条旧记录记完成、2 条记失败）→ 只在底部诊断行，不计数、不点亮读取警告；
 //   ③ 3 条真实新结果 → Updream 顶栏只显示「3 新」；
-//   ④ 45 批更早的待处理、加载到第二页后，另一个窗口经正式接口标掉第二页里的一批 → 抽屉跟着拿掉，下一页 offset 按已加载页数。
+//   ④ 45 批更早的待处理、加载到第二页后，另一个窗口经正式接口标掉第二页里的一批 → 抽屉跟着拿掉，下一页 offset 按已加载页数；
+//   ⑤ 同一间隔里标掉一批、恢复另一批（批数文件数不变）→ 靠 status.attentionRevision 也会刷新。
 // 不点重试、不复制文件、不连平台。用法：npm run build && node tests/task-entry-attention-real-ui.mjs（CREATIVE_TEST_EVIDENCE=目录 时保存截图）
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -99,9 +100,9 @@ try {
     await page.keyboard.press('Escape'); await expect(udDrawer).toHaveCount(0);
   });
 
+  const older = [];
   await check('C4 跨窗口：第二页里的一批在别处标为已处理，角标变了，下拉框也拿掉；保持原选中；下一页不重不漏', async () => {
     await page.close(); await stop();
-    const older = [];
     for (let n = 0; n < 45; n++) { const id = crypto.randomUUID(); older.push(id); await receipt(id, base - 1000 - n * 1000, 'partial', [item(`更早待处理-${n}.mp4`, 'failed', { code: 'INTAKE_NOT_STARTED', error: '合成：没有开始复制' })]); }
     await start(); await session();
     assert.equal((await api('/file-intake/status')).needsAttentionBatches, 45);
@@ -127,6 +128,23 @@ try {
     assert.ok(scoped.every(q => +q.split('/')[1] <= 20), '每页请求都应有界：' + scoped.join(','));
     await expect(hint().getByRole('button', { name: '加载更多', exact: true })).toHaveCount(0);
     await shot('c4-cross-window');
+  });
+
+  await check('C5 同数替换：别处标掉第二页一批、同时恢复另一批，批数和文件数都不变，靠 attentionRevision 也能刷新', async () => {
+    const page2 = older[30], target = await api('/file-intake/batches/' + page2), restore = await api('/file-intake/batches/' + ids.pendOld);
+    assert.ok(target.attention && restore.acknowledged);
+    const sel = () => page.getByRole('dialog', { name: '文件任务', exact: true }).getByLabel('选择文件收纳批次'), entry = page.getByRole('button', { name: /^文件任务/ });
+    const before = await api('/file-intake/status');
+    await api('/file-intake/batches/' + page2 + '/acknowledge', { acknowledged: true, resultKey: target.resultKey });
+    await api('/file-intake/batches/' + ids.pendOld + '/acknowledge', { acknowledged: false, resultKey: restore.resultKey });
+    const after = await api('/file-intake/status');
+    assert.deepEqual([after.needsAttentionBatches, after.needsAttentionFiles], [before.needsAttentionBatches, before.needsAttentionFiles], '批数和文件数应该不变');
+    assert.notEqual(after.attentionRevision, before.attentionRevision);
+    await expect(sel().locator(`option[value="${page2}"]`)).toHaveCount(0, { timeout: 10000 });
+    await expect(sel().locator(`option[value="${ids.pendOld}"]`)).toHaveCount(1);
+    await expect(entry).toContainText(after.needsAttentionBatches + ' 批待处理');
+    const values = await sel().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.equal(new Set(values).size, values.length);
   });
 
   assert.deepEqual(errors, []); assert.deepEqual(foreign, []);
