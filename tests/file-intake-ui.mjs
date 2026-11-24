@@ -233,6 +233,7 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     assert.deepEqual(options.map(o => o[0]), ['b-pend-1', 'b-pend-2', 'b-new-ok', 'b-mid-ok']);
     assert.match(options[0][1], /· 2 个文件待处理$/); assert.match(options[1][1], /· 1 个文件待处理$/); assert.doesNotMatch(options[2][1], /待处理/);
     await expect(hint()).toHaveText('还有 1 批待处理：合成乙项目 / 根目录 ▸');
+    assert.equal(requests.filter(r => r.query?.includes('scope=attention')).length, 0, '待处理都在最近列表里时不读待处理分页');
     // 只画后端声明的动作；reselect 只是提示，不发请求
     await expect(item('changed').getByRole('button')).toHaveCount(0); await expect(item('changed')).toContainText('请回访达重新选择原文件');
     await expect(item('transient').getByRole('button', {name: '重试此失败项', exact: true})).toBeVisible();
@@ -253,19 +254,22 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     const posts = requests.slice(start).filter(r => r.method === 'POST'); assert.equal(posts.length, 3); assert.ok(posts.every(r => r.path.endsWith('/acknowledge')));
     assert.equal(fixture.retryCount, 0); assert.equal(fixture.reconcileCount, 0);
   });
-  await check('attention pending batches beyond the recent list are reachable through 加载更多 only; narrow hint stays within two lines', async () => {
-    await fresh(false, null, false, false, f => {attentionFixture(f); const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older', projectName: '合成很早以前的项目名称特别长需要换行检查一下', folderName: '更早的一段/子文件夹/再下一层', older: true}); f.batches.push(older); splitStatus();});
-    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint');
-    await expect(entryButton).toContainText('3 批待处理'); await entryButton.click(); await expect(drawer().getByLabel('选择文件收纳批次')).toHaveValue('b-pend-1');
-    await expect(hint()).toContainText('还有 2 批待处理：合成乙项目 / 根目录 ▸');
-    assert.equal(requests.filter(r => r.path === '/api/file-intake/batches' && r.query?.includes('scope=attention')).length, 0, '没点加载更多前不读待处理分页');
+  await check('attention pending batches pushed out of the recent list load automatically (first page); 加载更多 reads the rest; narrow hint stays within two lines', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); for (let n = 0; n < 21; n++) {const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older-' + n, projectName: n ? '合成较早项目 ' + n : '合成很早以前的项目名称特别长需要换行检查一下', folderName: n ? '' : '更早的一段/子文件夹/再下一层', older: true}); f.batches.push(older);} splitStatus();});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint'), select = () => drawer().getByLabel('选择文件收纳批次');
+    await expect(entryButton).toContainText('23 批待处理'); await entryButton.click(); await expect(select()).toHaveValue('b-pend-1');
+    // status 说 23 批、最近列表里只有 2 批：自动读第一页（20 批），不用点
+    await expect(select().locator('option[value="b-older-0"]')).toHaveCount(1);
+    const scoped = () => requests.filter(r => r.query?.includes('scope=attention'));
+    assert.ok(scoped().length && scoped().every(r => /offset=0/.test(r.query) && /limit=20/.test(r.query)), JSON.stringify(scoped()[0]));
+    await expect(select().locator('option[value="b-older-20"]')).toHaveCount(0);
+    await expect(hint()).toContainText('还有 22 批待处理：合成乙项目 / 根目录 ▸');
     await hint().getByRole('button', {name: '加载更多', exact: true}).click();
-    await expect(drawer().getByLabel('选择文件收纳批次').locator('option[value="b-older"]')).toHaveCount(1);
-    await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
-    const scoped = requests.find(r => r.query?.includes('scope=attention')); assert.ok(scoped && /offset=0/.test(scoped.query) && /limit=22/.test(scoped.query), JSON.stringify(scoped));
-    const options = await drawer().getByLabel('选择文件收纳批次').locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
-    assert.deepEqual(options, ['b-pend-1', 'b-pend-2', 'b-older', 'b-new-ok', 'b-mid-ok']);
-    await page.setViewportSize({width: 420, height: 780}); await drawer().getByLabel('选择文件收纳批次').selectOption('b-pend-2');
+    await expect(select().locator('option[value="b-older-20"]')).toHaveCount(1); await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
+    assert.ok(/limit=40/.test(scoped().at(-1).query), scoped().at(-1).query);
+    const options = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.deepEqual(options.slice(0, 3), ['b-pend-1', 'b-pend-2', 'b-older-0']); assert.deepEqual(options.slice(-2), ['b-new-ok', 'b-mid-ok']); assert.equal(options.length, 25);
+    await page.setViewportSize({width: 420, height: 780}); await select().selectOption('b-older-0');
     const lines = await hint().evaluate(e => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight))); assert.ok(lines <= 2, '提示行占了 ' + lines + ' 行');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({path: path.join(evidence, 'attention-narrow.png')});
   });

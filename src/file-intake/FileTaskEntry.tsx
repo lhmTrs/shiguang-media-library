@@ -16,7 +16,7 @@ const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); 
 const ago = (at: number, now: number) => { const d = Math.max(0, now - at); return d < 60000 ? '刚刚' : d < 3600000 ? Math.floor(d / 60000) + ' 分钟前' : d < 86400000 ? Math.floor(d / 3600000) + ' 小时前' : new Date(at).toLocaleString(); };
 type InstallError = {kind: 'refused' | 'unknown'; message: string};
 const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
-/** 待处理批次「加载更多」每次多读的批数（第一版不做分页界面）；后端单页上限 100。 */
+/** 待处理批次每页批数：需要时自动读第一页，「加载更多」每次再多读这么多（第一版不做分页界面）；后端单页上限 100。 */
 const ATTENTION_PAGE = 20;
 const batchPlace = (b: IntakeBatch) => b.projectName + ' / ' + (b.folderName || '根目录');
 /** 待处理的排在前面（各自保持后端给的先后，新的在前）；旧后台没有 attention 字段时顺序不变。 */
@@ -101,12 +101,16 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     const version = ++readVersion.current; setReading(true);
     try {
       const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches', undefined, undefined, {signal});
-      // 待处理分页（只在点过「加载更多」后读）：先筛选再分页，读到的批次接在最近批次后面。
-      const limit = attentionLimitRef.current, more = limit > 0 ? await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: '0', limit: String(limit)}), undefined, undefined, {signal}) : null;
+      // 待处理分页：先筛选再分页，读到的批次接在最近批次后面。status 说的待处理批数比最近列表里看到的多
+      // （较早的待处理被许多较新的批次压到 50 批以外）时自动读第一页；更多的要点「加载更多」。
+      const known = statusRef.current?.needsAttentionBatches, recentPending = Array.isArray(value.batches) ? value.batches.filter(batchNeedsAttention).length : 0;
+      const limit = attentionLimitRef.current || (typeof known === 'number' && known > recentPending ? ATTENTION_PAGE : 0);
+      const more = limit > 0 ? await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: '0', limit: String(limit)}), undefined, undefined, {signal}) : null;
       if (alive.current && version === readVersion.current) {
-        recentRows.current = value.batches; if (more) attentionRows.current = Array.isArray(more.batches) ? more.batches : [];
+        recentRows.current = value.batches; attentionRows.current = more && Array.isArray(more.batches) ? more.batches : [];
         const total = more?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
-        installRows(mergedRows()); landPending.current = false; setReadError('');
+        // 状态还没读到时先不结束「找默认落点」，下一次读取再落一次。
+        installRows(mergedRows()); if (statusRef.current) landPending.current = false; setReadError('');
       }
     }
     catch (e) {if (alive.current && !signal?.aborted && version === readVersion.current) setReadError(errorMessage(e));}
