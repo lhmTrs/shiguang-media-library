@@ -18,8 +18,44 @@ test('absent queue is not created; broken/unknown/oversize/symlink records degra
  const f=await progressFixture(t);let s=new UpdreamProgress({dataDir:f.data,queueDir:path.join(f.root,'absent')});assert.equal((await s.list()).queue.state,'absent');await assert.rejects(fs.access(s.queueDir),{code:'ENOENT'});
  const ok=await f.put('ok'),broken=await f.put('broken'),unknown=await f.put('unknown',{version:99}),link=await f.put('link'),large=await f.put('large');
  await fs.writeFile(broken.file,'{"half":');await fs.unlink(link.file);await fs.symlink(ok.file,link.file);await fs.writeFile(large.file,' '.repeat(8*1024*1024+1));
- s=store(f);const listed=await s.list();assert.equal(listed.queue.state,'degraded');assert.equal(listed.queue.invalidCount,4);assert.equal(listed.tasks.find(t=>t.id==='ok').phase,'generating');assert.equal(listed.tasks.filter(t=>t.phase==='needs_review').length,4);
+ s=store(f);const listed=await s.list();assert.equal(listed.queue.state,'degraded');assert.equal(listed.queue.invalidCount,4);assert.equal(listed.queue.warning,true);assert.equal(listed.tasks.find(t=>t.id==='ok').phase,'generating');assert.equal(listed.tasks.length,1);assert.equal(listed.diagnostics.count,4);assert.equal(listed.summary.attentionCount,0);
  await fs.rename(f.queue,f.queue+'-original');await fs.symlink(f.queue+'-original',f.queue);assert.equal((await s.list()).queue.state,'unavailable');
+});
+
+test('missing historical source records stay readable as diagnostics but never count as task alerts',async t=>{
+ const f=await progressFixture(t),s=store(f);
+ for(let index=0;index<23;index++){
+  const job=await f.put('historic-'+index,{stage:index<21?'done':'failed'});
+  await fs.unlink(job.source);
+ }
+ for(let index=0;index<3;index++){
+  const id='delivered-'+index;
+  await f.put(id,{stage:'done'},{generation:{task_id:id,status:'completed'},delivery:f.delivered(id)});
+ }
+ let listing=await s.list({limit:2});
+ assert.deepEqual(listing.summary,{activeCount:0,unreadCount:3,attentionCount:0,attentionUnreadCount:0,doneUnreadCount:3,diagnosticCount:23,showEntry:true});
+ assert.equal(listing.total,3);assert.equal(listing.tasks.length,2);assert.equal(listing.queue.warning,false);
+ assert.deepEqual(listing.diagnostics.byReason,{state_missing:23});
+ assert.deepEqual(listing.diagnostics.legacyStatus,{done:21,failed:2});
+ assert.ok(listing.diagnostics.items.every(item=>item.registeredAt===1700000000000));
+ assert.ok(!JSON.stringify(listing.diagnostics).includes(f.sources));
+ const diagnostic=(await s.detail('historic-0')).task;
+ assert.equal(diagnostic.attention.code,'state_missing');
+ assert.equal(diagnostic.unread,false);
+ assert.deepEqual((await s.markRead({items:[{id:diagnostic.id,version:diagnostic.eventVersion}]})).skipped,[diagnostic.id]);
+ const pending=await f.put('missing-in-progress',{stage:'monitoring'});await fs.unlink(pending.source);
+ await f.put('actual-failure',{stage:'failed'},{generation:{task_id:'actual-failure',status:'failed'}});
+ listing=await s.list();
+ assert.equal(listing.summary.attentionCount,1);assert.equal(listing.summary.attentionUnreadCount,1);assert.equal(listing.summary.doneUnreadCount,3);
+ assert.equal(listing.diagnostics.count,24);assert.equal(listing.queue.warning,true);
+ assert.deepEqual(listing.tasks.filter(item=>item.attention).map(item=>item.id),['actual-failure']);
+ for(let index=23;index<50;index++){
+  const job=await f.put('historic-'+index,{stage:'done'});
+  await fs.unlink(job.source);
+ }
+ const capped=await s.list({scope:'history',offset:99,limit:1});
+ assert.equal(capped.tasks.length,0);assert.equal(capped.diagnostics.count,51);
+ assert.equal(capped.diagnostics.items.length,50);assert.equal(capped.diagnostics.truncated,true);
 });
 
 test('verified import is distinct from generation complete and notification failure; wrong library cannot view',async t=>{

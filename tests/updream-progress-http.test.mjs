@@ -17,7 +17,12 @@ test('isolated real application gates and read-only queue API; normal shutdown d
  try{
   let ready=false;for(let i=0;i<450;i++){if(child.exitCode!==null)throw Error('isolated application exited before ready');try{const r=await fetch(base+'/api/session');if(r.ok){ready=true;break;}}catch{}await wait(100);}assert.ok(ready,'isolated server readiness');
   assert.equal((await fetch(base+'/api/updream-progress')).status,401);
+  assert.equal((await fetch(base+'/api/file-intake/batches?scope=attention')).status,401);
   const session=await fetch(base+'/api/session'),cookie=session.headers.get('set-cookie').split(';')[0],{token}=await session.json();const headers={Cookie:cookie,'Content-Type':'application/json'};
+  const fileAttention=await fetch(base+'/api/file-intake/batches?scope=attention&offset=0&limit=20',{headers});
+  assert.equal(fileAttention.status,200);
+  assert.deepEqual(await fileAttention.json(),{batches:[],total:0,attentionTotal:0,attentionFiles:0,offset:0,limit:20});
+  assert.equal((await fetch(base+'/api/file-intake/batches?scope=attention&limit=101',{headers})).status,400);
   const listing=await fetch(base+'/api/updream-progress',{headers});assert.equal(listing.status,200);const body=await listing.json();assert.equal(body.tasks.length,2);assert.ok(!JSON.stringify(body).includes('PRIVATE'));assert.equal(listing.headers.get('cache-control'),'no-store');
   const task=body.tasks.find(t=>t.id==='failed'),request={items:[{id:task.id,version:task.eventVersion}]};
   assert.equal((await fetch(base+'/api/updream-progress/read',{method:'POST',headers,body:JSON.stringify(request)})).status,403);

@@ -15,6 +15,8 @@ const stable = value => JSON.stringify(value);
 const isProjectMusic = d => !!d && d.kind==='music' && d.scope==='project';
 const pending = new Set(['queued','copying','duplicate','unknown']);
 const terminal = new Set(['ready','managed','failed','cancelled','source_retained']);
+const attentionStates = new Set(['duplicate','failed','source_retained','unknown']);
+const reselectCodes = new Set(['INTAKE_SOURCE_CHANGED','INTAKE_SOURCE_UNBOUND']);
 const unavailableVideoFolder = new Set(['ENOENT','ENOTDIR','FOLDER_NOT_FOUND','TARGET_CHANGED']);
 const desktopUnavailable=new Set(['APPLICATION_CLOSING','DESKTOP_PLATFORM_UNAVAILABLE','DESKTOP_SESSION_UNAVAILABLE','NATIVE_HELPER_UNAVAILABLE','NATIVE_COMPILER_UNAVAILABLE']);
 const videoFolderChanged = () => error('TARGET_CHANGED','所选项目视频文件夹已移动、删除或变化，请重新选择');
@@ -89,15 +91,68 @@ export class FileIntake {
   canAcknowledge(b) {return !b.invalid&&b.libraryId===this.libraryId&&['completed','partial','interrupted'].includes(b.status)&&b.items.length>0&&
     b.items.every(i=>terminal.has(i.status)&&i.removal!=='planned'&&!this.finalizing.has(i.id));}
   acknowledged(b) {return this.canAcknowledge(b)&&b.acknowledgment?.resultKey===this.resultKey(b);}
-  dto(b) {return {version:b.version,id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
+  attention(b, acknowledged = this.acknowledged(b)) {
+    if (acknowledged) return null;
+    const codes = Object.create(null);
+    let items = 0;
+    for (const item of b.items) {
+      if (!attentionStates.has(item.status)) continue;
+      const code = typeof item.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(item.code) ? item.code : item.status;
+      codes[code] = (codes[code] ?? 0) + 1;
+      items++;
+    }
+    return items ? {items, codes} : null;
+  }
+  itemActions(b, item, status, acknowledged) {
+    if (b.invalid || b.libraryId !== this.libraryId) return [];
+    if (['ready','managed','source_retained'].includes(status)) {
+      const projectVideo = item.destination ? item.destination.scope === 'project' && item.destination.kind === 'video' && item.destination.projectId : b.projectId;
+      const target = status === 'managed' ? item.managedProjectId || item.assetId : projectVideo || item.videoId || item.assetId;
+      return target ? ['view'] : [];
+    }
+    if (acknowledged || this.closing || this.initializationError) return [];
+    if (status === 'duplicate') return ['resolve_duplicate'];
+    if (status === 'unknown') return ['reconcile'];
+    if (status === 'failed') return reselectCodes.has(item.code) ? ['reselect'] : ['retry'];
+    return [];
+  }
+  dto(b) {
+    const acknowledged = this.acknowledged(b);
+    return {version:b.version,id:b.id,projectId:b.projectId,projectName:b.projectName,folderId:b.folderId,folderName:b.folderName,
     mode:b.mode,...(b.prompt!==undefined?{prompt:structuredClone(b.prompt)}:{}),revealWhenDone:b.revealWhenDone===true,createdAt:b.createdAt,updatedAt:b.updatedAt,status:b.status,
-    canAcknowledge:this.canAcknowledge(b),acknowledged:this.acknowledged(b),acknowledgedAt:this.acknowledged(b)?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),items:b.items.map(i=>({...publicItem(i),status:this.finalizing.has(i.id)?'copying':i.status}))};}
+    canAcknowledge:this.canAcknowledge(b),acknowledged,acknowledgedAt:acknowledged?b.acknowledgment.at:undefined,resultKey:this.resultKey(b),
+    attention:this.attention(b, acknowledged),items:b.items.map(item=>{
+      const status = this.finalizing.has(item.id) ? 'copying' : item.status;
+      return {...publicItem(item), status, actions:this.itemActions(b,item,status,acknowledged)};
+    })};
+  }
   batch(id) {if(this.foreignIds.has(id))throw error('LOCAL_INSTANCE_CHANGED','这批文件任务属于另一素材库，原回执保留');if(!uuid(id)||!this.batches.has(id))throw error('INTAKE_NOT_FOUND','文件任务不存在',404);return this.batches.get(id);}
-  list(){return {batches:[...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(b=>this.dto(b))};}
+  list(query = {}) {
+    const rows = [...this.batches.values()].sort((a,b)=>b.createdAt-a.createdAt||a.id.localeCompare(b.id));
+    if (!Object.keys(query).length) return {batches:rows.slice(0,50).map(b=>this.dto(b))};
+    const integer = value => typeof value === 'string' && /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
+    const {scope, offset = '0', limit = '20'} = query;
+    if (scope !== 'attention' || Object.keys(query).some(key=>!['scope','offset','limit'].includes(key)) ||
+        !integer(offset) || !integer(limit) || Number(limit) < 1 || Number(limit) > 100)
+      throw error('INTAKE_INVALID_INPUT','待处理分页需要 scope=attention、非负 offset 和 1–100 的 limit',400);
+    const start = Number(offset), size = Number(limit);
+    const attentionRows = this.attentionRows(rows);
+    return {batches:attentionRows.slice(start,start+size).map(({batch})=>this.dto(batch)),
+      total:attentionRows.length,attentionTotal:attentionRows.length,attentionFiles:attentionRows.reduce((sum,row)=>sum+row.items,0),offset:start,limit:size};
+  }
+  attentionRows(batches) {
+    const rows = [];
+    for (const batch of batches) {
+      const attention = this.attention(batch);
+      if (attention) rows.push({batch, items:attention.items});
+    }
+    return rows;
+  }
   status(){const all=[...this.batches.values()],items=all.flatMap(b=>b.items);
+    const attention = this.attentionRows(all), needsAttentionFiles = attention.reduce((sum,row)=>sum+row.items,0);
     const last=all.filter(b=>['completed','partial'].includes(b.status)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];return {
     canTrash:this.canTrash,activeCount:items.filter(i=>['queued','copying'].includes(i.status)||this.finalizing.has(i.id)).length,
-    needsAttention:all.filter(b=>!this.acknowledged(b)).flatMap(b=>b.items).filter(i=>['duplicate','failed','source_retained','unknown'].includes(i.status)).length,
+    needsAttention:needsAttentionFiles,needsAttentionFiles,needsAttentionBatches:attention.length,
     latestCompletion:last?{id:last.id,updatedAt:last.updatedAt,projectName:last.projectName,status:last.status,
       completed:last.items.filter(i=>['ready','managed'].includes(i.status)).length,
       failed:last.items.filter(i=>i.status==='failed').length,retained:last.items.filter(i=>i.status==='source_retained').length}:null};}
@@ -757,6 +812,7 @@ export class FileIntake {
   async retry(id,itemId) {return this.serial(async()=>{
     this.assertOpen();const b=this.batch(id);this.assertLibrary(b);const i=b.items.find(i=>i.id===itemId);
     if(!i||i.status!=='failed')throw error('INTAKE_RETRY_REFUSED','只有明确失败的未完成文件可以重试');
+    if(reselectCodes.has(i.code))throw error(i.code,'原文件需从访达重新选择后收纳，原回执保留');
     const {catalog,projectId,target}=this.context(b,i);let r;try{r=catalog.receipt(projectId,i.requestId);}catch{}
     if(r?.status==='waiting'&&r.instance!==catalog.instance&&!r.published&&!catalog.running.has(i.requestId))
       await catalog.resolve(projectId,i.requestId,{choice:'cancel'});

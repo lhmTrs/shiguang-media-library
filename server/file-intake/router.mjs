@@ -52,7 +52,7 @@ export function fileIntakeRouter(store,native,{withActivity=fn=>fn(),sendMedia}=
     const release=store.catalog.media.attach(res,opened.handle);if(!release)return;
     try{await sendMedia(req,res,opened.path,opened.handle);}catch(e){release();throw e;}
   });
-  route('get','/batches',(_req,res)=>res.json(store.list()));
+  route('get','/batches',(req,res)=>res.json(store.list(req.query)));
   route('get','/batches/:id',(req,res)=>res.json(store.dto(store.batch(req.params.id))));
   route('post','/batches/:id/open-folder',async(req,res)=>res.json(await withActivity(()=>store.openFolder(req.params.id,req.body,{sessionId:desktopSession(req,res)}))));
   route('post','/batches/:id/acknowledge',async(req,res)=>res.json(await withActivity(()=>store.acknowledge(req.params.id,req.body))));
