@@ -2,7 +2,8 @@
 // 复现三种现场（Codex 后端冻结 912ba76 的组合探针口径）：
 //   ① 52 个较新的成功批次压住两个较早的待处理批次 → 顶栏按批数，打开直接落在待处理，标为已处理后跳下一批；
 //   ② 23 条找不到本地状态文件的历史记录（21 条旧记录记完成、2 条记失败）→ 只在底部诊断行，不计数、不点亮读取警告；
-//   ③ 3 条真实新结果 → Updream 顶栏只显示「3 新」。
+//   ③ 3 条真实新结果 → Updream 顶栏只显示「3 新」；
+//   ④ 45 批更早的待处理、加载到第二页后，另一个窗口经正式接口标掉第二页里的一批 → 抽屉跟着拿掉，下一页 offset 按已加载页数。
 // 不点重试、不复制文件、不连平台。用法：npm run build && node tests/task-entry-attention-real-ui.mjs（CREATIVE_TEST_EVIDENCE=目录 时保存截图）
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -96,6 +97,36 @@ try {
     await shot('c3-updream-diagnostics');
     await expect(ud).not.toContainText('新', { timeout: 10000 });   // 卡片看过以后「新」消失；诊断不会变成未读
     await page.keyboard.press('Escape'); await expect(udDrawer).toHaveCount(0);
+  });
+
+  await check('C4 跨窗口：第二页里的一批在别处标为已处理，角标变了，下拉框也拿掉；保持原选中；下一页不重不漏', async () => {
+    await page.close(); await stop();
+    const older = [];
+    for (let n = 0; n < 45; n++) { const id = crypto.randomUUID(); older.push(id); await receipt(id, base - 1000 - n * 1000, 'partial', [item(`更早待处理-${n}.mp4`, 'failed', { code: 'INTAKE_NOT_STARTED', error: '合成：没有开始复制' })]); }
+    await start(); await session();
+    assert.equal((await api('/file-intake/status')).needsAttentionBatches, 45);
+    const scoped = []; page = await context.newPage(); page.setDefaultTimeout(8000); page.on('pageerror', e => errors.push(e.message));
+    page.on('request', r => { const u = new URL(r.url()); if (u.pathname === '/api/file-intake/batches' && u.searchParams.get('scope') === 'attention') scoped.push(u.searchParams.get('offset') + '/' + u.searchParams.get('limit')); if (r.method() === 'POST' && u.pathname.startsWith('/api/')) posts.push(u.pathname); });
+    await page.goto(origin + '/#/project-videos'); await expect(page.getByRole('region', { name: '项目生成视频' })).toBeVisible();
+    const entry = page.getByRole('button', { name: /^文件任务/ }), drawer = page.getByRole('dialog', { name: '文件任务', exact: true }), sel = () => drawer.getByLabel('选择文件收纳批次'), hint = () => drawer.locator('.fi-pending-hint');
+    await expect(entry).toContainText('45 批待处理'); await entry.click(); await expect(sel()).toHaveValue(older[0]);
+    await hint().getByRole('button', { name: '加载更多', exact: true }).click(); await expect(sel().locator(`option[value="${older[39]}"]`)).toHaveCount(1);
+    await sel().selectOption(older[3]);
+    // 另一个窗口：正式接口标为已处理（第二页里、不在最近 50 批也不在第一页）
+    const target = await api('/file-intake/batches/' + older[25]); assert.ok(target.canAcknowledge && target.attention);
+    await api('/file-intake/batches/' + older[25] + '/acknowledge', { acknowledged: true, resultKey: target.resultKey });
+    const before = scoped.length;
+    await expect(entry).toContainText('44 批待处理', { timeout: 10000 });
+    await expect(sel().locator(`option[value="${older[25]}"]`)).toHaveCount(0, { timeout: 5000 });
+    assert.ok(scoped.slice(before).includes('20/20'), '角标变化后要按原 offset 重读第二页：' + scoped.slice(before).join(','));
+    await expect(sel()).toHaveValue(older[3]);
+    await hint().getByRole('button', { name: '加载更多', exact: true }).click(); await expect(sel().locator(`option[value="${older[44]}"]`)).toHaveCount(1);
+    assert.equal(scoped.at(-1), '40/20');
+    const values = await sel().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.equal(new Set(values).size, values.length); assert.equal(values.length, 44 + 50); assert.ok(older.filter(id => id !== older[25]).every(id => values.includes(id)), '有待处理批次漏掉了');
+    assert.ok(scoped.every(q => +q.split('/')[1] <= 20), '每页请求都应有界：' + scoped.join(','));
+    await expect(hint().getByRole('button', { name: '加载更多', exact: true })).toHaveCount(0);
+    await shot('c4-cross-window');
   });
 
   assert.deepEqual(errors, []); assert.deepEqual(foreign, []);

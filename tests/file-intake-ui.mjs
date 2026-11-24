@@ -275,6 +275,27 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     const lines = await hint().evaluate(e => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight))); assert.ok(lines <= 2, '提示行占了 ' + lines + ' 行');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({path: path.join(evidence, 'attention-narrow.png')});
   });
+  await check('attention cross-window: a loaded later page drops a batch handled elsewhere once the badge changes; selection kept; next page offset follows loaded pages', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); for (let n = 0; n < 45; n++) {const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older-' + n, projectName: '合成较早项目 ' + n, older: true}); f.batches.push(older);} splitStatus();});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint'), select = () => drawer().getByLabel('选择文件收纳批次');
+    const start = requests.length, scoped = () => requests.slice(start).filter(r => r.query?.includes('scope=attention')).map(r => r.query.replace('?scope=attention&', ''));
+    await expect(entryButton).toContainText('47 批待处理'); await entryButton.click(); await expect(select().locator('option[value="b-older-17"]')).toHaveCount(1);
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect(select().locator('option[value="b-older-37"]')).toHaveCount(1);
+    assert.equal(scoped().filter(q => q !== 'offset=0&limit=20').join(','), 'offset=20&limit=20');
+    await select().selectOption('b-pend-2');
+    // 另一个窗口把第二页里的一批标为已处理（不在最近列表、也不在第一页）
+    const elsewhere = fixture.batches.find(b => b.id === 'b-older-25'); elsewhere.acknowledged = true; elsewhere.attention = null; splitStatus();
+    const before = scoped().length;
+    await expect(entryButton).toContainText('46 批待处理', {timeout: 8000});
+    await expect(select().locator('option[value="b-older-25"]')).toHaveCount(0, {timeout: 4000});
+    assert.ok(scoped().slice(before).includes('offset=20&limit=20'), '角标变化后要重读已加载的第二页：' + scoped().slice(before).join(','));
+    await expect(select()).toHaveValue('b-pend-2');
+    // 再加载更多：offset 按已加载页数（40），不按本地行数（39）；不重不漏
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click(); await expect(select().locator('option[value="b-older-44"]')).toHaveCount(1);
+    assert.equal(scoped().at(-1), 'offset=40&limit=20');
+    const values = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.equal(new Set(values).size, values.length); assert.equal(values.length, 46 + 2); await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
+  });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
     fixture.batches[0].items.push({id:'recoverable',name:'recoverable.mp4',bytes:4096,copiedBytes:0,status:'failed',code:'TRANSIENT_IO_ERROR'});

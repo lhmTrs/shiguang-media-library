@@ -29,8 +29,10 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(() => !document.hidden), [status, setStatus] = useState<IntakeStatus | null>(null);
   const [batches, setBatches] = useState<IntakeBatch[]>([]), [selection, setSelection] = useState(''), [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [readError, setReadError] = useState(''), [reading, setReading] = useState(false), [busy, setBusy] = useState('');
   const [history, setHistory] = useState(false), historyRef = useRef(false);
-  // 三处来源分开记、合并后显示（同一批以靠前来源为准）：最近 50 批（默认列表）、待处理第一页（需要时随轮询刷新）、点「加载更多」读到的后续页（保留，不被轮询丢掉）。
-  const recentRows = useRef<IntakeBatch[]>([]), firstPage = useRef<IntakeBatch[]>([]), morePages = useRef<IntakeBatch[]>([]), pagesWanted = useRef(false), [loadingMore, setLoadingMore] = useState(false), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
+  // 三处来源分开记、合并后显示（同一批以靠前来源为准）：最近 50 批（默认列表）、待处理第一页（需要时随轮询刷新）、点「加载更多」读到的后续页。
+  // pagesLoaded：手上有几页待处理（含第一页）；下一页的 offset = 页数 × 每页批数，和服务端「先筛后分页」的前缀对齐，不用本地行数。
+  // 顶栏的待处理批数或文件数一变（另一个窗口标了已处理、新失败等），就把已加载的每一页按原 offset 重读一遍，不再待处理的批次随之拿掉。
+  const recentRows = useRef<IntakeBatch[]>([]), firstPage = useRef<IntakeBatch[]>([]), morePages = useRef<IntakeBatch[]>([]), pagesLoaded = useRef(0), refreshPages = useRef(false), attentionKey = useRef(''), [loadingMore, setLoadingMore] = useState(false), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
   const [uncertain, setUncertain] = useState<Record<string, Uncertain>>({});
   const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState<InstallError | null>(null), [verifying, setVerifying] = useState(false), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
   const jobRef = useRef<InstallJob | null>(null); jobRef.current = job;
@@ -90,6 +92,8 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
           message: completion.status === 'completed' ? '素材已收纳到' + completion.projectName : completion.projectName + '收纳结果：已收纳 ' + completion.completed + '，失败 ' + completion.failed + '，原件保留 ' + completion.retained,
         });
         completionRead.current = true; completionKey.current = key;
+        const nextKey = typeof value.needsAttentionBatches === 'number' ? value.needsAttentionBatches + ':' + (value.needsAttentionFiles ?? '') : '';
+        if (attentionKey.current && nextKey !== attentionKey.current) refreshPages.current = true; attentionKey.current = nextKey;
         setStatus(value); setStatusError(''); acceptJob(value.installJob, seq);
       }
     }
@@ -102,12 +106,19 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     try {
       const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches', undefined, undefined, {signal});
       // 待处理第一页（先筛选再分页）：status 说的待处理批数比最近列表里看到的多（较早的待处理被许多较新的批次压到 50 批以外），
-      // 或者已经点过「加载更多」时，随轮询读第一页；后续页只在点「加载更多」时按 offset 读一次。旧后台没有批数字段时不读。
+      // 或者手上已经有待处理页时，随轮询读第一页。待处理数变了就把已加载的每一页都重读（每页一次请求，页数有界）。旧后台没有批数字段时不读。
       const known = statusRef.current?.needsAttentionBatches, recentPending = Array.isArray(value.batches) ? value.batches.filter(batchNeedsAttention).length : 0;
-      const page = pagesWanted.current || typeof known === 'number' && known > recentPending ? await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: '0', limit: String(ATTENTION_PAGE)}), undefined, undefined, {signal}) : null;
+      const wantFirst = pagesLoaded.current > 0 && known !== 0 || typeof known === 'number' && known > recentPending, full = refreshPages.current && pagesLoaded.current > 1;
+      const pages: IntakeBatchPage[] = [];
+      for (let k = 0; k < (full ? pagesLoaded.current : wantFirst ? 1 : 0); k++) pages.push(await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(k * ATTENTION_PAGE), limit: String(ATTENTION_PAGE)}), undefined, undefined, {signal}));
       if (alive.current && version === readVersion.current) {
-        recentRows.current = value.batches; firstPage.current = page && Array.isArray(page.batches) ? page.batches : [];
-        const total = page?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
+        const rowsOf = (p?: IntakeBatchPage) => p && Array.isArray(p.batches) ? p.batches : [];
+        recentRows.current = value.batches; firstPage.current = rowsOf(pages[0]);
+        if (full) morePages.current = pages.slice(1).flatMap(rowsOf);
+        if (pages.length) pagesLoaded.current = Math.max(pagesLoaded.current, 1);
+        if (!wantFirst) {pagesLoaded.current = 0; morePages.current = [];}
+        refreshPages.current = false;
+        const total = pages.at(-1)?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
         // 状态还没读到时先不结束「找默认落点」，下一次读取再落一次。
         installRows(mergedRows()); if (statusRef.current) landPending.current = false; setReadError('');
       }
@@ -227,13 +238,16 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     selectionRef.current = landing(rows.current, value)?.id || ''; setSelection(selectionRef.current);
   }
   function jump(id: string) {selectionRef.current = id; setSelection(id);}
-  /** 加载更多：固定每页 ATTENTION_PAGE 批，offset 取已经拿到的待处理批数（服务端按同一顺序先筛后分页）；读到的接在后面，按编号去重。 */
+  /** 加载更多：固定每页 ATTENTION_PAGE 批，offset = 已加载页数 × 每页批数；读到的接在后面，按编号去重。
+   *  发出时作废正在进行的轮询读取，免得它带着旧的页数覆盖刚加载的这一页。 */
   async function loadMoreAttention() {
-    if (loadingMore) return; setLoadingMore(true);
+    if (loadingMore) return; setLoadingMore(true); readVersion.current++;
     try {
-      const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(pendingShown.length), limit: String(ATTENTION_PAGE)}));
+      const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(pagesLoaded.current * ATTENTION_PAGE), limit: String(ATTENTION_PAGE)}));
       if (!alive.current) return;
-      pagesWanted.current = true; morePages.current = [...morePages.current, ...(Array.isArray(value.batches) ? value.batches : []).filter(b => !morePages.current.some(o => o.id === b.id))];
+      const got = Array.isArray(value.batches) ? value.batches : [];
+      if (pagesLoaded.current === 0) firstPage.current = got; else morePages.current = [...morePages.current, ...got.filter(b => !morePages.current.some(o => o.id === b.id))];
+      pagesLoaded.current++;
       if (typeof value.attentionTotal === 'number') setAttentionTotal(value.attentionTotal);
       installRows(mergedRows()); setReadError('');
     } catch (e) {if (alive.current) setReadError(errorMessage(e));}
