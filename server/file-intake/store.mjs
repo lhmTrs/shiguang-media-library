@@ -150,9 +150,12 @@ export class FileIntake {
   }
   status(){const all=[...this.batches.values()],items=all.flatMap(b=>b.items);
     const attention = this.attentionRows(all), needsAttentionFiles = attention.reduce((sum,row)=>sum+row.items,0);
+    const attentionResults = attention.map(({batch}) => [batch.id, this.resultKey(batch)]);
+    attentionResults.sort(([first], [second]) => first.localeCompare(second));
+    const attentionRevision = createHash('sha256').update(stable(attentionResults)).digest('hex');
     const last=all.filter(b=>['completed','partial'].includes(b.status)).sort((a,b)=>b.updatedAt-a.updatedAt)[0];return {
     canTrash:this.canTrash,activeCount:items.filter(i=>['queued','copying'].includes(i.status)||this.finalizing.has(i.id)).length,
-    needsAttention:needsAttentionFiles,needsAttentionFiles,needsAttentionBatches:attention.length,
+    needsAttention:needsAttentionFiles,needsAttentionFiles,needsAttentionBatches:attention.length,attentionRevision,
     latestCompletion:last?{id:last.id,updatedAt:last.updatedAt,projectName:last.projectName,status:last.status,
       completed:last.items.filter(i=>['ready','managed'].includes(i.status)).length,
       failed:last.items.filter(i=>i.status==='failed').length,retained:last.items.filter(i=>i.status==='source_retained').length}:null};}
