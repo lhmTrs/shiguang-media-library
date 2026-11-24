@@ -24,13 +24,17 @@ videoId为storyboard_video_sources来源ID，不是全库media ID；sourceProjec
 
 ### 提交生成前固定出处，成片按原回执入库
 
+**预检本次确认的版本。** 回读当前分镜修订、段 ID 和有序镜头 ID，核对用户确认的提示词版本、参考素材及顺序、首尾帧槽、模型、时长、分辨率和条数（按执行端实际支持的参数）。分镜确认、预填和只上传素材各自到此为止。只有用户明确授权本次付费生成，才由已获准的执行端提交。平台提交结果不明时，优先按原任务编号或执行端原提交记录查证。
+
 1. 在本机 ${origin} 读取会话，校验实例为 ${instanceId}，继续携带Cookie、X-Local-Token及X-Shiguang-Library-Id。不向平台或共享文件发送会话凭据。
 2. 同步成功并verified后，POST ${base}/projects/${id}/provenance：{requestId:<固定新UUID>,expectedStoryboardRevision:<自己已核版本>,expectedAssetStamp:<刚读取值>,shotIds:[<该版唯一有序稳定ID>]}。这仅本地登记，不发起生成。预留成功才允许按已有明确授权提交生成，持久保存provenance及revision。读回不符或结果未知，查同一GET ${base}/requests/<requestId>，不另换UUID。
 3. 视频入库沿现有 POST /api/project-videos/projects/<sourceProjectId>/imports，原固定requestId/fileName/bytes/folderId/prompt等不变，增加storyboardOrigin:{provenanceId,expectedProvenanceRevision}。再走原raw PUT及同名确认，不猜镜头，不在成片后拿当前revision补造出处。等待生成期间改稿仍沿用原预留。
 4. ready只说明视频阶段；必须确认binding.status=bound，再GET实际videoId的binding，核原provenance、document/代次/revision/shotIds和来源项目，才报告已绑定。文件、完整提示词、位置、内容回读继续按原流程检查。复用旧片不能把本次新生成出处覆盖进去；VIDEO_ORIGIN_CONFLICT时保留原文件和稳定回执，不换UUID复制一条绕过。
 5. 已明确未提交/失败/取消且尚未绑定时，才POST ${base}/provenance/<id>/release：{requestId,expectedProvenanceRevision,reason:"not-submitted"|"failed"|"cancelled"}。未知在途不自动过期或释放。成功绑定的原出处不可改写或释放。
 
-外置Updream候选接入需未来另批部署；本地接口或mock不等于已安装执行器。不要改已安装Skill、真实队列或在途任务来冒充闭环。自动记录不等于自动采用，不自动确认人工复核。
+**回报实际到达的阶段。** 例如「生成完成、已下载并确认可解码、已入库到目标文件夹、绑定已回读、未采用」。只报告有证据的阶段；未绑定时写明。已有预留的任务仍按原出处绑定；普通导入需要手工对应时，先核实际覆盖范围并取得用户对绑定的指示。分镜改过或视频只覆盖一部分时，按稳定镜头 ID 和实际内容核范围，不能凭文件名套镜号。
+
+外置 Updream 执行端是否支持自动记录，必须在实际执行的电脑上单独核实。素材库的进度面板只读本机登记状态；本地接口、模拟响应或一个进度条都不能证明执行端已接通。自动绑定保留生成出处；采用和人工复核有各自的入口与确认。
 
 ### 历史、迁移与结果未知
 

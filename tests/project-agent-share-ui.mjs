@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect } from '@playwright/test';
+import { AGENT_GUIDE_VERSION } from '../server/project-agent-guide.mjs';
 import { syntheticSource } from './helpers/storyboard-fixture.mjs';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 
@@ -80,7 +81,9 @@ try {
   assert.equal(guide.headers.get('cache-control'), 'no-store');
   assert.equal(guide.headers.get('set-cookie'), null);
   const markdown = await guide.text();
-  assert.match(markdown, /说明版本：2026-11-17\.1/);
+  assert.ok(markdown.includes(`说明版本：${AGENT_GUIDE_VERSION}`));
+  assert.ok(markdown.includes('预检本次确认的版本'));
+  assert.ok(markdown.includes('绑定已回读、未采用'));
   const binding = markdown.match(/^\x60\x60\x60json\n([\s\S]*?)\n\x60\x60\x60$/m);
   assert.deepEqual(JSON.parse(binding?.[1] ?? 'null'), { projectName: b.name, projectId: b.id, instanceId, origin });
   for (const privateValue of [a.id, source.title, token, cookie]) assert.ok(!markdown.includes(privateValue));
@@ -96,7 +99,36 @@ try {
   assert.equal((await get(board)).status, 401);
   assert.equal((await get(board, { method: 'PUT', headers: { cookie } })).status, 403);
   assert.equal((await get(guidePath(randomUUID()))).status, 404);
+  const searchParams = new URLSearchParams({q: '合成素材查询', qField: 'name', qMode: 'all', kind: 'video', page: '1', pageSize: '20'});
+  const searchRoute = '/api/assets?' + searchParams;
+  assert.ok(markdown.includes('GET /api/assets?q=<URL编码的关键词>&qField=name&qMode=all&kind=video&page=1&pageSize=20'));
+  assert.equal((await get(searchRoute)).status, 401);
+  const result = await get(searchRoute, {headers: {cookie, 'x-shiguang-library-id': instanceId}});
+  assert.equal(result.status, 200);
+  const {items, total, page: resultPage} = await result.json();
+  assert.deepEqual({items, total, resultPage}, {items: [], total: 0, resultPage: 1});
   console.log('PASS 项目说明只返回当前项目接入信息，读写接口保留会话与跨站校验');
+
+  const photoRoot = path.join(temp, 'synthetic-photos');
+  await mkdir(photoRoot);
+  const photoName = '合成素材查询.png';
+  const photo = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9kAAAAASUVORK5CYII=', 'base64');
+  await writeFile(path.join(photoRoot, photoName), photo);
+  await create('/api/roots', {path: photoRoot, kind: 'photo'});
+  searchParams.set('kind', 'photo');
+  const mediaHeaders = {cookie, 'x-shiguang-library-id': instanceId};
+  const findPhoto = async () => {
+    const response = await get('/api/assets?' + searchParams, {headers: mediaHeaders});
+    assert.equal(response.status, 200);
+    const matches = await response.json();
+    return matches.items.find(item => item.name === photoName);
+  };
+  await expect.poll(async () => Boolean(await findPhoto())).toBe(true);
+  const hit = await findPhoto();
+  const original = await get('/api/media/' + hit.id + '/original', {headers: mediaHeaders});
+  assert.equal(original.status, 200);
+  assert.deepEqual(Buffer.from(await original.arrayBuffer()), photo);
+  console.log('PASS 按文档查到合成素材并用结果 ID 下载同一份原件');
 
   browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   const page = await browser.newPage({ viewport: { width: 390, height: 760 } });
