@@ -266,7 +266,9 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     await expect(hint()).toContainText('还有 22 批待处理：合成乙项目 / 根目录 ▸');
     await hint().getByRole('button', {name: '加载更多', exact: true}).click();
     await expect(select().locator('option[value="b-older-20"]')).toHaveCount(1); await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
-    assert.ok(/limit=40/.test(scoped().at(-1).query), scoped().at(-1).query);
+    const paged = scoped().filter(r => !/offset=0&/.test(r.query)); assert.equal(paged.length, 1); assert.match(paged[0].query, /offset=20&limit=20/);
+    // 之后的轮询只刷新第一页，已经加载的后续页不丢
+    await pause(1500); assert.ok(scoped().slice(-1)[0].query.includes('offset=0&limit=20')); await expect(select().locator('option[value="b-older-20"]')).toHaveCount(1);
     const options = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
     assert.deepEqual(options.slice(0, 3), ['b-pend-1', 'b-pend-2', 'b-older-0']); assert.deepEqual(options.slice(-2), ['b-new-ok', 'b-mid-ok']); assert.equal(options.length, 25);
     await page.setViewportSize({width: 420, height: 780}); await select().selectOption('b-older-0');

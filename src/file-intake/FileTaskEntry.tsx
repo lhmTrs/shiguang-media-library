@@ -16,7 +16,7 @@ const seconds = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); 
 const ago = (at: number, now: number) => { const d = Math.max(0, now - at); return d < 60000 ? '刚刚' : d < 3600000 ? Math.floor(d / 60000) + ' 分钟前' : d < 86400000 ? Math.floor(d / 3600000) + ' 小时前' : new Date(at).toLocaleString(); };
 type InstallError = {kind: 'refused' | 'unknown'; message: string};
 const stageRank = (j: InstallJob) => STEPS.findIndex(x => x.stage === j.stage);
-/** 待处理批次每页批数：需要时自动读第一页，「加载更多」每次再多读这么多（第一版不做分页界面）；后端单页上限 100。 */
+/** 待处理批次每页批数：需要时自动读第一页，「加载更多」每次按 offset 再读一页（第一版不做分页界面）。 */
 const ATTENTION_PAGE = 20;
 const batchPlace = (b: IntakeBatch) => b.projectName + ' / ' + (b.folderName || '根目录');
 /** 待处理的排在前面（各自保持后端给的先后，新的在前）；旧后台没有 attention 字段时顺序不变。 */
@@ -29,8 +29,8 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
   const [open, setOpen] = useState(false), [visible, setVisible] = useState(() => !document.hidden), [status, setStatus] = useState<IntakeStatus | null>(null);
   const [batches, setBatches] = useState<IntakeBatch[]>([]), [selection, setSelection] = useState(''), [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [readError, setReadError] = useState(''), [reading, setReading] = useState(false), [busy, setBusy] = useState('');
   const [history, setHistory] = useState(false), historyRef = useRef(false);
-  // 最近 50 批（默认列表）和「待处理」分页读到的批次分开记，合并后显示；attentionLimitRef 为 0 时不读待处理分页。
-  const recentRows = useRef<IntakeBatch[]>([]), attentionRows = useRef<IntakeBatch[]>([]), attentionLimitRef = useRef(0), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
+  // 三处来源分开记、合并后显示（同一批以靠前来源为准）：最近 50 批（默认列表）、待处理第一页（需要时随轮询刷新）、点「加载更多」读到的后续页（保留，不被轮询丢掉）。
+  const recentRows = useRef<IntakeBatch[]>([]), firstPage = useRef<IntakeBatch[]>([]), morePages = useRef<IntakeBatch[]>([]), pagesWanted = useRef(false), [loadingMore, setLoadingMore] = useState(false), [attentionTotal, setAttentionTotal] = useState<number | null>(null), landPending = useRef(false);
   const [uncertain, setUncertain] = useState<Record<string, Uncertain>>({});
   const [job, setJob] = useState<InstallJob | null>(null), [starting, setStarting] = useState(false), [installError, setInstallError] = useState<InstallError | null>(null), [verifying, setVerifying] = useState(false), [now, setNow] = useState(() => Date.now()), [seenJob, setSeenJob] = useState(''), [settings, setSettings] = useState<SettingsState>({state: 'idle'});
   const jobRef = useRef<InstallJob | null>(null); jobRef.current = job;
@@ -70,11 +70,11 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     }
   }
   /** 最近批次在前（后端顺序），待处理分页里读到、但不在最近 50 批里的接在后面。 */
-  const mergedRows = () => [...recentRows.current, ...attentionRows.current.filter(b => !recentRows.current.some(r => r.id === b.id))];
+  const mergedRows = () => {const seen = new Set<string>(), out: IntakeBatch[] = []; for (const b of [...recentRows.current, ...firstPage.current, ...morePages.current]) if (!seen.has(b.id)) {seen.add(b.id); out.push(b);} return out;};
   function installBatch(value: IntakeBatch) {
     if (!value?.id || !Array.isArray(value.items)) throw Error('文件任务回执格式不符，请核对原任务');
     const replace = (list: IntakeBatch[]) => list.map(b => b.id === value.id ? value : b);
-    if (recentRows.current.some(b => b.id === value.id) || attentionRows.current.some(b => b.id === value.id)) {recentRows.current = replace(recentRows.current); attentionRows.current = replace(attentionRows.current);}
+    if ([recentRows, firstPage, morePages].some(list => list.current.some(b => b.id === value.id))) {recentRows.current = replace(recentRows.current); firstPage.current = replace(firstPage.current); morePages.current = replace(morePages.current);}
     else recentRows.current = [value, ...recentRows.current].slice(0, 50);
     installRows(mergedRows());
   }
@@ -101,14 +101,13 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     const version = ++readVersion.current; setReading(true);
     try {
       const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches', undefined, undefined, {signal});
-      // 待处理分页：先筛选再分页，读到的批次接在最近批次后面。status 说的待处理批数比最近列表里看到的多
-      // （较早的待处理被许多较新的批次压到 50 批以外）时自动读第一页；更多的要点「加载更多」。
+      // 待处理第一页（先筛选再分页）：status 说的待处理批数比最近列表里看到的多（较早的待处理被许多较新的批次压到 50 批以外），
+      // 或者已经点过「加载更多」时，随轮询读第一页；后续页只在点「加载更多」时按 offset 读一次。旧后台没有批数字段时不读。
       const known = statusRef.current?.needsAttentionBatches, recentPending = Array.isArray(value.batches) ? value.batches.filter(batchNeedsAttention).length : 0;
-      const limit = attentionLimitRef.current || (typeof known === 'number' && known > recentPending ? ATTENTION_PAGE : 0);
-      const more = limit > 0 ? await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: '0', limit: String(limit)}), undefined, undefined, {signal}) : null;
+      const page = pagesWanted.current || typeof known === 'number' && known > recentPending ? await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: '0', limit: String(ATTENTION_PAGE)}), undefined, undefined, {signal}) : null;
       if (alive.current && version === readVersion.current) {
-        recentRows.current = value.batches; attentionRows.current = more && Array.isArray(more.batches) ? more.batches : [];
-        const total = more?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
+        recentRows.current = value.batches; firstPage.current = page && Array.isArray(page.batches) ? page.batches : [];
+        const total = page?.attentionTotal ?? value.attentionTotal; setAttentionTotal(typeof total === 'number' ? total : null);
         // 状态还没读到时先不结束「找默认落点」，下一次读取再落一次。
         installRows(mergedRows()); if (statusRef.current) landPending.current = false; setReadError('');
       }
@@ -228,7 +227,18 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
     selectionRef.current = landing(rows.current, value)?.id || ''; setSelection(selectionRef.current);
   }
   function jump(id: string) {selectionRef.current = id; setSelection(id);}
-  function loadMoreAttention() {attentionLimitRef.current = Math.min(100, Math.max(attentionLimitRef.current, pendingShown.length) + ATTENTION_PAGE); void readBatches();}
+  /** 加载更多：固定每页 ATTENTION_PAGE 批，offset 取已经拿到的待处理批数（服务端按同一顺序先筛后分页）；读到的接在后面，按编号去重。 */
+  async function loadMoreAttention() {
+    if (loadingMore) return; setLoadingMore(true);
+    try {
+      const value = await api.current<IntakeBatchPage>(INTAKE_API + '/batches?' + new URLSearchParams({scope: 'attention', offset: String(pendingShown.length), limit: String(ATTENTION_PAGE)}));
+      if (!alive.current) return;
+      pagesWanted.current = true; morePages.current = [...morePages.current, ...(Array.isArray(value.batches) ? value.batches : []).filter(b => !morePages.current.some(o => o.id === b.id))];
+      if (typeof value.attentionTotal === 'number') setAttentionTotal(value.attentionTotal);
+      installRows(mergedRows()); setReadError('');
+    } catch (e) {if (alive.current) setReadError(errorMessage(e));}
+    finally {if (alive.current) setLoadingMore(false);}
+  }
   // 待处理（任务入口两件）：新后台给批数 needsAttentionBatches；没有这个字段时照旧显示文件数 needsAttention。
   const attentionBatches = typeof status?.needsAttentionBatches === 'number' ? status.needsAttentionBatches : null;
   const attentionFiles = typeof status?.needsAttentionFiles === 'number' ? status.needsAttentionFiles : null;
@@ -250,7 +260,7 @@ export function FileTaskEntry({request, onView, onSummary}: {request: IntakeRequ
         {readError && <p className="fi-error" role="alert">任务读取失败：{readError}</p>}
         {error && <p className="fi-error" role="alert">{error}</p>}
         <div className="fi-task-tabs" role="group" aria-label="文件任务分类"><button aria-pressed={!history} onClick={() => switchHistory(false)}>最近任务</button><button aria-pressed={history} onClick={() => switchHistory(true)}>已处理</button></div>
-        {pendingRest > 0 && <p className="fi-pending-hint" role="status"><span>还有 {pendingRest} 批待处理{pendingOthers[0] ? '：' : ''}</span>{pendingOthers[0] && <button type="button" className="fi-link" title={batchPlace(pendingOthers[0])} onClick={() => jump(pendingOthers[0].id)}>{batchPlace(pendingOthers[0])} ▸</button>}{canLoadMore && <button type="button" className="fi-link" disabled={reading} onClick={loadMoreAttention}>加载更多</button>}</p>}
+        {pendingRest > 0 && <p className="fi-pending-hint" role="status"><span>还有 {pendingRest} 批待处理{pendingOthers[0] ? '：' : ''}</span>{pendingOthers[0] && <button type="button" className="fi-link" title={batchPlace(pendingOthers[0])} onClick={() => jump(pendingOthers[0].id)}>{batchPlace(pendingOthers[0])} ▸</button>}{canLoadMore && <button type="button" className="fi-link" disabled={loadingMore} onClick={() => void loadMoreAttention()}>{loadingMore ? '正在加载…' : '加载更多'}</button>}</p>}
         <div className="fi-task-toolbar"><label>最近批次<select aria-label="选择文件收纳批次" value={selected?.id || ''} onChange={e => {selectionRef.current = e.target.value; setSelection(e.target.value);}}><option value="" disabled>暂无收纳批次</option>{shown.map(b => <option key={b.id} value={b.id}>{b.projectName} / {b.folderName || '根目录'} · {batchLabel[b.status]} · {b.items.length} 项{batchNeedsAttention(b) ? ' · ' + b.attention!.items + ' 个文件待处理' : ''}</option>)}</select></label><button disabled={reading || !!busy} aria-label="刷新文件任务" onClick={() => void readBatches()}><RefreshCw size={15}/></button></div>
         {busy && <p className="fi-muted" role="status">{busy}…</p>}
         {!selected && <div className="fi-empty"><FolderInput size={28}/><h3>{reading ? '正在读取文件任务…' : history ? '暂无已处理任务' : '暂无文件任务'}</h3>{(history || !intakeHidden) && <p>{history ? '标记已处理后可在这里查看原结果，并恢复待处理。' : '在访达选择素材，右键“收纳素材到拾光”，确认目标后在这里查看。'}</p>}</div>}
