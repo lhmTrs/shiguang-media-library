@@ -1,6 +1,7 @@
 import {useState} from 'react';
 import {AlertTriangle, Check, ExternalLink, Film, FolderOpen} from 'lucide-react';
-import {batchLabel, bytes, itemLabel, type IntakeBatch, type IntakeItem, type IntakeView, type ResolveInput} from './types';
+import {batchLabel, bytes, itemLabel, type IntakeBatch, type IntakeItem, type IntakeItemAction, type IntakeView, type ResolveInput} from './types';
+import {usePlatformWords} from '../platform-words';
 
 export function Destination({batch}: {batch: IntakeBatch}) {
   return <div className="fi-destination"><FolderOpen size={16}/><div><strong>{batch.projectName}</strong><span>{batch.folderName || '根目录'} · {batch.mode === 'copy' ? '复制并保留原文件' : '校验并登记成功后移入废纸篓'}</span></div><small>固定目标</small></div>;
@@ -35,17 +36,22 @@ function Conflict({item, disabled, resolve, prompt}: {item: IntakeItem; disabled
   </div>;
 }
 
-export function BatchDetails({batch, busy = false, uncertain = false, resolve, retry, reconcile, onView}: {
+/** declared：文件任务抽屉用。文件带了后端声明的 actions 时只画里面有的动作；没带（旧后台）照旧按状态判断。收纳窗口不传，行为不变。 */
+export function BatchDetails({batch, busy = false, uncertain = false, resolve, retry, reconcile, onView, declared = false}: {
   batch: IntakeBatch; busy?: boolean; uncertain?: boolean; resolve?: (item: IntakeItem, input: ResolveInput) => void;
-  retry?: (item: IntakeItem) => void; reconcile?: () => void; onView?: IntakeView;
+  retry?: (item: IntakeItem) => void; reconcile?: () => void; onView?: IntakeView; declared?: boolean;
 }) {
-  const needsSelection = (item: IntakeItem) => item.status === 'failed' && ['INTAKE_SOURCE_CHANGED', 'INTAKE_SOURCE_UNBOUND'].includes(item.code || '');
+  const words = usePlatformWords();
+  const acts = (item: IntakeItem): Set<IntakeItemAction> | null => declared && Array.isArray(item.actions) ? new Set(item.actions) : null;
+  const can = (item: IntakeItem, action: IntakeItemAction, fallback: boolean) => {const a = acts(item); return a ? a.has(action) : fallback;};
+  const anyDeclared = batch.items.some(item => acts(item));
+  const needsSelection = (item: IntakeItem) => can(item, 'reselect', item.status === 'failed' && ['INTAKE_SOURCE_CHANGED', 'INTAKE_SOURCE_UNBOUND'].includes(item.code || ''));
   return <section className={'fi-batch' + (batch.acknowledged ? ' fi-batch-acknowledged' : '')} aria-label={'收纳批次 ' + batch.projectName}>
     <div className="fi-batch-title"><strong>{batch.acknowledged ? '已处理 · 原结果：' : ''}{batchLabel[batch.status]}</strong><span>{batch.items.length} 个文件</span></div>
     <Destination batch={batch}/>
-    {!batch.acknowledged && batch.items.some(needsSelection) && <p className="fi-warning-copy">部分文件需要从访达重新选择，不能直接重试。请右键“收纳素材到拾光”重新收纳；旧失败记录保留，原件不会自动移除。</p>}
+    {!batch.acknowledged && !anyDeclared && batch.items.some(needsSelection) && <p className="fi-warning-copy">部分文件需要从访达重新选择，不能直接重试。请右键“收纳素材到拾光”重新收纳；旧失败记录保留，原件不会自动移除。</p>}
     {uncertain && <p className="fi-error" role="alert">操作响应未确认，已保留原任务。请核对原回执；不会重复复制或删除。</p>}
-    {(uncertain || batch.status === 'interrupted' || batch.items.some(i => i.status === 'unknown')) && reconcile && <button disabled={busy} onClick={reconcile}>核对原回执</button>}
+    {(uncertain || (anyDeclared ? batch.items.some(i => acts(i)?.has('reconcile')) : batch.status === 'interrupted' || batch.items.some(i => i.status === 'unknown'))) && reconcile && <button disabled={busy} onClick={reconcile}>核对原回执</button>}
     <ul className="fi-items">{batch.items.map(item => {
       const complete = ['ready', 'source_retained', 'managed'].includes(item.status), viewProject = item.status === 'managed' ? item.managedProjectId || '' : item.destination ? item.destination.scope==='project'&&item.destination.kind==='video'?item.destination.projectId||'':'' : batch.projectId, viewId = item.status === 'managed' && !item.managedProjectId ? item.assetId : item.videoId||item.assetId, viewable = !!viewProject || !!viewId;
       const conflictKey = item.id + ':' + (item.adoptionStamp || '') + ':' + JSON.stringify(item.candidates?.map(c => [c.id, c.adoptedShots]));
@@ -56,8 +62,9 @@ export function BatchDetails({batch, busy = false, uncertain = false, resolve, r
         {item.status === 'source_retained' && <p className="fi-warning-copy">目标已登记，原文件未移除。不会重复复制。</p>}
         {item.status === 'managed' && <p className="fi-muted">保留原标签与关联 · {item.managedProjectName || (item.managedProjectId ? '原所属项目' : '全局素材库')}{item.managedProjectId ? '，可进入项目视频使用原移动入口。' : '，可进入素材查找查看。'}</p>}
         {(item.error || item.code) && <p className={batch.acknowledged ? 'fi-muted' : 'fi-error'} role={batch.acknowledged ? undefined : 'alert'}>{item.code && item.code + ' · '}{item.error}</p>}
-        {item.status === 'duplicate' && resolve && <Conflict key={conflictKey} item={item} disabled={busy || uncertain} prompt={!!batch.prompt?.text} resolve={input => resolve(item, input)}/>}
-        <div className="fi-actions">{item.status === 'failed' && !needsSelection(item) && !batch.acknowledged && retry && <button disabled={busy || uncertain} onClick={() => retry(item)}>重试此失败项</button>}{complete && onView && <button disabled={!viewable} title={!viewable ? '原所属项目尚未返回，请刷新核对' : ''} onClick={() => viewable && void onView(viewProject, viewId)}><FolderOpen size={14}/>{item.status === 'managed' ? item.managedProjectId ? '查看 / 移动已有文件' : '查看已有素材' : item.destination?.kind==='photo'&&item.destination.scope==='project'?'查看已绑定图片':viewProject?'查看项目视频':'查看素材'}</button>}</div>
+        {!batch.acknowledged && acts(item)?.has('reselect') && <p className="fi-warning-copy fi-reselect">请回{words.fileManager}重新选择原文件，这里不能直接重试。</p>}
+        {item.status === 'duplicate' && can(item, 'resolve_duplicate', true) && resolve && <Conflict key={conflictKey} item={item} disabled={busy || uncertain} prompt={!!batch.prompt?.text} resolve={input => resolve(item, input)}/>}
+        <div className="fi-actions">{item.status === 'failed' && can(item, 'retry', !needsSelection(item)) && !batch.acknowledged && retry && <button disabled={busy || uncertain} onClick={() => retry(item)}>重试此失败项</button>}{complete && can(item, 'view', true) && onView && <button disabled={!viewable} title={!viewable ? '原所属项目尚未返回，请刷新核对' : ''} onClick={() => viewable && void onView(viewProject, viewId)}><FolderOpen size={14}/>{item.status === 'managed' ? item.managedProjectId ? '查看 / 移动已有文件' : '查看已有素材' : item.destination?.kind==='photo'&&item.destination.scope==='project'?'查看已绑定图片':viewProject?'查看项目视频':'查看素材'}</button>}</div>
       </li>;
     })}</ul>
     <details className="fi-receipt"><summary>原批次编号</summary><code>{batch.id}</code></details>

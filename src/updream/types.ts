@@ -19,10 +19,19 @@ export type ApiTask = {
 };
 export type ApiList = {
   schemaVersion: number; readAt: number;
-  queue: {state: 'ready' | 'absent' | 'degraded' | 'unavailable' | string; reason: string | null; truncated: boolean; invalidCount: number};
+  /** warning（任务入口两件新增）：这次读取失败、被截断或在途记录丢失时为 true；历史终态记录缺失不算。旧后台没有这个字段。 */
+  queue: {state: 'ready' | 'absent' | 'degraded' | 'unavailable' | string; reason: string | null; truncated: boolean; invalidCount: number; warning?: boolean};
   preferences: {state: 'ready' | 'unavailable' | string};
-  summary: {activeCount: number; unreadCount: number; attentionCount: number; showEntry: boolean};
+  /** attentionCount：面板里的待处理量。attentionUnreadCount / doneUnreadCount / diagnosticCount 是任务入口两件新增，旧后台没有。 */
+  summary: {activeCount: number; unreadCount: number; attentionCount: number; showEntry: boolean; attentionUnreadCount?: number; doneUnreadCount?: number; diagnosticCount?: number};
   total: number; offset: number; limit: number; tasks: ApiTask[];
+  /** 本机记录无法核对的（例如找不到对应的本地状态文件）：不进 tasks、不计入任何数字，只合成一行诊断。 */
+  diagnostics?: ApiDiagnostics;
+};
+export type ApiDiagnostics = {
+  count: number; byReason: Record<string, number>; legacyStatus: Record<string, number>;
+  items: {id: string; reason: string; legacyStatus: string | null; registeredAt: number | string | null; name?: string | null}[];
+  truncated: boolean;
 };
 export type ApiReadResult = {schemaVersion: number; readAt: number; marked: string[]; skipped: string[]};
 
@@ -45,14 +54,18 @@ export type UpdreamTask = {
   lastCompleted: UpdreamStage | null;
   stale: {since: number | null; reason: string | null} | null;
 };
-export type UpdreamSummary = {active: number; unread: number; attention: number; showEntry: boolean};
+/** attentionUnread / doneUnread / diagnostic 为 null：旧后台没给，界面退回旧算法。 */
+export type UpdreamSummary = {active: number; unread: number; attention: number; showEntry: boolean; attentionUnread: number | null; doneUnread: number | null; diagnostic: number | null};
+export type UpdreamDiagnosticItem = {id: string; reason: string; legacyStatus: string | null; registeredAt: number | null; name: string | null};
+export type UpdreamDiagnostics = {count: number; byReason: Record<string, number>; legacyStatus: Record<string, number>; items: UpdreamDiagnosticItem[]; truncated: boolean};
 export type UpdreamTaskList = {
   readAt: number;
-  queue: {state: string; reason: string | null; truncated: boolean; invalidCount: number};
+  queue: {state: string; reason: string | null; truncated: boolean; invalidCount: number; warning: boolean | null};
   preferences: string;
   summary: UpdreamSummary;
   total: number; offset: number; limit: number;
   tasks: UpdreamTask[];
+  diagnostics: UpdreamDiagnostics | null;
 };
 export type UpdreamView = (projectId: string, videoId?: string) => void | Promise<void>;
 export type UpdreamRequest = {<T = unknown>(url: string, body?: unknown, method?: string, options?: {signal?: AbortSignal}): Promise<T>};

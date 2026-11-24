@@ -11,7 +11,7 @@ import {createServer} from 'vite';
 import {chromium, expect} from '@playwright/test';
 
 const root = path.resolve(import.meta.dirname, '..');
-const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'drawer-layout', 'retry-guidance', 'acknowledgement'].includes(selectedCase));
+const selectedCase = process.env.FILE_INTAKE_UI_CASE || 'all'; assert.ok(['all', 'completion', 'drawer-layout', 'retry-guidance', 'acknowledgement', 'attention'].includes(selectedCase));
 const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'file-intake-ui-')));
 const evidence = path.resolve(process.env.FILE_INTAKE_UI_EVIDENCE || path.join(temp, 'evidence'));
 await fs.mkdir(evidence, {recursive: true});
@@ -73,7 +73,7 @@ function validateConfirm(body) {
 }
 async function routeApi(route) {
   const req = route.request(), url = new URL(req.url()), method = req.method(), body = req.postData() ? req.postDataJSON() : undefined;
-  requests.push({path: url.pathname, method, body});
+  requests.push({path: url.pathname, query: url.search, method, body});
   const respond = (value, status = 200) => route.fulfill({status, json: clone(value)});
   if (url.pathname === '/api/session') return respond({app: 'shiguang-local-media', instanceId: fixture.libraryId, token: 'synthetic-token'});
   if (!url.pathname.startsWith('/api/file-intake/')) return respond({error: 'Unexpected synthetic test endpoint'}, 404);
@@ -117,12 +117,19 @@ async function routeApi(route) {
     fixture.handoff.batchId = batch.id; fixture.batches.unshift(batch);
     if (fixture.confirm === 'lost') return route.abort('failed'); return respond(batch);
   }
-  if (endpoint === '/batches') {await pause(40); return respond({batches: fixture.batches});}
+  if (endpoint === '/batches') {
+    await pause(40);
+    if (!fixture.split) return respond({batches: fixture.batches});
+    // 任务入口两件（11-24 锁定字段）：默认只给最近批次（older 的不在里面）；scope=attention 先筛选再分页。
+    const pending = fixture.batches.filter(b => b.attention), attentionTotal = pending.length, attentionFiles = pending.reduce((n, b) => n + b.attention.items, 0);
+    if (url.searchParams.get('scope') === 'attention') {const offset = +url.searchParams.get('offset'), limit = +url.searchParams.get('limit'); return respond({batches: pending.slice(offset, offset + limit), total: fixture.batches.length, attentionTotal, attentionFiles, offset, limit});}
+    return respond({batches: fixture.batches.filter(b => !b.older), attentionTotal, attentionFiles});
+  }
   const match = endpoint.match(/^\/batches\/([^/]+)(.*)$/), batch = fixture.batches.find(b => b.id === match?.[1]);
   if (match && batch) {
     const suffix = match[2];
     if (!suffix) return respond(batch);
-    if (suffix === '/acknowledge') {assert.equal(body.resultKey,batch.resultKey);batch.acknowledged=body.acknowledged;fixture.status.needsAttention=body.acknowledged?0:4;return respond(batch);}
+    if (suffix === '/acknowledge') {assert.equal(body.resultKey,batch.resultKey);batch.acknowledged=body.acknowledged;if(fixture.split){batch.attention=body.acknowledged?null:batch.pendingAttention;splitStatus();}else fixture.status.needsAttention=body.acknowledged?0:4;return respond(batch);}
     if (suffix === '/reconcile') {fixture.reconcileCount++; const failed = batch.items.find(i => i.id === 'failed'); if (fixture.retry === 'lost' && failed) failed.status = 'copying'; return respond(batch);}
     const operation = suffix.match(/^\/items\/([^/]+)\/(resolve|retry)$/), item = batch.items.find(i => i.id === operation?.[1]);
     if (operation && item) {
@@ -138,6 +145,26 @@ async function routeApi(route) {
     }
   }
   return respond({error: 'Unexpected fixture route ' + endpoint}, 404);
+}
+function splitStatus() {
+  const pending = fixture.batches.filter(b => b.attention);
+  Object.assign(fixture.status, {needsAttentionBatches: pending.length, needsAttentionFiles: pending.reduce((n, b) => n + b.attention.items, 0), needsAttention: pending.reduce((n, b) => n + b.attention.items, 0)});
+}
+/** 任务入口两件的合成批次：新的在前；待处理的两批夹在已完成的中间，默认列表第一批是已完成的。 */
+function attentionFixture(f) {
+  const item = (id, status, actions, extra = {}) => ({id, name: id + '.mp4', bytes: 4096, copiedBytes: 0, status, actions, ...extra});
+  const batch = (id, projectName, folderName, status, items, attention, extra = {}) => ({id, projectId: projectA, projectName, folderId: 'root', folderName, mode: 'copy', createdAt: 1, updatedAt: 1, status, items, attention, pendingAttention: attention, ...(attention ? {canAcknowledge: true, resultKey: id + '-result'} : {}), ...extra});
+  f.split = true; f.status.activeCount = 0;
+  f.batches = [
+    batch('b-new-ok', '合成最新项目', '成片', 'completed', [item('newest-ready', 'ready', ['view'], {videoId: 'v-new'})], null),
+    batch('b-pend-1', '合成甲项目', '第一段', 'partial', [
+      item('changed', 'failed', ['reselect'], {code: 'INTAKE_SOURCE_CHANGED', error: '确认之后原文件被改过，没有收纳'}),
+      item('transient', 'failed', ['retry'], {code: 'TRANSIENT_IO_ERROR', error: '合成临时错误'}),
+      item('done-view', 'ready', ['view'], {videoId: 'v-1'}), item('done-noview', 'ready', [], {videoId: 'v-2'}),
+    ], {items: 2, codes: {INTAKE_SOURCE_CHANGED: 1, TRANSIENT_IO_ERROR: 1}}),
+    batch('b-mid-ok', '合成中间项目', '', 'completed', [item('mid-ready', 'ready', ['view'], {videoId: 'v-mid'})], null),
+    batch('b-pend-2', '合成乙项目', '', 'interrupted', [item('lost', 'unknown', ['reconcile'], {code: 'RECEIPT_UNKNOWN', error: '原回执待核对'})], {items: 1, codes: {RECEIPT_UNKNOWN: 1}}),
+  ];
 }
 async function fresh(window = false, initialCompletion = null, firstCompletionAfterMount = false, layout = false, configure = () => {}) {
   await context?.close(); fixture = setup(); fixture.status.latestCompletion = initialCompletion; fixture.firstCompletionAfterMount = firstCompletionAfterMount;
@@ -192,6 +219,55 @@ createRoot(document.getElementById('root')).render(location.hash==='#intake'?<Fi
     await drawer().getByRole('button',{name:'最近任务',exact:true}).click();await expect(drawer().locator('.fi-item')).toHaveCount(4);
     assert.equal(fixture.retryCount,0);assert.equal(fixture.resolveBodies.length,0);assert.ok(batch.items.every(i=>i.status==='failed'));
     const posts=requests.slice(start).filter(r=>r.method==='POST');assert.equal(posts.length,2);assert.ok(posts.every(r=>r.path.endsWith('/acknowledge')));
+  });
+  await check('attention topbar counts batches, drawer lands on newest pending batch, jumps after acknowledge and draws only declared actions', async () => {
+    const start = requests.length; await fresh(false, null, false, false, f => {attentionFixture(f); splitStatus();});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), select = () => drawer().getByLabel('选择文件收纳批次'), hint = () => drawer().locator('.fi-pending-hint');
+    await expect(entryButton).toContainText('2 批待处理'); await expect(entryButton).not.toContainText('3 待处理');
+    await entryButton.click(); await expect(drawer()).toBeVisible();
+    // 抽屉标题旁和顶栏同一个数、同一个单位
+    await expect(drawer().locator('.fi-heading-attention')).toHaveText('2 批待处理 · 共 3 个文件');
+    await expect(select()).toHaveValue('b-pend-1');
+    // 下拉框：待处理排前面，标出文件数
+    const options = await select().locator('option:not([disabled])').evaluateAll(list => list.map(o => [o.value, o.textContent]));
+    assert.deepEqual(options.map(o => o[0]), ['b-pend-1', 'b-pend-2', 'b-new-ok', 'b-mid-ok']);
+    assert.match(options[0][1], /· 2 个文件待处理$/); assert.match(options[1][1], /· 1 个文件待处理$/); assert.doesNotMatch(options[2][1], /待处理/);
+    await expect(hint()).toHaveText('还有 1 批待处理：合成乙项目 / 根目录 ▸');
+    // 只画后端声明的动作；reselect 只是提示，不发请求
+    await expect(item('changed').getByRole('button')).toHaveCount(0); await expect(item('changed')).toContainText('请回访达重新选择原文件');
+    await expect(item('transient').getByRole('button', {name: '重试此失败项', exact: true})).toBeVisible();
+    await expect(item('done-view').getByRole('button', {name: '查看项目视频', exact: true})).toBeVisible(); await expect(item('done-noview').getByRole('button')).toHaveCount(0);
+    await expect(drawer().getByText(/部分文件需要从访达重新选择/)).toHaveCount(0); await expect(drawer().getByRole('button', {name: '核对原回执', exact: true})).toHaveCount(0);
+    await page.screenshot({path: path.join(evidence, 'attention-landing.png')});
+    // 提示行能跳到另一批待处理
+    await hint().getByRole('button', {name: '合成乙项目 / 根目录 ▸'}).click(); await expect(select()).toHaveValue('b-pend-2');
+    await expect(hint()).toHaveText('还有 1 批待处理：合成甲项目 / 第一段 ▸'); await expect(drawer().getByRole('button', {name: '核对原回执', exact: true})).toBeVisible();
+    // 标为已处理后跳到下一批待处理；都处理完才回到最新一批
+    await select().selectOption('b-pend-1'); await drawer().getByRole('button', {name: '标记已处理', exact: true}).click();
+    await expect(select()).toHaveValue('b-pend-2'); await expect(entryButton).toContainText('1 批待处理'); await expect(drawer().locator('.fi-heading-attention')).toHaveText('1 批待处理 · 共 1 个文件'); await expect(hint()).toHaveCount(0);
+    await drawer().getByRole('button', {name: '标记已处理', exact: true}).click();
+    await expect(select()).toHaveValue('b-new-ok'); await expect(entryButton).not.toContainText('待处理'); await expect(drawer().locator('.fi-heading-attention')).toHaveCount(0);
+    // 重新打开：再落到最新的待处理批次
+    await drawer().getByRole('button', {name: '已处理', exact: true}).click(); await select().selectOption('b-pend-2'); await drawer().getByRole('button', {name: '恢复待处理', exact: true}).click();
+    await drawer().getByRole('button', {name: '关闭文件任务', exact: true}).click(); await entryButton.click(); await expect(select()).toHaveValue('b-pend-2');
+    const posts = requests.slice(start).filter(r => r.method === 'POST'); assert.equal(posts.length, 3); assert.ok(posts.every(r => r.path.endsWith('/acknowledge')));
+    assert.equal(fixture.retryCount, 0); assert.equal(fixture.reconcileCount, 0);
+  });
+  await check('attention pending batches beyond the recent list are reachable through 加载更多 only; narrow hint stays within two lines', async () => {
+    await fresh(false, null, false, false, f => {attentionFixture(f); const older = structuredClone(f.batches[3]); Object.assign(older, {id: 'b-older', projectName: '合成很早以前的项目名称特别长需要换行检查一下', folderName: '更早的一段/子文件夹/再下一层', older: true}); f.batches.push(older); splitStatus();});
+    const entryButton = page.getByRole('button', {name: /^文件任务/}), hint = () => drawer().locator('.fi-pending-hint');
+    await expect(entryButton).toContainText('3 批待处理'); await entryButton.click(); await expect(drawer().getByLabel('选择文件收纳批次')).toHaveValue('b-pend-1');
+    await expect(hint()).toContainText('还有 2 批待处理：合成乙项目 / 根目录 ▸');
+    assert.equal(requests.filter(r => r.path === '/api/file-intake/batches' && r.query?.includes('scope=attention')).length, 0, '没点加载更多前不读待处理分页');
+    await hint().getByRole('button', {name: '加载更多', exact: true}).click();
+    await expect(drawer().getByLabel('选择文件收纳批次').locator('option[value="b-older"]')).toHaveCount(1);
+    await expect(hint().getByRole('button', {name: '加载更多', exact: true})).toHaveCount(0);
+    const scoped = requests.find(r => r.query?.includes('scope=attention')); assert.ok(scoped && /offset=0/.test(scoped.query) && /limit=22/.test(scoped.query), JSON.stringify(scoped));
+    const options = await drawer().getByLabel('选择文件收纳批次').locator('option:not([disabled])').evaluateAll(list => list.map(o => o.value));
+    assert.deepEqual(options, ['b-pend-1', 'b-pend-2', 'b-older', 'b-new-ok', 'b-mid-ok']);
+    await page.setViewportSize({width: 420, height: 780}); await drawer().getByLabel('选择文件收纳批次').selectOption('b-pend-2');
+    const lines = await hint().evaluate(e => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight))); assert.ok(lines <= 2, '提示行占了 ' + lines + ' 行');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({path: path.join(evidence, 'attention-narrow.png')});
   });
   await check('retry-guidance source-change failures require reselection while ordinary failed items remain retryable',async()=>{
     await fresh();fixture.batches[0].items.find(i=>i.id==='failed').code='INTAKE_SOURCE_CHANGED';
