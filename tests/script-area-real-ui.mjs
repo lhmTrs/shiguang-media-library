@@ -320,6 +320,33 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  await check('真接口回归（PR156 独验 P2-1）：101 个正式版本、100 多张图时，历史版本里第二页的 V1 能只读打开，「再显示后面的」能看到并打开最早那张图', async () => {
+    let versionsNow = (await api(P + '/versions?limit=1')).total;
+    for (; versionsNow < 101; versionsNow++) { const d = await api(P + '/draft'); await api(P + '/versions', { expected_revision: d.revision, contentDigest: d.contentDigest, requestId: rid() }); }
+    const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
+    for (let n = (await api(P + '/maps?limit=1')).total; n < 105; n++) await api(P + '/maps', { binding: { before: { kind: 'snapshot', id: snap1.id }, target: { kind: 'snapshot', id: snap2.id } }, graph: { ...diff, title: '合成第二批 ' + n }, requestId: rid() });
+    const totalMaps = (await api(P + '/maps?limit=1')).total;
+    await page.reload(); await expect(area()).toBeVisible();
+    await historyButton().click();
+    const items = area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem');
+    await expect(items).toHaveCount(101);
+    await expect(items.last()).toContainText(/^V1/);
+    await items.last().click();
+    await expect(area().getByLabel('当前看的是')).toContainText(/^正在看 V1（只读）/);
+    await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('小周没拉住老李。');
+    await area().getByRole('button', { name: '回到当前稿' }).click();
+    await tab('泳道图').click();
+    await expect(tab('泳道图')).toContainText(String(totalMaps));
+    const cards = area().getByRole('button', { name: /^打开泳道图：/ });
+    await expect(cards).toHaveCount(100);
+    await area().getByRole('button', { name: `再显示后面的 ${totalMaps - 100} 张` }).click();
+    await expect(cards).toHaveCount(totalMaps);
+    await cards.last().click(); // 最早那张：「合成样例 · 单版」
+    await expect(area().locator('.sm-sheet .sm-title')).toHaveText('合成样例 · 单版');
+    await expect(area().locator('.sm-sheet svg')).toBeVisible();
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
   assert.deepEqual(errors, [], '页面没有报错');
   assert.deepEqual(external, [], '没有外部请求');
   passed = true;

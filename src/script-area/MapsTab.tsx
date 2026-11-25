@@ -1,6 +1,6 @@
 // 「泳道图」标签：这一集所有的图（不按版本筛）。每张写清画在哪份稿子上、那份和当前稿是否相同。用户只看，不在这里编辑。
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { contentDigestOf, dateTime, errorText, scriptBase, timeout } from './api';
+import { contentDigestOf, dateTime, errorText, readPages, scriptBase, timeout } from './api';
 import { CausalMap } from './CausalMap';
 import { IssueList } from './IssueList';
 import { boundLabel, isBigChange, sourceCaption } from './map-layout.mjs';
@@ -15,18 +15,22 @@ function Sameness({ text }: { text: string }) {
 
 
 /** 一个项目的全部图摘要（首版最多 100 张）：标签数字和列表共用。 */
+/** 这一集的图摘要：先读最近 100 张，「再显示后面的」按 100 张一页接着读；刷新时按已经显示的张数重读。 */
 export function useMapList(request: ScriptRequest, projectId: string, active: boolean, reload: number) {
   const [state, setState] = useState<{ projectId: string; items: MapSummary[]; total: number; error: string; loading: boolean }>({ projectId, items: [], total: 0, error: '', loading: false });
+  const [want, setWant] = useState({ projectId, count: 100 });
+  const count = want.projectId === projectId ? want.count : 100;
   useEffect(() => {
     if (!active || !projectId) return;
     const c = new AbortController();
     setState(s => ({ ...s, projectId, loading: true, error: '', ...(s.projectId !== projectId ? { items: [], total: 0 } : {}) }));
-    request<Paged<MapSummary>>(scriptBase(projectId) + '/maps?limit=100', undefined, undefined, { signal: c.signal })
+    readPages<MapSummary>(request, scriptBase(projectId) + '/maps', { want: count, signal: c.signal })
       .then(r => setState({ projectId, items: r.items, total: r.total, error: '', loading: false }))
       .catch(e => { if (!c.signal.aborted) setState(s => ({ ...s, loading: false, error: errorText(e) })); });
     return () => c.abort();
-  }, [request, projectId, active, reload]);
-  return state.projectId === projectId ? state : { projectId, items: [], total: 0, error: '', loading: true };
+  }, [request, projectId, active, reload, count]);
+  const loadMore = useCallback(() => setWant({ projectId, count: count + 100 }), [projectId, count]);
+  return { ...(state.projectId === projectId ? state : { projectId, items: [], total: 0, error: '', loading: true }), loadMore };
 }
 
 function kindText(m: MapSummary, d: MapDetail | undefined) {
@@ -113,6 +117,6 @@ export function MapsTab({ projectId, request, list, currentDigest, onBack }: { p
         <small>agent 画于 {dateTime(m.createdAt)}{detail && ' · ' + countText(detail)}</small>
       </button></li>;
     })}</ul>}
-    {list.total > list.items.length && <p className="ca-muted">只列出了最近 {list.items.length} 张（共 {list.total} 张）。</p>}
+    {list.total > list.items.length && <p className="sa-more"><button type="button" disabled={list.loading} onClick={list.loadMore}>{list.loading ? '正在读取…' : `再显示后面的 ${Math.min(100, list.total - list.items.length)} 张`}</button><span className="ca-muted">已显示最近 {list.items.length} 张，共 {list.total} 张</span></p>}
   </section>;
 }

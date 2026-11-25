@@ -1,11 +1,11 @@
 // 侧栏「剧本」：一集（或单独项目）的剧本区。头部、版本条、三个标签（剧本｜泳道图 N｜甲方资料 N）、定稿对话框。
 // 选剧和集走顶栏（和「项目资产」一样），这里只读宿主给的当前项目。
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ProjectScript, ScriptMentions, type ScriptName } from '../project-assets/ProjectScript';
 import { ScriptMarkdown, scriptOutline } from '../project-assets/ScriptMarkdown';
 import '../project-assets/asset-library.css';
 import { buildTree, displayPath, type GroupedProject, type Series } from '../series/model';
-import { dateTime, errorText, scriptBase, timeout } from './api';
+import { dateTime, errorText, readPages, scriptBase, timeout } from './api';
 import { FinalizeDialog } from './FinalizeDialog';
 import { MapsTab, useMapList } from './MapsTab';
 import { MaterialsTab, useMaterialList } from './MaterialsTab';
@@ -65,21 +65,51 @@ function ReadOnlyScript({ request, projectId, version, names }: { request: Scrip
   </section>;
 }
 
-/** 标题旁的「历史版本 ▾」：列出正式版本（写定稿时间）和原稿存档，点了只读打开。没有历史版本时宿主不渲染它。 */
+/**
+ * 标题旁的「历史版本 ▾」：列出正式版本（写定稿时间）和原稿存档，点了只读打开。没有历史版本时宿主不渲染它。
+ * 菜单（role=menu）：打开时焦点到第一项；↑↓ 循环移动，Home/End 到头尾，Enter/空格选中，Tab 和 Esc 关上；
+ * 选中或 Esc 后焦点回到「历史版本」按钮。菜单整个留在窗口里，靠右时往左挪，窄屏不超过窗口宽（PR156 独验 P2-2）。
+ */
 function HistoryMenu({ items, viewing, onPick }: { items: VersionSummary[]; viewing: Viewing; onPick: (v: VersionSummary) => void }) {
-  const [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false), [shift, setShift] = useState(0);
+  const box = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
+  const close = (refocus: boolean) => { setOpen(false); if (refocus) button.current?.focus(); };
+  const entries = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role=menuitem]') ?? [])];
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); button.current?.focus(); } };
-    document.addEventListener('mousedown', away); document.addEventListener('keydown', esc);
-    box.current?.querySelector<HTMLButtonElement>('[role=menuitem]')?.focus();
-    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
+    document.addEventListener('mousedown', away);
+    entries()[0]?.focus();
+    return () => document.removeEventListener('mousedown', away);
   }, [open]);
+  // 菜单留在窗口里：先按按钮左对齐摆，再量一次，超出右边就往左挪，左边也不越界
+  useLayoutEffect(() => {
+    if (!open) { setShift(0); return; }
+    const place = () => {
+      const m = menu.current, b = box.current; if (!m || !b) return;
+      const left = b.getBoundingClientRect().left, width = m.offsetWidth, room = document.documentElement.clientWidth - 8;
+      let dx = Math.min(0, room - (left + width)); // 超出右边就往左挪
+      if (left + dx < 8) dx = 8 - left;             // 但不越过左边
+      setShift(dx);
+    };
+    place(); window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open, items.length]);
+  function keys(e: React.KeyboardEvent) {
+    const list = entries(), at = list.indexOf(document.activeElement as HTMLButtonElement);
+    const go = (i: number) => { e.preventDefault(); list[(i + list.length) % list.length]?.focus(); };
+    if (e.key === 'ArrowDown') go(at + 1);
+    else if (e.key === 'ArrowUp') go(at < 0 ? list.length - 1 : at - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(list.length - 1);
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === 'Tab') setOpen(false);
+  }
   return <div className="sa-history" ref={box}>
-    <button ref={button} type="button" className="sa-history-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>历史版本<ChevronDown size={14}/></button>
-    {open && <div className="sa-history-menu" role="menu" aria-label="历史版本">
-      {items.map(v => <button key={v.id} type="button" role="menuitem" aria-current={viewing.kind !== 'draft' && viewing.id === v.id ? 'true' : undefined} onClick={() => { setOpen(false); onPick(v); }}>
+    <button ref={button} type="button" className="sa-history-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}
+      onKeyDown={e => { if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setOpen(true); } }}>历史版本<ChevronDown size={14}/></button>
+    {open && <div className="sa-history-menu" role="menu" aria-label="历史版本" ref={menu} style={{ transform: shift ? `translateX(${shift}px)` : undefined }} onKeyDown={keys}>
+      {items.map(v => <button key={v.id} type="button" role="menuitem" tabIndex={-1} aria-current={viewing.kind !== 'draft' && viewing.id === v.id ? 'true' : undefined} onClick={() => { close(true); onPick(v); }}>
         <b>{versionLabel(v)}</b><small>{v.kind === 'version' ? `${dateTime(v.finalizedAt)} 定稿` : '剧本区上线前保存的稿子'}</small>
       </button>)}
     </div>}
@@ -125,7 +155,8 @@ function Workspace({ active, projectId, projects, series, request, registerProje
   useEffect(() => {
     if (!active || !projectId) return;
     const c = new AbortController();
-    request<Paged<VersionSummary>>(scriptBase(projectId) + '/versions?limit=100', undefined, undefined, { signal: c.signal })
+    // 历史版本读完全部分页：原稿存档排在最后，版本多于 100 个时它在第二页以后（PR156 独验 P2-1）
+    readPages<VersionSummary>(request, scriptBase(projectId) + '/versions', { signal: c.signal })
       .then(r => setVersions({ projectId, items: r.items, error: '' }))
       .catch(e => { if (!c.signal.aborted) setVersions(v => ({ projectId, items: v?.projectId === projectId ? v.items : [], error: errorText(e) })); });
     return () => c.abort();

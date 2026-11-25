@@ -1,5 +1,5 @@
 // 剧本区接口路径（合同 v1.1「P = /api/project-scripts/projects/:projectId」；宿主 api 自己补 /api 前缀和库请求头）。
-import type { Binding, MapGraph, ObjectRef, RequestError } from './types';
+import type { Binding, MapGraph, ObjectRef, Paged, RequestError, ScriptRequest } from './types';
 
 export const scriptBase = (projectId: string) => '/project-scripts/projects/' + encodeURIComponent(projectId);
 export const qs = (params: Record<string, string | number | undefined>) => {
@@ -41,4 +41,21 @@ export async function contentDigestOf(title: string, content: string): Promise<s
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([title, content])));
     return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
   } catch { return null; }
+}
+
+/**
+ * 按合同的 offset/limit 分页读，直到拿够 want 条或读完（limit 上限 100）。want 不传就读完全部（最多 50 页，防止接口异常时死循环）。
+ * 返回读到的条目和服务器报的总数（PR156 独验 P2：只读第一页时，第 101 条在页面上没有入口）。
+ */
+export async function readPages<T>(request: ScriptRequest, url: string, opts: { want?: number; signal?: AbortSignal } = {}): Promise<{ items: T[]; total: number }> {
+  const items: T[] = []; let total = 0;
+  const join = url.includes('?') ? '&' : '?';
+  for (let page = 0; page < 50; page++) {
+    const left = opts.want === undefined ? 100 : Math.min(100, opts.want - items.length);
+    if (left <= 0) break;
+    const r = await request<Paged<T>>(`${url}${join}offset=${items.length}&limit=${left}`, undefined, undefined, opts.signal ? { signal: opts.signal } : timeout());
+    total = r.total; items.push(...r.items);
+    if (!r.items.length || items.length >= total) break;
+  }
+  return { items, total };
 }

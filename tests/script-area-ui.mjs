@@ -177,6 +177,39 @@ try {
     await expect(area().getByLabel('剧本正文', { exact: true }).or(area().getByRole('document', { name: '剧本正文（阅读）' }))).toContainText('第二稿。');
   });
 
+  await check('历史版本菜单的键盘（PR156 独验 P2-2）：打开焦点到第一项；↓↑ 循环、Home/End 到头尾；Enter 选中后焦点回到「历史版本」按钮；Esc 关上也回按钮', async () => {
+    const menu = area().getByRole('menu', { name: '历史版本' }), items = menu.getByRole('menuitem');
+    await historyButton().focus(); await page.keyboard.press('Enter');
+    await expect(items).toHaveCount(3); await expect(items.nth(0)).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await expect(items.nth(1)).toBeFocused();
+    await page.keyboard.press('End'); await expect(items.nth(2)).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await expect(items.nth(0)).toBeFocused();   // 到底再往下回到第一项
+    await page.keyboard.press('ArrowUp'); await expect(items.nth(2)).toBeFocused();     // 第一项再往上到最后一项
+    await page.keyboard.press('Home'); await expect(items.nth(0)).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');           // 选 V1
+    await expect(menu).toHaveCount(0); await expect(historyButton()).toBeFocused();
+    await expect(area().getByLabel('当前看的是')).toContainText('正在看 V1（只读）');
+    await page.keyboard.press('Enter'); await expect(items.nth(0)).toBeFocused();       // 按钮上回车再打开
+    await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0); await expect(historyButton()).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await expect(items.nth(0)).toBeFocused();   // 按钮上按 ↓ 也能打开
+    await page.keyboard.press('Escape');
+    await backToCurrent();
+  });
+
+  await check('历史版本菜单不越出窗口（PR156 独验 P2-2）：窗口宽 360–760 逐档打开，菜单整个在窗口里、页面不多出横向滚动', async () => {
+    const menu = area().getByRole('menu', { name: '历史版本' });
+    for (let w = 360; w <= 760; w += 10) {
+      await page.setViewportSize({ width: w, height: 844 });
+      await historyButton().click(); await expect(menu).toBeVisible();
+      const box = await menu.boundingBox(), over = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth - innerWidth, area: (el => el.scrollWidth - el.clientWidth)(document.querySelector('.sa-workspace')) }));
+      assert.ok(box.x >= 0 && box.x + box.width <= w, `宽 ${w}：菜单在窗口里 ${JSON.stringify(box)}`);
+      assert.ok(over.doc <= 0 && over.area <= 0, `宽 ${w}：没有横向滚动 ${JSON.stringify(over)}`);
+      await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0);
+    }
+    await page.setViewportSize({ width: 390, height: 844 }); await historyButton().click(); await shot('01c-history-menu-390');
+    await page.keyboard.press('Escape'); await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
   await check('请求工具：/project-scripts 一律带库请求头，写请求带本机令牌', async () => {
     assert.ok(fake.log.length > 0);
     for (const l of fake.log) assert.equal(l.libraryHeader, session.instanceId, l.verb + ' ' + l.path);
@@ -264,6 +297,33 @@ try {
     assert.ok(eb.y - (tabs.y + tabs.height) < 40 && eb.height < 60, '空状态紧贴标签下方、只有一行：' + JSON.stringify(eb));
     await shot('05b-maps-empty');
     fake.state.maps = saved; await tab('泳道图').click(); await expect(tab('泳道图')).toContainText('3');
+  });
+
+  await check('分页（PR156 独验 P2-1）：版本超过 100 个时原稿存档在第二页也能在历史版本里打开；图超过 100 张时「再显示后面的」能看到并打开第 101 张', async () => {
+    const savedVersions = fake.state.versions.slice(), savedMaps = fake.state.maps.slice(), now = Date.now();
+    for (let n = 3; n <= 102; n++) fake.state.versions.push({ ...savedVersions.find(v => v.versionNo === 2), id: 'ver-' + n, versionNo: n, sourceId: 'src-ver-' + n, finalizedAt: now + n });
+    const one = savedMaps.find(x => x.map.id === 'map-1');
+    for (let n = 1; n <= 98; n++) fake.state.maps.push({ ...one, map: { ...one.map, id: 'extra-' + n, title: '合成批量图 ' + n, createdAt: now + n } });
+    await page.reload(); await expect(area()).toBeVisible();
+    await historyButton().click();
+    const items = area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem');
+    await expect(items).toHaveCount(103);
+    await expect(items.last()).toContainText(LEGACY);
+    await items.last().click();
+    await expect(area().getByLabel('当前看的是')).toContainText(/正在看 原稿存档（\d\d-\d\d）（只读）/);
+    await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('原稿的合成正文。');
+    await backToCurrent();
+    await tab('泳道图').click();
+    await expect(tab('泳道图')).toContainText('101');
+    const cards = area().getByRole('button', { name: /^打开泳道图：/ });
+    await expect(cards).toHaveCount(100);
+    await area().getByRole('button', { name: '再显示后面的 1 张' }).click();
+    await expect(cards).toHaveCount(101);
+    await area().getByRole('button', { name: '打开泳道图：合成样例 · 单版', exact: true }).click();   // 最早的那张，在第二页
+    await expect(area().locator('.sm-sheet svg')).toBeVisible();
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+    fake.state.versions = savedVersions; fake.state.maps = savedMaps;
+    await page.reload(); await expect(area()).toBeVisible();
   });
 
   await check('甲方资料：默认挂本集；勾「放到全局资料」进全局组并标「全局」；上传走浏览器生成的 multipart 边界', async () => {
