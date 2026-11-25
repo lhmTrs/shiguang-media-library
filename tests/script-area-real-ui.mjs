@@ -217,6 +217,28 @@ try {
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
   });
 
+  await check('真接口回归（PR154 独验 P2 补充）：切集时上一集（空草稿）的草稿信息晚到，不会挡住这一集定稿', async () => {
+    const A = (await api(`/project-series/${S.id}/episodes`, { season_id: q.id, expected_episode_no: 2, request_id: rid() })).project; // 空草稿
+    let release, held = 0; const gate = new Promise(r => { release = r; });
+    const aDraft = url => url.pathname === `/api/project-scripts/projects/${A.id}/draft`;
+    const hold = async route => { held++; await gate; await route.continue(); };
+    await page.reload(); await expect(area()).toBeVisible(); // 顶栏要重新读到新建的第 2 集
+    const prev = page.locator('.ppb').getByRole('button', { name: '上一集：第1集' });
+    if (await prev.isEnabled().catch(() => false)) await prev.click();   // 先停在第 1 集
+    await expect(area().getByLabel('当前看的是')).toContainText('存过');
+    await page.route(aDraft, hold);
+    await page.locator('.ppb').getByRole('button', { name: '下一集：第2集' }).click(); await expect.poll(() => held).toBeGreaterThanOrEqual(1);
+    await page.locator('.ppb').getByRole('button', { name: '上一集：第1集' }).click();
+    await expect(area().getByLabel('当前看的是')).toContainText('存过');
+    release(); await page.waitForTimeout(500);
+    await area().getByRole('button', { name: '定稿', exact: true }).click();
+    await expect(area()).not.toContainText('草稿是空的，不能定稿');
+    const dlg = page.getByRole('dialog', { name: '定稿' });
+    await expect(dlg.getByRole('heading')).toHaveText(/^定稿成 V\d+$/);
+    await dlg.getByRole('button', { name: '取消' }).click();
+    await page.unroute(aDraft, hold);
+  });
+
   assert.deepEqual(errors, [], '页面没有报错');
   assert.deepEqual(external, [], '没有外部请求');
   passed = true;

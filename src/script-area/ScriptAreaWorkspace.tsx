@@ -86,11 +86,18 @@ function Workspace({ active, projectId, projects, series, request, registerProje
 
   useEffect(() => { setViewing({ kind: 'draft' }); setNotice(''); setFinalizing(false); }, [projectId]);
   useEffect(() => { if (scriptFocus) { setTab('script'); setViewing({ kind: 'draft' }); } }, [scriptFocus]);
+  // 草稿元信息（头部时间、定稿前的空稿判断）：每次读取领一个编号，回来时不是最新一次、或已经换了项目，就丢掉，
+  // 成功和失败都一样（PR154 独验 P2：切项目后旧项目的空草稿晚到，挡住了新项目定稿）。
+  const draftTicket = useRef(0), projectRef = useRef(projectId); projectRef.current = projectId;
   const readDraft = useCallback(() => {
-    if (!projectId) return;
-    request<Draft>(scriptBase(projectId) + '/draft', undefined, undefined, timeout()).then(d => { if (d.projectId === projectId) { setDraft(d); setDraftError(''); } }).catch(e => setDraftError(errorText(e)));
+    const mine = ++draftTicket.current, pid = projectId;
+    if (!pid) return;
+    const current = () => mine === draftTicket.current && pid === projectRef.current;
+    request<Draft>(scriptBase(pid) + '/draft', undefined, undefined, timeout())
+      .then(d => { if (current() && d.projectId === pid) { setDraft(d); setDraftError(''); } })
+      .catch(e => { if (current()) setDraftError(errorText(e)); });
   }, [request, projectId]);
-  useEffect(() => { setDraft(null); if (active) readDraft(); }, [active, readDraft]);
+  useEffect(() => { setDraft(null); setDraftError(''); if (active) readDraft(); else draftTicket.current++; }, [active, readDraft]);
   useEffect(() => {
     if (!active || !projectId) return;
     const c = new AbortController();
@@ -116,13 +123,13 @@ function Workspace({ active, projectId, projects, series, request, registerProje
   function startFinalize() {
     setNotice('');
     if (dirty) { setNotice('草稿有未保存的修改：先点「保存剧本」，再定稿。定稿只认已经保存的草稿。'); setTab('script'); return; }
-    if (draft && !draft.content.trim()) { setNotice('草稿是空的，不能定稿。'); return; }
+    if (draft && draft.projectId === projectId && !draft.content.trim()) { setNotice('草稿是空的，不能定稿。'); return; }
     setFinalizing(true);
   }
 
   if (!projectId) return <div className="ca-workspace sa-workspace"><div className="ca-welcome"><h2>剧本</h2><p>在顶部选一集，或一个单独项目。</p></div></div>;
   const viewingText = viewing.kind === 'draft'
-    ? (draft ? (draft.updatedAt ? `草稿（${dateTime(draft.updatedAt)} 存过）` : '草稿（还没保存过）') : '草稿')
+    ? (draft && draft.projectId === projectId ? (draft.updatedAt ? `草稿（${dateTime(draft.updatedAt)} 存过）` : '草稿（还没保存过）') : '草稿')
     : viewed ? (viewed.kind === 'legacy' ? '迁移时的稿子' : `V${viewed.versionNo} · ${dateTime(viewed.finalizedAt)} 定稿`) : '';
 
   return <div className="ca-workspace ca-v2 sa-workspace" aria-label="剧本区" role="region">
