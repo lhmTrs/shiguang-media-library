@@ -46,7 +46,8 @@ export function MaterialsTab({ projectId, seriesId, seriesName, request, list, o
   async function upload() {
     if (!file || uploading) return;
     setUploading(true); setError(''); setNotice('');
-    const form = new FormData(); form.append('file', file); form.append('ownerType', toSeries && seriesId ? 'series' : 'project'); form.append('requestId', uploadId.current);
+    // 文字字段放在文件前面：流式解析时后端先拿到归属和 requestId。
+    const form = new FormData(); form.append('ownerType', toSeries && seriesId ? 'series' : 'project'); form.append('requestId', uploadId.current); form.append('file', file);
     try {
       const r = await request<{ material: MaterialSummary }>(scriptBase(projectId) + '/materials', form, 'POST', timeout(120000));
       setNotice(`已上传「${r.material.originalFilename}」` + (r.material.ownerType === 'series' ? '，放在全局资料里，这部剧所有集都能看到。' : '，挂在本集。'));
