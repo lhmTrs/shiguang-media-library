@@ -21,14 +21,16 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
   const t0 = now();
   const log = [];
   const state = {
-    versions: [{ id: 'legacy-1', projectId, kind: 'legacy', versionNo: null, title: '迁移来的合成剧本', sourceId: 'src-legacy-1', draftRevision: 0, createdAt: t0 - 5 * 86_400_000, finalizedAt: null, content: '## 场一\n迁移时的合成正文。\n乙看向门口。' }],
+    versions: [{ id: 'legacy-1', projectId, kind: 'legacy', versionNo: null, title: '上线前的合成剧本', sourceId: 'src-legacy-1', draftRevision: 0, createdAt: t0 - 5 * 86_400_000, finalizedAt: null, content: '## 场一\n原稿的合成正文。\n乙看向门口。' }],
     snapshots: [{ id: 'snap-1', projectId, kind: 'snapshot', title: '合成剧本', sourceId: 'fixture-a', draftRevision: 1, createdAt: t0 - 3600_000, content: '' }],
     maps: [], materials: [], receipts: new Map(), materialText: new Map(), materialBytes: new Map(),
   };
-  // 一张草稿图（挂在快照上，标「基于较早的草稿」）和一张挂在迁移基线上的改动图
+  // 一张草稿图（挂在快照上，后端会标 isDraftStale）和一张挂在原稿存档上的改动图
   const single = makeRenderData(readFixture('fixture_single'));
   state.maps.push({ map: { id: 'map-1', projectId, kind: 'single', title: single.graph.title, schemaVersion: 1, createdAt: t0 - 1800_000, binding: { target: { kind: 'snapshot', id: 'snap-1' } }, isDraftStale: true }, renderData: single, issues: [{ code: 'LABEL_LONG', path: 'graph.nodes[5].label', message: '标签超长', severity: 'warning' }] });
-  const diff = makeRenderData(readFixture('fixture_diff'), { deleted: ['V1'] });
+  // 后端给原稿存档的 displayLabel 是「迁移基线」，前端要自己改叫「原稿存档（日期）」
+  const legacyBound = { kind: 'legacy', id: 'legacy-1', versionNo: null, title: '上线前的合成剧本', displayLabel: '迁移基线', at: t0 - 5 * 86_400_000 };
+  const diff = makeRenderData(readFixture('fixture_diff'), { deleted: ['V1'], binding: { before: { kind: 'snapshot', id: 'snap-1', versionNo: null, title: '合成剧本', displayLabel: '草稿快照', at: t0 - 3600_000 }, target: legacyBound } });
   state.maps.push({ map: { id: 'map-2', projectId, kind: 'diff', title: diff.graph.title, schemaVersion: 1, createdAt: t0 - 900_000, binding: { before: { kind: 'snapshot', id: 'snap-1' }, target: { kind: 'legacy', id: 'legacy-1' } }, isDraftStale: false }, renderData: diff, issues: [] });
 
   async function realDraft() {
@@ -71,7 +73,12 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
       return json(route, 201, out);
     }
     if (verb === 'GET' && rest === '/draft/snapshots') return json(route, 200, page(state.snapshots.map(summary), url));
-    if (verb === 'GET' && rest === '/maps') return json(route, 200, page(state.maps.map(x => x.map).sort((a, b) => b.createdAt - a.createdAt), url));
+    if (verb === 'GET' && (x = rest.match(/^\/draft\/snapshots\/([^/]+)$/))) { const v = state.snapshots.find(v => v.id === x[1]); return v ? json(route, 200, v) : fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这份快照'); }
+    if (verb === 'GET' && rest === '/maps') {
+      const body = page(state.maps.map(x => x.map).sort((a, b) => b.createdAt - a.createdAt), url);
+      if (state.churnMaps) body.total += ++state.churnMaps; // 模拟一直有新图入库：每次读总数都不一样
+      return json(route, 200, body);
+    }
     if (verb === 'GET' && (x = rest.match(/^\/maps\/([^/]+)$/))) { const d = state.maps.find(e => e.map.id === x[1]); return d ? json(route, 200, d) : fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这张图'); }
     if (verb === 'POST' && rest === '/maps/dry-run') {
       state.dryRuns = (state.dryRuns ?? 0) + 1;

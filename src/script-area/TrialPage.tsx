@@ -71,7 +71,7 @@ export function TrialPage({ request }: { request: ScriptRequest }) {
     const local = validateScriptMap(graph).issues as Issue[];
     if (local.some(i => i.severity === 'error')) { done('invalid', '结构检查没有通过，图没有画（还没发给拾光）', local); return; }
     if (!params.project) { done('error', '先选项目（集）'); return; }
-    if (!target) { done('error', '先选这张图画在哪一份上（版本、迁移时的稿子或草稿快照）'); return; }
+    if (!target) { done('error', '先选这张图画在哪一份上（正式版本、原稿存档或草稿快照）'); return; }
     const diff = graph.kind === 'diff';
     if (diff && !before) { done('error', '这是改动图：还要选前稿'); return; }
     if (diff && before && before.kind === target.kind && before.id === target.id) { done('error', '前稿和当前稿是同一份，请换一份'); return; }

@@ -28,7 +28,8 @@ const shot = async (name, target = page) => { if (shots) await target.screenshot
 const rid = () => crypto.randomUUID();
 const area = () => page.getByRole('region', { name: '剧本区' });
 const tab = name => area().getByRole('tablist', { name: '剧本区' }).getByRole('tab', { name: new RegExp('^' + name) });
-const versions = () => area().getByRole('navigation', { name: '版本' });
+const historyButton = () => area().getByRole('button', { name: '历史版本' });
+async function openHistory(name) { await historyButton().click(); await area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem', { name }).click(); }
 const sources = readFixture('fixture_sources');
 
 try {
@@ -52,18 +53,24 @@ try {
   await page.goto(origin + '/#/project-scripts'); await page.reload(); await selectProjectInBar(page, ep.id);
   await expect(area()).toBeVisible();
 
-  await check('真接口：草稿头部写保存时间；第一次定稿是 V1，确认后版本条出现 V1', async () => {
+  await check('真接口：页头写当前稿的保存时间；还没有历史版本时不显示「历史版本」；第一次定稿是 V1，之后在历史版本里只读打开、回到当前稿', async () => {
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿（');
     await expect(area().getByLabel('当前看的是')).toContainText('存过');
+    await expect(historyButton()).toHaveCount(0);
+    await expect(area().getByRole('navigation', { name: '版本' })).toHaveCount(0);
     await area().getByRole('button', { name: '定稿', exact: true }).click();
     const dlg = page.getByRole('dialog', { name: '定稿' });
     await expect(dlg.getByRole('heading')).toHaveText('定稿成 V1');
     await expect(dlg.getByLabel('开头几行')).toContainText('2-1 地下 · 夜');
     await dlg.getByRole('button', { name: '确认定稿' }).click();
     await expect(dlg).toHaveCount(0); await expect(area()).toContainText('已定稿成 V1');
-    await expect(versions().getByRole('button', { name: 'V1' })).toBeVisible();
-    await versions().getByRole('button', { name: 'V1' }).click();
+    await expect(historyButton()).toBeVisible();
+    await openHistory(/^V1/);
+    await expect(area().getByLabel('当前看的是')).toContainText(/^正在看 V1（只读） · /);
+    await expect(area().getByRole('button', { name: '定稿', exact: true })).toHaveCount(0);
     await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('小周没拉住老李。');
-    await versions().getByRole('button', { name: /^草稿/ }).click();
+    await area().getByRole('button', { name: '回到当前稿' }).click();
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿（');
   });
 
   await check('真接口：定稿前草稿被别处改过 → 409 提示并重读，换新 requestId 后能定成 V2', async () => {
@@ -75,7 +82,7 @@ try {
     await expect(dlg.getByLabel('开头几行')).toBeVisible();
     await dlg.getByRole('button', { name: '确认定稿' }).click();
     await expect(dlg).toHaveCount(0);
-    await expect(versions().getByRole('button', { name: 'V2' })).toBeVisible();
+    await historyButton().click(); await expect(area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem')).toHaveText([/^V2/, /^V1/]); await page.keyboard.press('Escape');
   });
 
   let material;
@@ -154,8 +161,10 @@ try {
     await expect(cards).toHaveCount(2);
     await expect(cards.filter({ hasText: '合成样例 · 单版' })).toContainText('AI 补了 1 处');
     await expect(cards.filter({ hasText: '改动' })).toContainText('改了 5 处因果或动机，1 处措辞');
-    // 草稿在冻结快照之后又改过（409 那一步），草稿图标「基于较早的草稿」
-    await expect(cards.first()).toContainText('基于较早的草稿');
+    // 冻结快照之后当前稿又改过（409 那一步），两张图都写「当前稿已经改过」（真摘要比对）
+    await expect(cards.filter({ hasText: '合成样例 · 单版' })).toContainText(/画在 草稿快照 \d\d-\d\d \d\d:\d\d · 当前稿已经改过/);
+    await expect(cards.filter({ hasText: '改动' })).toContainText('当前稿已经改过');
+    await expect(area()).not.toContainText('迁移');
     await shot('maps');
     await cards.filter({ hasText: '改动' }).click();
     await expect(area().locator('.sm-sheet svg')).toBeVisible();
@@ -292,6 +301,8 @@ try {
     await api(P + '/maps', { binding: { target: { kind: 'snapshot', id: snap.id } }, graph, requestId: rid() });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    // 刚冻结、当前稿没再改过：「和当前稿相同」（真摘要比对）
+    await expect(area().getByRole('button', { name: '打开泳道图：合成长引文图' })).toContainText(/画在 草稿快照 \d\d-\d\d \d\d:\d\d · 和当前稿相同/);
     await area().getByRole('button', { name: '打开泳道图：合成长引文图' }).click();
     await area().getByRole('button', { name: '阅读模式' }).click();
     const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
@@ -307,6 +318,63 @@ try {
     await shot('reading-long-quote');
     await leaveReading(reader);
     await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  await check('真接口回归（PR156 独验 P2-1）：101 个正式版本、100 多张图时，历史版本里第二页的 V1 能只读打开，「再显示后面的」能看到并打开最早那张图', async () => {
+    let versionsNow = (await api(P + '/versions?limit=1')).total;
+    for (; versionsNow < 101; versionsNow++) { const d = await api(P + '/draft'); await api(P + '/versions', { expected_revision: d.revision, contentDigest: d.contentDigest, requestId: rid() }); }
+    const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
+    for (let n = (await api(P + '/maps?limit=1')).total; n < 105; n++) await api(P + '/maps', { binding: { before: { kind: 'snapshot', id: snap1.id }, target: { kind: 'snapshot', id: snap2.id } }, graph: { ...diff, title: '合成第二批 ' + n }, requestId: rid() });
+    const totalMaps = (await api(P + '/maps?limit=1')).total;
+    await page.reload(); await expect(area()).toBeVisible();
+    await historyButton().click();
+    const items = area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem');
+    await expect(items).toHaveCount(101);
+    await expect(items.last()).toContainText(/^V1/);
+    await items.last().click();
+    await expect(area().getByLabel('当前看的是')).toContainText(/^正在看 V1（只读）/);
+    await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('小周没拉住老李。');
+    await area().getByRole('button', { name: '回到当前稿' }).click();
+    await tab('泳道图').click();
+    await expect(tab('泳道图')).toContainText(String(totalMaps));
+    const cards = area().getByRole('button', { name: /^打开泳道图：/ });
+    await expect(cards).toHaveCount(100);
+    await area().getByRole('button', { name: `再显示后面的 ${totalMaps - 100} 张` }).click();
+    await expect(cards).toHaveCount(totalMaps);
+    await cards.last().click(); // 最早那张：「合成样例 · 单版」
+    await expect(area().locator('.sm-sheet .sm-title')).toHaveText('合成样例 · 单版');
+    await expect(area().locator('.sm-sheet svg')).toBeVisible();
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
+  await check('真接口回归（PR156 独验 P2-3）：翻页途中有新图入库，列表不重复、不漏，新图看得见；再刷新也没有残留', async () => {
+    await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    const cards = area().locator('[data-map-id]'), unique = async () => { const ids = await cards.evaluateAll(els => els.map(e => e.dataset.mapId)); return { n: ids.length, distinct: new Set(ids).size }; };
+    await area().getByRole('button', { name: /^再显示后面的/ }).click();
+    const before = (await api(P + '/maps?limit=1')).total;
+    await expect(cards).toHaveCount(before);
+    const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
+    const newTitle = '翻页途中新入库的图';
+    // 下一次刷新的第一页：先从真后端拿到回包（这时还是 before 张），再真的登记一张新图，然后才把这份旧的第一页交给页面
+    let done = false;
+    const firstPage = url => url.pathname === `/api${P}/maps` && url.searchParams.get('offset') === '0' && url.searchParams.get('limit') === '100';
+    const hold = async route => {
+      if (done) return route.fallback(); done = true;
+      const response = await route.fetch();
+      await api(P + '/maps', { binding: { before: { kind: 'snapshot', id: snap1.id }, target: { kind: 'snapshot', id: snap2.id } }, graph: { ...diff, title: newTitle }, requestId: rid() });
+      await route.fulfill({ response });
+    };
+    await page.route(firstPage, hold);
+    await tab('泳道图').click();
+    await expect.poll(() => done).toBe(true);
+    await expect(cards).toHaveCount(before + 1);
+    assert.deepEqual(await unique(), { n: before + 1, distinct: before + 1 }, '卡片 id 都不重复');
+    await expect(area().getByRole('button', { name: '打开泳道图：' + newTitle })).toBeVisible();
+    await expect(tab('泳道图')).toContainText(String(before + 1));
+    await page.unroute(firstPage, hold);
+    await tab('泳道图').click();
+    await expect(cards).toHaveCount(before + 1);
+    assert.deepEqual(await unique(), { n: before + 1, distinct: before + 1 }, '再刷新也没有残留的重复卡片');
   });
 
   assert.deepEqual(errors, [], '页面没有报错');

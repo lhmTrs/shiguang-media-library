@@ -8,12 +8,6 @@
 .sa-head h1{font-size:24px;margin:4px 0}
 .sa-viewing{margin:0;color:var(--muted)}
 .sa-muted{color:var(--muted)}
-.sa-versions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 28px 16px}
-.sa-versions button{padding:5px 12px;border-radius:16px}
-.sa-versions button small{color:var(--muted);margin-left:2px;font-size:11px}
-.sa-versions button[aria-pressed=true]{background:var(--soft);border-color:var(--green);color:var(--green)}
-.sa-versions .sa-legacy{border-style:dashed;color:var(--muted)}
-.sa-versions>span{font-size:12px}
 .sa-body .ca-project-script{margin-top:0}
 .ca-notice>button{float:right;padding:0 6px;border:0;background:none;cursor:pointer}
 .sa-warn{margin:0 0 14px;padding:10px 14px;border-radius:7px;background:var(--soft);color:var(--c-8a6a3a);line-height:1.7}
@@ -98,4 +92,20 @@
 .sa-trial-map{overflow:auto}
 .sa-alert{color:var(--c-b34747)}
 @media(max-width:760px){.sa-reading-bar{padding:8px 12px}.sa-reading-body{padding:0 12px 32px}}
-@media(max-width:700px){.sa-head,.sa-versions,.sa-maps,.sa-materials,.sa-map-view{padding-left:16px;padding-right:16px}.sa-material{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "meta" "actions"}}
+@media(max-width:700px){.sa-head,.sa-maps,.sa-materials,.sa-map-view{padding-left:16px;padding-right:16px}.sa-material{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "meta" "actions"}}
+/* 标题旁的「历史版本 ▾」和只读页头 */
+.sa-title-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.sa-history{position:relative}
+.ca-workspace .sa-history-button{padding:4px 10px;border-radius:14px;font-size:12px;color:var(--muted);gap:4px}
+.sa-history-menu{position:absolute;left:0;top:calc(100% + 6px);z-index:30;min-width:min(240px,calc(100vw - 16px));max-width:calc(100vw - 16px);box-sizing:border-box;max-height:min(360px,60dvh);overflow-y:auto;display:flex;flex-direction:column;padding:6px;background:var(--c-fff);border:1px solid var(--line);border-radius:9px;box-shadow:0 12px 34px var(--c-20322920)}
+.ca-workspace .sa-history-menu button{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;border:0;background:transparent;padding:8px 10px;text-align:left}
+.ca-workspace .sa-history-menu button:hover:not(:disabled),.ca-workspace .sa-history-menu button[aria-current=true]{background:var(--soft);color:var(--green)}
+.sa-history-menu small{color:var(--muted);font-size:11px}
+.sa-viewing.is-readonly{color:var(--c-24292c);font-weight:600}
+.ca-workspace .sa-back-current{margin-left:10px;padding:3px 10px;font-size:12px;font-weight:400}
+/* 泳道图卡片：画在哪份稿子、和当前稿是否相同 */
+.sa-map-on{color:var(--muted)}
+.sa-sameness{color:var(--green)}
+.sa-sameness.is-changed{color:var(--c-8a6a3a)}
+.sa-history-menu b,.sa-history-menu small{overflow-wrap:anywhere}
+.sa-more{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0 0}
