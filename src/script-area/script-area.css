@@ -26,7 +26,7 @@
 /* 泳道图 */
 .sa-maps,.sa-materials,.sa-map-view{padding:20px 28px}
 .sa-map-cards{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.sa-map-card{width:100%;display:flex!important;flex-direction:column;align-items:flex-start!important;justify-content:flex-start!important;gap:4px!important;text-align:left;padding:14px!important}
+.ca-workspace .sa-map-card{width:100%;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:4px;text-align:left;padding:14px}
 .sa-map-card strong{font-size:14px;overflow-wrap:anywhere}
 .sa-map-card small{color:var(--muted);line-height:1.6;overflow-wrap:anywhere}
 .sa-map-kind{font-size:11px;color:var(--green);border:1px solid var(--line);border-radius:9px;padding:0 8px}
@@ -49,7 +49,7 @@
 .sa-upload{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 16px;padding:14px 16px;border:1px solid var(--line);border-radius:9px;background:var(--c-fff);margin-bottom:16px}
 .sa-upload .ca-check{margin:0}
 .sa-upload>small{flex-basis:100%}
-.sa-materials h3{font-size:15px;margin:18px 0 8px}.sa-materials h3 small{font-weight:400;color:var(--muted);margin-left:8px;font-size:12px}
+.sa-materials h3{font-size:16px;margin:18px 0 8px}.sa-materials h3 small{font-weight:400;color:var(--muted);margin-left:8px;font-size:12px}
 .sa-material-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .sa-material{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name actions" "meta actions";gap:2px 16px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--c-fff)}
 .sa-material-name{grid-area:name;display:flex;align-items:center;gap:8px;min-width:0}
@@ -57,11 +57,11 @@
 .sa-material>small{grid-area:meta;color:var(--muted)}
 .sa-material>.ca-actions{grid-area:actions}
 .sa-chip{font-size:11px;color:var(--green);border:1px solid var(--green);border-radius:9px;padding:0 7px;flex:none}
-.sa-link-button{display:inline-flex;align-items:center;border:1px solid var(--line);background:var(--c-fff);border-radius:7px;padding:8px 11px;text-decoration:none;color:inherit!important}
-.sa-link-button:hover{border-color:var(--green);color:var(--green)!important}
+.sa-workspace a.sa-link-button{display:inline-flex;align-items:center;border:1px solid var(--line);background:var(--c-fff);border-radius:7px;padding:8px 11px;text-decoration:none;color:inherit}
+.sa-workspace a.sa-link-button:hover{border-color:var(--green);color:var(--green)}
 .ca-workspace button.sa-danger{color:var(--c-b34747)}
 .ca-workspace button.sa-danger:hover:not(:disabled){border-color:var(--c-b34747);color:var(--c-b34747)}
-.sa-danger-primary{background:var(--c-b34747)!important;border-color:var(--c-b34747)!important;color:var(--c-fff)!important}
+.ca-workspace button.sa-danger-primary,.ca-workspace button.sa-danger-primary:hover:not(:disabled){background:var(--c-b34747);border-color:var(--c-b34747);color:var(--c-fff)}
 .sa-preview{width:min(900px,100%)}
 .sa-lines{list-style:none;margin:0;padding:0;font-size:13px;line-height:1.7}
 .sa-lines li{display:grid;grid-template-columns:52px 1fr;gap:10px}
@@ -76,7 +76,7 @@
 .sa-field>span{font-size:12px;font-weight:600}
 /* 试画页（独立整页） */
 .sa-trial{min-height:100dvh;background:var(--c-f7f9fa);color:var(--c-24292c);padding:24px 28px 40px;font-size:13px}
-.sa-trial-head h1{font-size:22px;margin:0 0 4px}.sa-trial-head p{margin:0;color:var(--muted)}
+.sa-trial-head h1{font-size:24px;margin:0 0 4px}.sa-trial-head p{margin:0;color:var(--muted)}
 .sa-trial-controls{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-end;margin:18px 0 10px}
 .sa-trial-controls select{min-width:220px;max-width:360px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--c-fff);font:inherit;color:inherit}
 .sa-trial-status{margin:10px 0;color:var(--muted)}
