@@ -8,6 +8,7 @@ import { IssueList } from './IssueList';
 import { allObjects, loadObjects, objectLabel, type ScriptObjects } from './objects';
 import type { Binding, Issue, MapGraph, ObjectRef, RenderData, ScriptRequest } from './types';
 import { buildTree, displayPath, type GroupedProject, type Series } from '../series/model';
+import { applyTheme, readTheme } from '../theme';
 import './script-area.css';
 
 export const TRIAL_HASH = '#/script-map-trial';
@@ -37,6 +38,8 @@ export function TrialPage({ request }: { request: ScriptRequest }) {
   const ticket = useRef(0), sheet = useRef<HTMLDivElement>(null);
   const update = (next: Partial<Params>) => setParams(p => { const v = { ...p, ...next }; writeParams(v); return v; });
 
+  // 独立整页没有 App：自己套上这台电脑选的界面风格（不写回，不通知别的窗口）。
+  useEffect(() => { applyTheme(readTheme(), { syncIntake: false }); }, []);
   useEffect(() => { const sync = () => setParams(readParams()); window.addEventListener('hashchange', sync); return () => window.removeEventListener('hashchange', sync); }, []);
   useEffect(() => {
     let live = true;
