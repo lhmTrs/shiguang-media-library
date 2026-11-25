@@ -23,7 +23,7 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
   const state = {
     versions: [{ id: 'legacy-1', projectId, kind: 'legacy', versionNo: null, title: '迁移来的合成剧本', sourceId: 'src-legacy-1', draftRevision: 0, createdAt: t0 - 5 * 86_400_000, finalizedAt: null, content: '## 场一\n迁移时的合成正文。\n乙看向门口。' }],
     snapshots: [{ id: 'snap-1', projectId, kind: 'snapshot', title: '合成剧本', sourceId: 'fixture-a', draftRevision: 1, createdAt: t0 - 3600_000, content: '' }],
-    maps: [], materials: [], receipts: new Map(), materialText: new Map(),
+    maps: [], materials: [], receipts: new Map(), materialText: new Map(), materialBytes: new Map(),
   };
   // 一张草稿图（挂在快照上，标「基于较早的草稿」）和一张挂在迁移基线上的改动图
   const single = makeRenderData(readFixture('fixture_single'));
@@ -43,7 +43,10 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
     const headers = req.headers();
     log.push({ verb, path: url.pathname + url.search, libraryHeader: headers['x-shiguang-library-id'] ?? null, token: !!headers['x-local-token'], contentType: headers['content-type'] ?? null });
     if (!m) return fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这个接口');
-    if (headers['x-shiguang-library-id'] !== libraryId) return fail(route, 400, 'SCRIPT_INVALID_INPUT', '缺少库请求头');
+    // 合同 v1.1：只有浏览器直开的资料原件（GET/HEAD …/content）可以用地址里的 libraryId 代替请求头；两个都给就要一致。
+    const content = ['GET', 'HEAD'].includes(verb) && /\/materials\/[^/]+\/content$/.test(url.pathname), q = content ? url.searchParams.get('libraryId') : null, h = headers['x-shiguang-library-id'];
+    if (h && q && h !== q) return fail(route, 409, 'SCRIPT_SCOPE_CHANGED', '库身份不一致');
+    if ((h ?? q) !== libraryId) return fail(route, 400, 'SCRIPT_INVALID_INPUT', '缺少库请求头');
     if (decodeURIComponent(m[1]) !== projectId) return fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这个项目');
     if (verb !== 'GET' && !headers['x-local-token']) return fail(route, 403, 'LOCAL_FORBIDDEN', '本机会话校验失败');
     const rest = m[2] ?? '', body = verb === 'POST' && !String(headers['content-type'] ?? '').startsWith('multipart/') ? JSON.parse(req.postData() || '{}') : null;
@@ -95,7 +98,7 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
       if (!/\.(txt|docx|pdf)$/i.test(filename)) return fail(route, 415, 'SCRIPT_UNSUPPORTED_MEDIA', '不支持的文件类型');
       const id = 'mat-' + (state.materials.length + 1), txt = /\.txt$/i.test(filename);
       const mat = { id, projectId, ownerType, ownerId: ownerType === 'series' ? state.seriesId : projectId, originalFilename: filename, contentType: txt ? 'text/plain; charset=utf-8' : /\.pdf$/i.test(filename) ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', byteSize: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), createdAt: now(), updatedAt: now(), revision: 1, sourceId: txt ? 'src-' + id : null, downloadUrl: `/api/project-scripts/projects/${projectId}/materials/${id}/content?disposition=attachment&libraryId=${libraryId}`, previewUrl: /\.pdf$/i.test(filename) ? `/api/project-scripts/projects/${projectId}/materials/${id}/content?disposition=inline&libraryId=${libraryId}` : null };
-      state.materials.push(mat); if (txt) state.materialText.set(mat.sourceId, bytes.toString('utf8'));
+      state.materials.push(mat); state.materialBytes.set(id, bytes); if (txt) state.materialText.set(mat.sourceId, bytes.toString('utf8'));
       const out = { material: mat }; state.receipts.set('upload:' + requestId, { body: out });
       return json(route, 201, out);
     }
@@ -107,7 +110,7 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
     }
     if (verb === 'GET' && (x = rest.match(/^\/materials\/([^/]+)\/content$/))) {
       const mat = state.materials.find(m => m.id === x[1] && !m.deletedAt); if (!mat) return fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这份资料');
-      return route.fulfill({ status: 200, contentType: mat.contentType, body: state.materialText.get(mat.sourceId) ?? 'binary' });
+      return route.fulfill({ status: 200, contentType: mat.contentType, body: state.materialBytes.get(mat.id) });
     }
     if (verb === 'GET' && (x = rest.match(/^\/sources\/([^/]+)$/))) {
       const text = state.materialText.get(decodeURIComponent(x[1])); if (text == null) return fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这份来源');

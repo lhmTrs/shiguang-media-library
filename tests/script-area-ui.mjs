@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { createFakeBackend } from './fixtures/script-area/fake-backend.mjs';
+import { syntheticDocx } from './fixtures/script-area/synthetic-docx.mjs';
 
 const root = path.resolve(import.meta.dirname, '..'), fixtures = path.join(root, 'tests/fixtures/script-area');
 const shots = process.env.SCRIPT_AREA_SHOTS || '';
@@ -220,6 +221,19 @@ try {
     await expect(txtRow.getByRole('link', { name: '下载' })).toHaveAttribute('href', /disposition=attachment&libraryId=/);
   });
 
+  await check('甲方资料：DOCX 在页面里预览（docx-preview）；文档里的链接不跳转、不请求外部', async () => {
+    const mats = area().getByRole('region', { name: '甲方资料' });
+    await mats.getByLabel('选择要上传的甲方资料').setInputFiles({ name: '合成文学稿.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await syntheticDocx() });
+    await mats.getByRole('button', { name: '上传', exact: true }).click();
+    await expect(mats).toContainText('已上传「合成文学稿.docx」');
+    await mats.locator('.sa-material', { hasText: '合成文学稿.docx' }).getByRole('button', { name: '预览' }).click();
+    const doc = page.getByRole('document', { name: 'DOCX 预览：合成文学稿.docx' });
+    await expect(doc).toContainText('合成 DOCX 第一段'); await expect(doc).toContainText('外部链接');
+    assert.equal(await doc.locator('a[href]').count(), 0);
+    await shot('06b-docx-preview');
+    await page.getByRole('dialog', { name: '预览：合成文学稿.docx' }).getByRole('button', { name: '关闭' }).click();
+  });
+
   await check('甲方资料：移到全局 / 移回本集提示剧级影响；删除全局资料提示所有集都看不到；版本冲突刷新列表', async () => {
     const mats = area().getByRole('region', { name: '甲方资料' });
     await mats.locator('.sa-material', { hasText: '文学稿.txt' }).getByRole('button', { name: '移到全局' }).click();
@@ -228,7 +242,6 @@ try {
     await dlg.getByRole('button', { name: '移到全局' }).click();
     await expect(mats).toContainText('已移到全局资料');
     await expect(mats.locator('.sa-material', { hasText: '文学稿.txt' }).locator('.sa-chip')).toHaveText('全局');
-    await expect(mats).toContainText('本集还没有甲方资料');
     // 别处改过：版本对不上 → 冲突提示，列表刷新
     fake.state.materials.find(m => m.originalFilename === '人物小传.pdf').revision += 5;
     await mats.locator('.sa-material', { hasText: '人物小传.pdf' }).getByRole('button', { name: '删除' }).click();
@@ -241,7 +254,7 @@ try {
     await page.getByRole('alertdialog', { name: '删除甲方资料' }).getByRole('button', { name: '删除' }).click();
     await expect(mats).toContainText('已删除「人物小传.pdf」；泳道图里引用的 2 段摘录留着');
     await expect(mats).not.toContainText('人物小传.pdf' + 'PDF');
-    await expect(tab('甲方资料')).toContainText('1');
+    await expect(tab('甲方资料')).toContainText('2');
   });
 
   await check('单独项目：甲方资料只有本集，没有「放到全局资料」', async () => {

@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { readFixture } from './fixtures/script-area/make-render-data.mjs';
+import { syntheticDocx } from './fixtures/script-area/synthetic-docx.mjs';
 
 const root = path.resolve(import.meta.dirname, '..'), fixtures = path.join(root, 'tests/fixtures/script-area');
 const shots = process.env.SCRIPT_AREA_SHOTS || '';
@@ -93,6 +94,12 @@ try {
     await mats.getByRole('button', { name: '上传', exact: true }).click();
     await expect(mats).toContainText('放在全局资料里');
     await expect(mats.locator('.sa-material', { hasText: '合成人物小传.pdf' }).locator('.sa-chip')).toHaveText('全局');
+    await mats.getByLabel('选择要上传的甲方资料').setInputFiles({ name: '合成文学稿.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await syntheticDocx() });
+    await mats.getByRole('button', { name: '上传', exact: true }).click();
+    await expect(mats).toContainText('已上传「合成文学稿.docx」');
+    await mats.locator('.sa-material', { hasText: '合成文学稿.docx' }).getByRole('button', { name: '预览' }).click();
+    await expect(page.getByRole('document', { name: 'DOCX 预览：合成文学稿.docx' })).toContainText('合成 DOCX 第一段');
+    await page.getByRole('dialog', { name: '预览：合成文学稿.docx' }).getByRole('button', { name: '关闭' }).click();
     material = (await api(P + '/materials')).items.find(m => m.originalFilename === '合成文学稿.txt');
     assert.ok(material.sourceId);
     await shot('materials');

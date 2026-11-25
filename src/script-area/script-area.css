@@ -68,6 +68,10 @@
 .sa-line-no{color:var(--muted);font-size:11px;text-align:right;padding-top:2px;user-select:none}
 .sa-lines li>span:last-child{white-space:pre-wrap;overflow-wrap:anywhere}
 .sa-confirm{width:min(520px,100%)}
+.sa-preview .ca-modal-content{padding:0}
+.sa-preview .ca-modal-content>.sa-lines,.sa-preview .ca-modal-content>p{margin:22px}
+.sa-docx-body{overflow:auto;max-height:75dvh}
+.sa-docx-host>p{margin:22px}
 .sa-field{display:flex;flex-direction:column;gap:5px;min-width:0}
 .sa-field>span{font-size:12px;font-weight:600}
 /* 试画页（独立整页） */
