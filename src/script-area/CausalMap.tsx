@@ -23,14 +23,16 @@ export function mapHeading(data: RenderData) {
 
 /** 小卡片最终能看到的范围：离它最近的滚动容器和浏览器窗口的交集（阅读模式里就是细栏下面那一块）。 */
 function visibleArea(el: Element) {
-  let top = 0, bottom = window.innerHeight;
+  let top = 0, bottom = window.innerHeight, scroller: HTMLElement | null = null;
   for (let p = el.parentElement; p; p = p.parentElement) {
     const o = getComputedStyle(p).overflowY;
-    if (o === 'auto' || o === 'scroll' || o === 'hidden') { const r = p.getBoundingClientRect(); top = Math.max(top, r.top); bottom = Math.min(bottom, r.bottom); break; }
+    if (o === 'auto' || o === 'scroll' || o === 'hidden') { const r = p.getBoundingClientRect(); top = Math.max(top, r.top); bottom = Math.min(bottom, r.bottom); scroller = p; break; }
   }
-  return { top, bottom };
+  return { top, bottom, scroller };
 }
-type Pop = { id: string; left: number; top: number };
+const samePlace = (a: Place | null, b: Place) => !!a && a.left === b.left && a.top === b.top && a.width === b.width && a.maxHeight === b.maxHeight;
+type Pop = { id: string };
+type Place = { left: number; top: number; width: number; maxHeight: number };
 
 /** 「**重点**」加粗，其余一律当文字。 */
 function Gist({ text }: { text: string }) {
@@ -55,7 +57,7 @@ export function CausalMap({ data, openId, fit, bare = false }: Props) {
   const sourceByKey = useMemo(() => Object.fromEntries((data.sources || []).map(s => [s.key, s])), [data.sources]);
   const excerpts = useMemo(() => new Map((data.excerpts || []).map(e => [excerptKey(e.source, e.start, e.end), e])), [data.excerpts]);
   const board = useRef<HTMLDivElement>(null), popRef = useRef<HTMLDivElement>(null);
-  const [pop, setPop] = useState<Pop | null>(null);
+  const [pop, setPop] = useState<Pop | null>(null), [place, setPlace] = useState<Place | null>(null), [relayout, setRelayout] = useState(0);
   const arrow = 'sm-ar' + useId().replace(/[^a-zA-Z0-9]/g, '');
 
   const laneName = (id: string) => laneById[id]?.name ?? id;
@@ -75,24 +77,34 @@ export function CausalMap({ data, openId, fit, bare = false }: Props) {
   const minors = mode === 'diff' ? g.nodes.filter(n => n.change === 'minor') : [];
   const ais = mode === 'single' ? g.nodes.filter(n => n.ai).map(n => all[n.id]).filter(Boolean).sort((a, b) => (a.num ?? 0) - (b.num ?? 0)) : [];
 
-  function open(id: string, el: Element) {
-    const b = board.current; if (!b) return;
-    const br = b.getBoundingClientRect(), tr = el.getBoundingClientRect(), pw = Math.min(380, br.width - 12);
-    let left = tr.right - br.left + 10; if (left + pw > br.width) left = tr.left - br.left - pw - 10;
-    if (left < 0) left = Math.max(6, Math.min(br.width - pw - 6, tr.left - br.left));
-    setPop({ id, left, top: tr.top - br.top });
-  }
-  // 卡片要整个看得见：先不超出画板底部（模板同样的处理），再挪进看得见的范围（滚动区和窗口），挡不住也跑不出去
+  function open(id: string) { setPlace(null); setPop({ id }); }
+  // 小卡片挂在它的框上：每次打开、窗口或容器（画板、滚动区、阅读模式细栏换行后的正文区）尺寸一变，都按框的当前位置重算横纵位置；
+  // 宽度不超过画板，高度不超过看得见的范围，原文多了在卡片里滚动，标题行和关闭按钮一直在（PR155 独验 P2）。
   useLayoutEffect(() => {
     const b = board.current, p = popRef.current; if (!pop || !b || !p) return;
-    const ph = p.offsetHeight, br = b.getBoundingClientRect(), area = visibleArea(b);
-    let top = pop.top;
+    const el = b.querySelector(`[data-id="${CSS.escape(pop.id)}"]`); if (!el) return;
+    const br = b.getBoundingClientRect(), tr = el.getBoundingClientRect(), area = visibleArea(b);
+    const width = Math.round(Math.max(160, Math.min(380, br.width - 12)));
+    let left = tr.right - br.left + 10; if (left + width > br.width) left = tr.left - br.left - width - 10;
+    if (left < 0) left = Math.max(6, Math.min(br.width - width - 6, tr.left - br.left));
+    left = Math.round(Math.max(0, Math.min(left, br.width - width)));
+    const maxHeight = Math.max(120, Math.floor(area.bottom - area.top - 12));
+    // 高度按这一轮的宽度和限高量；宽度或限高刚变的话，下一轮会用新尺寸再量一次
+    const ph = Math.min(p.offsetHeight, maxHeight);
+    let top = tr.top - br.top;
     if (top + ph > br.height) top = Math.max(6, br.height - ph - 6);
-    const shownTop = br.top + top;
-    if (shownTop + ph > area.bottom - 6) top -= shownTop + ph - (area.bottom - 6);
+    if (br.top + top + ph > area.bottom - 6) top -= br.top + top + ph - (area.bottom - 6);
     if (br.top + top < area.top + 6) top = area.top + 6 - br.top;
-    top = Math.round(top);
-    if (top !== pop.top) setPop({ ...pop, top });
+    const next = { left, top: Math.round(top), width, maxHeight };
+    if (!samePlace(place, next)) setPlace(next);
+  }, [pop, place, relayout]);
+  useEffect(() => {
+    if (!pop) return;
+    const again = () => setRelayout(n => n + 1);
+    const ro = new ResizeObserver(again), b = board.current;
+    if (b) { ro.observe(b); const sc = visibleArea(b).scroller; if (sc) ro.observe(sc); }
+    window.addEventListener('resize', again);
+    return () => { ro.disconnect(); window.removeEventListener('resize', again); };
   }, [pop]);
   useEffect(() => {
     if (!pop) return;
@@ -104,13 +116,13 @@ export function CausalMap({ data, openId, fit, bare = false }: Props) {
   useEffect(() => setPop(null), [data]);
   useEffect(() => {
     if (!openId) return;
-    const el = board.current?.querySelector(`[data-id="${CSS.escape(openId)}"]`); if (el) open(openId, el);
+    if (board.current?.querySelector(`[data-id="${CSS.escape(openId)}"]`)) open(openId);
   }, [openId, data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nodeProps = (id: string, label: string) => ({
     className: 'sm-nd', 'data-id': id, role: 'button', tabIndex: 0, 'aria-label': label,
-    onClick: (e: React.MouseEvent<SVGGElement>) => { e.stopPropagation(); open(id, e.currentTarget); },
-    onKeyDown: (e: React.KeyboardEvent<SVGGElement>) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(id, e.currentTarget); } },
+    onClick: (e: React.MouseEvent<SVGGElement>) => { e.stopPropagation(); open(id); },
+    onKeyDown: (e: React.KeyboardEvent<SVGGElement>) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(id); } },
   });
 
   // 引文：服务器按 source+start+end 回填的原句；原件删了先说明这是存档摘录
@@ -149,7 +161,7 @@ export function CausalMap({ data, openId, fit, bare = false }: Props) {
       if (n.ai?.why) body.push(<div key="why" className="sm-sec"><b>为什么这样补：</b>{n.ai.why}</div>);
       if (n.ai?.unsure) body.push(<div key="unsure" className="sm-sec"><b>拿不准的地方：</b>{n.ai.unsure}</div>);
     }
-    return <>{<div className="sm-hd">{head}<button type="button" className="sm-x" title="关闭" aria-label="关闭" onClick={() => setPop(null)}>×</button></div>}{body}</>;
+    return <><div className="sm-hd">{head}<button type="button" className="sm-x" title="关闭" aria-label="关闭" onClick={() => setPop(null)}>×</button></div><div className="sm-pop-body">{body}</div></>;
   }
 
   const R = MAP_GEOMETRY.R;
@@ -193,7 +205,7 @@ export function CausalMap({ data, openId, fit, bare = false }: Props) {
         })}
         {delMarks.map(m => <g key={'del' + m.id} {...nodeProps(m.id, '删' + m.num + '：' + (all[m.id]?.label.join('') ?? ''))}><Pill cx={m.cx} cy={m.cy} label={'删' + m.num} cls="ghost"/></g>)}
       </svg>
-      {pop && <div className="sm-pop" ref={popRef} role="dialog" aria-label="原文" style={{ left: pop.left, top: pop.top }}>{popup(pop.id)}</div>}
+      {pop && <div className="sm-pop" ref={popRef} role="dialog" aria-label="原文" style={place ? { left: place.left, top: place.top, width: place.width, maxHeight: place.maxHeight } : { left: 0, top: 0, visibility: 'hidden' }}>{popup(pop.id)}</div>}
     </div></div>
     <div className="sm-notes">
       {mode === 'diff' ? <>
