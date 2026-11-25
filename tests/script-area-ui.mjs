@@ -322,6 +322,15 @@ try {
     await area().getByRole('button', { name: '打开泳道图：合成样例 · 单版', exact: true }).click();   // 最早的那张，在第二页
     await expect(area().locator('.sm-sheet svg')).toBeVisible();
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+    // 一直读不到一致的列表（每次读总数都在变）：保留上次正确的 101 张，给出「重试」，稳定后重试恢复
+    fake.state.churnMaps = 1;
+    await tab('泳道图').click();
+    await expect(area().getByRole('alert')).toContainText('列表在读取的时候又有变化');
+    await expect(cards).toHaveCount(101);
+    const ids = await area().locator('[data-map-id]').evaluateAll(els => els.map(e => e.dataset.mapId)); assert.equal(new Set(ids).size, ids.length);
+    fake.state.churnMaps = 0;
+    await area().getByRole('alert').getByRole('button', { name: '重试' }).click();
+    await expect(area().getByRole('alert')).toHaveCount(0); await expect(cards).toHaveCount(101);
     fake.state.versions = savedVersions; fake.state.maps = savedMaps;
     await page.reload(); await expect(area()).toBeVisible();
   });

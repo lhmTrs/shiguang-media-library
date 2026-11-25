@@ -74,7 +74,11 @@ export function createFakeBackend({ origin, cookie, libraryId, projectId, now = 
     }
     if (verb === 'GET' && rest === '/draft/snapshots') return json(route, 200, page(state.snapshots.map(summary), url));
     if (verb === 'GET' && (x = rest.match(/^\/draft\/snapshots\/([^/]+)$/))) { const v = state.snapshots.find(v => v.id === x[1]); return v ? json(route, 200, v) : fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这份快照'); }
-    if (verb === 'GET' && rest === '/maps') return json(route, 200, page(state.maps.map(x => x.map).sort((a, b) => b.createdAt - a.createdAt), url));
+    if (verb === 'GET' && rest === '/maps') {
+      const body = page(state.maps.map(x => x.map).sort((a, b) => b.createdAt - a.createdAt), url);
+      if (state.churnMaps) body.total += ++state.churnMaps; // 模拟一直有新图入库：每次读总数都不一样
+      return json(route, 200, body);
+    }
     if (verb === 'GET' && (x = rest.match(/^\/maps\/([^/]+)$/))) { const d = state.maps.find(e => e.map.id === x[1]); return d ? json(route, 200, d) : fail(route, 404, 'SCRIPT_NOT_FOUND', '没有这张图'); }
     if (verb === 'POST' && rest === '/maps/dry-run') {
       state.dryRuns = (state.dryRuns ?? 0) + 1;

@@ -19,6 +19,7 @@ function Sameness({ text }: { text: string }) {
 export function useMapList(request: ScriptRequest, projectId: string, active: boolean, reload: number) {
   const [state, setState] = useState<{ projectId: string; items: MapSummary[]; total: number; error: string; loading: boolean }>({ projectId, items: [], total: 0, error: '', loading: false });
   const [want, setWant] = useState({ projectId, count: 100 });
+  const [retry, setRetry] = useState(0);
   const count = want.projectId === projectId ? want.count : 100;
   useEffect(() => {
     if (!active || !projectId) return;
@@ -28,9 +29,11 @@ export function useMapList(request: ScriptRequest, projectId: string, active: bo
       .then(r => setState({ projectId, items: r.items, total: r.total, error: '', loading: false }))
       .catch(e => { if (!c.signal.aborted) setState(s => ({ ...s, loading: false, error: errorText(e) })); });
     return () => c.abort();
-  }, [request, projectId, active, reload, count]);
+  }, [request, projectId, active, reload, count, retry]);
   const loadMore = useCallback(() => setWant({ projectId, count: count + 100 }), [projectId, count]);
-  return { ...(state.projectId === projectId ? state : { projectId, items: [], total: 0, error: '', loading: true }), loadMore };
+  const again = useCallback(() => setRetry(n => n + 1), []);
+  // 读失败（包括读不到一致的列表）时保留上次正确的列表，不把半截结果放上去
+  return { ...(state.projectId === projectId ? state : { projectId, items: [], total: 0, error: '', loading: true }), loadMore, retry: again };
 }
 
 function kindText(m: MapSummary, d: MapDetail | undefined) {
@@ -104,12 +107,12 @@ export function MapsTab({ projectId, request, list, currentDigest, onBack }: { p
   </section>;
 
   return <section className="sa-maps" aria-label="泳道图列表">
-    {list.error && <p className="ca-alert" role="alert">泳道图列表没有读到：{list.error}</p>}
+    {list.error && <p className="ca-alert" role="alert">泳道图列表没有读到：{list.error}{list.items.length > 0 && '。下面还是上次读到的列表'}　<button type="button" disabled={list.loading} onClick={list.retry}>重试</button></p>}
     {list.loading && !list.items.length ? <p className="sa-empty-line">正在读取泳道图…</p> : !maps.length ? <p className="sa-empty-line" role="status">
       <b>这一集还没有泳道图。</b>泳道图由 agent 读剧本后画好传上来，这里只看不改。
     </p> : <ul className="sa-map-cards">{maps.map(m => {
       const d = details[keyOf(m.id)], detail = d && 'map' in d ? d : undefined;
-      return <li key={m.id}><button type="button" className="sa-map-card" onClick={() => openMap(m.id)} aria-label={'打开泳道图：' + (m.title || '未命名')}>
+      return <li key={m.id}><button type="button" className="sa-map-card" data-map-id={m.id} onClick={() => openMap(m.id)} aria-label={'打开泳道图：' + (m.title || '未命名')}>
         <span className="sa-map-kind">{kindText(m, detail)}</span>
         <strong>{m.title || '未命名泳道图'}</strong>
         <small className="sa-map-on">画在 {detail ? boundLabel(detail.renderData.binding.target) : '…'}<Sameness text={sameness(m.binding.target)}/></small>

@@ -347,6 +347,36 @@ try {
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
   });
 
+  await check('真接口回归（PR156 独验 P2-3）：翻页途中有新图入库，列表不重复、不漏，新图看得见；再刷新也没有残留', async () => {
+    await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    const cards = area().locator('[data-map-id]'), unique = async () => { const ids = await cards.evaluateAll(els => els.map(e => e.dataset.mapId)); return { n: ids.length, distinct: new Set(ids).size }; };
+    await area().getByRole('button', { name: /^再显示后面的/ }).click();
+    const before = (await api(P + '/maps?limit=1')).total;
+    await expect(cards).toHaveCount(before);
+    const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
+    const newTitle = '翻页途中新入库的图';
+    // 下一次刷新的第一页：先从真后端拿到回包（这时还是 before 张），再真的登记一张新图，然后才把这份旧的第一页交给页面
+    let done = false;
+    const firstPage = url => url.pathname === `/api${P}/maps` && url.searchParams.get('offset') === '0' && url.searchParams.get('limit') === '100';
+    const hold = async route => {
+      if (done) return route.fallback(); done = true;
+      const response = await route.fetch();
+      await api(P + '/maps', { binding: { before: { kind: 'snapshot', id: snap1.id }, target: { kind: 'snapshot', id: snap2.id } }, graph: { ...diff, title: newTitle }, requestId: rid() });
+      await route.fulfill({ response });
+    };
+    await page.route(firstPage, hold);
+    await tab('泳道图').click();
+    await expect.poll(() => done).toBe(true);
+    await expect(cards).toHaveCount(before + 1);
+    assert.deepEqual(await unique(), { n: before + 1, distinct: before + 1 }, '卡片 id 都不重复');
+    await expect(area().getByRole('button', { name: '打开泳道图：' + newTitle })).toBeVisible();
+    await expect(tab('泳道图')).toContainText(String(before + 1));
+    await page.unroute(firstPage, hold);
+    await tab('泳道图').click();
+    await expect(cards).toHaveCount(before + 1);
+    assert.deepEqual(await unique(), { n: before + 1, distinct: before + 1 }, '再刷新也没有残留的重复卡片');
+  });
+
   assert.deepEqual(errors, [], '页面没有报错');
   assert.deepEqual(external, [], '没有外部请求');
   passed = true;
