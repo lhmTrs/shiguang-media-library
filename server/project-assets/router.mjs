@@ -10,6 +10,7 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     guard();res.json({clip:await store.voices.upload(store.get(id),req.body,guard)});
   }));
   router.put('/image-imports/:id/content',asyncRoute(async(req,res)=>{if(!req.is('application/octet-stream'))return res.status(415).json({error:'请发送所选图片原文件'});res.json(await store.imageImports.upload(req.params.id,req));}));
+  router.post('/restore',express.json({limit:'128mb'}),asyncRoute(async(req,res)=>res.json(await store.restore(req.body))));
   router.use(express.json({ limit: '8mb' }));
   const route = (method, url, fn) => router[method](url, asyncRoute(async (req, res) => res.json(await fn(req))));
   route('post','/image-imports',req=>store.imageImports.start(req.body));
@@ -134,7 +135,7 @@ export function projectAssetRouter(store, asyncRoute, {rememberTarget=async()=>{
     await streamImage(file,b.expected_sha256,res);
   }));
   route('get', '/backup', () => store.backup());
-  route('post', '/restore', req => store.restore(req.body));
+
   router.use((_req, res) => res.status(404).json({ error: '资产库接口不存在' }));
   router.use((error, _req, res, next) => { if (res.headersSent) return next(error); res.status(error.status ?? 500).json({ error: error.status ? error.message : '资产库操作失败，未确认保存；请保留编辑并重试', ...(error.status&&error.code ? {code:error.code} : {}), ...(Number.isSafeInteger(error.current_revision) ? { current_revision: error.current_revision } : {}), ...(error.status === 409 && error.current ? { current: error.current } : {}), ...(error.status && error.details ? { details: error.details } : {}) }); });
   return router;

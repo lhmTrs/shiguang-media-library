@@ -3,13 +3,13 @@ import {exact,fault,uuid} from './store.mjs';
 
 // Internal business calls traverse the same HTTP session, token, Host and module guards
 // as a human UI action. Neither model arguments nor documents choose this origin.
-function businessInvoker(req){
+function businessInvoker(req,libraryId){
   const port=req.socket.localPort;if(!Number.isInteger(port)||port<1)throw fault('无法确认本机业务服务',503);
   const origin='http://127.0.0.1:'+port,cookie=req.headers.cookie,token=req.headers['x-local-token'];
   return async(method,url,body)=>{
     if(!['GET','POST','PUT','PATCH','DELETE'].includes(method)||typeof url!=='string'||!url.startsWith('/api/')||/[\r\n\\#]/.test(url)||url.startsWith('/api/concierge'))throw fault('业务接口调用地址无效',403);
     const target=new URL(url,origin);if(target.origin!==origin)throw fault('业务调用超出本机范围',403);
-    const response=await fetch(target,{method,headers:{cookie:cookie??'',origin,'x-local-token':token??'','content-type':'application/json'},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000),redirect:'error'});
+    const response=await fetch(target,{method,headers:{cookie:cookie??'',origin,'x-local-token':token??'','content-type':'application/json',...(libraryId?{'x-shiguang-library-id':libraryId}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000),redirect:'error'});
     const chunks=[];let size=0;for await(const chunk of response.body??[]){size+=chunk.length;if(size>1024*1024)throw fault('业务结果过大，请缩小查询范围',413);chunks.push(chunk);}const raw=Buffer.concat(chunks).toString('utf8');
     let value;try{value=JSON.parse(raw);}catch{throw fault('业务接口未返回有效结果',502);}
     if(!response.ok)throw fault(value.error||value.message||'业务操作未完成',response.status,value.code||'CONCIERGE_BUSINESS_FAILED');return value;
@@ -28,7 +28,7 @@ export function conciergeRouter(service,{sendMedia,withActivity=fn=>fn()}={}){
   route('get','/tasks',(req,res)=>res.json(service.listTasks(req.query.scope??'all')));
   route('get','/tasks/:id',(req,res)=>res.json({task:service.task(req.params.id,scope(req))}));
   route('post','/turns',async(req,res)=>{
-    try{res.status(202).json(await service.start(req.body,businessInvoker(req)));}
+    try{res.status(202).json(await service.start(req.body,businessInvoker(req,service.store.lib.scriptArea?.libraryId())));}
     catch(e){if(uuid(req.body?.id)){try{if(!service.store.rawTask(req.body.id)){e.conciergeNotAccepted=true;e.conciergeRequestId=req.body.id;}}catch{}}throw e;}
   });
   route('post','/tasks/:id/stop',async(req,res)=>{exact(req.body,['scope']);res.json(await service.stop(req.params.id,scope(req)));});

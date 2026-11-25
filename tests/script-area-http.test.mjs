@@ -1,0 +1,54 @@
+import {createShutdownClient} from '../scripts/shutdown-client.mjs';
+import {readShutdownReceipt} from '../server/application-shutdown.mjs';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import net from 'node:net';
+import {once} from 'node:events';
+import {spawn} from 'node:child_process';
+import {randomUUID} from 'node:crypto';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const bounded=async(p,ms)=>{let timer;try{return await Promise.race([p,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('OWNED_OPERATION_TIMEOUT')),ms))]);}finally{clearTimeout(timer);}};
+test('actual isolated App authentication, library binding, multipart, PDF navigation/HEAD and concurrent version confirmation',{timeout:60000},async t=>{
+ const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'script-area-http-'))),data=path.join(dir,'data'),home=path.join(dir,'home');await fs.mkdir(data);await fs.mkdir(home);
+ const listener=net.createServer();listener.listen(0,'127.0.0.1');await once(listener,'listening');const port=listener.address().port;assert.ok(![4317,3306].includes(port));await new Promise(r=>listener.close(r));
+ const origin='http://127.0.0.1:'+port,child=spawn(process.execPath,['server/index.mjs'],{env:{...process.env,HOME:home,USERPROFILE:home,LOCALAPPDATA:path.join(home,'local'),MEDIA_DATA_DIR:data,MEDIA_PERSONAL_ITEM_DIR:path.join(dir,'personal'),MEDIA_UPDREAM_QUEUE_DIR:path.join(dir,'empty-queue'),SHIGUANG_CLOUD_RELEASE_CONFIG:path.join(dir,'no-release.json'),MEDIA_SKIP_IMPORT:'1',MEDIA_SKIP_RECONCILE:'1',MEDIA_NO_WATCH:'1',MEDIA_CODEX_AUTOCONNECT:'0',MEDIA_DISABLE_DESKTOP_NATIVE:'1',SHIGUANG_AUDIO_ANALYSIS:'0',CONTAINER:'1',PORT:String(port)},stdio:['ignore','pipe','pipe'],windowsHide:true});let logs='';for(const stream of [child.stdout,child.stderr])stream.on('data',b=>logs=(logs+b).slice(-15000));const exited=once(child,'exit');let ended=false;child.once('exit',()=>ended=true);
+ t.after(async()=>{if(!ended){if(process.platform==='win32'){
+  if(!record?.runId){child.unref();child.stdout.unref();child.stderr.unref();throw Error('OWNED_APP_IDENTITY_UNKNOWN: retained without force');}
+  const receiptRoot=await fs.realpath(path.join(data,record.receiptDirectory));
+  const trace=[];const client=createShutdownClient({budgetMs:30000,fetchImpl:async(url,options)=>{const response=await fetch(url,options);trace.push({path:new URL(url).pathname,status:response.status});return response;},readReceipt:async()=>{try{return await readShutdownReceipt(receiptRoot);}catch(e){t.diagnostic('RECEIPT_READ_REFUSED '+(e.code??'UNKNOWN'));throw e;}}});
+  const receipt=await client.stop({url:origin,libraryId:record.instanceId,runId:record.runId,requestId:randomUUID()});
+  if(receipt.phase!=='CLOSED_KNOWN'){child.unref();child.stdout.unref();child.stderr.unref();t.diagnostic(JSON.stringify({shutdownTrace:trace}));throw Error('OWNED_APP_CLOSE_UNKNOWN: retained without force');}
+ }else child.kill('SIGTERM');}assert.deepEqual(await bounded(exited,25000),[0,null],'owned app normal exit required');await fs.rm(dir,{recursive:true,force:true});});
+ let record;for(let n=0;n<300;n++){if(ended)throw Error('OWNED_APP_START_FAILED '+logs.slice(-2000));try{record=JSON.parse(await fs.readFile(path.join(data,'server.json'),'utf8'));if(record.pid===child.pid)break;}catch{}await sleep(50);}assert.equal(record?.port,port);assert.equal(record.url,origin);
+ const sr=await fetch(origin+'/api/session'),session=await sr.json(),cookie=sr.headers.get('set-cookie').split(';')[0],headers={cookie,origin,'x-local-token':session.token,'x-shiguang-library-id':session.instanceId};
+ const call=async(url,{method='GET',body,extra={}}={})=>{const form=body instanceof FormData;const r=await fetch(origin+url,{method,headers:{...headers,...(!form&&body!==undefined?{'content-type':'application/json'}:{}),...extra},...(body===undefined?{}:{body:form?body:JSON.stringify(body)})});return r;};
+ let r=await call('/api/projects',{method:'POST',body:{name:'HTTP合成剧本'}}),p=(await r.json()).id;assert.ok(p);const P='/api/project-scripts/projects/'+p;
+ assert.equal((await fetch(origin+P+'/draft')).status,401);
+ assert.equal((await fetch(origin+P+'/draft',{headers:{cookie}})).status,400);
+ assert.equal((await call(P+'/draft',{extra:{'x-shiguang-library-id':'other'}})).status,409);
+ r=await call('/api/project-assets/projects/'+p+'/script',{method:'PUT',body:{title:'合成',content:'第一行合成正文\n第二行正文',expected_revision:0}});assert.equal(r.status,200);
+ const d=await (await call(P+'/draft')).json(),input={expected_revision:d.revision,contentDigest:d.contentDigest,requestId:randomUUID()};
+ const confirmations=await Promise.all([call(P+'/versions',{method:'POST',body:input}),call(P+'/versions',{method:'POST',body:input})]);assert.deepEqual(confirmations.map(r=>r.status).sort(),[200,201]);const [v1,v2]=await Promise.all(confirmations.map(r=>r.json()));assert.equal(v1.version.id,v2.version.id);assert.equal(v1.version.versionNo,1);
+ assert.equal((await call(P+'/versions',{method:'POST',body:{...input,requestId:randomUUID()},extra:{'x-local-token':'wrong'}})).status,403);
+ const pdf=Buffer.from('%PDF-1.4\n% synthetic private fixture\n%%EOF'),form=new FormData();form.set('file',new Blob([pdf],{type:'application/pdf'}),'合成 🎬.pdf');form.set('requestId',randomUUID());
+ r=await call(P+'/materials',{method:'POST',body:form});assert.equal(r.status,201,await r.clone().text());const material=(await r.json()).material;assert.ok(!material.downloadUrl.includes('token'));assert.ok(material.previewUrl.startsWith(P));
+ r=await fetch(origin+material.previewUrl,{headers:{cookie}});assert.equal(r.status,200);assert.equal(r.headers.get('content-type'),'application/pdf');assert.equal(r.headers.get('x-frame-options'),'DENY');assert.match(r.headers.get('content-disposition'),/^inline;/);assert.deepEqual(Buffer.from(await r.arrayBuffer()),pdf);
+ r=await fetch(origin+material.downloadUrl,{method:'HEAD',headers:{cookie}});assert.equal(r.status,200);assert.equal(r.headers.get('content-length'),String(pdf.length));assert.equal((await r.arrayBuffer()).byteLength,0);
+ assert.equal((await fetch(origin+material.downloadUrl,{headers:{cookie,'x-shiguang-library-id':'other'}})).status,409);
+ assert.equal((await call(P+'/draft?libraryId='+session.instanceId,{extra:{'x-shiguang-library-id':''}})).status,409);
+ const graph={schemaVersion:1,kind:'single',title:'合成图',sources:[{key:'a',sourceId:v1.version.id}],lanes:[{id:'a',name:'甲',hero:true}],nodes:[{id:'n',lane:'a',row:1,kind:'self',label:['合成'],refs:[{source:'a',start:1,quote:'合成正文'}]}],edges:[]},mapInput={binding:{target:{kind:'version',id:v1.version.id}},graph,requestId:randomUUID()};
+ r=await call(P+'/maps/dry-run',{method:'POST',body:mapInput});assert.equal(r.status,200,await r.clone().text());assert.equal((await (await call(P+'/maps')).json()).total,0);assert.ok(!JSON.stringify(await r.json()).includes('"quote":'));
+ r=await call(P+'/maps',{method:'POST',body:mapInput});assert.equal(r.status,201);const map=await r.json();assert.equal((await (await call(P+'/maps/requests/'+mapInput.requestId)).json()).map.id,map.map.id);
+ const beforeMaps=(await (await call(P+'/maps')).json()).total;
+ const badSingle={...structuredClone(mapInput),requestId:randomUUID()};badSingle.graph.versions={v1:{quote:'SYNTHETIC_QUOTE_SHOULD_NOT_PERSIST'}};
+ for(const route of ['/maps/dry-run','/maps']){const rejected=await call(P+route,{method:'POST',body:badSingle});assert.equal(rejected.status,422);const error=await rejected.json();assert.equal(error.code,'SCRIPT_MAP_INVALID');assert.ok(error.issues.some(i=>i.path==='graph.versions'&&i.severity==='error'));assert.ok(!('renderData' in error));}
+ assert.equal((await (await call(P+'/maps')).json()).total,beforeMaps);assert.equal((await call(P+'/maps/requests/'+badSingle.requestId)).status,404);
+ const ownBackup=await (await call('/api/project-assets/backup')).json();const restored=await call('/api/project-assets/restore',{method:'POST',body:ownBackup});assert.equal(restored.status,200,await restored.clone().text());
+ const malformed=await call(P+'/maps/dry-run',{method:'POST',body:{...mapInput,graph:null}});assert.equal(malformed.status,422);assert.ok((await malformed.json()).issues);
+ // A: public agent guide and capability catalog omit a finalization action.
+ const guide=await (await fetch(origin+'/api/projects/'+p+'/agent-guide')).text();assert.match(guide,/Agent 不许代为定稿/);
+ const caps=await (await call('/api/concierge/capabilities?scope='+p)).text();assert.ok(caps.includes('scripts.snapshot'));assert.ok(!caps.includes('scripts.finalize'));
+});

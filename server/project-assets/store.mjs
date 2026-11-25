@@ -1,3 +1,4 @@
+import {areaBackup,validateAreaBackup,restoreAreaBackup} from '../project-scripts/backup.mjs';
 import {platformWords} from '../platform-words.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -22,8 +23,8 @@ import { validateScopedAssetBackup } from './scoped-backup.mjs';
 const parse = value => JSON.parse(value);
 const PUBLIC_KEY = 'creative-public';
 const active = row => row.archived_at === null;
-const backupContent = ({ tables, projects, project_scripts, project_attributes, project_series }) => ({
-  tables, projects, ...(project_scripts !== undefined && { project_scripts }),
+const backupContent = ({ tables, projects, project_scripts, script_area, project_attributes, project_series }) => ({
+  tables, projects, ...(script_area !== undefined && { script_area }), ...(project_scripts !== undefined && { project_scripts }),
   ...(project_attributes !== undefined && { project_attributes }),
   ...(project_series !== undefined && { project_series }),
 });
@@ -320,7 +321,7 @@ export class ProjectAssets {
   // Internal caller already owns the one transaction; never start a nested one.
   backupInTransaction() {
     const tables = this.snapshot(), projects = this.db.prepare('SELECT id,name,software,note,created_at,updated_at,project_kind,system_key FROM media_projects ORDER BY id').all();
-    const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), project_attributes: snapshotAttributes(this.db), project_series: this.lib.projectSeries ? snapshotSeries(this.db) : undefined });
+    const data = backupContent({ tables, projects, project_scripts: this.scripts?.snapshot(), script_area: this.scripts?.area ? areaBackup(this.scripts.area) : undefined, project_attributes: snapshotAttributes(this.db), project_series: this.lib.projectSeries ? snapshotSeries(this.db) : undefined });
     return { format: 'shiguang-creative-backup', schema_version: creativeSchemaVersion, ...data, checksum: digest(data) };
   }
   validateBackup(input) {
@@ -356,6 +357,7 @@ export class ProjectAssets {
       if (!this.lib.projectSeries) throw fault('剧集目录尚未就绪，未恢复备份');
       validateSeriesBackup(input.project_series, input.projects);
     }
+    if(Object.hasOwn(input,'script_area')){if(!this.scripts?.area)throw fault('剧本区模块未就绪');validateAreaBackup(this.scripts.area,input.script_area,input.projects,input.project_series);}
     this.scripts?.validateRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[],input.projects);
     for (const [table, columns] of Object.entries(CREATIVE_TABLES)) {
       const rows = input.tables[table], ids = new Set(); if (!Array.isArray(rows) || rows.length > 100000) throw fault('备份表数量无效');
@@ -457,7 +459,8 @@ export class ProjectAssets {
         normalize(a);
       }
       for (const table of ['creative_looks', 'creative_image_bindings', 'creative_asset_versions']) for (const r of input.tables[table]) this.head(r.asset_id);
-      this.scripts?.restoreRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[]);
+      this.scripts?.restoreRows(Object.hasOwn(input,'project_scripts')?input.project_scripts:[],{legacy:!input.script_area});
+      if(input.script_area)restoreAreaBackup(this.scripts.area,input.script_area);
       restoreAttributes(this.db, input.project_attributes);
       return { restored: true, assets: input.tables.creative_assets.length };
   }

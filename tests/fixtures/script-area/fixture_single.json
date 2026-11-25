@@ -1,0 +1,216 @@
+{
+ "schemaVersion": 1,
+ "kind": "single",
+ "title": "合成样例 · 单版",
+ "madeBy": "开发统筹手写的合成样例",
+ "sources": [
+  {
+   "key": "A",
+   "sourceId": "fixture-a",
+   "label": "合成剧本（单版用）"
+  }
+ ],
+ "lanes": [
+  {
+   "id": "clue",
+   "name": "线索与画面"
+  },
+  {
+   "id": "yi",
+   "name": "乙"
+  },
+  {
+   "id": "jia",
+   "name": "甲",
+   "hero": true
+  },
+  {
+   "id": "bing",
+   "name": "丙"
+  }
+ ],
+ "bands": [
+  {
+   "row": 1,
+   "label": "1-1 书房 · 夜"
+  },
+  {
+   "row": 6,
+   "label": "1-2 泳池 · 日"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "n1",
+   "lane": "jia",
+   "row": 2,
+   "kind": "self",
+   "label": [
+    "举杯：好日子"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 3,
+     "quote": "今天是好日子。"
+    }
+   ]
+  },
+  {
+   "id": "n2",
+   "lane": "yi",
+   "row": 2,
+   "kind": "seen",
+   "label": [
+    "率先喝酒"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 4,
+     "quote": "乙（率先喝酒）"
+    }
+   ]
+  },
+  {
+   "id": "n3",
+   "lane": "yi",
+   "row": 3,
+   "kind": "seen",
+   "label": [
+    "看向门口"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 5,
+     "quote": "乙放下杯子，看向"
+    }
+   ]
+  },
+  {
+   "id": "n6",
+   "lane": "clue",
+   "row": 3,
+   "kind": "seen",
+   "label": [
+    "毒在他杯里？"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 4,
+     "quote": "乙（率先喝酒）"
+    },
+    {
+     "source": "A",
+     "start": 6,
+     "quote": "甲喝下，突然咳嗽"
+    }
+   ],
+   "ai": {
+    "what": "毒下在甲的杯里，乙先喝让他放心",
+    "why": "两人都喝了，只有甲发作。",
+    "unsure": "剧本没写谁下的毒。"
+   }
+  },
+  {
+   "id": "n4",
+   "lane": "jia",
+   "row": 3,
+   "kind": "self",
+   "label": [
+    "喝下，咳嗽"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 6,
+     "quote": "甲喝下，突然咳嗽"
+    }
+   ]
+  },
+  {
+   "id": "n5",
+   "lane": "bing",
+   "row": 4,
+   "kind": "seen",
+   "label": [
+    "暗门走出",
+    "质问甲"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 7,
+     "end": 8,
+     "quote": "丙从暗门后走出。"
+    }
+   ]
+  },
+  {
+   "id": "n7",
+   "lane": "jia",
+   "row": 5,
+   "kind": "self",
+   "label": [
+    "倒地"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 9,
+     "quote": "甲倒地。"
+    }
+   ]
+  },
+  {
+   "id": "n8",
+   "lane": "jia",
+   "row": 7,
+   "kind": "self",
+   "label": [
+    "水下睁眼"
+   ],
+   "refs": [
+    {
+     "source": "A",
+     "start": 11,
+     "quote": "甲在水下睁眼。"
+    }
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "from": "n1",
+   "to": "n4"
+  },
+  {
+   "from": "n2",
+   "to": "n6"
+  },
+  {
+   "from": "n6",
+   "to": "n4",
+   "route": "hv",
+   "offset": 0.5
+  },
+  {
+   "from": "n3",
+   "to": "n5"
+  },
+  {
+   "from": "n4",
+   "to": "n7"
+  },
+  {
+   "from": "n5",
+   "to": "n7"
+  },
+  {
+   "from": "n7",
+   "to": "n8"
+  }
+ ]
+}
