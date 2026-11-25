@@ -56,3 +56,19 @@ test('publication rollback exposes no material or receipt, retry preserves origi
  const material=f.area.upload(f.p,input,bytes).material;assert.deepEqual(f.area.files.read(material.id,material.sha256),bytes);assert.equal(f.area.materials(f.p).total,1);
  const backup=f.store.backup();delete backup.script_area;const {checksum,...data}=backup;backup.checksum=digest({tables:data.tables,projects:data.projects,project_scripts:data.project_scripts,project_attributes:data.project_attributes,project_series:data.project_series});await f.store.restore(backup);assert.equal(f.area.materials(f.p).total,1);assert.deepEqual(f.area.files.read(material.id,material.sha256),bytes);
 });
+
+test('single/diff branch closure rejects ignored nested structures without preview/map/receipt writes; own backups restore both valid kinds',async t=>{
+ const f=await setup(t),single=await mapped(f,'fixture_single'),diff=await mapped(f,'fixture_diff');
+ const variants=[
+  [single,g=>{g.versions={v1:{quote:'SYNTHETIC_QUOTE_SHOULD_NOT_PERSIST'}};},'graph.versions'],
+  [single,g=>{g.versions=null;},'graph.versions'],
+  [single,g=>{g.versions={};},'graph.versions'],
+  [single,g=>{g.bands=null;},'graph.bands'],
+  [single,g=>{g.nodes[0].refs[0].end=null;},'graph.nodes[0].refs[0]'],
+  [diff,g=>{g.versions.v1.quote='SYNTHETIC_QUOTE_SHOULD_NOT_PERSIST';},'graph.versions.v1.quote'],
+  [diff,g=>{delete g.versions.v2;},'graph.versions.v2'],
+  [diff,g=>{g.versions.v1={label:'合成',source:'V1',nested:{quote:'SYNTHETIC'}};},'graph.versions.v1.nested']
+ ];
+ for(const [valid,mutate,path] of variants){const input=structuredClone(valid);input.requestId=randomUUID();mutate(input.graph);const match=e=>e.code==='SCRIPT_MAP_INVALID'&&e.issues.some(i=>i.path===path&&i.severity==='error');assert.ok(validateScriptMap(input.graph).issues.some(i=>i.path===path&&i.severity==='error'));const before=digest(areaBackup(f.area));assert.throws(()=>f.area.render(f.p,input),match);assert.throws(()=>f.area.createMap(f.p,input),match);assert.equal(digest(areaBackup(f.area)),before);assert.throws(()=>f.area.mapRequest(f.p,input.requestId),e=>e.status===404);}
+ const maps=[single,diff].map(input=>f.area.createMap(f.p,input));const backup=f.store.backup();assert.ok(f.store.validateBackup(backup));const fresh=await fixture(t);fresh.db.prepare('UPDATE media_projects SET name=name||? WHERE project_kind=?').run(' branch restore','normal');await fresh.store.restore(backup);for(const m of maps)assert.deepEqual(fresh.area.mapRead(f.p,m.map.id).renderData,f.area.mapRead(f.p,m.map.id).renderData);assert.ok(fresh.store.validateBackup(fresh.store.backup()));
+});

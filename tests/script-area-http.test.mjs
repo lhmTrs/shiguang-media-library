@@ -42,6 +42,11 @@ test('actual isolated App authentication, library binding, multipart, PDF naviga
  const graph={schemaVersion:1,kind:'single',title:'合成图',sources:[{key:'a',sourceId:v1.version.id}],lanes:[{id:'a',name:'甲',hero:true}],nodes:[{id:'n',lane:'a',row:1,kind:'self',label:['合成'],refs:[{source:'a',start:1,quote:'合成正文'}]}],edges:[]},mapInput={binding:{target:{kind:'version',id:v1.version.id}},graph,requestId:randomUUID()};
  r=await call(P+'/maps/dry-run',{method:'POST',body:mapInput});assert.equal(r.status,200,await r.clone().text());assert.equal((await (await call(P+'/maps')).json()).total,0);assert.ok(!JSON.stringify(await r.json()).includes('"quote":'));
  r=await call(P+'/maps',{method:'POST',body:mapInput});assert.equal(r.status,201);const map=await r.json();assert.equal((await (await call(P+'/maps/requests/'+mapInput.requestId)).json()).map.id,map.map.id);
+ const beforeMaps=(await (await call(P+'/maps')).json()).total;
+ const badSingle={...structuredClone(mapInput),requestId:randomUUID()};badSingle.graph.versions={v1:{quote:'SYNTHETIC_QUOTE_SHOULD_NOT_PERSIST'}};
+ for(const route of ['/maps/dry-run','/maps']){const rejected=await call(P+route,{method:'POST',body:badSingle});assert.equal(rejected.status,422);const error=await rejected.json();assert.equal(error.code,'SCRIPT_MAP_INVALID');assert.ok(error.issues.some(i=>i.path==='graph.versions'&&i.severity==='error'));assert.ok(!('renderData' in error));}
+ assert.equal((await (await call(P+'/maps')).json()).total,beforeMaps);assert.equal((await call(P+'/maps/requests/'+badSingle.requestId)).status,404);
+ const ownBackup=await (await call('/api/project-assets/backup')).json();const restored=await call('/api/project-assets/restore',{method:'POST',body:ownBackup});assert.equal(restored.status,200,await restored.clone().text());
  const malformed=await call(P+'/maps/dry-run',{method:'POST',body:{...mapInput,graph:null}});assert.equal(malformed.status,422);assert.ok((await malformed.json()).issues);
  // A: public agent guide and capability catalog omit a finalization action.
  const guide=await (await fetch(origin+'/api/projects/'+p+'/agent-guide')).text();assert.match(guide,/Agent 不许代为定稿/);
