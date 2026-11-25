@@ -1,3 +1,4 @@
+import {scriptAreaRouter} from '../server/project-scripts/router.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -18,14 +19,14 @@ const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
 async function fixture(t){
  const f=await creativeFixture();t.after(()=>f.close());
  const scripts=new ProjectScripts(f.store).init(),board=new StoryboardDatabase(f.lib,f.store).init(),templates=new PromptTemplates(f.lib).init();
- const app=express();app.use(express.json());app.get('/api/projects',(_req,res)=>res.json(f.projects.list()));app.use('/api/project-assets',projectAssetRouter(f.store,wrap));
+ const app=express();app.use(express.json());app.get('/api/projects',(_req,res)=>res.json(f.projects.list()));app.use('/api/project-assets',projectAssetRouter(f.store,wrap));f.store.scripts.area.libraryId=()=> 'synthetic-library';app.use('/api/project-scripts',scriptAreaRouter(f.store.scripts.area,{libraryId:()=> 'synthetic-library'}));
  const storyboard=createStoryboardModule({dataDir:f.dir,lib:f.lib,projectAssets:f.store});t.after(()=>storyboard.close());app.use('/api/storyboard',storyboard.router);app.use('/api/prompt-templates',promptRouter(templates,wrap));
  app.get('/api/assets',(_req,res)=>res.json({items:[f.lib.asset(f.media)],total:1}));app.get('/api/assets/:id',(req,res)=>res.json(f.lib.asset(req.params.id)));
- app.get('/api/storyboard-video/projects/:id/state',(req,res)=>res.json({projectId:req.params.id,sources:[],takes:[],adopted:{}}));
+ app.get('/api/storyboard-video/v2/projects/:id/state',(req,res)=>res.json({projectId:req.params.id,sources:[],takes:[],adopted:{}}));
  app.use((e,_req,res,_next)=>res.status(e.status??500).json({error:e.message,current_revision:e.current_revision}));
  // Exercise existing Express routers without opening any network listener.
  const calls=[];const invoke=(method,url,body)=>new Promise((resolve,reject)=>{
-  calls.push({method,path:url,body:structuredClone(body)});const socket=new Duplex({read(){},write(_chunk,_enc,cb){cb();}}),req=new IncomingMessage(socket);req.method=method;req.url=url;req.headers={host:'127.0.0.1'};
+  calls.push({method,path:url,body:structuredClone(body)});const socket=new Duplex({read(){},write(_chunk,_enc,cb){cb();}}),req=new IncomingMessage(socket);req.method=method;req.url=url;req.headers={host:'127.0.0.1','x-shiguang-library-id':'synthetic-library'};
   if(body!==undefined){req.headers['content-type']='application/json';req.headers['content-length']=String(Buffer.byteLength(JSON.stringify(body)));}
   const res=new ServerResponse(req),chunks=[];res.write=(b)=>{chunks.push(Buffer.from(b));return true;};res.end=(b)=>{if(b)chunks.push(Buffer.from(b));const raw=Buffer.concat(chunks).toString();try{const value=JSON.parse(raw);if(res.statusCode>=400)reject(Object.assign(Error(value.error??value.message),{status:res.statusCode,...value}));else resolve(value);}catch(e){reject(e);}res.emit('finish');};
   app.handle(req,res);req.push(body===undefined?null:JSON.stringify(body));if(body!==undefined)req.push(null);
@@ -99,3 +100,8 @@ test('material query encoding, bounded result and read-only video status use act
 });
 
  test('segment capability uses current project readonly route without writes',async t=>{const f=await fixture(t);f.board.initialize(f.a.id,{source:syntheticSource(),request_id:randomUUID(),expected_revision:null});const result=await f.run(f.a.id,'storyboards.segments');assert.ok(result);assert.equal(f.calls.at(-1).method,'GET');assert.equal(f.calls.at(-1).path,'/api/storyboard/projects/'+f.a.id+'/segments');assert.throws(()=>cap.docs('global',{operationId:'storyboards.segments'}));});
+
+test('script-area capabilities freeze and read sources/maps without a finalization or material-upload action',async t=>{
+ const f=await fixture(t),p=f.a.id;await f.run(p,'scripts.save',{title:'合成',content:'可引用的合成正文',expected_revision:0},{allowWrites:true});const d=await f.run(p,'scripts.draft');const args={expected_revision:d.revision,contentDigest:d.contentDigest,requestId:randomUUID()};await assert.rejects(f.run(p,'scripts.snapshot',args),/未授权/);const s=(await f.run(p,'scripts.snapshot',args,{allowWrites:true})).snapshot;assert.equal((await f.run(p,'scripts.source',{sourceId:s.id})).lines[0].text,'可引用的合成正文');assert.equal((await f.run(p,'scripts.versions')).total,0);
+ const catalog=JSON.stringify(cap.catalog(p));assert.ok(catalog.includes('scripts.map_upload'));assert.ok(!catalog.includes('scripts.finalize'));for(const operationId of ['scripts.finalize','scripts.material_upload','scripts.material_delete'])await assert.rejects(f.run(p,operationId,{}, {allowWrites:true}),/没有该能力/);
+});

@@ -1,0 +1,31 @@
+name: Script area isolated checks
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'shared/**'
+      - 'tests/script-area*'
+      - 'tests/fixtures/script-area/**'
+      - '.github/workflows/script-area.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  script-area:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22.x'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: node --test --test-timeout=120000 tests/script-area.test.mjs tests/script-area-http.test.mjs tests/project-agent-guide.test.mjs

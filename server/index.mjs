@@ -1,3 +1,4 @@
+import {scriptAreaRouter} from './project-scripts/router.mjs';
 import {unquotePath} from './path-input.mjs';
 import {platformWords} from './platform-words.mjs';
 import {createApplicationShutdown,createShutdownWorkGate,createShutdownReceiptStore,observeShutdownResource,observeSqliteShutdown} from './application-shutdown.mjs';
@@ -394,6 +395,7 @@ app.use("/api/projects/timeline-import/confirm", express.json({ limit: "1mb" }))
 const ordinaryJson = express.json({ limit: "256kb" });
 app.use((req, res, next) => {
   const pathname = req.url.split("?")[0];
+  if(pathname==='/api/project-scripts'||pathname.startsWith('/api/project-scripts/'))return next();
   if(pathname==='/api/project-videos'||pathname.startsWith('/api/project-videos/')||pathname==='/api/concierge'||pathname.startsWith('/api/concierge/'))return next();
   if (pathname.startsWith("/api/cloud-management/audio-maintenance/")) res.setHeader("Cache-Control", "no-store");
   return pathname === "/api/project-assets" || pathname.startsWith("/api/project-assets/") || pathname === "/api/prompt-codex" || pathname.startsWith("/api/prompt-codex/") || pathname === "/api/prompt-templates" || pathname.startsWith("/api/prompt-templates/") || pathname === "/api/storyboard" || pathname.startsWith("/api/storyboard/") || pathname === TASK_ENTRY_BASE || pathname.startsWith(TASK_ENTRY_BASE + "/") || pathname.startsWith("/api/cloud-management/audio-maintenance/") ? next() : ordinaryJson(req, res, next);
@@ -560,6 +562,8 @@ app.use('/api/notices',noticesRouter(notices,{withActivity:fn=>uploadHost.track(
 app.use("/api/storyboard", storyboard.router);
 app.use("/api/prompt-templates", promptRouter(prompts, asyncRoute));
 app.use("/api/project-assets", projectAssetRouter(projectAssets, asyncRoute,{desktop:projectAssetDesktop,headBox:projectAssetHeadBox,rememberTarget:target=>intakePreferences.remember([target])}));
+projectAssets.scripts.area.libraryId=()=>mysqlStorage.sourceId;
+app.use("/api/project-scripts",scriptAreaRouter(projectAssets.scripts.area,{asyncRoute,libraryId:()=>mysqlStorage.sourceId}));
 app.use("/api/prompt-codex", codexRouter(codexStore, codexService, codexMedia, codexBackup, asyncRoute));
 app.use("/api/concierge", concierge.router);
 app.use(TASK_ENTRY_BASE, (req, res, next) => {

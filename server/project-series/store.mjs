@@ -235,6 +235,7 @@ export class ProjectSeries {
         throw new SeriesError("SERIES_NOT_EMPTY", "剧中仍有项目，请先移出项目");
       }
       this.projects.lib.creativeAssetStore?.scopedWrites.assertSeriesRemovable(id);
+      if(this.projects.lib.scriptArea?.db.prepare("SELECT id FROM script_materials WHERE owner_type='series' AND owner_id=?").all(id).some(r=>!JSON.parse(this.db.prepare('SELECT payload FROM script_materials WHERE id=?').get(r.id).payload).deletedAt))throw new SeriesError('SERIES_NOT_EMPTY','剧中仍有剧本资料，请先处理资料');
       this.db.prepare("DELETE FROM project_series_seasons WHERE series_id=?").run(id);
       if (this.attributeAlignment) this.db.prepare("DELETE FROM series_attribute_alignment WHERE id=?").run(id);
       this.db.prepare("DELETE FROM project_series WHERE id=?").run(id);

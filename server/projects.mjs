@@ -82,6 +82,7 @@ export class Projects {
       this.lib.db.prepare("DELETE FROM project_assets WHERE project_id=?").run(id);
       const hasScript=this.lib.db.kind==='mysql'?this.lib.db.prepare("SELECT TABLE_NAME name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='project_scripts'").get():this.lib.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_scripts'").get();
       this.lib.projectAttributes?.removeProject(id);
+      this.lib.scriptArea?.removeProject(id);
       if(hasScript)this.lib.db.prepare('DELETE FROM project_scripts WHERE id=?').run(id);
       this.lib.creativeAssetStore?.scopedWrites.assertNoOverrides('episode', id);
       this.lib.db.prepare("DELETE FROM project_series_members WHERE id=?").run(id);
