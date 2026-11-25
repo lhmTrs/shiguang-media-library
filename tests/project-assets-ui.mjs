@@ -88,12 +88,14 @@ try {
   await work().getByRole('tab', { name: '人物', exact: true }).click(); await dropFiles(work().locator('.ca-card').filter({ hasText: '陈川' }).first(), ['补充参考.png']); await expect(dialog()).toContainText('添加到“陈川”'); await expect(dialog().getByLabel('放进造型')).toBeVisible();
   await dialog().getByLabel('放进造型').selectOption({ label: '家居造型' }); await dialog().getByRole('button', { name: '添加图片' }).click(); await expect(dialog().locator('.ca-drop-list li')).toContainText('未完成'); await dialog().getByRole('button', { name: '取消', exact: true }).click(); await expect(dialog()).toHaveCount(0);
  });
- await check('剧本三栏：场次大纲跳转与出现的资产', async () => {
-  await work().getByRole('tab', { name: '剧本', exact: true }).click(); const body = work().getByLabel('剧本正文'); await expect(body).toBeEnabled();
-  await body.fill('1. 家中厨房 早晨\n陈川拿起工作包。\n\n2. 街角 傍晚\n陈川走过拖入的街角。'); await expect(work().getByRole('navigation', { name: '场次大纲' }).getByRole('button')).toHaveCount(2);
-  await work().getByRole('navigation', { name: '场次大纲' }).getByRole('button', { name: /^2\./ }).click(); assert.ok(await body.evaluate(t => t.selectionStart > 0));
-  const mentions = work().getByRole('complementary', { name: '剧本中出现的资产' }); await expect(mentions.locator('li').filter({ hasText: '陈川' })).toContainText('2 次'); await expect(mentions.locator('li').filter({ hasText: '工作包' })).toContainText('1 次');
-  await work().getByRole('button', { name: '保存剧本' }).click(); await expect(work().getByRole('button', { name: '保存剧本' })).toBeDisabled(); await work().getByRole('tab', { name: '人物', exact: true }).click();
+ await check('剧本三栏：「剧本」标签跳到侧栏「剧本」同一集；场次大纲跳转与出现的资产', async () => {
+  await work().getByRole('tab', { name: '剧本', exact: true }).click(); await expect(page).toHaveURL(/#\/project-scripts$/);
+  const scriptArea = page.getByRole('region', { name: '剧本区' }); const body = scriptArea.getByLabel('剧本正文'); await expect(body).toBeEnabled();
+  await body.fill('1. 家中厨房 早晨\n陈川拿起工作包。\n\n2. 街角 傍晚\n陈川走过拖入的街角。'); await expect(scriptArea.getByRole('navigation', { name: '场次大纲' }).getByRole('button')).toHaveCount(2);
+  await scriptArea.getByRole('navigation', { name: '场次大纲' }).getByRole('button', { name: /^2\./ }).click(); assert.ok(await body.evaluate(t => t.selectionStart > 0));
+  const mentions = scriptArea.getByRole('complementary', { name: '剧本中出现的资产' }); await expect(mentions.locator('li').filter({ hasText: '陈川' })).toContainText('2 次'); await expect(mentions.locator('li').filter({ hasText: '工作包' })).toContainText('1 次');
+  await scriptArea.getByRole('button', { name: '保存剧本' }).click(); await expect(scriptArea.getByRole('button', { name: '保存剧本' })).toBeDisabled();
+  await page.locator('.sidebar').getByRole('button', { name: /^项目资产/ }).click(); await expect(work()).toBeVisible(); await work().getByRole('tab', { name: /^人物/ }).click();
  });
  await check('主题、手机布局、刷新路由与原分镜入口兼容', async () => {
   for (const theme of ['forest','dark','midnight']) { await page.evaluate(t => document.documentElement.dataset.theme = t, theme); await page.screenshot({ path: path.join(evidence, 'assets-' + theme + '.png'), fullPage: true }); }

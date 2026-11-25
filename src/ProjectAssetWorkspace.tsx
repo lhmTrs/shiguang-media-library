@@ -5,7 +5,9 @@ const Editor = lazy(() => import('./project-assets/AssetLibrary').then(m => ({ d
 export type SeasonSettingsFocus = { seasonId: string; request: number };
 export type ProjectAssetProps = { focusProject?: {id:string;request:number}; openSeasonSettings?: SeasonSettingsFocus; active: boolean; /** 已不使用：顶栏统一后资产页不再往顶栏放选择器；宿主移除传参前保留为可选。 */ projectSelectorHost?: HTMLElement | null; request: PromptRequest; activeProject: string; /** 已不使用：资产页不替用户切项目，切项目统一走顶栏。 */ selectProject?: (id: string) => void; refreshSeconds: number; onSettings: () => void; onOpenShot?: (target:ShotTarget)=>void;
   /** 宿主切换当前项目前调用登记的保护；返回 false 表示不切换（未保存修改被保留、或正在处理）。卸载时登记 null。 */
-  registerProjectSwitchGuard?: (guard: (() => boolean) | null) => void };
+  registerProjectSwitchGuard?: (guard: (() => boolean) | null) => void;
+  /** 「剧本」标签：剧本搬到侧栏「剧本」后，点了直接去那里的同一集（不在资产页编辑）。 */
+  onOpenScript?: () => void };
 export function ProjectAssetWorkspace(props: ProjectAssetProps) {
   const [started, setStarted] = useState(false); useEffect(() => { if (props.active) setStarted(true); }, [props.active]);
   return started ? <div hidden={!props.active}><Suspense fallback={<p style={{ padding: 24 }}>正在打开项目资产库…</p>}><Editor {...props}/></Suspense></div> : null;

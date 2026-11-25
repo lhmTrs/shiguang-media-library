@@ -1,0 +1,82 @@
+/* 剧本区页面（侧栏「剧本」和试画页）。按钮、标签页、对话框沿用项目资产的 ca-* 样式；色值只用 --c-* 变量。 */
+.sa-workspace.ca-v2>*{flex:none}
+/* 和项目资产一样占满一屏：头部、版本条、标签固定，下面的内容自己滚；剧本正文在阅读框里滚 */
+.sa-workspace.ca-v2>.sa-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column}
+.sa-body>.ca-script-host:not([hidden]),.sa-body>.sa-readonly{flex:1;min-height:0}
+.sa-workspace .sa-tabs{padding:0 28px;border-bottom:1px solid var(--line)}
+.sa-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:24px 28px 10px}
+.sa-head h1{font-size:24px;margin:4px 0}
+.sa-viewing{margin:0;color:var(--muted)}
+.sa-muted{color:var(--muted)}
+.sa-versions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 28px 16px}
+.sa-versions button{padding:5px 12px;border-radius:16px}
+.sa-versions button small{color:var(--muted);margin-left:2px;font-size:11px}
+.sa-versions button[aria-pressed=true]{background:var(--soft);border-color:var(--green);color:var(--green)}
+.sa-versions .sa-legacy{border-style:dashed;color:var(--muted)}
+.sa-versions>span{font-size:12px}
+.sa-body .ca-project-script{margin-top:0}
+.ca-notice>button{float:right;padding:0 6px;border:0;background:none;cursor:pointer}
+.sa-warn{margin:0 0 14px;padding:10px 14px;border-radius:7px;background:var(--soft);color:var(--c-8a6a3a);line-height:1.7}
+/* 定稿对话框 */
+.sa-finalize{width:min(640px,100%)}
+.sa-facts{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:14px 0}
+.sa-facts dt{color:var(--muted)}.sa-facts dd{margin:0;overflow-wrap:anywhere}
+.sa-head-lines{border-left:3px solid var(--line);padding:4px 0 4px 12px;max-height:180px;overflow:auto}
+.sa-head-lines p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+/* 泳道图 */
+.sa-maps,.sa-materials,.sa-map-view{padding:20px 28px}
+.sa-map-cards{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.sa-map-card{width:100%;display:flex!important;flex-direction:column;align-items:flex-start!important;justify-content:flex-start!important;gap:4px!important;text-align:left;padding:14px!important}
+.sa-map-card strong{font-size:14px;overflow-wrap:anywhere}
+.sa-map-card small{color:var(--muted);line-height:1.6;overflow-wrap:anywhere}
+.sa-map-kind{font-size:11px;color:var(--green);border:1px solid var(--line);border-radius:9px;padding:0 8px}
+.sa-stale{font-size:11px;color:var(--c-8a6a3a);border:1px dashed var(--c-8a6a3a);border-radius:9px;padding:0 8px}
+.sa-map-view-bar{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.sa-map-scroll{overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--c-fff)}
+.sa-footnote{margin-top:24px;font-size:12px;color:var(--muted)}
+.sa-footnote a,.sa-workspace a{color:var(--green)}
+/* 校验问题 */
+.sa-issues{margin:12px 0;padding:12px 16px;border:1px solid var(--line);border-radius:9px;background:var(--c-fff)}
+.sa-issues h3{font-size:14px;margin:0 0 8px}.sa-issues h3 small{font-weight:400;color:var(--muted);margin-left:8px}
+.sa-issues ol{margin:0;padding-left:20px}
+.sa-issue{padding:4px 0;line-height:1.6}
+.sa-issue-kind{font-size:11px;border-radius:9px;padding:0 7px;margin-right:8px;border:1px solid var(--line)}
+.sa-issue.is-error .sa-issue-kind{color:var(--c-b34747);border-color:var(--c-b34747)}
+.sa-issue.is-warning .sa-issue-kind{color:var(--c-8a6a3a);border-color:var(--c-8a6a3a)}
+.sa-issue-path{margin-left:8px;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.sa-issue-lines{display:block;font-size:12px;color:var(--muted)}
+/* 甲方资料 */
+.sa-upload{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 16px;padding:14px 16px;border:1px solid var(--line);border-radius:9px;background:var(--c-fff);margin-bottom:16px}
+.sa-upload .ca-check{margin:0}
+.sa-upload>small{flex-basis:100%}
+.sa-materials h3{font-size:15px;margin:18px 0 8px}.sa-materials h3 small{font-weight:400;color:var(--muted);margin-left:8px;font-size:12px}
+.sa-material-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.sa-material{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name actions" "meta actions";gap:2px 16px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--c-fff)}
+.sa-material-name{grid-area:name;display:flex;align-items:center;gap:8px;min-width:0}
+.sa-material-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sa-material>small{grid-area:meta;color:var(--muted)}
+.sa-material>.ca-actions{grid-area:actions}
+.sa-chip{font-size:11px;color:var(--green);border:1px solid var(--green);border-radius:9px;padding:0 7px;flex:none}
+.sa-link-button{display:inline-flex;align-items:center;border:1px solid var(--line);background:var(--c-fff);border-radius:7px;padding:8px 11px;text-decoration:none;color:inherit!important}
+.sa-link-button:hover{border-color:var(--green);color:var(--green)!important}
+.ca-workspace button.sa-danger{color:var(--c-b34747)}
+.ca-workspace button.sa-danger:hover:not(:disabled){border-color:var(--c-b34747);color:var(--c-b34747)}
+.sa-danger-primary{background:var(--c-b34747)!important;border-color:var(--c-b34747)!important;color:var(--c-fff)!important}
+.sa-preview{width:min(900px,100%)}
+.sa-lines{list-style:none;margin:0;padding:0;font-size:13px;line-height:1.7}
+.sa-lines li{display:grid;grid-template-columns:52px 1fr;gap:10px}
+.sa-line-no{color:var(--muted);font-size:11px;text-align:right;padding-top:2px;user-select:none}
+.sa-lines li>span:last-child{white-space:pre-wrap;overflow-wrap:anywhere}
+.sa-confirm{width:min(520px,100%)}
+.sa-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.sa-field>span{font-size:12px;font-weight:600}
+/* 试画页（独立整页） */
+.sa-trial{min-height:100dvh;background:var(--c-f7f9fa);color:var(--c-24292c);padding:24px 28px 40px;font-size:13px}
+.sa-trial-head h1{font-size:22px;margin:0 0 4px}.sa-trial-head p{margin:0;color:var(--muted)}
+.sa-trial-controls{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-end;margin:18px 0 10px}
+.sa-trial-controls select{min-width:220px;max-width:360px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--c-fff);font:inherit;color:inherit}
+.sa-trial-status{margin:10px 0;color:var(--muted)}
+.sa-trial-status.is-ok{color:var(--green)}.sa-trial-status.is-invalid,.sa-trial-status.is-error{color:var(--c-b34747)}
+.sa-trial-map{overflow:auto}
+.sa-alert{color:var(--c-b34747)}
+@media(max-width:700px){.sa-head,.sa-versions,.sa-maps,.sa-materials,.sa-map-view{padding-left:16px;padding-right:16px}.sa-material{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "meta" "actions"}}

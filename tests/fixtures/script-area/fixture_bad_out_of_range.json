@@ -1,0 +1,265 @@
+{
+ "schemaVersion": 1,
+ "kind": "diff",
+ "title": "合成样例 · v1 到 v2 改动",
+ "madeBy": "开发统筹手写的合成样例",
+ "gist": "这次改的是**小周有没有拉住老李**。",
+ "sources": [
+  {
+   "key": "V1",
+   "sourceId": "fixture-v1",
+   "label": "合成剧本 v1"
+  },
+  {
+   "key": "V2",
+   "sourceId": "fixture-v2",
+   "label": "合成剧本 v2"
+  }
+ ],
+ "versions": {
+  "v1": {
+   "label": "v1 工头硬撑",
+   "source": "V1"
+  },
+  "v2": {
+   "label": "v2 没拉住",
+   "source": "V2"
+  }
+ },
+ "lanes": [
+  {
+   "id": "scene",
+   "name": "线索与画面"
+  },
+  {
+   "id": "boss",
+   "name": "工头"
+  },
+  {
+   "id": "zhou",
+   "name": "小周",
+   "hero": true
+  },
+  {
+   "id": "li",
+   "name": "老李"
+  }
+ ],
+ "bands": [
+  {
+   "row": 1,
+   "label": "2-1 地下 · 夜"
+  },
+  {
+   "row": 9,
+   "label": "2-2 坑底 · 夜"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "e1",
+   "lane": "boss",
+   "row": 2,
+   "kind": "seen",
+   "label": [
+    "逼大家挖完"
+   ],
+   "change": "chg",
+   "old": [
+    {
+     "source": "V1",
+     "start": 3,
+     "quote": "今天不挖完谁也别"
+    }
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 3,
+     "quote": "今天必须挖完。"
+    }
+   ],
+   "what": "工头从「谁也别走」改成「必须挖完」",
+   "why": "文件未写原因"
+  },
+  {
+   "id": "e2",
+   "lane": "scene",
+   "row": 3,
+   "kind": "seen",
+   "label": [
+    "漏沙→湿痕"
+   ],
+   "change": "chg",
+   "old": [
+    {
+     "source": "V1",
+     "start": 5,
+     "quote": "墙缝在漏沙。"
+    }
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 5,
+     "quote": "墙根多了一道湿痕"
+    }
+   ],
+   "what": "墙缝漏沙改成墙根湿痕",
+   "why": "（推断：上一集尾帧没有沙）"
+  },
+  {
+   "id": "e3",
+   "lane": "boss",
+   "row": 4,
+   "kind": "seen",
+   "label": [
+    "撑不住也得撑"
+   ],
+   "change": "del",
+   "old": [
+    {
+     "source": "V1",
+     "start": 7,
+     "quote": "撑不住也得撑。"
+    }
+   ],
+   "what": "删掉工头硬撑这句",
+   "why": "文件未写原因"
+  },
+  {
+   "id": "e4",
+   "lane": "zhou",
+   "row": 5,
+   "kind": "self",
+   "label": [
+    "这墙撑不住"
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 15,
+     "quote": "这墙撑不住。"
+    }
+   ]
+  },
+  {
+   "id": "e5",
+   "lane": "li",
+   "row": 6,
+   "kind": "seen",
+   "label": [
+    "下去看看"
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 7,
+     "end": 8,
+     "quote": "老李把铲子插进沙"
+    }
+   ]
+  },
+  {
+   "id": "e6",
+   "lane": "zhou",
+   "row": 7,
+   "kind": "self",
+   "label": [
+    "没拉住老李"
+   ],
+   "change": "chg",
+   "old": [
+    {
+     "source": "V1",
+     "start": 10,
+     "quote": "小周拉住老李。"
+    }
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 9,
+     "quote": "小周没拉住老李。"
+    }
+   ],
+   "what": "小周从拉住老李改成没拉住",
+   "why": "文件未写原因"
+  },
+  {
+   "id": "e7",
+   "lane": "zhou",
+   "row": 8,
+   "kind": "self",
+   "label": [
+    "追了下去"
+   ],
+   "change": "new",
+   "new": [
+    {
+     "source": "V2",
+     "start": 10,
+     "quote": "小周追了下去。"
+    }
+   ],
+   "what": "新增小周追下去",
+   "why": "文件未写原因"
+  },
+  {
+   "id": "e8",
+   "lane": "li",
+   "row": 10,
+   "kind": "seen",
+   "label": [
+    "听见闷响"
+   ],
+   "change": "minor",
+   "old": [
+    {
+     "source": "V1",
+     "start": 13,
+     "quote": "老李听见一声闷响"
+    }
+   ],
+   "new": [
+    {
+     "source": "V2",
+     "start": 13,
+     "quote": "老李听见一声闷响"
+    }
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "from": "e1",
+   "to": "e4"
+  },
+  {
+   "from": "e2",
+   "to": "e4"
+  },
+  {
+   "from": "e3",
+   "to": "e4"
+  },
+  {
+   "from": "e4",
+   "to": "e6"
+  },
+  {
+   "from": "e5",
+   "to": "e6",
+   "route": "vh",
+   "offset": 0.3
+  },
+  {
+   "from": "e6",
+   "to": "e7"
+  },
+  {
+   "from": "e7",
+   "to": "e8"
+  }
+ ]
+}

@@ -20,6 +20,7 @@ export const CI_FILES = Object.freeze([
   'notices-poll.test.mjs',
   'project-music-prompt-split.test.mjs',
   'video-probe-readiness.test.mjs',
+  'script-map-layout.test.mjs',
 ]);
 export const CI_TIMEOUT_MS = 120_000;
 
