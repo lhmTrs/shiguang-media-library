@@ -205,7 +205,7 @@ ${example({ asset: '<基于读取结果修改后的完整 asset 对象>', expect
 版本/迁移基线列表为 \`GET /api/project-scripts/projects/${project.id}/versions\`，快照列表为 \`.../draft/snapshots\`；来源为 \`.../sources/<sourceId>\`。使用服务端行号数组，BOM/换行由服务端处理，空行占号。
 甲方资料须由用户在页面上传；缺资料时一次性请用户上传，PDF/DOCX 复杂文本需用户核对的 TXT 副本；不代传、不代删、不导入共享历史稿作快照。
 泳道图按 schemaVersion:1 提交 binding 和 graph：单版 target、对比 before+target 均绑定本项目的版本/基线/快照。sources 用已存 sourceId，每处 refs/old/new 带 source/start/end 和核对短引文 quote；quote去空白4–20个Unicode字符，短行可交完整短行，不跨行。先去泳道图试画页用文件选择器交JSON，调用 \`POST .../maps/dry-run\` 返回同组件 renderData，截图核线与主线，再 \`POST .../maps\` 提交原graph和UUID requestId，按 \`GET .../maps/requests/<requestId>\` 查原回执。试画不存服务器、不算正式图、不能当上传凭证；图保存后quote剥离，只保留服务器摘录。删除来源后只显示旧图存档摘录，不新引用。
-所有新剧本区接口带当前 \`X-Shiguang-Library-Id\`，写入沿用 Cookie 和 \`X-Local-Token\`。使用稳定对象ID，不猜机器路径；不要把预检或HTTP接受说成已定稿／已上传。
+库 ID 取 \`GET /api/session\` 回包的 \`instanceId\`。所有新剧本区接口带当前 \`X-Shiguang-Library-Id\`，写入沿用 Cookie 和 \`X-Local-Token\`。使用稳定对象ID，不猜机器路径；不要把预检或HTTP接受说成已定稿／已上传。
 
 1. 先读取 \`GET ${projectAssets}/script\`、项目规则及人物列表。需要核对人物背景时，读取人物完整资料。只给剧本或资料有依据的维度打分。
 2. 读取 \`GET ${projectAssets}/attribute-config\`。读取 \`config_scope\`、\`alignment_status\` 和 \`config_token\`。使用返回的维度 ID 和评分依据，按该维度的两端含义打整数分。全剧已统一时，本集自有人物仍走本集评分接口，用全剧维度 ID；项目链接不授予修改全剧底分或设置的权限。五档区间从低到高为 −100～−60、−59～−20、−19～19、20～59、60～100。0 是有效分数。没有依据时跳过该格。仅独立项目经用户授权、尚无评分记录时，可调用 \`POST ${projectAssets}/attribute-config/initialize\`，提交 \`expected_revision\`、\`config_token\` 和 3–8 个 \`dimensions\`。沿用的维度传现有 ID，新维度传 \`id:null\`。已经评分的项目若需改维度，请将提案交给用户核对。

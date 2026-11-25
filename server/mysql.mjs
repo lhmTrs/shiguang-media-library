@@ -3,7 +3,7 @@ import {HISTORY_TABLES,historyColumnType,historyConstraints} from './storyboard/
 import { ATTRIBUTE_TABLES, attributeColumnType } from './project-attributes/schema.mjs';
 import { SERIES_TABLES, seriesMysqlColumnType, seriesConstraints } from './project-series/schema.mjs';
 import {VIDEO_TABLES,videoColumnType} from './storyboard-video/schema.mjs';
-import {SCRIPT_TABLES,scriptColumnType} from './project-scripts/schema.mjs';
+import {SCRIPT_TABLES,scriptColumnType,scriptConstraints} from './project-scripts/schema.mjs';
 import {TABLES as GENERATION_TABLES,generationColumnType,generationConstraints} from './storyboard-generation/schema.mjs';
 import { PROMPT_TABLES, promptMysqlColumnType, promptConstraints } from "./prompt-templates/schema.mjs";
 import { CREATIVE_TABLES, creativeColumnType, creativeConstraints } from "./project-assets/schema.mjs";
@@ -409,6 +409,7 @@ export class MysqlStorage {
           return `\`${col.name}\` ${type}${col.pk || /PRIMARY KEY/.test(type) ? " NOT NULL" : col.dflt_value !== null ? " DEFAULT " + (type === "LONGTEXT" ? "(" + col.dflt_value + ")" : col.dflt_value) : " NULL"}`;
         });
         if(Object.hasOwn(UPLOAD_TABLES,t))defs.push(...uploadConstraints(t));
+        if(Object.hasOwn(SCRIPT_TABLES,t))defs.push(...scriptConstraints(t));
         if(Object.hasOwn(PROMPT_TABLES,t))defs.push(...promptConstraints(t));
         if(Object.hasOwn(CREATIVE_TABLES,t))defs.push(...creativeConstraints(t));
         if(Object.hasOwn(V2_TABLES,t))defs.push(...v2Constraints(t));
