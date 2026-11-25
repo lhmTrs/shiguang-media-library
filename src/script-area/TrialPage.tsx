@@ -9,6 +9,8 @@ import { allObjects, loadObjects, objectLabel, type ScriptObjects } from './obje
 import type { Binding, Issue, MapGraph, ObjectRef, RenderData, ScriptRequest } from './types';
 import { buildTree, displayPath, type GroupedProject, type Series } from '../series/model';
 import { applyTheme, readTheme } from '../theme';
+// 和后端同一份纯结构校验（合同 v1.1）：选了文件先在本页查结构，前端不另写规则；归属、行号、quote 仍由 dry-run 核对。
+import { validateScriptMap } from '../../shared/script-map-validation.mjs';
 import './script-area.css';
 
 export const TRIAL_HASH = '#/script-map-trial';
@@ -66,6 +68,8 @@ export function TrialPage({ request }: { request: ScriptRequest }) {
     const mine = ++ticket.current;
     const done = (s: State, msg: string, list: Issue[] = [], rd: RenderData | null = null) => { if (mine !== ticket.current) return; setState(s); setMessage(msg); setIssues(list); setData(rd); };
     if (!graph) { done(fileError ? 'error' : 'idle', fileError); return; }
+    const local = validateScriptMap(graph).issues as Issue[];
+    if (local.some(i => i.severity === 'error')) { done('invalid', '结构检查没有通过，图没有画（还没发给拾光）', local); return; }
     if (!params.project) { done('error', '先选项目（集）'); return; }
     if (!target) { done('error', '先选这张图画在哪一份上（版本、迁移时的稿子或草稿快照）'); return; }
     const diff = graph.kind === 'diff';

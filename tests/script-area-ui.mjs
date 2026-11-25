@@ -306,6 +306,13 @@ try {
     await expect(trial.locator('.sa-issue-path')).toHaveText('graph.nodes[5].new[0].quote');
     assert.match(trial.url(), /before=legacy%3Alegacy-1|before=legacy:legacy-1/);
     await shot('08-trial-invalid', trial);
+    // 结构错误（来源 key 重复）：本页用共享校验模块直接拦下，不发 dry-run
+    const dryBefore = fake.state.dryRuns;
+    await trial.getByLabel('选择泳道图 JSON').setInputFiles(path.join(fixtures, 'fixture_bad_dup_key.json'));
+    await expect(root).toHaveAttribute('data-trial-state', 'invalid');
+    await expect(trial.getByRole('status')).toContainText('还没发给拾光');
+    await expect(trial.locator('.sa-issue.is-error').first()).toBeVisible();
+    assert.equal(fake.state.dryRuns, dryBefore, '结构错误不发 dry-run');
     // 不是 JSON
     await trial.getByLabel('选择泳道图 JSON').setInputFiles({ name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{not json') });
     await expect(root).toHaveAttribute('data-trial-state', 'error'); await expect(trial.getByRole('status')).toContainText('不是有效的 JSON');
