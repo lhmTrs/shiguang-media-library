@@ -179,6 +179,44 @@ try {
     await shot('map-deleted-source');
   });
 
+  await check('真接口回归（PR154 独验 P2-1）：图详情请求还没回来时列表刷新了，回包照样用上，点开不会卡在「正在读取」', async () => {
+    const newest = (await api(P + '/maps?limit=100')).items[0];
+    let release, held = 0; const gate = new Promise(r => { release = r; });
+    const detailUrl = url => url.pathname === `/api${P}/maps/${newest.id}`;
+    const hold = async route => { held++; await gate; await route.continue(); };
+    await page.reload(); await expect(area()).toBeVisible();
+    await page.route(detailUrl, hold);
+    const listRefresh = page.waitForResponse(r => new URL(r.url()).pathname === `/api${P}/maps` && r.request().method() === 'GET');
+    await tab('泳道图').click();               // 挂上列表就预取详情（被拦住），同时点标签又刷新一次列表
+    await listRefresh; await expect.poll(() => held).toBe(1);
+    await page.waitForTimeout(300);           // 让新列表数组生效，旧的预取 effect 被清理
+    release();
+    await area().getByRole('button', { name: '打开泳道图：' + newest.title }).first().click();
+    await expect(area().locator('.sm-sheet svg')).toBeVisible();
+    await expect(area()).not.toContainText('正在读取这张图');
+    assert.equal(held, 1, '详情只请求了一次');
+    await page.unroute(detailUrl, hold);
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
+  await check('真接口回归（PR154 独验 P2-2）：草稿上有 32 张图，前 30 张以外的卡片点开也能取到详情', async () => {
+    const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
+    for (let i = 1; i <= 30; i++) await api(P + '/maps', { binding: { before: { kind: 'snapshot', id: snap1.id }, target: { kind: 'snapshot', id: snap2.id } }, graph: { ...diff, title: '合成批量图 ' + i }, requestId: rid() });
+    const details = []; page.on('request', r => { if (/\/maps\/[^/?]+$/.test(new URL(r.url()).pathname) && r.method() === 'GET') details.push(new URL(r.url()).pathname); });
+    await page.reload(); await expect(area()).toBeVisible();
+    await tab('泳道图').click();
+    const cards = area().getByRole('button', { name: /^打开泳道图：/ });
+    await expect(cards).toHaveCount(32);
+    const last = cards.nth(31); await expect(last).toContainText('合成样例 · 单版'); // 最早的那张排在第 32
+    const lastId = (await api(P + '/maps?limit=100')).items.find(m => m.title === '合成样例 · 单版').id;
+    await expect.poll(() => details.length).toBeGreaterThanOrEqual(30);
+    assert.ok(!details.some(d => d.endsWith('/' + lastId)), '第 32 张不在预取里');
+    await last.click();
+    await expect(area().locator('.sm-sheet svg')).toBeVisible();
+    assert.equal(details.filter(d => d.endsWith('/' + lastId)).length, 1, '点开时取了一次详情');
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
   assert.deepEqual(errors, [], '页面没有报错');
   assert.deepEqual(external, [], '没有外部请求');
   passed = true;

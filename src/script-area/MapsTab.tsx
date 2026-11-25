@@ -1,5 +1,5 @@
 // 「泳道图」标签：挂在当前所选那一份（某一版、迁移基线，或草稿 = 各草稿快照）上的图。用户只看，不在这里编辑。
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { dateTime, errorText, scriptBase, timeout } from './api';
 import { CausalMap } from './CausalMap';
 import { IssueList } from './IssueList';
@@ -42,28 +42,36 @@ function countText(d: MapDetail | undefined) {
 
 export function MapsTab({ projectId, request, viewing, list, onBack }: { projectId: string; request: ScriptRequest; viewing: Viewing; list: ReturnType<typeof useMapList>; onBack?: () => void }) {
   const maps = useMemo(() => list.items.filter(m => mapBelongs(m, viewing)), [list.items, viewing]);
+  // 图详情：按「项目 + 图 id」记结果和正在发的请求。请求的去留不跟列表数组走——列表刷新只是换了一个数组，
+  // 已经发出的请求照样把结果写回来（PR154 独验 P2-1）。失败的记下错误，点开或点「重试」再发。
   const [details, setDetails] = useState<Record<string, MapDetail | { error: string }>>({});
-  const [open, setOpen] = useState<string | null>(null);
-  const asked = useRef(new Set<string>());
-  useEffect(() => { setOpen(null); }, [projectId, viewing.kind, viewing.kind === 'draft' ? '' : viewing.id]);
-  useEffect(() => {
-    let live = true;
-    for (const m of maps.slice(0, 30)) {
-      if (asked.current.has(m.id)) continue; asked.current.add(m.id);
-      request<MapDetail>(scriptBase(projectId) + '/maps/' + encodeURIComponent(m.id), undefined, undefined, timeout())
-        .then(d => { if (live) setDetails(x => ({ ...x, [m.id]: d })); })
-        .catch(e => { asked.current.delete(m.id); if (live) setDetails(x => ({ ...x, [m.id]: { error: errorText(e) } })); });
-    }
-    return () => { live = false; };
-  }, [maps, projectId, request]);
+  const detailsRef = useRef(details); detailsRef.current = details;
+  const inflight = useRef(new Set<string>()), alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const keyOf = (id: string) => projectId + '\u0000' + id;
+  const load = useCallback((id: string, retry = false) => {
+    const k = projectId + '\u0000' + id, have = detailsRef.current[k];
+    if (inflight.current.has(k) || have && ('map' in have || !retry)) return;
+    inflight.current.add(k);
+    if (have) setDetails(x => { const { [k]: _, ...rest } = x; return rest; });
+    request<MapDetail>(scriptBase(projectId) + '/maps/' + encodeURIComponent(id), undefined, undefined, timeout())
+      .then(d => { if (alive.current) setDetails(x => ({ ...x, [k]: d })); })
+      .catch(e => { if (alive.current) setDetails(x => ({ ...x, [k]: { error: errorText(e) } })); })
+      .finally(() => inflight.current.delete(k));
+  }, [projectId, request]);
+  const [open, setOpenState] = useState<string | null>(null);
+  // 点开任一张卡片都要能取到详情：先预取的只是前 30 张，其余点开时再取（PR154 独验 P2-2）
+  const openMap = (id: string) => { setOpenState(id); load(id, true); };
+  useEffect(() => { setOpenState(null); }, [projectId, viewing.kind, viewing.kind === 'draft' ? '' : viewing.id]);
+  useEffect(() => { for (const m of maps.slice(0, 30)) load(m.id); }, [maps, load]);
 
   const trialTarget = viewing.kind === 'draft' ? null : { kind: viewing.kind, id: viewing.id };
   const trialLink = <p className="sa-footnote"><a href={trialHref(projectId, trialTarget)} target="_blank" rel="noopener">泳道图试画页</a>：交一个 JSON 先看看画出来什么样，不保存。</p>;
-  const current = open ? details[open] : undefined;
+  const current = open ? details[keyOf(open)] : undefined;
   if (open) return <section className="sa-map-view" aria-label="泳道图">
-    <div className="sa-map-view-bar"><button type="button" onClick={() => { setOpen(null); onBack?.(); }}>← 返回泳道图列表</button>
+    <div className="sa-map-view-bar"><button type="button" onClick={() => { setOpenState(null); onBack?.(); }}>← 返回泳道图列表</button>
       {current && 'map' in current && current.map.isDraftStale && <span className="sa-stale">基于较早的草稿</span>}</div>
-    {!current ? <p className="ca-muted">正在读取这张图…</p> : 'error' in current ? <p className="ca-alert" role="alert">{current.error}</p> : <>
+    {!current ? <p className="ca-muted">正在读取这张图…</p> : 'error' in current ? <p className="ca-alert" role="alert">这张图没有读到：{current.error}　<button type="button" onClick={() => load(open, true)}>重试</button></p> : <>
       <IssueList issues={current.issues} title={current.issues.length ? `上传时的 ${current.issues.length} 条提醒` : undefined}/>
       <div className="sa-map-scroll"><CausalMap data={current.renderData}/></div>
     </>}
@@ -75,8 +83,8 @@ export function MapsTab({ projectId, request, viewing, list, onBack }: { project
       <p>{viewing.kind === 'draft' ? '草稿上还没有泳道图。' : '这一版上还没有泳道图。'}</p>
       <p className="ca-muted">泳道图由 agent 读剧本后画好传上来，这里只看不改。</p>
     </div> : <ul className="sa-map-cards">{maps.map(m => {
-      const d = details[m.id], detail = d && 'map' in d ? d : undefined;
-      return <li key={m.id}><button type="button" className="sa-map-card" onClick={() => setOpen(m.id)} aria-label={'打开泳道图：' + (m.title || '未命名')}>
+      const d = details[keyOf(m.id)], detail = d && 'map' in d ? d : undefined;
+      return <li key={m.id}><button type="button" className="sa-map-card" onClick={() => openMap(m.id)} aria-label={'打开泳道图：' + (m.title || '未命名')}>
         <span className="sa-map-kind">{kindText(m, detail)}</span>
         {m.isDraftStale && <span className="sa-stale">基于较早的草稿</span>}
         <strong>{m.title || '未命名泳道图'}</strong>
