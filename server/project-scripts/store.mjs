@@ -1,3 +1,4 @@
+import {ScriptArea} from './area.mjs';
 import {fault,idOK,canonical} from '../project-assets/model.mjs';
 import {scriptSchema} from './schema.mjs';
 const LIMIT=200000;
@@ -5,7 +6,7 @@ function text(input){if(!input||typeof input.title!=='string'||input.title.lengt
 export class ProjectScripts{
  constructor(assets){this.assets=assets;this.lib=assets.lib;}
  get db(){return this.assets.db;}
- init(){this.db.exec(scriptSchema(this.db.kind==='mysql'));this.assets.scripts=this;return this;}
+ init(){this.db.exec(scriptSchema(this.db.kind==='mysql'));this.assets.scripts=this;this.area=new ScriptArea(this).init();return this;}
  project(id,lock=false){const p=this.assets.project(id,lock);if(p.project_kind!=='normal')throw fault('公共人物库不保存项目剧本',400);return p;}
  dto(row,id){return row?{project_id:row.id,title:row.title,content:row.content,revision:row.revision,updated_at:row.updated_at}:{project_id:id,title:'',content:'',revision:0,updated_at:null};}
  get(id){this.project(id);return this.dto(this.db.prepare('SELECT * FROM project_scripts WHERE id=?').get(id),id);}
@@ -25,5 +26,5 @@ export class ProjectScripts{
   return rows;
  }
  // Caller owns the same project/backup transaction. Old backups do not erase new scripts.
- restoreRows(rows){for(const row of rows){this.project(row.id,true);const old=this.db.prepare('SELECT * FROM project_scripts WHERE id=?').get(row.id);if(old){if(canonical(old)!==canonical(row))throw fault('目标项目已有不同剧本，未覆盖',409);}else this.db.prepare('INSERT INTO project_scripts(id,title,content,revision,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(row.id,row.title,row.content,row.revision,row.created_at,row.updated_at);}}
+ restoreRows(rows,{legacy=false}={}){for(const row of rows){this.project(row.id,true);const old=this.db.prepare('SELECT * FROM project_scripts WHERE id=?').get(row.id);if(old){if(canonical(old)!==canonical(row))throw fault('目标项目已有不同剧本，未覆盖',409);}else this.db.prepare('INSERT INTO project_scripts(id,title,content,revision,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(row.id,row.title,row.content,row.revision,row.created_at,row.updated_at);if(legacy&&row.content.trim()&&!this.area.sourceRows(row.id).length)this.area.insertSource(row.id,'legacy',row,null);}}
 }
