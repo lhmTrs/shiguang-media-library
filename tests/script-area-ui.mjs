@@ -312,6 +312,24 @@ try {
     await trial.close();
   });
 
+  await check('试画页：全新的浏览器（没有 Cookie、没开过主程序）直接打开就能试画，页面自己取本机会话', async () => {
+    const fresh = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await fresh.route('**/api/project-scripts/**', route => fake.handle(route));
+    assert.deepEqual(await fresh.cookies(), []);
+    const trial = await fresh.newPage(); trial.on('pageerror', e => errors.push(e.message));
+    const sessionReads = []; trial.on('request', r => { if (new URL(r.url()).pathname === '/api/session') sessionReads.push(r.url()); });
+    const before = fake.log.length;
+    await trial.goto(origin + `/#/script-map-trial?project=${ep.id}&target=snapshot:snap-1`);
+    const rootEl = trial.locator('[data-trial-state]');
+    await expect(rootEl).toHaveAttribute('data-trial-state', 'idle');
+    await trial.getByLabel('选择泳道图 JSON').setInputFiles(path.join(fixtures, 'fixture_single.json'));
+    await expect(rootEl).toHaveAttribute('data-trial-state', 'ok');
+    assert.ok(sessionReads.length >= 1, '页面自己读了 /api/session');
+    const dry = fake.log.slice(before).find(l => l.path.endsWith('/maps/dry-run'));
+    assert.ok(dry && dry.token && dry.libraryHeader === session.instanceId, JSON.stringify(dry));
+    await fresh.close();
+  });
+
   await check('试画页：换文件时旧请求晚到的回包不会盖掉新的', async () => {
     const trial = await context.newPage(); trial.on('pageerror', e => errors.push(e.message));
     await trial.goto(origin + `/#/script-map-trial?project=${ep.id}&target=snapshot:snap-1&before=legacy:legacy-1`);

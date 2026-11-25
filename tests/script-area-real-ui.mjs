@@ -130,6 +130,20 @@ try {
     await trial.close();
   });
 
+  await check('真接口：全新的浏览器（没有 Cookie、没开过主程序）直接打开试画页就能试画', async () => {
+    const single = readFixture('fixture_single'); single.sources[0].sourceId = material.sourceId;
+    const file = path.join(temp, 'single-fresh.json'); await fs.writeFile(file, JSON.stringify(single));
+    const fresh = await browser.newContext(); assert.deepEqual(await fresh.cookies(), []);
+    const trial = await fresh.newPage(); trial.on('pageerror', e => errors.push(e.message));
+    await trial.goto(origin + `/#/script-map-trial?project=${ep.id}&target=snapshot:${snap2.id}`);
+    const rootEl = trial.locator('[data-trial-state]');
+    await expect(rootEl).toHaveAttribute('data-trial-state', 'idle');
+    await trial.getByLabel('选择泳道图 JSON').setInputFiles(file);
+    await expect(rootEl).toHaveAttribute('data-trial-state', 'ok');
+    assert.ok((await fresh.cookies()).length > 0, '页面自己拿到了会话 Cookie');
+    await fresh.close();
+  });
+
   await check('真接口：agent 传上来的图出现在草稿的泳道图标签；点开整页看图；删掉引用的资料后显示存档摘录', async () => {
     const single = readFixture('fixture_single'); single.sources[0].sourceId = material.sourceId;
     const diff = readFixture('fixture_diff'); for (const s of diff.sources) s.sourceId = s.key === 'V1' ? snap1.sourceId : snap2.sourceId;
