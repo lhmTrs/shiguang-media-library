@@ -28,3 +28,4 @@ export function excerptKey(source: string, start: number, end?: number | null): 
 export function shortDate(ms: number | null | undefined, withTime?: boolean): string;
 export function sourceCaption(source: Pick<MapRenderSource, 'label' | 'kind' | 'at' | 'sourceState'>): string;
 export function boundLabel(o: Pick<BoundObject, 'kind' | 'displayLabel' | 'at'> | null | undefined): string;
+export function legacyLabel(at: number | null | undefined): string;

@@ -7,11 +7,14 @@ import '../project-assets/asset-library.css';
 import { buildTree, displayPath, type GroupedProject, type Series } from '../series/model';
 import { dateTime, errorText, scriptBase, timeout } from './api';
 import { FinalizeDialog } from './FinalizeDialog';
-import { MapsTab, mapBelongs, useMapList, type Viewing } from './MapsTab';
+import { MapsTab, useMapList } from './MapsTab';
 import { MaterialsTab, useMaterialList } from './MaterialsTab';
 import { versionLabel } from './objects';
 import type { Draft, Paged, ScriptRequest, VersionDetail, VersionSummary } from './types';
+import { ChevronDown } from 'lucide-react';
 import './script-area.css';
+
+type Viewing = { kind: 'draft' } | { kind: 'version' | 'legacy'; id: string };
 
 type Tab = 'script' | 'maps' | 'materials';
 export type ScriptAreaProps = {
@@ -35,7 +38,7 @@ function useNames(request: ScriptRequest, projectId: string, active: boolean) {
   return state.project === projectId ? state : { project: projectId, names: [], status: 'loading' as const };
 }
 
-/** 旧版本和迁移基线：只读阅读视图，样子和草稿的「阅读」一样。 */
+/** 历史版本（正式版本和原稿存档）：只读阅读视图，样子和草稿的「阅读」一样。 */
 function ReadOnlyScript({ request, projectId, version, names }: { request: ScriptRequest; projectId: string; version: VersionSummary; names: ReturnType<typeof useNames> }) {
   const [doc, setDoc] = useState<VersionDetail | null>(null), [error, setError] = useState('');
   const reader = useRef<HTMLDivElement>(null);
@@ -48,7 +51,7 @@ function ReadOnlyScript({ request, projectId, version, names }: { request: Scrip
   const outline = doc ? scriptOutline(doc.content) : [];
   const jump = (line: number) => { const host = reader.current; if (!host) return; let t: HTMLElement | null = null; host.querySelectorAll<HTMLElement>('[data-line]').forEach(el => { if (Number(el.dataset.line) <= line) t = el; }); if (t) host.scrollTop = Math.max(0, (t as HTMLElement).offsetTop - host.offsetTop - 8); };
   return <section className="ca-project-script is-mid sa-readonly" aria-label="项目剧本（只读）">
-    <header><div><h2>剧本 · {versionLabel(version)}</h2><p role="status">{error ? '读取失败' : !doc ? '读取中…' : version.kind === 'legacy' ? '迁移时的稿子，只读' : `只读 · ${dateTime(version.finalizedAt)} 定稿`}</p></div></header>
+    <header><div><h2>剧本 · {versionLabel(version)}</h2><p role="status">{error ? '读取失败' : !doc ? '读取中…' : version.kind === 'legacy' ? '剧本区上线前保存的稿子，只读' : `只读 · ${dateTime(version.finalizedAt)} 定稿`}</p></div></header>
     {error && <p className="ca-alert" role="alert">{error}</p>}
     {doc && <div className="ca-script-cols">
       <nav className="ca-script-outline" aria-label="场次大纲"><h3>场次大纲</h3>{outline.length ? <ol>{outline.map(o => <li key={o.line + ':' + o.offset}><button type="button" title={o.text} onClick={() => jump(o.line)}>{o.text}</button></li>)}</ol> : <p className="ca-muted">这一份没有场次标题。</p>}</nav>
@@ -60,6 +63,27 @@ function ReadOnlyScript({ request, projectId, version, names }: { request: Scrip
       <ScriptMentions text={doc.content} names={names.names} namesStatus={names.status}/>
     </div>}
   </section>;
+}
+
+/** 标题旁的「历史版本 ▾」：列出正式版本（写定稿时间）和原稿存档，点了只读打开。没有历史版本时宿主不渲染它。 */
+function HistoryMenu({ items, viewing, onPick }: { items: VersionSummary[]; viewing: Viewing; onPick: (v: VersionSummary) => void }) {
+  const [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); button.current?.focus(); } };
+    document.addEventListener('mousedown', away); document.addEventListener('keydown', esc);
+    box.current?.querySelector<HTMLButtonElement>('[role=menuitem]')?.focus();
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  return <div className="sa-history" ref={box}>
+    <button ref={button} type="button" className="sa-history-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>历史版本<ChevronDown size={14}/></button>
+    {open && <div className="sa-history-menu" role="menu" aria-label="历史版本">
+      {items.map(v => <button key={v.id} type="button" role="menuitem" aria-current={viewing.kind !== 'draft' && viewing.id === v.id ? 'true' : undefined} onClick={() => { setOpen(false); onPick(v); }}>
+        <b>{versionLabel(v)}</b><small>{v.kind === 'version' ? `${dateTime(v.finalizedAt)} 定稿` : '剧本区上线前保存的稿子'}</small>
+      </button>)}
+    </div>}
+  </div>;
 }
 
 export function ScriptAreaWorkspace(props: ScriptAreaProps) {
@@ -118,7 +142,7 @@ function Workspace({ active, projectId, projects, series, request, registerProje
   const formal = list.filter(v => v.kind === 'version'), legacy = list.find(v => v.kind === 'legacy');
   const nextNo = Math.max(0, ...formal.map(v => v.versionNo ?? 0)) + 1;
   const viewed = viewing.kind === 'draft' ? null : list.find(v => v.id === viewing.id) ?? null;
-  const mapCount = maps.items.filter(m => mapBelongs(m, viewing)).length;
+  const history = [...formal, ...(legacy ? [legacy] : [])];
 
   function startFinalize() {
     setNotice('');
@@ -129,24 +153,25 @@ function Workspace({ active, projectId, projects, series, request, registerProje
 
   if (!projectId) return <div className="ca-workspace sa-workspace"><div className="ca-welcome"><h2>剧本</h2><p>在顶部选一集，或一个单独项目。</p></div></div>;
   const viewingText = viewing.kind === 'draft'
-    ? (draft && draft.projectId === projectId ? (draft.updatedAt ? `草稿（${dateTime(draft.updatedAt)} 存过）` : '草稿（还没保存过）') : '草稿')
-    : viewed ? (viewed.kind === 'legacy' ? '迁移时的稿子' : `V${viewed.versionNo} · ${dateTime(viewed.finalizedAt)} 定稿`) : '';
+    ? (draft && draft.projectId === projectId ? (draft.updatedAt ? `当前稿（${dateTime(draft.updatedAt)} 存过）` : '当前稿（还没保存过）') : '当前稿')
+    : viewed ? `正在看 ${versionLabel(viewed)}（只读）` + (viewed.kind === 'version' ? ` · ${dateTime(viewed.finalizedAt)} 定稿` : '') : '';
+  const currentDigest = draft && draft.projectId === projectId ? draft.contentDigest : null;
 
   return <div className="ca-workspace ca-v2 sa-workspace" aria-label="剧本区" role="region">
     <header className="sa-head">
-      <div><h1>{name || '（项目没有读到）'}</h1><p className="sa-viewing" aria-label="当前看的是">{viewingText}{draftError && viewing.kind === 'draft' && <span className="sa-muted"> · 草稿信息没有读到</span>}</p></div>
+      <div>
+        <div className="sa-title-row"><h1>{name || '（项目没有读到）'}</h1>
+          {history.length > 0 && <HistoryMenu items={history} viewing={viewing} onPick={v => { setViewing({ kind: v.kind, id: v.id }); setTab('script'); }}/>}</div>
+        <p className={'sa-viewing' + (viewing.kind === 'draft' ? '' : ' is-readonly')} aria-label="当前看的是">{viewingText}{draftError && viewing.kind === 'draft' && <span className="sa-muted"> · 草稿信息没有读到</span>}
+          {viewing.kind !== 'draft' && <button type="button" className="sa-back-current" onClick={() => setViewing({ kind: 'draft' })}>回到当前稿</button>}</p>
+        {versions?.error && <p className="sa-muted" role="alert">历史版本没有读到：{versions.error}</p>}
+      </div>
       {viewing.kind === 'draft' && <div className="ca-actions"><button className="ca-primary" type="button" onClick={startFinalize}>定稿</button></div>}
     </header>
-    <nav className="sa-versions" aria-label="版本">
-      <button type="button" aria-pressed={viewing.kind === 'draft'} onClick={() => setViewing({ kind: 'draft' })}>草稿<small>正在改</small></button>
-      {formal.map(v => <button type="button" key={v.id} aria-pressed={viewing.kind === 'version' && viewing.id === v.id} title={`${dateTime(v.finalizedAt)} 定稿`} onClick={() => setViewing({ kind: 'version', id: v.id })}>V{v.versionNo}</button>)}
-      {legacy && <button type="button" className="sa-legacy" aria-pressed={viewing.kind === 'legacy'} title="剧本区上线前的旧稿，没有编号" onClick={() => setViewing({ kind: 'legacy', id: legacy.id })}>迁移时的稿子</button>}
-      {versions?.error && <span className="sa-muted" role="alert">版本列表没有读到：{versions.error}</span>}
-    </nav>
     {notice && <p className="ca-notice" role="status">{notice}<button type="button" aria-label="关闭提示" onClick={() => setNotice('')}>×</button></p>}
     <div className="ca-tabs sa-tabs" role="tablist" aria-label="剧本区">
       <button role="tab" aria-selected={tab === 'script'} onClick={() => setTab('script')}>剧本</button>
-      <button role="tab" aria-selected={tab === 'maps'} onClick={() => { setTab('maps'); setReloadMaps(n => n + 1); }}>泳道图<span className="ca-tab-count">{maps.loading && !maps.items.length ? '…' : mapCount}</span></button>
+      <button role="tab" aria-selected={tab === 'maps'} onClick={() => { setTab('maps'); setReloadMaps(n => n + 1); }}>泳道图<span className="ca-tab-count">{maps.loading && !maps.items.length ? '…' : maps.total}</span></button>
       <button role="tab" aria-selected={tab === 'materials'} onClick={() => setTab('materials')}>甲方资料<span className="ca-tab-count">{materials.loading && !materials.items.length ? '…' : materials.items.length}</span></button>
     </div>
     <div className="sa-body">
@@ -155,7 +180,7 @@ function Workspace({ active, projectId, projects, series, request, registerProje
           draft={{ onSaved: () => readDraft() }}/>
       </div>
       {tab === 'script' && viewed && <ReadOnlyScript request={request} projectId={projectId} version={viewed} names={names}/>}
-      {tab === 'maps' && <MapsTab projectId={projectId} request={request} viewing={viewing} list={maps}/>}
+      {tab === 'maps' && <MapsTab projectId={projectId} request={request} list={maps} currentDigest={currentDigest}/>}
       {tab === 'materials' && <MaterialsTab projectId={projectId} seriesId={seriesHit?.node.series.id ?? null} seriesName={seriesHit?.node.series.name ?? ''} request={request} list={materials} onChanged={() => setReloadMaterials(n => n + 1)}/>}
     </div>
     {finalizing && <FinalizeDialog projectId={projectId} nextNo={nextNo} request={request} onClose={() => setFinalizing(false)} onDone={v => {

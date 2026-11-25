@@ -30,3 +30,15 @@ export function fileSize(bytes: number) {
 }
 export const dateTime = (ms: number | null | undefined) => ms == null ? '' : new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 export const dateOnly = (ms: number | null | undefined) => ms == null ? '' : new Date(ms).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+
+/**
+ * 稿子的摘要，和后端 GET …/draft 的 contentDigest 同一个算法（合同 v1.1：UTF-8 SHA-256，输入 JSON.stringify([title, content])，十六进制小写）。
+ * 版本和快照的摘要后端不给，用它们的标题和正文在这里算；浏览器算不了就返回 null，界面上不写「相同 / 改过」。
+ */
+export async function contentDigestOf(title: string, content: string): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle) return null;
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([title, content])));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
+}

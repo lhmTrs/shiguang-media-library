@@ -28,7 +28,8 @@ const shot = async (name, target = page) => { if (shots) await target.screenshot
 const rid = () => crypto.randomUUID();
 const area = () => page.getByRole('region', { name: '剧本区' });
 const tab = name => area().getByRole('tablist', { name: '剧本区' }).getByRole('tab', { name: new RegExp('^' + name) });
-const versions = () => area().getByRole('navigation', { name: '版本' });
+const historyButton = () => area().getByRole('button', { name: '历史版本' });
+async function openHistory(name) { await historyButton().click(); await area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem', { name }).click(); }
 const sources = readFixture('fixture_sources');
 
 try {
@@ -52,18 +53,24 @@ try {
   await page.goto(origin + '/#/project-scripts'); await page.reload(); await selectProjectInBar(page, ep.id);
   await expect(area()).toBeVisible();
 
-  await check('真接口：草稿头部写保存时间；第一次定稿是 V1，确认后版本条出现 V1', async () => {
+  await check('真接口：页头写当前稿的保存时间；还没有历史版本时不显示「历史版本」；第一次定稿是 V1，之后在历史版本里只读打开、回到当前稿', async () => {
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿（');
     await expect(area().getByLabel('当前看的是')).toContainText('存过');
+    await expect(historyButton()).toHaveCount(0);
+    await expect(area().getByRole('navigation', { name: '版本' })).toHaveCount(0);
     await area().getByRole('button', { name: '定稿', exact: true }).click();
     const dlg = page.getByRole('dialog', { name: '定稿' });
     await expect(dlg.getByRole('heading')).toHaveText('定稿成 V1');
     await expect(dlg.getByLabel('开头几行')).toContainText('2-1 地下 · 夜');
     await dlg.getByRole('button', { name: '确认定稿' }).click();
     await expect(dlg).toHaveCount(0); await expect(area()).toContainText('已定稿成 V1');
-    await expect(versions().getByRole('button', { name: 'V1' })).toBeVisible();
-    await versions().getByRole('button', { name: 'V1' }).click();
+    await expect(historyButton()).toBeVisible();
+    await openHistory(/^V1/);
+    await expect(area().getByLabel('当前看的是')).toContainText(/^正在看 V1（只读） · /);
+    await expect(area().getByRole('button', { name: '定稿', exact: true })).toHaveCount(0);
     await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('小周没拉住老李。');
-    await versions().getByRole('button', { name: /^草稿/ }).click();
+    await area().getByRole('button', { name: '回到当前稿' }).click();
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿（');
   });
 
   await check('真接口：定稿前草稿被别处改过 → 409 提示并重读，换新 requestId 后能定成 V2', async () => {
@@ -75,7 +82,7 @@ try {
     await expect(dlg.getByLabel('开头几行')).toBeVisible();
     await dlg.getByRole('button', { name: '确认定稿' }).click();
     await expect(dlg).toHaveCount(0);
-    await expect(versions().getByRole('button', { name: 'V2' })).toBeVisible();
+    await historyButton().click(); await expect(area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem')).toHaveText([/^V2/, /^V1/]); await page.keyboard.press('Escape');
   });
 
   let material;
@@ -154,8 +161,10 @@ try {
     await expect(cards).toHaveCount(2);
     await expect(cards.filter({ hasText: '合成样例 · 单版' })).toContainText('AI 补了 1 处');
     await expect(cards.filter({ hasText: '改动' })).toContainText('改了 5 处因果或动机，1 处措辞');
-    // 草稿在冻结快照之后又改过（409 那一步），草稿图标「基于较早的草稿」
-    await expect(cards.first()).toContainText('基于较早的草稿');
+    // 冻结快照之后当前稿又改过（409 那一步），两张图都写「当前稿已经改过」（真摘要比对）
+    await expect(cards.filter({ hasText: '合成样例 · 单版' })).toContainText(/画在 草稿快照 \d\d-\d\d \d\d:\d\d · 当前稿已经改过/);
+    await expect(cards.filter({ hasText: '改动' })).toContainText('当前稿已经改过');
+    await expect(area()).not.toContainText('迁移');
     await shot('maps');
     await cards.filter({ hasText: '改动' }).click();
     await expect(area().locator('.sm-sheet svg')).toBeVisible();
@@ -292,6 +301,8 @@ try {
     await api(P + '/maps', { binding: { target: { kind: 'snapshot', id: snap.id } }, graph, requestId: rid() });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    // 刚冻结、当前稿没再改过：「和当前稿相同」（真摘要比对）
+    await expect(area().getByRole('button', { name: '打开泳道图：合成长引文图' })).toContainText(/画在 草稿快照 \d\d-\d\d \d\d:\d\d · 和当前稿相同/);
     await area().getByRole('button', { name: '打开泳道图：合成长引文图' }).click();
     await area().getByRole('button', { name: '阅读模式' }).click();
     const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });

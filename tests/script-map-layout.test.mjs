@@ -1,7 +1,7 @@
 // 剧本区泳道图排版（src/script-area/map-layout.mjs）：合成样例，不起服务、不开浏览器。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { excerptKey, layoutMap, lineRange, shortDate, sourceCaption } from '../src/script-area/map-layout.mjs';
+import { boundLabel, excerptKey, layoutMap, legacyLabel, lineRange, shortDate, sourceCaption } from '../src/script-area/map-layout.mjs';
 import { makeRenderData, readFixture } from './fixtures/script-area/make-render-data.mjs';
 
 test('单版图：AI 补的框按行编号，手写 hv + offset 落在目标框的 offset 处，其余自动挑', () => {
@@ -51,7 +51,12 @@ test('行号、来源名、日期的显示', () => {
   const at = new Date(2026, 10, 24, 9, 0).getTime();
   assert.equal(sourceCaption({ label: '文学稿', kind: 'material', at, sourceState: 'available' }), '文学稿（11-24 上传）');
   assert.equal(sourceCaption({ label: '文学稿', kind: 'material', at, sourceState: 'deleted' }), '文学稿（11-24 上传） · 原件已删除');
-  assert.equal(sourceCaption({ label: '迁移时的稿子', kind: 'legacy', at, sourceState: 'available' }), '迁移时的稿子（11-24）');
+  assert.equal(sourceCaption({ label: '合成剧本', kind: 'legacy', at, sourceState: 'available' }), '合成剧本（11-24 原稿存档）');
+  // 原稿存档：后端 displayLabel 是「迁移基线」，界面一律叫「原稿存档（日期）」
+  assert.equal(legacyLabel(at), '原稿存档（11-24）');
+  assert.equal(legacyLabel(null), '原稿存档');
+  assert.equal(boundLabel({ kind: 'legacy', displayLabel: '迁移基线', at }), '原稿存档（11-24）');
+  assert.equal(boundLabel({ kind: 'version', displayLabel: 'V2', at }), 'V2');
 });
 
 test('假回包：quote 都去掉了，摘录按 source+start+end 能查到，空行照计', () => {

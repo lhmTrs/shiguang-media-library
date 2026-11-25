@@ -124,7 +124,7 @@ export function shortDate(ms, withTime = false) {
 
 /** 来源名带日期：「文学稿（11-24 上传）」；原件删了另行标注。 */
 export function sourceCaption(source) {
-  const verb = { material: '上传', version: '定稿', snapshot: '冻结', legacy: '' }[source.kind] ?? '';
+  const verb = { material: '上传', version: '定稿', snapshot: '冻结', legacy: '原稿存档' }[source.kind] ?? '';
   const date = shortDate(source.at);
   return source.label + (date ? `（${date}${verb ? ' ' + verb : ''}）` : '') + (source.sourceState === 'deleted' ? ' · 原件已删除' : '');
 }
@@ -132,5 +132,12 @@ export function sourceCaption(source) {
 /** 挂载对象的显示名：快照名字都一样，后面加冻结时间才分得开。 */
 export function boundLabel(o) {
   if (!o) return '';
+  if (o.kind === 'legacy') return legacyLabel(o.at);
   return o.kind === 'snapshot' && o.at != null ? `${o.displayLabel} ${shortDate(o.at, true)}` : o.displayLabel;
+}
+
+/** 剧本区上线前就有的那份旧稿（后端叫 legacy，displayLabel 是「迁移基线」）：界面上统一叫「原稿存档（11-21）」，日期是原稿最后保存的那天。 */
+export function legacyLabel(at) {
+  const date = shortDate(at);
+  return date ? `原稿存档（${date}）` : '原稿存档';
 }

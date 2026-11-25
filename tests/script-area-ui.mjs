@@ -61,7 +61,12 @@ async function readingModeWorks(nodeName, shotName) {
   await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
 }
 const tab = name => area().getByRole('tablist', { name: '剧本区' }).getByRole('tab', { name: new RegExp('^' + name) });
-const versions = () => area().getByRole('navigation', { name: '版本' });
+const historyButton = () => area().getByRole('button', { name: '历史版本' });
+/** 「历史版本 ▾」下拉里的条目名（只取粗体那一行），读完把下拉关上。 */
+async function historyItems() { await historyButton().click(); const items = await area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem').locator('b').allInnerTexts(); await page.keyboard.press('Escape'); return items; }
+async function openHistory(name) { await historyButton().click(); await area().getByRole('menu', { name: '历史版本' }).getByRole('menuitem', { name: name }).click(); }
+const backToCurrent = () => area().getByRole('button', { name: '回到当前稿' }).click();
+const LEGACY = /^原稿存档（\d\d-\d\d）/;
 
 try {
   await expect.poll(() => logs, { timeout: 25000 }).toContain(origin);
@@ -92,21 +97,29 @@ try {
     await expect(page).toHaveURL(/#\/project-scripts$/);
     await expect(area()).toBeVisible();
     await expect(area().getByRole('heading', { level: 1 })).toContainText('合成剧');
-    await expect(area().getByLabel('当前看的是')).toContainText('草稿');
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿');
   });
 
-  await check('版本条：草稿｜迁移时的稿子（没有编号，样子不同）；旧稿只读', async () => {
-    await expect(versions().getByRole('button')).toHaveText(['草稿正在改', '迁移时的稿子']);
-    await expect(versions().getByRole('button', { name: '迁移时的稿子' })).toHaveClass(/sa-legacy/);
-    await versions().getByRole('button', { name: '迁移时的稿子' }).click();
-    await expect(area().getByLabel('当前看的是')).toHaveText('迁移时的稿子');
+  await check('历史版本：页头下面不再有一排版本按钮；标题旁「历史版本」下拉里是原稿存档（带日期，不出现「迁移」）；点开只读，页头写「正在看 …（只读）」', async () => {
+    await expect(area().getByRole('navigation', { name: '版本' })).toHaveCount(0);
+    assert.deepEqual((await historyItems()).map(t => LEGACY.test(t)), [true]);
+    await historyButton().click();
+    await expect(area().getByRole('menu', { name: '历史版本' })).toContainText('剧本区上线前保存的稿子');
+    await shot('01a-history-menu');
+    await page.keyboard.press('Escape');
+    await openHistory(LEGACY);
+    await expect(area().getByLabel('当前看的是')).toHaveText(/^正在看 原稿存档（\d\d-\d\d）（只读）回到当前稿$/);
     await expect(area().getByRole('button', { name: '定稿', exact: true })).toHaveCount(0);
-    await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('迁移时的合成正文。');
+    await expect(area().getByRole('document', { name: '剧本正文（只读）' })).toContainText('原稿的合成正文。');
     await expect(area().getByLabel('剧本正文', { exact: true })).toBeHidden();
     // 右栏照旧：本集出现的人物
     await expect(area().getByRole('complementary', { name: '剧本中出现的资产' }).last()).toContainText('甲');
+    await expect(area()).not.toContainText('迁移');
     await shot('01-legacy-readonly');
-    await versions().getByRole('button', { name: /^草稿/ }).click();
+    await backToCurrent();
+    await expect(area().getByLabel('当前看的是')).toContainText('当前稿');
+    await expect(area().getByRole('button', { name: '定稿', exact: true })).toBeVisible();
+    await expect(area().getByLabel('剧本正文', { exact: true })).toBeVisible();
   });
 
   await check('定稿：空草稿说明不能定稿；有未保存修改先提示保存', async () => {
@@ -124,7 +137,7 @@ try {
     await expect(area().locator('.ca-project-script header [role=status]')).toContainText('草稿已保存');
   });
 
-  await check('定稿对话框写清 V1、字数、最后保存时间和开头几行；确认后版本条出现 V1，草稿照旧', async () => {
+  await check('定稿对话框写清 V1、字数、最后保存时间和开头几行；确认后历史版本里出现 V1，草稿照旧', async () => {
     await area().getByRole('button', { name: '定稿', exact: true }).click();
     const dlg = page.getByRole('dialog', { name: '定稿' });
     await expect(dlg.getByRole('heading')).toHaveText('定稿成 V1');
@@ -134,7 +147,7 @@ try {
     await dlg.getByRole('button', { name: '确认定稿' }).click();
     await expect(dlg).toHaveCount(0);
     await expect(area()).toContainText('已定稿成 V1');
-    await expect(versions().getByRole('button')).toHaveText(['草稿正在改', 'V1', '迁移时的稿子']);
+    assert.deepEqual((await historyItems()).map(t => LEGACY.test(t) ? '原稿存档' : t), ['V1', '原稿存档']);
     const post = fake.log.filter(l => l.verb === 'POST' && l.path.endsWith('/versions'));
     assert.equal(post.length, 1); assert.ok(post[0].token, '定稿带 X-Local-Token');
     await expect(area().getByLabel('剧本正文', { exact: true }).or(area().getByRole('document', { name: '剧本正文（阅读）' }))).toContainText('甲端起酒杯');
@@ -159,7 +172,7 @@ try {
     await expect(dlg).toHaveCount(0);
     const ids = fake.log.filter(l => l.verb === 'POST' && l.path.endsWith('/versions'));
     assert.equal(ids.length, 4);
-    await expect(versions().getByRole('button')).toHaveText(['草稿正在改', 'V2', 'V1', '迁移时的稿子']);
+    assert.deepEqual((await historyItems()).map(t => LEGACY.test(t) ? '原稿存档' : t), ['V2', 'V1', '原稿存档']);
     // 页面上的输入没有被换掉（本地停在别的窗口改之前的内容——这正是让用户再看一眼的原因）
     await expect(area().getByLabel('剧本正文', { exact: true }).or(area().getByRole('document', { name: '剧本正文（阅读）' }))).toContainText('第二稿。');
   });
@@ -170,13 +183,22 @@ try {
     for (const l of fake.log.filter(l => l.verb !== 'GET')) assert.ok(l.token, l.verb + ' ' + l.path);
   });
 
-  await check('泳道图标签：草稿图卡片写类型、依据、画于何时、AI 补了几处，标「基于较早的草稿」；点开整页看图', async () => {
-    await versions().getByRole('button', { name: /^草稿/ }).click();
+  await check('泳道图标签：列出这一集所有的图（不按版本筛）；每张写画在哪份稿子、和当前稿相同还是已经改过；数字是总数；点开整页看图', async () => {
+    // 再挂一张图在 V2 上：V2 定稿后草稿没再改过，所以「和当前稿相同」
+    const one = fake.state.maps.find(x => x.map.id === 'map-1'), v2 = fake.state.versions.find(v => v.versionNo === 2);
+    fake.state.maps.push({ map: { ...one.map, id: 'map-3', title: '合成样例 · 单版（画在 V2 上）', createdAt: Date.now(), binding: { target: { kind: 'version', id: v2.id } }, isDraftStale: false },
+      renderData: { ...one.renderData, binding: { target: { kind: 'version', id: v2.id, versionNo: 2, title: v2.title, displayLabel: 'V2', at: v2.finalizedAt } } }, issues: [] });
     await tab('泳道图').click();
-    await expect(tab('泳道图')).toContainText('1');
-    const card = area().getByRole('button', { name: /^打开泳道图：/ });
-    await expect(card).toHaveCount(1);
-    await expect(card).toContainText('草稿图'); await expect(card).toContainText('基于较早的草稿');
+    await expect(tab('泳道图')).toContainText('3');
+    const cards = area().getByRole('button', { name: /^打开泳道图：/ });
+    await expect(cards).toHaveCount(3);
+    await expect(cards.filter({ hasText: '画在 V2' })).toContainText('画在 V2 · 和当前稿相同');
+    await expect(area().getByRole('button', { name: '打开泳道图：合成样例 · 单版', exact: true })).toContainText(/画在 快照 #1 \d\d-\d\d \d\d:\d\d · 当前稿已经改过/);
+    await expect(area().getByRole('button', { name: '打开泳道图：合成样例 · v1 到 v2 改动' })).toContainText(/画在 原稿存档（\d\d-\d\d） · 当前稿已经改过/);
+    await expect(area()).not.toContainText('迁移');
+    await expect(area()).not.toContainText('基于较早的草稿');
+    const card = area().getByRole('button', { name: '打开泳道图：合成样例 · 单版', exact: true });
+    await expect(card).toContainText('草稿图');
     await expect(card).toContainText('依据：合成剧本（单版用）'); await expect(card).toContainText('AI 补了 1 处'); await expect(card).toContainText('agent 画于');
     await expect(area().getByRole('link', { name: '泳道图试画页' })).toHaveCount(0); // 试画页给 agent 用，用户页面上不放链接
     await shot('03-maps-list');
@@ -211,9 +233,8 @@ try {
   });
 
   await check('改动图：删掉的框不画框和箭头，只留删除标记；没变的框写「新版原文」；原件删了写存档摘录', async () => {
-    await versions().getByRole('button', { name: '迁移时的稿子' }).click();
-    const card = area().getByRole('button', { name: /^打开泳道图：/ });
-    await expect(card).toContainText(/改动 快照 #1 \d\d-\d\d \d\d:\d\d→快照 #2 \d\d-\d\d \d\d:\d\d/);
+    const card = area().getByRole('button', { name: '打开泳道图：合成样例 · v1 到 v2 改动' });
+    await expect(card).toContainText(/改动 草稿快照 \d\d-\d\d \d\d:\d\d→原稿存档（\d\d-\d\d）/);
     await expect(card).toContainText('改了 5 处因果或动机，1 处措辞');
     await card.click();
     const svg = area().locator('.sm-sheet svg');
@@ -226,21 +247,23 @@ try {
     await expect(pop).toContainText('新版原文 L6'); await expect(pop).not.toContainText('两版相同');
     await area().getByRole('button', { name: '小周：没拉住老李' }).click();
     await expect(pop).toContainText('原件已删除，以下为存档摘录');
-    await expect(pop).toContainText(/快照 #1 \d\d-\d\d \d\d:\d\d 原文 L10/); await expect(pop).toContainText('小周拉住老李。');
-    await expect(pop).toContainText(/快照 #2 \d\d-\d\d \d\d:\d\d 原文 L9/); await expect(pop).toContainText('小周没拉住老李。');
+    await expect(pop).toContainText(/草稿快照 \d\d-\d\d \d\d:\d\d 原文 L10/); await expect(pop).toContainText('小周拉住老李。');
+    await expect(pop).toContainText(/原稿存档（\d\d-\d\d） 原文 L9/); await expect(pop).toContainText('小周没拉住老李。');
     await expect(area().locator('.sm-sub')).toContainText('合成剧本 v1（11-');
     await expect(area().locator('.sm-sub')).toContainText('原件已删除');
     await shot('05-map-diff-pop');
     await page.keyboard.press('Escape');
+    await expect(area().locator('.sa-map-view-bar')).toContainText(/画在 原稿存档（\d\d-\d\d） · 当前稿已经改过/);
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
-    // 没有图的一版：内容区上方一行提示，不居中留大片空白
-    await versions().getByRole('button', { name: 'V1' }).click();
+    // 这一集没有图时：内容区上方一行提示，不居中留大片空白
+    const saved = fake.state.maps; fake.state.maps = [];
+    await tab('泳道图').click();
     const empty = area().locator('.sa-empty-line');
-    await expect(empty).toHaveText('这一版上还没有泳道图。泳道图由 agent 读剧本后画好传上来，这里只看不改。');
+    await expect(empty).toHaveText('这一集还没有泳道图。泳道图由 agent 读剧本后画好传上来，这里只看不改。');
     const eb = await empty.boundingBox(), tabs = await area().getByRole('tablist', { name: '剧本区' }).boundingBox();
     assert.ok(eb.y - (tabs.y + tabs.height) < 40 && eb.height < 60, '空状态紧贴标签下方、只有一行：' + JSON.stringify(eb));
     await shot('05b-maps-empty');
-    await versions().getByRole('button', { name: /^草稿/ }).click();
+    fake.state.maps = saved; await tab('泳道图').click(); await expect(tab('泳道图')).toContainText('3');
   });
 
   await check('甲方资料：默认挂本集；勾「放到全局资料」进全局组并标「全局」；上传走浏览器生成的 multipart 边界', async () => {
@@ -355,6 +378,8 @@ try {
     await expect(root).toHaveAttribute('data-trial-state', 'error');
     await expect(trial.getByRole('status')).toContainText('还要选前稿');
     await trial.getByLabel('前稿（改动图才要）').selectOption('legacy:legacy-1');
+    await expect(trial.getByLabel('前稿（改动图才要）').locator('option:checked')).toHaveText(/^原稿存档（\d\d-\d\d）$/);
+    await expect(trial.locator('body')).not.toContainText('迁移');
     await expect(root).toHaveAttribute('data-trial-state', 'invalid');
     await expect(trial.locator('.sm-sheet')).toHaveCount(0);
     await expect(trial.locator('.sa-issue.is-error')).toContainText('quote 对不上 L10');
@@ -415,7 +440,7 @@ try {
     assert.ok(navItems.some(t => t.trim() === '剧本'), JSON.stringify(navItems));
     await page.locator('.sidebar').getByRole('button', { name: '剧本', exact: true }).click();
     await expect(area()).toBeVisible();
-    await expect(versions().getByRole('button', { name: 'V2' })).toBeVisible();
+    assert.deepEqual((await historyItems()).map(t => LEGACY.test(t) ? '原稿存档' : t), ['V2', 'V1', '原稿存档']);
     await shot('09-paper-trial');
     await tab('泳道图').click();
     await readingModeWorks('线索与画面：毒在他杯里？', '09b-paper-reading');
