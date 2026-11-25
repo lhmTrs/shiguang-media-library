@@ -163,7 +163,7 @@ try {
   await check('改动图：删掉的框不画框和箭头，只留删除标记；没变的框写「新版原文」；原件删了写存档摘录', async () => {
     await versions().getByRole('button', { name: '迁移时的稿子' }).click();
     const card = area().getByRole('button', { name: /^打开泳道图：/ });
-    await expect(card).toContainText('改动 试画前稿→试画目标'.replace('试画前稿', '快照 #1').replace('试画目标', '快照 #2'));
+    await expect(card).toContainText(/改动 快照 #1 \d\d-\d\d \d\d:\d\d→快照 #2 \d\d-\d\d \d\d:\d\d/);
     await expect(card).toContainText('改了 5 处因果或动机，1 处措辞');
     await card.click();
     const svg = area().locator('.sm-sheet svg');
@@ -176,8 +176,8 @@ try {
     await expect(pop).toContainText('新版原文 L6'); await expect(pop).not.toContainText('两版相同');
     await area().getByRole('button', { name: '小周：没拉住老李' }).click();
     await expect(pop).toContainText('原件已删除，以下为存档摘录');
-    await expect(pop).toContainText('快照 #1 原文 L10'); await expect(pop).toContainText('小周拉住老李。');
-    await expect(pop).toContainText('快照 #2 原文 L9'); await expect(pop).toContainText('小周没拉住老李。');
+    await expect(pop).toContainText(/快照 #1 \d\d-\d\d \d\d:\d\d 原文 L10/); await expect(pop).toContainText('小周拉住老李。');
+    await expect(pop).toContainText(/快照 #2 \d\d-\d\d \d\d:\d\d 原文 L9/); await expect(pop).toContainText('小周没拉住老李。');
     await expect(area().locator('.sm-sub')).toContainText('合成剧本 v1（11-');
     await expect(area().locator('.sm-sub')).toContainText('原件已删除');
     await shot('05-map-diff-pop');

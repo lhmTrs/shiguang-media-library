@@ -128,3 +128,9 @@ export function sourceCaption(source) {
   const date = shortDate(source.at);
   return source.label + (date ? `（${date}${verb ? ' ' + verb : ''}）` : '') + (source.sourceState === 'deleted' ? ' · 原件已删除' : '');
 }
+
+/** 挂载对象的显示名：快照名字都一样，后面加冻结时间才分得开。 */
+export function boundLabel(o) {
+  if (!o) return '';
+  return o.kind === 'snapshot' && o.at != null ? `${o.displayLabel} ${shortDate(o.at, true)}` : o.displayLabel;
+}

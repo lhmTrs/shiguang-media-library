@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { dateTime, errorText, scriptBase, timeout } from './api';
 import { CausalMap } from './CausalMap';
 import { IssueList } from './IssueList';
-import { isBigChange, sourceCaption } from './map-layout.mjs';
+import { boundLabel, isBigChange, sourceCaption } from './map-layout.mjs';
 import { trialHref } from './TrialPage';
 import type { MapDetail, MapSummary, Paged, ScriptRequest } from './types';
 
@@ -26,7 +26,7 @@ export function useMapList(request: ScriptRequest, projectId: string, active: bo
 }
 
 function kindText(m: MapSummary, d: MapDetail | undefined) {
-  if (m.kind === 'diff') { const b = d?.renderData.binding; return b?.before ? `改动 ${b.before.displayLabel}→${b.target.displayLabel}` : '改动图'; }
+  if (m.kind === 'diff') { const b = d?.renderData.binding; return b?.before ? `改动 ${boundLabel(b.before)}→${boundLabel(b.target)}` : '改动图'; }
   return m.binding.target.kind === 'snapshot' ? '草稿图' : '单版';
 }
 function countText(d: MapDetail | undefined) {

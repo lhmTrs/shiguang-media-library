@@ -16,7 +16,7 @@ export async function loadObjects(request: ScriptRequest, projectId: string, sig
 
 export const versionLabel = (v: VersionSummary) => v.kind === 'legacy' ? '迁移时的稿子' : 'V' + v.versionNo;
 export const objectLabel = (o: VersionSummary | SnapshotSummary) =>
-  o.kind === 'snapshot' ? `草稿快照（${dateTime(o.createdAt)}）` : o.kind === 'legacy' ? '迁移时的稿子' : `V${o.versionNo} · ${dateTime(o.finalizedAt)} 定稿`;
+  o.kind === 'snapshot' ? `草稿快照（${dateTime(o.createdAt)} · 第 ${o.draftRevision} 次保存的草稿）` : o.kind === 'legacy' ? '迁移时的稿子' : `V${o.versionNo} · ${dateTime(o.finalizedAt)} 定稿`;
 
 export const findObject = (objs: ScriptObjects | null, ref: ObjectRef | null | undefined) =>
   !objs || !ref ? null : ref.kind === 'snapshot' ? objs.snapshots.find(s => s.id === ref.id) ?? null : objs.versions.find(v => v.id === ref.id && v.kind === ref.kind) ?? null;

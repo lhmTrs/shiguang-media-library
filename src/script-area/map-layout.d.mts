@@ -1,4 +1,4 @@
-import type { MapGraph, MapNode, MapRenderSource } from './types';
+import type { BoundObject, MapGraph, MapNode, MapRenderSource } from './types';
 
 export type LaidLane = { id: string; name: string; hero?: boolean; i: number; w: number; x: number; cx: number };
 export type LaidNode = Omit<MapNode, 'label'> & { label: string[]; num?: number; l: LaidLane; x: number; y: number; w: number; h: number };
@@ -27,3 +27,4 @@ export function lineRange(start: number, end?: number | null): string;
 export function excerptKey(source: string, start: number, end?: number | null): string;
 export function shortDate(ms: number | null | undefined, withTime?: boolean): string;
 export function sourceCaption(source: Pick<MapRenderSource, 'label' | 'kind' | 'at' | 'sourceState'>): string;
+export function boundLabel(o: Pick<BoundObject, 'kind' | 'displayLabel' | 'at'> | null | undefined): string;

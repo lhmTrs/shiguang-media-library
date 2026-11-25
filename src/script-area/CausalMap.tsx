@@ -1,7 +1,7 @@
 // 泳道图（剧本因果图）：renderer/template.html 的 React 移植，纯 SVG，只读。
 // 输入是合同里的 renderData；正式图详情和试画回包共用这一个组件。样子照模板，配色用拾光的 --c-* 变量。
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { MAP_GEOMETRY, excerptKey, isBigChange, layoutMap, lineRange, pillWidth, shortDate, sourceCaption } from './map-layout.mjs';
+import { MAP_GEOMETRY, boundLabel, excerptKey, isBigChange, layoutMap, lineRange, pillWidth, shortDate, sourceCaption } from './map-layout.mjs';
 import type { MapLayout } from './map-layout.d.mts';
 import type { MapRef, RenderData } from './types';
 import './causal-map.css';
@@ -37,7 +37,7 @@ export function CausalMap({ data, openId }: Props) {
 
   const laneName = (id: string) => laneById[id]?.name ?? id;
   const before = data.binding?.before, target = data.binding?.target;
-  const shortA = vs.v1?.short || before?.displayLabel || '旧版', shortB = vs.v2?.short || target?.displayLabel || '新版';
+  const shortA = vs.v1?.short || boundLabel(before) || '旧版', shortB = vs.v2?.short || boundLabel(target) || '新版';
   const named = (g.sources || []).length > 1;
 
   // 副标题：写了 subtitle 就用它；改动图自动写「前稿（时间）→ 当前稿（时间）」；再接依据的来源和画图的人
