@@ -164,6 +164,16 @@ try {
     await expect(pop).toContainText('小周拉住老李。'); await expect(pop).toContainText('小周没拉住老李。');
     await shot('map-diff');
     await page.keyboard.press('Escape');
+    // 阅读模式（真数据）：进出、点框、不横向滚动
+    await area().getByRole('button', { name: '阅读模式' }).click();
+    const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
+    await expect(reader.getByRole('button', { name: '退出阅读' })).toBeFocused();
+    await expect(reader.locator('.sa-reading-bar')).toContainText('依据：合成剧本');
+    const sc = await reader.locator('.sa-reading-body').evaluate(el => el.scrollWidth <= el.clientWidth); assert.ok(sc, '阅读模式不横向滚动');
+    await reader.getByRole('button', { name: '小周：没拉住老李' }).click();
+    await expect(reader.getByRole('dialog', { name: '原文' })).toContainText('小周没拉住老李。');
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await expect(reader).toHaveCount(0);
+    await expect(area().getByRole('button', { name: '阅读模式' })).toBeFocused();
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
     // 删除被引用的资料
     await tab('甲方资料').click();

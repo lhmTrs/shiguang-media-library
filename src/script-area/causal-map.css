@@ -72,3 +72,8 @@
 .sm-sec{margin-top:8px;padding-top:8px;border-top:1px solid var(--sm-line);color:var(--c-455b50);font-size:12px}
 .sm-kind{font-size:11px;padding:0 7px;border-radius:9px;border:1px solid var(--sm-line);color:var(--sm-muted);white-space:nowrap}
 .sm-kind.is-ai{border-style:dashed;border-color:var(--sm-ai-stroke)}
+/* 跟着所在区域铺开：图按宽度缩放（放大有上限，太宽的图缩小），居中，不再按原始像素宽度靠左留一大片白 */
+.sm-sheet.is-fit{display:block;min-width:0;padding:20px 24px 28px}
+.sm-sheet.is-fit .sm-board{display:block;width:100%;max-width:var(--sm-max);margin:0 auto}
+.sm-sheet.is-fit .sm-board svg{width:100%;height:auto}
+.sm-pop{max-width:calc(100% - 12px)}

@@ -25,6 +25,41 @@ const shot = async (name, target = page) => { if (shots) await target.screenshot
 const rid = () => crypto.randomUUID();
 
 const area = () => page.getByRole('region', { name: '剧本区' });
+async function readingModeWorks(nodeName, shotName) {
+  await area().getByRole('button', { name: /^打开泳道图：/ }).first().click();
+  const enter = area().getByRole('button', { name: '阅读模式' });
+  await enter.click();
+  const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
+  await expect(reader).toBeVisible();
+  const exitBtn = reader.getByRole('button', { name: '退出阅读' });
+  await expect(exitBtn).toBeFocused();
+  // 盖满浏览器窗口（侧栏、顶栏都在下面）
+  const vp = page.viewportSize(), box = await reader.boundingBox();
+  assert.ok(box.x === 0 && box.y === 0 && Math.abs(box.width - vp.width) < 1 && Math.abs(box.height - vp.height) < 1, JSON.stringify(box));
+  const bar = reader.locator('.sa-reading-bar');
+  await expect(bar).toContainText('合成样例 · 单版'); await expect(bar).toContainText('依据：合成剧本（单版用）'); await expect(bar).toContainText('Esc 退出');
+  await expect(reader.locator('.sm-title')).toHaveCount(0);
+  await expect(reader.locator('.sm-sheet')).not.toContainText('依据：');
+  // 图按窗口宽度缩放：不横向滚动，图比原始宽度宽
+  const scroll = await reader.locator('.sa-reading-body').evaluate(el => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+  assert.ok(scroll.sw <= scroll.cw, '阅读模式没有横向滚动：' + JSON.stringify(scroll));
+  const svg = reader.locator('.sm-board svg'), natural = Number(await svg.getAttribute('viewBox').then(v => v.split(' ')[2])), shown = (await svg.boundingBox()).width;
+  assert.ok(shown > natural, `图放大铺开：${shown} > ${natural}`);
+  // 点框：卡片在窗口里、整个看得见
+  await reader.getByRole('button', { name: nodeName }).click();
+  const pop = reader.getByRole('dialog', { name: '原文' }); await expect(pop).toBeVisible();
+  const pb = await pop.boundingBox(), barBox = await bar.boundingBox();
+  assert.ok(pb.x >= 0 && pb.x + pb.width <= vp.width && pb.y >= barBox.y + barBox.height - 1 && pb.y + pb.height <= vp.height, '卡片在窗口里：' + JSON.stringify(pb));
+  // 底部附近的框：卡片也不跑出窗口
+  const lowest = reader.locator('g.sm-nd').last(); await lowest.scrollIntoViewIfNeeded(); await lowest.click();
+  await expect(pop).toBeVisible(); const pb2 = await pop.boundingBox();
+  assert.ok(pb2.y + pb2.height <= vp.height + 1 && pb2.y >= barBox.y + barBox.height - 1, '靠下的框，卡片也在窗口里：' + JSON.stringify(pb2));
+  if (shotName) await shot(shotName);
+  await page.keyboard.press('Escape'); await expect(pop).toHaveCount(0); await expect(reader).toBeVisible();
+  await page.keyboard.press('Escape'); await expect(reader).toHaveCount(0);
+  await expect(enter).toBeFocused();
+  await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+}
 const tab = name => area().getByRole('tablist', { name: '剧本区' }).getByRole('tab', { name: new RegExp('^' + name) });
 const versions = () => area().getByRole('navigation', { name: '版本' });
 
@@ -143,7 +178,7 @@ try {
     await expect(card).toHaveCount(1);
     await expect(card).toContainText('草稿图'); await expect(card).toContainText('基于较早的草稿');
     await expect(card).toContainText('依据：合成剧本（单版用）'); await expect(card).toContainText('AI 补了 1 处'); await expect(card).toContainText('agent 画于');
-    await expect(area().getByRole('link', { name: '泳道图试画页' })).toHaveAttribute('href', new RegExp('#/script-map-trial\\?project=' + ep.id));
+    await expect(area().getByRole('link', { name: '泳道图试画页' })).toHaveCount(0); // 试画页给 agent 用，用户页面上不放链接
     await shot('03-maps-list');
     await card.click();
     await expect(area().locator('.sm-sheet svg')).toBeVisible();
@@ -158,7 +193,21 @@ try {
     // 范围引用 L7–L8 显示两行
     await area().getByRole('button', { name: '丙：暗门走出质问甲' }).click();
     await expect(pop).toContainText('原文 L7–L8'); await expect(pop).toContainText('丙从暗门后走出。\n丙：你以为她会站在你那边？');
+    await page.keyboard.press('Escape'); await expect(pop).toHaveCount(0);
+    // 页面里的图跟着内容区铺开，不再按原始像素宽度靠左留白；标题和依据只出现一次
+    const sheet = area().locator('.sa-map-scroll'), svgBox = await area().locator('.sm-board svg').boundingBox(), sheetBox = await sheet.boundingBox();
+    const natural = Number((await area().locator('.sm-board svg').getAttribute('viewBox')).split(' ')[2]);
+    assert.ok(svgBox.width > natural * 1.3, `图放大铺开：${svgBox.width} > ${natural}`);
+    const leftGap = svgBox.x - sheetBox.x, rightGap = sheetBox.x + sheetBox.width - svgBox.x - svgBox.width;
+    assert.ok(Math.abs(leftGap - rightGap) < 30, `居中，右边不留一大片白：左 ${leftGap}，右 ${rightGap}`);
+    await expect(area().getByText('依据：合成剧本（单版用）')).toHaveCount(1);
+    await expect(area().locator('.sm-title')).toHaveCount(1);
+    await shot('04b-map-fit');
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
+  await check('泳道图阅读模式：盖满窗口、焦点给「退出阅读」；细栏写标题和依据，图上不重复；按宽度缩放不横向滚动；点框弹卡片不出窗口；Esc 先关卡片再退出，焦点回到按钮', async () => {
+    await readingModeWorks('线索与画面：毒在他杯里？', '04c-reading');
   });
 
   await check('改动图：删掉的框不画框和箭头，只留删除标记；没变的框写「新版原文」；原件删了写存档摘录', async () => {
@@ -184,6 +233,13 @@ try {
     await shot('05-map-diff-pop');
     await page.keyboard.press('Escape');
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+    // 没有图的一版：内容区上方一行提示，不居中留大片空白
+    await versions().getByRole('button', { name: 'V1' }).click();
+    const empty = area().locator('.sa-empty-line');
+    await expect(empty).toHaveText('这一版上还没有泳道图。泳道图由 agent 读剧本后画好传上来，这里只看不改。');
+    const eb = await empty.boundingBox(), tabs = await area().getByRole('tablist', { name: '剧本区' }).boundingBox();
+    assert.ok(eb.y - (tabs.y + tabs.height) < 40 && eb.height < 60, '空状态紧贴标签下方、只有一行：' + JSON.stringify(eb));
+    await shot('05b-maps-empty');
     await versions().getByRole('button', { name: /^草稿/ }).click();
   });
 
@@ -361,6 +417,8 @@ try {
     await expect(area()).toBeVisible();
     await expect(versions().getByRole('button', { name: 'V2' })).toBeVisible();
     await shot('09-paper-trial');
+    await tab('泳道图').click();
+    await readingModeWorks('线索与画面：毒在他杯里？', '09b-paper-reading');
     await page.evaluate(() => localStorage.removeItem('shiguang.paperTrial.v1'));
   });
 

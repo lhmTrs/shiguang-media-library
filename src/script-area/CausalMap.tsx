@@ -6,7 +6,30 @@ import type { MapLayout } from './map-layout.d.mts';
 import type { MapRef, RenderData } from './types';
 import './causal-map.css';
 
-type Props = { data: RenderData; /** 打开后直接弹出这个框（试画页地址栏 open=…）。 */ openId?: string };
+type Props = {
+  data: RenderData;
+  /** 打开后直接弹出这个框（试画页地址栏 open=…）。 */
+  openId?: string;
+  /** 图按所在区域的宽度缩放，最多放大到这个倍数（页面里 1.4、阅读模式 2），太宽的图缩小；不再按原始像素宽度摆在左边。 */
+  fit?: number;
+  /** 阅读模式：标题和依据已经在顶部细栏里，图上不再重复。 */
+  bare?: boolean;
+};
+
+/** 图的标题和依据（来源名＋日期），阅读模式的细栏和图上共用同一份文字。 */
+export function mapHeading(data: RenderData) {
+  return { title: data.graph.title || '未命名泳道图', basis: data.sources?.length ? '依据：' + data.sources.map(sourceCaption).join('、') : '' };
+}
+
+/** 小卡片最终能看到的范围：离它最近的滚动容器和浏览器窗口的交集（阅读模式里就是细栏下面那一块）。 */
+function visibleArea(el: Element) {
+  let top = 0, bottom = window.innerHeight;
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const o = getComputedStyle(p).overflowY;
+    if (o === 'auto' || o === 'scroll' || o === 'hidden') { const r = p.getBoundingClientRect(); top = Math.max(top, r.top); bottom = Math.min(bottom, r.bottom); break; }
+  }
+  return { top, bottom };
+}
 type Pop = { id: string; left: number; top: number };
 
 /** 「**重点**」加粗，其余一律当文字。 */
@@ -25,7 +48,7 @@ function Pill({ cx, cy, label, cls }: { cx: number; cy: number; label: string; c
   </g>;
 }
 
-export function CausalMap({ data, openId }: Props) {
+export function CausalMap({ data, openId, fit, bare = false }: Props) {
   const layout: MapLayout = useMemo(() => layoutMap(data.graph), [data.graph]);
   const { mode, lanes, laneById, nodes, bands, edges, delMarks, all, W, H, PADX } = layout;
   const g = data.graph, vs = g.versions || {};
@@ -43,7 +66,7 @@ export function CausalMap({ data, openId }: Props) {
   // 副标题：写了 subtitle 就用它；改动图自动写「前稿（时间）→ 当前稿（时间）」；再接依据的来源和画图的人
   let sub = g.subtitle || '';
   if (!sub && mode === 'diff' && vs.v1 && vs.v2) sub = `${vs.v1.label}（${shortDate(before?.at, true)}）→ ${vs.v2.label}（${shortDate(target?.at, true)}）`;
-  if (data.sources?.length) sub += (sub ? ' · ' : '') + '依据：' + data.sources.map(sourceCaption).join('、');
+  if (data.sources?.length && !bare) sub += (sub ? ' · ' : '') + mapHeading(data).basis;
   if (g.madeBy) sub += (sub ? ' · ' : '') + g.madeBy;
 
   const hero = lanes.find(l => l.hero), hn = hero ? hero.name : '主角';
@@ -54,16 +77,22 @@ export function CausalMap({ data, openId }: Props) {
 
   function open(id: string, el: Element) {
     const b = board.current; if (!b) return;
-    const br = b.getBoundingClientRect(), tr = el.getBoundingClientRect();
-    let left = tr.right - br.left + 10; if (left + 380 > br.width) left = tr.left - br.left - 390;
-    if (left < 0) left = Math.max(6, Math.min(br.width - 386, tr.left - br.left));
+    const br = b.getBoundingClientRect(), tr = el.getBoundingClientRect(), pw = Math.min(380, br.width - 12);
+    let left = tr.right - br.left + 10; if (left + pw > br.width) left = tr.left - br.left - pw - 10;
+    if (left < 0) left = Math.max(6, Math.min(br.width - pw - 6, tr.left - br.left));
     setPop({ id, left, top: tr.top - br.top });
   }
-  // 卡片超出画板底部时往上挪（模板同样的处理）
+  // 卡片要整个看得见：先不超出画板底部（模板同样的处理），再挪进看得见的范围（滚动区和窗口），挡不住也跑不出去
   useLayoutEffect(() => {
     const b = board.current, p = popRef.current; if (!pop || !b || !p) return;
-    const ph = p.offsetHeight, bh = b.getBoundingClientRect().height;
-    if (pop.top + ph > bh) { const top = Math.max(6, bh - ph - 6); if (top !== pop.top) setPop({ ...pop, top }); }
+    const ph = p.offsetHeight, br = b.getBoundingClientRect(), area = visibleArea(b);
+    let top = pop.top;
+    if (top + ph > br.height) top = Math.max(6, br.height - ph - 6);
+    const shownTop = br.top + top;
+    if (shownTop + ph > area.bottom - 6) top -= shownTop + ph - (area.bottom - 6);
+    if (br.top + top < area.top + 6) top = area.top + 6 - br.top;
+    top = Math.round(top);
+    if (top !== pop.top) setPop({ ...pop, top });
   }, [pop]);
   useEffect(() => {
     if (!pop) return;
@@ -124,9 +153,9 @@ export function CausalMap({ data, openId }: Props) {
   }
 
   const R = MAP_GEOMETRY.R;
-  return <div className="sm-sheet" data-map-kind={mode}>
-    {g.title && <h1 className="sm-title">{g.title}</h1>}
-    <div className="sm-sub">{sub}</div>
+  return <div className={'sm-sheet' + (fit ? ' is-fit' : '')} data-map-kind={mode} style={fit ? { '--sm-max': Math.round(W * fit + 14) + 'px' } as React.CSSProperties : undefined}>
+    {g.title && !bare && <h1 className="sm-title">{g.title}</h1>}
+    {sub && <div className="sm-sub">{sub}</div>}
     {g.gist && <div className="sm-gist"><Gist text={g.gist}/></div>}
     <div className="sm-legend">
       {kinds.has('self') && <span><i className="sm-sw is-self"/>{hn}本人</span>}
