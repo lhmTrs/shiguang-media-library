@@ -2,7 +2,7 @@ import {UpdreamTaskEntry} from './updream/UpdreamTaskEntry';
 import {NoticesEntry} from './notices/NoticesEntry';
 import {confirmStoryboardLeave, hasStoryboardLeaveGuard} from './storyboard/leave-guard';
 import {GlobalErrorBoundary, GlobalFeedback, useFeedbackToast} from './global-feedback';
-import { Users, ListMusic } from "lucide-react";
+import { Users, ListMusic, ScrollText } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { KeywordSearch, KeywordTokens, type SearchMode } from "./KeywordSearch";
@@ -111,6 +111,8 @@ import type {GenerationFocus,GenerationTask} from './storyboard/generation-types
 import {ProjectVideoWorkspace} from "./project-videos/ProjectVideoWorkspace";
 import {prefixForProject} from "./project-videos/display-name.mjs";
 import {ProjectMusicWorkspace} from "./project-music/ProjectMusicWorkspace";
+import {ScriptAreaWorkspace} from "./script-area/ScriptAreaWorkspace";
+import {TrialPage,isTrialHash} from "./script-area/TrialPage";
 import {FileIntakeWindow,FileTaskEntry} from "./file-intake";
 import { StoryboardWorkspace } from "./StoryboardWorkspace";
 import { PromptTemplateWorkspace,type PromptWorkspaceHandle } from "./PromptTemplateWorkspace";
@@ -130,7 +132,7 @@ import { hasPastedPath, pastedPath, setServerPlatform, usePlatformWords } from "
 
 const navigationGroups = [
   { id: "find", label: "素材查找", icon: Search, items: ["all", "photo", "video", "sfx", "music", "favorites"] },
-  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"] },
+  { id: "design", label: "项目设计和管理", icon: FolderKanban, items: ["projects", "projectUsage", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "storyboard", "promptTemplates"] },
   { id: "manage", label: "素材管理", icon: FolderOpen, items: ["categoryManagement", "tagManagement", "duplicates", "review", "offline", "missing"] },
 ];
 /** 「新样子（试用）」里一次只开一组的两组，以及各自的名字（剪辑时用素材，做漫剧时用项目）。 */
@@ -293,7 +295,7 @@ async function readLibraryIdentity(){return(await establishLocalSession(true)).i
 async function api<T = unknown>(url: string, body?: unknown, method?: string, options?: { signal?: AbortSignal }): Promise<T> {
   const verb = (method || (body ? 'POST' : 'GET')).toUpperCase();
   if (url === '/session' && verb === 'GET') return await establishLocalSession() as T;
-  const projectRequest = /^\/(?:projects|project-series)(?:[/?]|$)/.test(url);
+  const projectRequest = /^\/(?:projects|project-series|project-scripts)(?:[/?]|$)/.test(url);
   if (projectRequest && libraryIdentityChanged) throw libraryIdentityError();
   const expectedInstance = (await establishLocalSession()).instanceId;
   const assertCurrent = async () => {
@@ -301,14 +303,15 @@ async function api<T = unknown>(url: string, body?: unknown, method?: string, op
   };
   const perform = async (recovered = false): Promise<T> => {
     const sentToken = token, headers: Record<string, string> = {};
-    const binary = body instanceof Blob;
-    if (body) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
+    // FormData: leave Content-Type unset so the browser writes the multipart boundary itself.
+    const binary = body instanceof Blob, form = body instanceof FormData;
+    if (body && !form) headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json';
     if (verb !== 'GET') headers['X-Local-Token'] = sentToken;
     if (projectRequest) {
       if (libraryIdentityChanged) throw libraryIdentityError();
       headers['X-Shiguang-Library-Id'] = expectedInstance;
     }
-    const response = await hostReads.fetch('/api' + url, { method: verb, headers, body: binary ? body : body ? JSON.stringify(body) : undefined, signal: options?.signal }, assertCurrent);
+    const response = await hostReads.fetch('/api' + url, { method: verb, headers, body: binary || form ? body as BodyInit : body ? JSON.stringify(body) : undefined, signal: options?.signal }, assertCurrent);
     const result = await response.json();
     if (projectRequest && (verb === 'GET' && libraryIdentityChanged || response.status === 409 && result.code === 'LOCAL_INSTANCE_CHANGED')) {
       throw libraryIdentityError();
@@ -324,6 +327,8 @@ async function api<T = unknown>(url: string, body?: unknown, method?: string, op
     if (!response.ok) throw Object.assign(Error(hostBusyMessage(result.code,result.error || '请求失败')), {
       diagnostic: result.diagnostic, code: result.code, kind: result.kind, status: response.status, accepted:result.accepted,
       retryAfterMs: result.retryAfterMs, requestId: result.requestId, details: result.details,
+      // 剧本区 422（泳道图校验）的问题列表在顶层；原样交给界面。
+      issues: Array.isArray(result.issues) ? result.issues : undefined,
     });
     if (verb !== 'GET') clearTagFacetCache();
     return result;
@@ -674,6 +679,11 @@ function App() {
   const registerProjectSwitchGuard = useCallback((guard: (() => boolean) | null) => {
     assetProjectSwitchGuard.current = guard;
   }, []);
+  // 剧本区自己一份：两个页面都常驻，各自的未保存修改各问各的。
+  const scriptProjectSwitchGuard = useRef<(() => boolean) | null>(null), [scriptFocus, setScriptFocus] = useState(0);
+  const registerScriptSwitchGuard = useCallback((guard: (() => boolean) | null) => {
+    scriptProjectSwitchGuard.current = guard;
+  }, []);
   const openStoryboardTaskProject = useRef<(id: string, then?: () => void, isCurrent?: () => boolean) => boolean>(() => false);
   const codexTasks=useCodexTasks(api,setNotice),promptWorkspace=useRef<PromptWorkspaceHandle>(null);
   const openUploadTasks=()=>{cancelCodexNavigation();setWorkspaceInitialTab('audio');setUploadTasksOpen(true);};
@@ -844,7 +854,7 @@ function App() {
       if (retry && hasStoryboardLeaveGuard()) { const ticket = ++projectSwitchTicket.current; void confirmStoryboardLeave("切换项目").then(ok => { if (ok && ticket === projectSwitchTicket.current) retry(); }); return false; }
       if (!confirm("当前分镜有未保存草稿，切换后可在原项目恢复。继续切换？")) return false;
     }
-    return assetProjectSwitchGuard.current?.() ?? true;
+    return (assetProjectSwitchGuard.current?.() ?? true) && (scriptProjectSwitchGuard.current?.() ?? true);
   }
   function activateProject(id: string) {
     if (!projectLibrary.current || id === activeProject) return;
@@ -1249,7 +1259,7 @@ function App() {
   const facetQuery = assetParams(1).toString();
   useEffect(() => {
     let live = true;
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
     const timer = setTimeout(() => {
       void loadTagFacets(new URLSearchParams(facetQuery), api).then(result => {
         if (live) setFilterTags(result.items);
@@ -1282,7 +1292,7 @@ function App() {
    */
   async function refresh(opts: { silent?: boolean; stats?: boolean } = {}) {
     if(opts.stats!==false)void globalStats.refresh();
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
+    if (["storyboard", "promptTemplates", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "projectUsage"].includes(view)) return;
     if (opts.silent && (backgroundBlocked() || backgroundRequest.current)) return;
     browseRead.current?.abort();
     const controller = new AbortController(); browseRead.current = controller;
@@ -1568,7 +1578,7 @@ function App() {
       setCaptureUnknown(saved?.captureUnknown || false);
       setOnlyFavorites(saved?.onlyFavorites || false);
     }
-    if (["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
+    if (["storyboard", "promptTemplates", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "projectUsage"].includes(v) || view === "projectUsage" && v !== view) pauseAudition();
     if (v !== "projectAssets") setSeasonSettingsFocus(undefined);
     viewRef.current = v;
     setView(v);
@@ -1666,7 +1676,7 @@ function App() {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > length + 0.01 || end - start < 0.05) return;
     setInPoint(start); setOutPoint(Math.min(length, end));
   }
-  const libraryView = !["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
+  const libraryView = !["projects", "projectUsage", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates", "missing"].includes(view);
   const auditionContext = useRef({ id: playing?.id, view });
   auditionContext.current = { id: playing?.id, view };
   const auditionQueue = displayedAssets.filter(a => audioAsset(a) && a.ext !== "ncm" && a.online);
@@ -1847,7 +1857,7 @@ function App() {
   }
   const currentProject = projects.find(project => project.id === activeProject);
   const title =
-    view === "projectVideos" ? "生成视频" : view === "projectMusic" ? "项目音乐" : view === "projectAssets" ? "项目资产" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? (paperTrial ? paperItemLabels.projects : "项目") : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
+    view === "projectVideos" ? "生成视频" : view === "projectMusic" ? "项目音乐" : view === "projectAssets" ? "项目资产" : view === "projectScripts" ? "剧本" : view === "storyboard" ? "分镜设计" : view === "promptTemplates" ? "提示词模板" : view === "projects" ? (paperTrial ? paperItemLabels.projects : "项目") : view === "projectUsage" ? "素材使用" : view === "duplicates" ? "重复音频" : view === "tagManagement"
       ? "标签管理"
       : view === "categoryManagement"
         ? "分类管理"
@@ -1879,6 +1889,7 @@ function App() {
     ["projects", "项目", FolderKanban],
     ["projectUsage", "素材使用", Layers],
     ["projectAssets", "项目资产", Users],
+    ["projectScripts", "剧本", ScrollText],
     ["projectVideos", "生成视频", Film],
     ["projectMusic", "项目音乐", ListMusic],
     ["storyboard", "分镜设计", Clapperboard],
@@ -2018,7 +2029,7 @@ function App() {
                   className={view === value ? "nav-item selected" : "nav-item"} onClick={() => navigate(value)}>
                   <Icon size={19} aria-hidden="true"/>
                   <span>{itemLabel}</span>
-                  {!["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
+                  {!["projects", "projectUsage", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "storyboard", "promptTemplates", "categoryManagement", "tagManagement", "duplicates"].includes(value) && <small>{count(value).toLocaleString()}</small>}
                 </button>)}
               </div>
             </section>;
@@ -2088,7 +2099,7 @@ function App() {
             <span className="sgp-path-sep" aria-hidden="true">/</span>
             <span className="sgp-path-page" aria-current="page">{title}</span>
           </nav> : <div className="breadcrumb">
-            {["projects", "projectUsage", "projectAssets", "projectVideos", "projectMusic", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
+            {["projects", "projectUsage", "projectAssets", "projectScripts", "projectVideos", "projectMusic", "storyboard", "promptTemplates"].includes(view) ? "项目设计和管理" : "素材库"}<span>/</span>
             {title}
           </div>}
           <BackgroundReadStatus/>
@@ -2130,12 +2141,13 @@ function App() {
           </div>
         </header>
         {projectsError && ["projectUsage", "storyboard", "promptTemplates"].includes(view) && <div className="banner error" role="alert"><span>{projectsError}，项目列表未能更新，已有项目保留。</span><button onClick={refreshProjects}>重试项目列表</button></div>}
-        <ProjectAssetWorkspace focusProject={projectAssetFocus} openSeasonSettings={seasonSettingsFocus?.projectId === activeProject ? seasonSettingsFocus : undefined} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
+        <ProjectAssetWorkspace onOpenScript={() => { setScriptFocus(n => n + 1); navigate("projectScripts"); }} focusProject={projectAssetFocus} openSeasonSettings={seasonSettingsFocus?.projectId === activeProject ? seasonSettingsFocus : undefined} active={view === "projectAssets"} registerProjectSwitchGuard={registerProjectSwitchGuard} request={api} activeProject={activeProject} selectProject={selectKnownProject} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} onOpenShot={target=>{if(!selectKnownProject(target.projectId))return;setStoryboardShotFocus(previous=>({...target,request:(previous?.request??0)+1}));navigate("storyboard");}}/>
         <PromptTemplateWorkspace ref={promptWorkspace} active={!specialPage&&view === "promptTemplates"} request={api} refreshSeconds={refreshSeconds} onSettings={() => setNavSettings(true)} projects={projects} activeProject={activeProject} onTaskViewing={codexTasks.viewed}/>
         <ProjectVideoWorkspace namePrefixFor={namePrefixFor} focusVideo={fileTaskVideoFocus} onBusyChange={setProjectVideoBusy} active={view==="projectVideos"} projectId={activeProject} projects={projects} request={api} onProject={selectKnownProject} onStoryboard={()=>navigate("storyboard")}/>
         <ProjectMusicWorkspace active={view==="projectMusic"} projectId={activeProject} projects={projects} request={api}/>
+        <ScriptAreaWorkspace active={view==="projectScripts"} projectId={activeProject} projects={projectDirectory?.projects ?? projects} series={projectDirectory?.series ?? []} request={api} registerProjectSwitchGuard={registerScriptSwitchGuard} scriptFocus={scriptFocus}/>
         <StoryboardWorkspace projectsKnown={projectsKnown} projectsError={projectsError} request={api} generationFocus={generationFocus} onTaskViewing={codexTasks.viewed} projects={projects} activeProject={activeProject} onAssets={() => {setProjectAssetFocus(p=>({id:activeProject,request:p.request+1}));navigate("projectAssets");}} onProjects={() => navigate("projects")} active={view === "storyboard"} refreshSeconds={refreshSeconds} appearance={storyboardAppearance} onAppearanceChange={setStoryboardAppearance} onSettings={() => setNavSettings(true)} shotFocus={storyboardShotFocus} onDirtyChange={setStoryboardDirty}/>
-        {["storyboard", "promptTemplates", "projectAssets", "projectVideos", "projectMusic"].includes(view) ? null : view === "projects" ? <>
+        {["storyboard", "promptTemplates", "projectAssets", "projectScripts", "projectVideos", "projectMusic"].includes(view) ? null : view === "projects" ? <>
           {directoryError && <div className="banner error" role="alert"><span>{directoryError}</span>{projectLibraryId && <button onClick={refreshProjects}>重试项目目录</button>}</div>}
           {projectDirectory ? <ProjectFolders {...projectFolderSeasonActions} projects={projectDirectory.projects} series={projectDirectory.series}
             seriesChanged={refreshProjects} activeId={activeProject} select={selectKnownProject}
@@ -4147,4 +4159,6 @@ function App() {
   );
 }
 const fileIntakeMatch=window.location.hash.match(/^#\/file-intake\/([a-f0-9-]{36})$/i);
-createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary>{fileIntakeMatch?<FileIntakeWindow handoffId={fileIntakeMatch[1]}/>:<App />}</GlobalErrorBoundary>{!fileIntakeMatch&&<GlobalFeedback />}</>);
+// 泳道图试画页：独立整页，没有侧栏（给 agent 的无头浏览器用，人也能用）。
+const scriptMapTrial=!fileIntakeMatch&&isTrialHash(window.location.hash);
+createRoot(document.getElementById("root")!).render(<><GlobalErrorBoundary>{fileIntakeMatch?<FileIntakeWindow handoffId={fileIntakeMatch[1]}/>:scriptMapTrial?<TrialPage request={api}/>:<App />}</GlobalErrorBoundary>{!fileIntakeMatch&&!scriptMapTrial&&<GlobalFeedback />}</>);

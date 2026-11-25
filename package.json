@@ -35,6 +35,7 @@
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
     "better-sqlite3": "^11.10.0",
+    "docx-preview": "0.4.1",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
     "mysql2": "^3.24.6",

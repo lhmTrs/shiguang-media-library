@@ -1,0 +1,30 @@
+import type { BoundObject, MapGraph, MapNode, MapRenderSource } from './types';
+
+export type LaidLane = { id: string; name: string; hero?: boolean; i: number; w: number; x: number; cx: number };
+export type LaidNode = Omit<MapNode, 'label'> & { label: string[]; num?: number; l: LaidLane; x: number; y: number; w: number; h: number };
+export type LaidBand = { row: number; label: string; y: number; tw: number; tx: number };
+export type LaidEdge = { from: string; to: string; route: string; d: string; leader: boolean };
+export type LaidDelMark = { id: string; lane: string; before: number; num?: number; cx: number; cy: number };
+export type MapLayout = {
+  mode: 'single' | 'diff';
+  lanes: LaidLane[];
+  laneById: Record<string, LaidLane>;
+  nodes: LaidNode[];
+  bands: LaidBand[];
+  edges: LaidEdge[];
+  delMarks: LaidDelMark[];
+  all: Record<string, Omit<MapNode, 'label'> & { label: string[]; num?: number }>;
+  W: number;
+  H: number;
+  PADX: number;
+  warnings: { from: string; to: string; message: string }[];
+};
+export const MAP_GEOMETRY: { readonly GAP: number; readonly PADX: number; readonly HEAD: number; readonly BOXH: number; readonly R: number; readonly HERO_W: number };
+export function isBigChange(mode: 'single' | 'diff', node: { change?: string }): boolean;
+export function layoutMap(graph: MapGraph): MapLayout;
+export function pillWidth(label: string): number;
+export function lineRange(start: number, end?: number | null): string;
+export function excerptKey(source: string, start: number, end?: number | null): string;
+export function shortDate(ms: number | null | undefined, withTime?: boolean): string;
+export function sourceCaption(source: Pick<MapRenderSource, 'label' | 'kind' | 'at' | 'sourceState'>): string;
+export function boundLabel(o: Pick<BoundObject, 'kind' | 'displayLabel' | 'at'> | null | undefined): string;

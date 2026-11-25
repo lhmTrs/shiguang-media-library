@@ -15,7 +15,18 @@ function checked(doc:Doc,id:string){if(doc?.project_id!==id||typeof doc.title!==
 type Name={kind:'character'|'scene'|'prop';name:string};
 const kindLabel={character:'人物',scene:'场景',prop:'道具'} as const;
 function countOf(text:string,name:string){if(!name)return 0;let n=0,i=text.indexOf(name);while(i>=0&&n<9999){n++;i=text.indexOf(name,i+name.length);}return n;}
-export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],namesStatus='ok'}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[];namesStatus?:'loading'|'ok'|'error'}){
+export type ScriptName=Name;
+type NamesStatus='loading'|'ok'|'error';
+/** 右栏「剧本中出现」：本项目人物、场景、道具在正文里出现几次。剧本区的只读版本也用它。 */
+export function ScriptMentions({text,names,namesStatus}:{text:string;names:Name[];namesStatus:NamesStatus}){
+ const mentions=names.map(n=>({...n,count:countOf(text,n.name)}));
+ return <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{namesStatus==='loading'?<p className="ca-muted">正在读取本项目的人物、场景、道具…</p>:namesStatus==='error'?<p className="ca-muted">资产列表没有读到，暂时无法统计；剧本照常可读写</p>:!names.length?<p className="ca-muted">本项目还没有人物、场景、道具</p>:(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>;
+}
+/**
+ * draft：剧本区里这是「草稿」——状态不写「V」（V 留给用户定稿的正式版本），并在保存成功后告诉宿主（刷新头部时间、定稿要用的修订号）。
+ * 项目资产页不传，行为不变。
+ */
+export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],namesStatus='ok',draft}:{projectId:string;visible:boolean;request:PromptRequest;onDirtyChange:(dirty:boolean)=>void;names?:Name[];namesStatus?:NamesStatus;draft?:{onSaved:(doc:{project_id:string;revision:number;updated_at:number|null})=>void}}){
  const editor=useRef<HTMLTextAreaElement>(null),reader=useRef<HTMLDivElement>(null);
  // 正文默认「阅读」（排好版的 Markdown）；空剧本直接「编辑」；有未保存修改时始终停在「编辑」。
  const [view,setView]=useState<'read'|'edit'|null>(null);
@@ -47,16 +58,17 @@ export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],
   const sent={title:e.title,content:e.content,expected_revision:e.doc.revision},edits=e.edits;e.saving=true;e.error='';update();
   try{const doc=checked(await request<Doc>('/project-assets/projects/'+encodeURIComponent(id)+'/script',sent,'PUT',{signal:AbortSignal.timeout(15000)}),id);if(doc.revision<=sent.expected_revision||doc.title!==sent.title||doc.content!==sent.content)throw Error('保存回执不一致，本地输入仍保留，请核对已保存内容');
    e.doc=doc;if(e.edits===edits){e.title=doc.title;e.content=doc.content;}
+   draft?.onSaved(doc);
   }catch(error:any){e.error=(error.message||'保存失败')+'；本地输入仍保留'+(!error.status?'，保存结果尚未确认，请核对后再操作':'');}
   finally{e.saving=false;update();}
  }
  const mode=unsaved||!current.loaded?'edit':view??(current.content.trim()?'read':'edit');
- const outline=scriptOutline(current.content),mentions=names.map(n=>({...n,count:countOf(current.content,n.name)}));
+ const outline=scriptOutline(current.content);
  function jumpTo(offset:number,line:number){
   if(mode==='read'){const host=reader.current;if(!host)return;let target:HTMLElement|null=null;host.querySelectorAll<HTMLElement>('[data-line]').forEach(el=>{if(Number(el.dataset.line)<=line)target=el;});if(target){const t=target as HTMLElement;host.scrollTop=Math.max(0,t.offsetTop-host.offsetTop-8);}return;}
   const t=editor.current;if(!t)return;t.focus();t.setSelectionRange(offset,offset);const lh=parseFloat(getComputedStyle(t).lineHeight)||22;t.scrollTop=Math.max(0,line*lh-lh*2);}
  return <section className={'ca-project-script '+(width==='full'?'is-full':'is-mid')} aria-label="项目剧本" aria-busy={current.reading||current.saving}>
-  <header><div><h2>剧本</h2><p role="status">{current.saving?'保存中…':current.reading?'读取中…':current.error?'操作失败，输入保留':!current.loaded?'尚未读取':unsaved?'有未保存修改':current.doc.revision?'已保存 · V'+current.doc.revision:'尚未保存'}{current.doc.updated_at!==null&&<> · 最后保存 {new Date(current.doc.updated_at).toLocaleString('zh-CN')}</>} · 保存在当前项目，不会自动生成或修改分镜</p></div><div className="ca-actions"><div className="ca-script-view" role="group" aria-label="正文宽度" title="正文宽度（记在这台电脑上）"><button type="button" aria-pressed={width==='mid'} onClick={()=>setWidth('mid')}>适中</button><button type="button" aria-pressed={width==='full'} onClick={()=>setWidth('full')}>铺满</button></div><div className="ca-script-view" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={mode==='read'} disabled={unsaved||!current.loaded} title={unsaved?'有未保存修改，保存后才能切到阅读':undefined} onClick={()=>setView('read')}>阅读</button><button type="button" aria-pressed={mode==='edit'} disabled={!current.loaded} onClick={()=>setView('edit')}>编辑</button></div><button disabled={current.reading||current.saving} onClick={()=>void read(true)}>重新读取剧本</button><button className="ca-primary" disabled={!current.loaded||current.reading||current.saving||!unsaved} onClick={()=>void save()}>保存剧本</button></div></header>
+  <header><div><h2>剧本</h2><p role="status">{current.saving?'保存中…':current.reading?'读取中…':current.error?'操作失败，输入保留':!current.loaded?'尚未读取':unsaved?'有未保存修改':current.doc.revision?(draft?'草稿已保存':'已保存 · V'+current.doc.revision):'尚未保存'}{current.doc.updated_at!==null&&<> · 最后保存 {new Date(current.doc.updated_at).toLocaleString('zh-CN')}</>} · {draft?'保存只改草稿；点上方「定稿」才存成新版本':'保存在当前项目，不会自动生成或修改分镜'}</p></div><div className="ca-actions"><div className="ca-script-view" role="group" aria-label="正文宽度" title="正文宽度（记在这台电脑上）"><button type="button" aria-pressed={width==='mid'} onClick={()=>setWidth('mid')}>适中</button><button type="button" aria-pressed={width==='full'} onClick={()=>setWidth('full')}>铺满</button></div><div className="ca-script-view" role="group" aria-label="正文显示方式"><button type="button" aria-pressed={mode==='read'} disabled={unsaved||!current.loaded} title={unsaved?'有未保存修改，保存后才能切到阅读':undefined} onClick={()=>setView('read')}>阅读</button><button type="button" aria-pressed={mode==='edit'} disabled={!current.loaded} onClick={()=>setView('edit')}>编辑</button></div><button disabled={current.reading||current.saving} onClick={()=>void read(true)}>重新读取剧本</button><button className="ca-primary" disabled={!current.loaded||current.reading||current.saving||!unsaved} onClick={()=>void save()}>保存剧本</button></div></header>
   {current.error&&<p className="ca-alert" role="alert">{current.error}</p>}
   <div className="ca-script-cols">
    <nav className="ca-script-outline" aria-label="场次大纲"><h3>场次大纲</h3>{outline.length?<ol>{outline.map(o=><li key={o.line+':'+o.offset}><button type="button" title={o.text} onClick={()=>jumpTo(o.offset,o.line)}>{o.text}</button></li>)}</ol>:<p className="ca-muted">以“## ”开头的标题，或“1. ”这样的数字编号开头的行，会显示为场次。</p>}</nav>
@@ -69,7 +81,7 @@ export function ProjectScript({projectId,visible,request,onDirtyChange,names=[],
      <label className="ca-field ca-script-body"><span>剧本正文<small className="ca-script-hint">支持 Markdown：<code>## 场次标题</code> <code>**加粗**</code> <code>&gt; 引用</code> <code>- 列表</code> <code>---</code> 分隔</small></span><textarea ref={editor} aria-label="剧本正文" maxLength={200000} rows={22} disabled={!current.loaded||current.reading} value={current.content} onChange={e=>{current.content=e.target.value;current.edits++;if(view===null)setView('edit');update();}}/></label>
     </>}<small>{current.content.length.toLocaleString()} / 200,000 字</small>
    </div>
-   <aside className="ca-script-mentions" aria-label="剧本中出现的资产"><h3>剧本中出现</h3>{namesStatus==='loading'?<p className="ca-muted">正在读取本项目的人物、场景、道具…</p>:namesStatus==='error'?<p className="ca-muted">资产列表没有读到，暂时无法统计；剧本照常可读写</p>:!names.length?<p className="ca-muted">本项目还没有人物、场景、道具</p>:(['character','scene','prop'] as const).map(k=>{const list=mentions.filter(m=>m.kind===k).sort((x,y)=>y.count-x.count);return <div key={k}><h4>{kindLabel[k]}</h4>{list.length?<ul>{list.map(m=><li key={m.name} className={m.count?'':'is-absent'}><span>{m.name}</span><small>{m.count?m.count+' 次':'未出现'}</small></li>)}</ul>:<p className="ca-muted">本项目还没有{kindLabel[k]}</p>}</div>;})}</aside>
+   <ScriptMentions text={current.content} names={names} namesStatus={namesStatus}/>
   </div>
  </section>;
 }

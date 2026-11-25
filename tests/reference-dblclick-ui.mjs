@@ -79,12 +79,13 @@ try {
     await page.keyboard.press('Escape');
   });
 
-  await check('FE2-R3 反例：单击参考图后 0.4 秒内切到「剧本」，排队的「图片设置」不弹出、不盖住剧本；切回人物也不恢复，之后单击照常', async () => {
+  await check('FE2-R3 反例：单击参考图后 0.4 秒内点「剧本」（跳到侧栏「剧本」页），排队的「图片设置」不弹出、不盖住剧本；切回人物也不恢复，之后单击照常', async () => {
     await work().getByRole('tab', { name: /^人物/ }).click(); await wrap('阿青').locator('.ca-card').click();
     const tile = work().locator('.ca-tile-open').first(); await expect(tile).toBeVisible();
     await tile.click(); await work().getByRole('tab', { name: '剧本', exact: true }).click();
-    await expect(work().getByRole('tab', { name: '剧本', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page).toHaveURL(/#\/project-scripts$/); await expect(page.getByRole('region', { name: '剧本区' })).toBeVisible();
     await page.waitForTimeout(650); await expect(settingsOpen()).toHaveCount(0);
+    await page.locator('.sidebar').getByRole('button', { name: /^项目资产/ }).click(); await expect(work()).toBeVisible();
     await work().getByRole('tab', { name: /^人物/ }).click(); await page.waitForTimeout(650); await expect(settingsOpen()).toHaveCount(0);
     await wrap('阿青').locator('.ca-card').click(); await work().locator('.ca-tile-open').first().click(); await expect(settingsOpen()).toBeVisible();
     await settingsOpen().click(); await expect(settingsOpen()).toHaveCount(0);

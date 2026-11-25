@@ -1,4 +1,4 @@
-// 项目剧本正文的 Markdown 阅读 / 编辑切换。真实本地服务 + 合成剧本；不接入真实素材库，不调用模型。
+// 项目剧本正文的 Markdown 阅读 / 编辑切换（剧本搬到侧栏「剧本」后，这里测那一页的草稿）。真实本地服务 + 合成剧本；不接入真实素材库，不调用模型。
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,7 +16,7 @@ const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { 
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body, method) { const response = await fetch(origin + '/api' + p, { method: method ?? (body ? 'POST' : 'GET'), headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const data = await response.json(); assert.ok(response.ok, p + ' ' + JSON.stringify(data)); return data; }
 async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
-const work = () => page.getByRole('region', { name: '项目资产库' });
+const work = () => page.getByRole('region', { name: '剧本区' });
 const script = () => work().getByRole('region', { name: '项目剧本' });
 const reader = () => script().getByRole('document', { name: '剧本正文（阅读）' });
 const body = () => script().getByLabel('剧本正文', { exact: true });
@@ -57,7 +57,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); await context.addInitScript(() => localStorage.setItem('shiguang.refreshSeconds', '0'));
   page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
   page.on('request', r => { const u = new URL(r.url()); if (u.origin !== origin && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) external.push(r.url()); });
-  const open = async () => { await page.goto(origin + '/#/project-assets'); await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await work().getByRole('tab', { name: '剧本', exact: true }).click(); await expect(script()).toBeVisible(); };
+  const open = async () => { await page.goto(origin + '/#/project-scripts'); await page.reload(); await expect(work()).toBeVisible(); await selectProjectInBar(page, project.id); await expect(script()).toBeVisible(); };
   await open();
 
   await check('空剧本直接进入编辑；输入 Markdown 后停在编辑，「阅读」在保存前不能点；大纲同时认「## 标题」和「1. 场二」', async () => {
