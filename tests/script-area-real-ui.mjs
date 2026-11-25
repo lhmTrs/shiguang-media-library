@@ -164,6 +164,16 @@ try {
     await expect(pop).toContainText('小周拉住老李。'); await expect(pop).toContainText('小周没拉住老李。');
     await shot('map-diff');
     await page.keyboard.press('Escape');
+    // 阅读模式（真数据）：进出、点框、不横向滚动
+    await area().getByRole('button', { name: '阅读模式' }).click();
+    const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
+    await expect(reader.getByRole('button', { name: '退出阅读' })).toBeFocused();
+    await expect(reader.locator('.sa-reading-bar')).toContainText('依据：合成剧本');
+    const sc = await reader.locator('.sa-reading-body').evaluate(el => el.scrollWidth <= el.clientWidth); assert.ok(sc, '阅读模式不横向滚动');
+    await reader.getByRole('button', { name: '小周：没拉住老李' }).click();
+    await expect(reader.getByRole('dialog', { name: '原文' })).toContainText('小周没拉住老李。');
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await expect(reader).toHaveCount(0);
+    await expect(area().getByRole('button', { name: '阅读模式' })).toBeFocused();
     await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
     // 删除被引用的资料
     await tab('甲方资料').click();
@@ -237,6 +247,66 @@ try {
     await expect(dlg.getByRole('heading')).toHaveText(/^定稿成 V\d+$/);
     await dlg.getByRole('button', { name: '取消' }).click();
     await page.unroute(aDraft, hold);
+  });
+
+  // 阅读模式里小卡片的可视边界（PR155 独验 P2）：卡片和关闭按钮都在窗口里，正文能读，没有多出横向滚动，Esc 先关卡片再退出，焦点回到按钮
+  const popInView = async (reader, vp) => {
+    const pop = reader.getByRole('dialog', { name: '原文' }); await expect(pop).toBeVisible();
+    const pb = await pop.boundingBox(), bar = await reader.locator('.sa-reading-bar').boundingBox(), x = await pop.getByRole('button', { name: '关闭' }).boundingBox();
+    assert.ok(pb.x >= 0 && pb.x + pb.width <= vp.width + 0.5 && pb.y >= bar.y + bar.height - 0.5 && pb.y + pb.height <= vp.height + 0.5, '卡片在窗口里：' + JSON.stringify({ pb, vp }));
+    assert.ok(x.x >= 0 && x.x + x.width <= vp.width && x.y >= bar.y + bar.height - 0.5 && x.y + x.height <= vp.height, '关闭按钮看得见：' + JSON.stringify(x));
+    const sc = await reader.locator('.sa-reading-body').evaluate(el => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+    assert.ok(sc.sw <= sc.cw, '没有多出横向滚动：' + JSON.stringify(sc));
+    return pop;
+  };
+  const leaveReading = async reader => {
+    await page.keyboard.press('Escape'); await expect(reader.getByRole('dialog', { name: '原文' })).toHaveCount(0); await expect(reader).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(reader).toHaveCount(0);
+    await expect(area().getByRole('button', { name: '阅读模式' })).toBeFocused();
+  };
+
+  await check('真接口回归（PR155 独验 P2-1）：宽屏打开最右边的卡片，开着把窗口缩到 390×844，卡片跟着挪回窗口里', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    await area().getByRole('button', { name: /^打开泳道图：合成批量图 30$/ }).click();
+    await area().getByRole('button', { name: '阅读模式' }).click();
+    const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
+    const right = reader.getByRole('button', { name: '老李：下去看看' }); await right.click();
+    await popInView(reader, { width: 1440, height: 900 });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const pop = await popInView(reader, { width: 390, height: 844 });
+    await expect(pop).toContainText('老李把铲子插进沙里。');
+    await shot('reading-resize-narrow');
+    await leaveReading(reader);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await area().getByRole('button', { name: '← 返回泳道图列表' }).click();
+  });
+
+  await check('真接口回归（PR155 独验 P2-2）：390×844 下打开合法的 10 行长引文，卡片限在窗口里，原文在卡片里滚动着读完', async () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `第${i + 1}行：` + '合成长引文，用来测小卡片的限高和卡片里的滚动；'.repeat(3) + '这一行到这里结束。');
+    await saveDraft('合成长引文', lines.join('\n') + '\n'); const snap = await freeze();
+    const graph = { schemaVersion: 1, kind: 'single', title: '合成长引文图', sources: [{ key: 'L', sourceId: snap.sourceId, label: '合成长引文' }],
+      lanes: [{ id: 'a', name: '甲', hero: true }, { id: 'b', name: '乙' }],
+      nodes: [{ id: 'x', lane: 'a', row: 1, kind: 'self', label: ['一整段'], refs: [{ source: 'L', start: 1, end: 10, quote: '合成长引文，用来测小卡片' }] }, { id: 'y', lane: 'b', row: 2, kind: 'seen', label: ['旁边'], refs: [{ source: 'L', start: 2, quote: '合成长引文，用来测小卡片' }] }],
+      edges: [{ from: 'x', to: 'y' }] };
+    await api(P + '/maps', { binding: { target: { kind: 'snapshot', id: snap.id } }, graph, requestId: rid() });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload(); await expect(area()).toBeVisible(); await tab('泳道图').click();
+    await area().getByRole('button', { name: '打开泳道图：合成长引文图' }).click();
+    await area().getByRole('button', { name: '阅读模式' }).click();
+    const reader = page.getByRole('dialog', { name: '泳道图阅读模式' });
+    await reader.getByRole('button', { name: '甲：一整段' }).click();
+    const pop = await popInView(reader, { width: 390, height: 844 });
+    const body = pop.locator('.sm-pop-body');
+    const sb = await body.evaluate(el => ({ sh: el.scrollHeight, ch: el.clientHeight }));
+    assert.ok(sb.sh > sb.ch, '原文比卡片高，在卡片里滚动：' + JSON.stringify(sb));
+    await body.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const txt = pop.locator('.sm-txt').first(); await expect(txt).toContainText('第10行：'); await expect(txt).toContainText('这一行到这里结束。');
+    const end = await body.evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 1), lb = await txt.boundingBox(), pb = await pop.boundingBox();
+    assert.ok(end && lb.y + lb.height <= pb.y + pb.height + 1, '滚到底，第 10 行（原文最后一行）在卡片里：' + JSON.stringify({ end, lb, pb }));
+    await shot('reading-long-quote');
+    await leaveReading(reader);
+    await page.setViewportSize({ width: 1440, height: 900 });
   });
 
   assert.deepEqual(errors, [], '页面没有报错');

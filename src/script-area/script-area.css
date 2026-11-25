@@ -32,9 +32,23 @@
 .sa-map-kind{font-size:11px;color:var(--green);border:1px solid var(--line);border-radius:9px;padding:0 8px}
 .sa-stale{font-size:11px;color:var(--c-8a6a3a);border:1px dashed var(--c-8a6a3a);border-radius:9px;padding:0 8px}
 .sa-map-view-bar{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-.sa-map-scroll{overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--c-fff)}
-.sa-footnote{margin-top:24px;font-size:12px;color:var(--muted)}
-.sa-footnote a,.sa-workspace a{color:var(--green)}
+.sa-map-scroll{border-radius:10px;background:var(--c-fff)}
+.sa-workspace a{color:var(--green)}
+.sa-map-view-bar svg{flex:none}
+/* 空的时候：内容区上方一行，不居中留大片空白 */
+.sa-empty-line{margin:0;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--c-fff);color:var(--muted);font-size:13px;line-height:1.6}
+.sa-empty-line b{margin-right:8px;color:var(--c-24292c);font-weight:600}
+/* 泳道图阅读模式：尺寸照分镜的 .sb-reading*，颜色用分镜 --sb-* 所指的同一组变量 */
+.sa-reading{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:var(--c-fff);color:var(--c-24292c)}
+.sa-reading-bar{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px 24px;border-bottom:1px solid var(--line);font-size:13px}
+.sa-reading-bar button{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:7px;padding:5px 10px;background:var(--c-fff);color:var(--c-24292c);font-size:13px;cursor:pointer}
+.sa-reading-bar button:hover{border-color:var(--green);color:var(--green)}
+.sa-reading-bar button:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.sa-reading-title{font-size:16px}
+.sa-reading-muted{color:var(--muted)}
+.sa-reading-spacer{flex:1}
+.sa-reading-body{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;padding:0 24px 48px}
+.sa-reading-body>.sm-sheet.is-fit{padding:16px 0 0}
 /* 校验问题 */
 .sa-issues{margin:12px 0;padding:12px 16px;border:1px solid var(--line);border-radius:9px;background:var(--c-fff)}
 .sa-issues h3{font-size:14px;margin:0 0 8px}.sa-issues h3 small{font-weight:400;color:var(--muted);margin-left:8px}
@@ -83,4 +97,5 @@
 .sa-trial-status.is-ok{color:var(--green)}.sa-trial-status.is-invalid,.sa-trial-status.is-error{color:var(--c-b34747)}
 .sa-trial-map{overflow:auto}
 .sa-alert{color:var(--c-b34747)}
+@media(max-width:760px){.sa-reading-bar{padding:8px 12px}.sa-reading-body{padding:0 12px 32px}}
 @media(max-width:700px){.sa-head,.sa-versions,.sa-maps,.sa-materials,.sa-map-view{padding-left:16px;padding-right:16px}.sa-material{grid-template-columns:minmax(0,1fr);grid-template-areas:"name" "meta" "actions"}}

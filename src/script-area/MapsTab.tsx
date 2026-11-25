@@ -4,7 +4,8 @@ import { dateTime, errorText, scriptBase, timeout } from './api';
 import { CausalMap } from './CausalMap';
 import { IssueList } from './IssueList';
 import { boundLabel, isBigChange, sourceCaption } from './map-layout.mjs';
-import { trialHref } from './TrialPage';
+import { MapReadingMode } from './MapReadingMode';
+import { BookOpen } from 'lucide-react';
 import type { MapDetail, MapSummary, Paged, ScriptRequest } from './types';
 
 export type Viewing = { kind: 'draft' } | { kind: 'version' | 'legacy'; id: string };
@@ -65,24 +66,26 @@ export function MapsTab({ projectId, request, viewing, list, onBack }: { project
   useEffect(() => { setOpenState(null); }, [projectId, viewing.kind, viewing.kind === 'draft' ? '' : viewing.id]);
   useEffect(() => { for (const m of maps.slice(0, 30)) load(m.id); }, [maps, load]);
 
-  const trialTarget = viewing.kind === 'draft' ? null : { kind: viewing.kind, id: viewing.id };
-  const trialLink = <p className="sa-footnote"><a href={trialHref(projectId, trialTarget)} target="_blank" rel="noopener">泳道图试画页</a>：交一个 JSON 先看看画出来什么样，不保存。</p>;
+  const [reading, setReading] = useState(false);
+  const closeReading = useCallback(() => setReading(false), []);
+  useEffect(() => { setReading(false); }, [open, projectId]);
   const current = open ? details[keyOf(open)] : undefined;
   if (open) return <section className="sa-map-view" aria-label="泳道图">
     <div className="sa-map-view-bar"><button type="button" onClick={() => { setOpenState(null); onBack?.(); }}>← 返回泳道图列表</button>
+      {current && 'map' in current && <button type="button" onClick={() => setReading(true)} title="整屏只看泳道图 · Esc 退出"><BookOpen size={15}/>阅读模式</button>}
       {current && 'map' in current && current.map.isDraftStale && <span className="sa-stale">基于较早的草稿</span>}</div>
     {!current ? <p className="ca-muted">正在读取这张图…</p> : 'error' in current ? <p className="ca-alert" role="alert">这张图没有读到：{current.error}　<button type="button" onClick={() => load(open, true)}>重试</button></p> : <>
       <IssueList issues={current.issues} title={current.issues.length ? `上传时的 ${current.issues.length} 条提醒` : undefined}/>
-      <div className="sa-map-scroll"><CausalMap data={current.renderData}/></div>
+      <div className="sa-map-scroll"><CausalMap data={current.renderData} fit={1.4}/></div>
+      {reading && <MapReadingMode data={current.renderData} onClose={closeReading}/>}
     </>}
   </section>;
 
   return <section className="sa-maps" aria-label="泳道图列表">
     {list.error && <p className="ca-alert" role="alert">泳道图列表没有读到：{list.error}</p>}
-    {list.loading && !list.items.length ? <p className="ca-muted">正在读取泳道图…</p> : !maps.length ? <div className="ca-empty">
-      <p>{viewing.kind === 'draft' ? '草稿上还没有泳道图。' : '这一版上还没有泳道图。'}</p>
-      <p className="ca-muted">泳道图由 agent 读剧本后画好传上来，这里只看不改。</p>
-    </div> : <ul className="sa-map-cards">{maps.map(m => {
+    {list.loading && !list.items.length ? <p className="sa-empty-line">正在读取泳道图…</p> : !maps.length ? <p className="sa-empty-line" role="status">
+      <b>{viewing.kind === 'draft' ? '草稿上还没有泳道图。' : '这一版上还没有泳道图。'}</b>泳道图由 agent 读剧本后画好传上来，这里只看不改。
+    </p> : <ul className="sa-map-cards">{maps.map(m => {
       const d = details[keyOf(m.id)], detail = d && 'map' in d ? d : undefined;
       return <li key={m.id}><button type="button" className="sa-map-card" onClick={() => openMap(m.id)} aria-label={'打开泳道图：' + (m.title || '未命名')}>
         <span className="sa-map-kind">{kindText(m, detail)}</span>
@@ -93,6 +96,5 @@ export function MapsTab({ projectId, request, viewing, list, onBack }: { project
       </button></li>;
     })}</ul>}
     {list.total > list.items.length && <p className="ca-muted">只列出了最近 {list.items.length} 张（共 {list.total} 张）。</p>}
-    {trialLink}
   </section>;
 }
