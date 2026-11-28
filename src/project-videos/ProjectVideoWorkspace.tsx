@@ -34,8 +34,7 @@ type Task = {
   api: <T = any>(suffix: string, body?: unknown, method?: string) => Promise<T>;
   file?: File; folderId: string; folderName: string;
 };
-type Confirmation = { kind: 'remove'; video: ProjectVideo; adoptionStamp: string }
-  | { kind: 'relink'; video: ProjectVideo; path: string } | null;
+type RelinkConfirmation = { video: ProjectVideo; path: string } | null;
 const noPrompt = (): PromptDraft => ({ mode: 'none', id: '', title: '', text: '' });
 const promptInput = (p: PromptDraft): PromptInput => p.mode === 'new'
   ? { mode: 'new', title: p.title.trim() || undefined, text: p.text.trim() }
@@ -180,7 +179,9 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const contentChange = useContentChange(projectId, request, (videoId, removed) => { if (removed) setSelectedId(old => old === videoId ? '' : old); void refresh(); });
   // 废片收纳（#55）：同样放在项目会话层，原请求不随弹窗或切页丢失
   const reject = useRejectTask(projectId, request, () => void refresh());
-  const openContentChange = (video: ProjectVideo) => { if (!contentChange.open(video)) setNotice('另一个视频的内容变化处理还没有结清，请先在页面顶部查看它的结果。'); };
+  const openContentChange = (video: ProjectVideo, mode: 'review' | 'remove' = 'review') => {
+    if (!contentChange.open(video, mode)) setNotice('另一个视频的处理还没有结清，请先在页面顶部查看它的结果。');
+  };
   const autoRevealRef = useRef('');
   const desktop = useDesktopAction(projectId, request);
   const applyPick = (next: string[]) => { if (next.length > 1) { setMultiPicked(next); setSelectedId(''); } else { setMultiPicked([]); setSelectedId(next[0] || ''); } };
@@ -225,7 +226,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
   const queryRef = useRef(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [upgrade, setUpgrade] = useState<UpgradePreview | null>(null);
-  const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [confirmation, setConfirmation] = useState<RelinkConfirmation>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const requestRef = useRef(request); requestRef.current = request;
@@ -479,28 +480,18 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     });
   }
 
-  async function confirmAction() {
+  async function confirmRelink() {
     const action = confirmation;
     if (!action) return;
-    await run(action.kind === 'remove' ? '正在移除视频记录…' : '正在检查并复制视频…', async ticket => {
-      if (action.kind === 'remove') {
-        const result = await api<{ removed: true }>(`/videos/${encodeURIComponent(action.video.id)}/remove`, {
-          expectedRevision: action.video.revision, adoptionStamp: action.adoptionStamp, confirmUnbind: true,
-          ...(action.video.adoptedShots?.length ? unbindConfirmation(action.video.adoptedShots) : {}),
+    await run('正在检查并复制视频…', async ticket => {
+      const requestId = crypto.randomUUID();
+      putTask({ kind: 'relink', requestId, queryId: requestId, receipt: null, uploadAttempted: false, error: '', api: frozenAPI(), folderId: 'root', folderName: '项目根目录' });
+      try {
+        const receipt = await api<Receipt>(`/videos/${encodeURIComponent(action.video.id)}/relink`, {
+          requestId, expectedRevision: action.video.revision, path: pastedPath(action.path),
         }, 'POST');
-        if (!isCurrent(ticket)) return;
-        if (!result.removed) throw Error('未取得移除成功回执，请刷新资料核对。');
-        setConfirmation(null); setNotice('视频记录已移除，文件保留。'); void refresh();
-      } else {
-        const requestId = crypto.randomUUID();
-        putTask({ kind: 'relink', requestId, queryId: requestId, receipt: null, uploadAttempted: false, error: '', api: frozenAPI(), folderId: 'root', folderName: '项目根目录' });
-        try {
-          const receipt = await api<Receipt>(`/videos/${encodeURIComponent(action.video.id)}/relink`, {
-            requestId, expectedRevision: action.video.revision, path: pastedPath(action.path),
-          }, 'POST');
-          receive(receipt); setConfirmation(null);
-        } catch (e) { taskError(e); }
-      }
+        receive(receipt); setConfirmation(null);
+      } catch (e) { taskError(e); }
     });
   }
 
@@ -577,7 +568,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
     : !video.folderId ? (video.managed ? '未核对目录' : '旧视频 · 原位置')
     : folderLabel(video.folderId) || (video.folderName && !/^([/\\]|[A-Za-z]:)/.test(video.folderName) ? video.folderName : '未核对目录');
   const discardDraft = (id: string) => setEdits(old => { const next = { ...old }; delete next[id]; return next; });
-  const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ kind: 'relink', video, path: '' }); };
+  const openRelink = (video: ProjectVideo) => { if (terminal(taskRef.current?.receipt || null)) putTask(null); setConfirmation({ video, path: '' }); };
   // Video moves always open the move-video preview; nothing is moved by the drop itself.
   const moveVideoTo = (videoId: string, target: string) => {
     if (readOnly || sending || modalOpen) return;
@@ -938,7 +929,7 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
               {['changed', 'untrusted'].includes(selected.status) && menuItem('处理内容变化…', () => openContentChange(selected), {disabled: locked || unresolved || protectionBlocked, hint: protectionHint})}
               {menuItem('重新定位…', () => openRelink(selected), {disabled: locked || unresolved})}
               <hr/>
-              {menuItem('移除视频记录…', () => setConfirmation({ kind: 'remove', video: selected, adoptionStamp: collection!.adoptionStamp ?? '' }), {disabled: locked || unresolved || !collection || protectionBlocked, danger: true, hint: protectionHint})}
+              {menuItem('移除视频记录…', () => openContentChange(selected, 'remove'), {disabled: locked || unresolved || !collection || protectionBlocked, danger: true, hint: protectionHint})}
             </>)}
             <button type="button" className="pv-icon-button pv-ghost" aria-label="关闭详情" onClick={() => setSelectedId('')}><X size={17}/></button>
           </header>
@@ -1059,25 +1050,18 @@ function ProjectVideoSession({ active, projectId, projects, request, onStoryboar
         return null;
       })()}
     </Modal>}
-    {active && contentChange.video && contentChange.visible && <ContentChangeDialog ctl={contentChange}/>}
+    {active && contentChange.video && contentChange.visible && <ContentChangeDialog ctl={contentChange} writeBlocked={locked || protectionBlocked} onStoryboard={onStoryboard}/>}
     {active && reject.mode && reject.visible && <RejectDialog ctl={reject} allFolders={folders}/>}
     <FolderOperations action={folderAction} active={active} folders={folders} projectId={projectId} request={request} canTrash={!!collection?.canTrash} readOnly={readOnly} folderBlocked={folderBlocked} excludeTargets={rejectSet} onClose={() => setFolderAction(null)} onComplete={receipt => {if (receipt?.status === 'ready' && folderAction?.kind === 'delete-folder') navigateFolder('root'); else { if (receipt?.status === 'ready' && folderAction?.kind === 'move-videos') applyPick([]); void refresh(); }}} onPending={setOperationPending}
       rolesRevision={roles?.revision} onOpenFolder={id => navigateFolder(id)}/>
-    {active && confirmation && <Modal title={confirmation.kind === 'remove' ? '移除视频记录' : '重新定位视频'} locked={locked} onClose={() => setConfirmation(null)}>
+    {active && confirmation && <Modal title="重新定位视频" locked={locked} onClose={() => setConfirmation(null)}>
       <p>项目：<strong>{projectName}</strong> · {confirmation.video.name}</p>
       {error && <p className="pv-error" role="alert">{error}</p>}
-      {confirmation.kind === 'remove' ? <>
-        <p className="pv-notice">将移除本项目的视频记录并解除以下实际采用关系，原文件和托管文件均保留。</p>
-        <h3>受影响镜号</h3><p>{shotsLabel(confirmation.video.adoptedShots)}</p>
-        <p className="pv-muted">若采用关系已经变化，请刷新资料后重新确认；也可以到分镜点开镜头取消采用。</p>
-        <ModalActions><button type="button" disabled={locked || loading} onClick={() => { setConfirmation(null); void refresh(); }}>取消并刷新资料</button><button type="button" disabled={locked} onClick={() => { setConfirmation(null); onStoryboard(); }}>前往分镜查看</button><button type="button" className="pv-danger" disabled={locked} onClick={() => void confirmAction()}>确认移除并解除关联</button></ModalActions>
-      </> : <>
-        <p className="pv-notice">明确指定同一内容文件的新位置。后台核验内容一致后复制到项目托管位置，保留既有绑定与新位置的原文件。</p>
-        <p className="pv-path">记录位置：{confirmation.video.path}</p>
-        <label className="pv-field">同内容视频文件的绝对路径<input value={confirmation.path} disabled={locked || task?.kind === 'relink' && unresolved} placeholder="粘贴文件的完整路径" onChange={e => setConfirmation({ ...confirmation, path: e.target.value })}/></label>
-        {task?.kind === 'relink' && taskPanel(task)}
-        <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !hasPastedPath(confirmation.path) || task?.kind === 'relink' && unresolved} onClick={() => void confirmAction()}>确认核验并复制</button></ModalActions>
-      </>}
+      <p className="pv-notice">明确指定同一内容文件的新位置。后台核验内容一致后复制到项目托管位置，保留既有绑定与新位置的原文件。</p>
+      <p className="pv-path">记录位置：{confirmation.video.path}</p>
+      <label className="pv-field">同内容视频文件的绝对路径<input value={confirmation.path} disabled={locked || task?.kind === 'relink' && unresolved} placeholder="粘贴文件的完整路径" onChange={e => setConfirmation({ ...confirmation, path: e.target.value })}/></label>
+      {task?.kind === 'relink' && taskPanel(task)}
+      <ModalActions><button type="button" disabled={locked} onClick={() => setConfirmation(null)}>取消</button><button type="button" className="pv-primary" disabled={locked || !hasPastedPath(confirmation.path) || task?.kind === 'relink' && unresolved} onClick={() => void confirmRelink()}>确认核验并复制</button></ModalActions>
     </Modal>}
   </div>;
 }
