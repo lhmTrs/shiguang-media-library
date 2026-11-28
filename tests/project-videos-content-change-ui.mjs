@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import express from 'express';
 import { selectProjectInBar } from './helpers/path-bar.mjs';
 import { chromium, expect } from '@playwright/test';
-import { fixture, imported, initialize, bind, replaceBytes, appendXmp } from './helpers/project-video-desktop-fixture.mjs';
+import { fixture, imported, initialize, replaceBytes, appendXmp } from './helpers/project-video-desktop-fixture.mjs';
 import { projectVideoRouter } from '../server/project-videos/router.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -22,26 +22,48 @@ const temp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pv-chang
 const freePort = async () => { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 const port = await freePort(), origin = 'http://127.0.0.1:' + port;
 let logs = '', browser, page, cookie, token, passed = false; const checks = [], errors = [], cleanups = [];
-const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal_item'), CODEX_HOME: path.join(temp, 'codex'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_CODEX_AUTOCONNECT: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), NODE_ENV: 'production', MEDIA_DATA_DIR: path.join(temp, 'data'), MEDIA_PERSONAL_ITEM_DIR: path.join(temp, 'personal_item'), MEDIA_PERSONAL_VIDEO_DIR: path.join(temp, 'personal_video'), CODEX_HOME: path.join(temp, 'codex'), MEDIA_UPDREAM_QUEUE_DIR: path.join(temp, 'no-queue'), MEDIA_SKIP_IMPORT: '1', MEDIA_SKIP_RECONCILE: '1', MEDIA_NO_WATCH: '1', SHIGUANG_AUDIO_ANALYSIS: '0', MEDIA_CODEX_AUTOCONNECT: '0', MEDIA_DISABLE_DESKTOP_NATIVE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', b => logs += b); child.stderr.on('data', b => logs += b); const exited = new Promise(r => child.once('exit', r));
 async function api(p, body) { const response = await fetch(origin + '/api' + p, { method: body ? 'POST' : 'GET', headers: { cookie, origin, 'x-local-token': token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); const data = await response.json(); if (!response.ok) throw Error(data.error); return data; }
 async function check(name, fn) { await fn(); checks.push(name); console.log('PASS ' + name); }
 const work = () => page.getByRole('region', { name: '项目生成视频' }), modal = () => page.locator('.pv-modal');
 const detail = () => work().getByRole('complementary', { name: '视频详情' });
 const card = id => work().locator(`.pv-card[data-video-id="${id}"]`);
-const banner = () => work().locator('.pv-banner', { hasText: '内容变化处理' });
-const ACCEPT = '我已核对当前内容，接受它作为这个视频的新内容', TRASH = '移到系统废纸篓（不是永久删除，可从废纸篓找回）', KEEP = '只移除记录，不移动文件';
+const banner = () => work().locator('.pv-banner', { hasText: /内容变化处理|移除视频记录/ });
+const ACCEPT = '我已核对当前内容，接受它作为这个视频的新内容', TRASH = '移除记录，并把文件移到系统废纸篓（可从废纸篓找回）', KEEP = '只移除记录，不移动文件';
 const changedText = /视频内容已发生变化|无法确认是否只改了元数据/;
+async function openRemove(id) {
+  await card(id).click();
+  await detail().getByRole('button', { name: '视频操作' }).click();
+  await page.getByRole('menuitem', { name: '移除视频记录…' }).click();
+  await expect(modal()).toContainText('移除视频记录');
+  await expect(modal().getByLabel(KEEP)).toBeChecked();
+}
 async function openChange(id) { await card(id).click(); await detail().getByRole('button', { name: '处理内容变化…' }).click(); await expect(modal()).toContainText('处理内容变化'); }
 const closeX = () => page.locator('.pv-modal > header button[aria-label="关闭"]').click();
 
 try {
   // ---- 真实后端 + 测试替身 ----
   const f = await fixture({ after: fn => cleanups.push(fn) });
-  const fx = []; for (let i = 0; i < 16; i++) fx.push(await imported(f));
-  initialize(f); await bind(f, fx[0], [0]); await bind(f, fx[1], [1, 2]);
-  for (const [i, v] of fx.entries()) if (i !== 1) await replaceBytes(f, v); // fx10 也先改画面，让入口在任何环境都可见
-  await replaceBytes(f, fx[1], { duration: 1.5 }); // 变短，fx1 第二段越界
+  const fx = []; for (let i = 0; i < 18; i++) fx.push(await imported(f));
+  initialize(f);
+  const bind = async (videoId, positions) => {
+    const project = f.project.id, v2 = f.entry.bindingV2;
+    const board = f.storyboards.read(project), before = v2.sourceBinding(project, videoId);
+    const shotIds = positions.map(i => board.project.scenes[0].shots[i].id);
+    const intent = { action: 'bind', targetProjectId: project, shotIds, expectedBindingRevision: before.bindingRevision,
+      expectedStoryboardRevision: board.revision, expectedAssetStamp: board.asset_stamp };
+    const bindPreview = await v2.previewBinding(project, videoId, intent);
+    await v2.bind(project, videoId, { ...intent, requestId: crypto.randomUUID(), previewHash: bindPreview.previewHash });
+    const { context } = v2.state(project), { binding, bindingRevision } = v2.sourceBinding(project, videoId);
+    const selection = { action: 'adopt-video', sourceProjectId: project, videoId, bindingId: binding.bindingId,
+      expectedBindingRevision: bindingRevision, expectedStoryboardRevision: context.storyboardRevision, expectedSelectionRevision: context.selectionRevision };
+    const selectPreview = v2.previewSelection(project, selection);
+    v2.select(project, { ...selection, requestId: crypto.randomUUID(), previewHash: selectPreview.previewHash });
+  };
+  await bind(fx[0].id, [0]); await bind(fx[1].id, [1, 2]);
+  for (const [i, v] of fx.entries()) if (i !== 1 && i < 16) await replaceBytes(f, v); // fx10 也先改画面，让入口在任何环境都可见
+  await replaceBytes(f, fx[1], { duration: 1.5 });
   const fxApp = express(); fxApp.use('/api/project-videos', projectVideoRouter(f.catalog, { sendMedia: async (_q, res, _file, handle) => { res.setHeader('content-type', 'video/mp4'); res.end(await handle.readFile()); } }));
   const fxServer = http.createServer(fxApp); await new Promise(r => fxServer.listen(0, '127.0.0.1', r));
   cleanups.unshift(async () => { fxServer.closeAllConnections(); await new Promise(r => fxServer.close(r)); });
@@ -105,23 +127,24 @@ try {
     const v = await fxState(fx[0].id); assert.equal(v.adoptedShots.length, 1, '原采用保留'); assert.equal(v.status, 'available');
   });
 
-  await check('变短：越界镜号必须精确确认解除，接受后只解除越界的采用；用“完成”退出也刷新（R3）', async () => {
-    await openChange(fx[1].id); await expect(modal()).toContainText('超出新时长');
+  await check('变短：现行绑定保留原采用，接受后刷新列表', async () => {
+    await openChange(fx[1].id); await expect(modal()).toContainText('当前被采用');
+    await expect(modal().getByLabel(/确认解除.*采用/)).toHaveCount(0);
     await modal().getByLabel(ACCEPT).check();
-    const go = modal().getByRole('button', { name: '继续使用当前内容' }); await expect(go).toBeDisabled();
-    await modal().getByLabel(/确认解除 镜 .* 的采用/).check(); await go.click();
-    await expect(modal()).toContainText(/解除 \d+ 个超出新时长的镜号采用/);
-    const sent = posts.filter(p => p.suffix.endsWith('/accept-change')).at(-1).body; assert.ok(sent.confirmedUnbindShotIds.length >= 1);
+    await modal().getByRole('button', { name: '继续使用当前内容' }).click();
+    await expect(modal()).toContainText('保留 2 个镜号的采用');
+    const sent = posts.filter(p => p.suffix.endsWith('/accept-change')).at(-1).body;
+    assert.deepEqual(sent.confirmedUnbindShotIds, []);
     await modal().getByRole('button', { name: '完成' }).click(); await expect(modal()).toHaveCount(0);
     await expect(card(fx[1].id)).not.toContainText(/内容已变化|待核验/);
-    assert.ok((await fxState(fx[1].id)).adoptedShots.length < 2, '只解除越界的采用');
+    assert.equal((await fxState(fx[1].id)).adoptedShots.length, 2);
   });
 
   await check('不再使用 + 保留：原文件在确认前被移走，结果只说“本次没有移动或删除文件”（R4）；用 ✕ 退出也刷新（R3）', async () => {
     await openChange(fx[2].id); await expect(modal()).toContainText(changedText);
     await modal().getByRole('button', { name: '不再使用…' }).click(); await expect(modal()).toContainText('这个文件怎么处理');
-    const go = modal().getByRole('button', { name: /^移除记录/ }); await expect(go).toBeDisabled();
-    await modal().getByLabel(KEEP).check();
+    const go = modal().getByRole('button', { name: '移除记录', exact: true });
+    await expect(modal().getByLabel(KEEP)).toBeChecked(); await expect(go).toBeEnabled();
     await fs.rename(fx[2].path, fx[2].path + '.moved'); // 原文件已不在原位置
     await go.click();
     await expect(modal()).toContainText('已移除视频记录'); await expect(modal()).toContainText('文件：本次没有移动或删除文件');
@@ -173,7 +196,7 @@ try {
     await expect(modal()).toContainText(requestId);
     await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0); // 收起弹窗（模态弹窗打开时不能切页）
     await page.getByRole('navigation').getByRole('button', { name: '分镜设计' }).first().click(); await expect(work()).toBeHidden();
-    await page.getByRole('navigation').getByRole('button', { name: '生成视频' }).first().click(); await expect(work()).toBeVisible();
+    await page.evaluate(() => { location.hash = '/project-videos'; }); await expect(work()).toBeVisible();
     await expect(banner()).toContainText('结果待核对'); await expect(banner()).toContainText(requestId);
     await banner().getByRole('button', { name: '打开' }).click(); await expect(modal()).toContainText(requestId); await expect(modal()).toContainText('只会查询原请求');
     await page.keyboard.press('Escape'); await expect(modal()).toHaveCount(0);
@@ -304,6 +327,38 @@ try {
     assert.equal(postsFor(id, '/changes/preview'), before + 1, '只提交一次核对');
     console.log('metadata-only check real changeKind:', realKinds.slice(kinds).join(','));
     await modal().getByRole('button', { name: '知道了' }).click(); await expect(modal()).toHaveCount(0);
+  });
+
+  await check('普通视频：取消后重新打开默认保留，确认只移除记录', async () => {
+    const { id, path: file } = fx[16], trashCount = f.trash.length;
+    await openRemove(id);
+    await modal().getByLabel(TRASH).check();
+    await modal().getByRole('button', { name: '取消' }).click();
+    await expect(modal()).toHaveCount(0);
+    assert.equal(postsFor(id, '/remove'), 0, '取消不提交');
+    await openRemove(id);
+    await modal().getByRole('button', { name: '移除记录', exact: true }).click();
+    await expect(modal()).toContainText('文件：本次没有移动或删除文件');
+    await modal().getByRole('button', { name: '完成' }).click();
+    await expect(card(id)).toHaveCount(0);
+    assert.equal(postsFor(id, '/changes/preview'), 0, '普通移除直接核对影响');
+    assert.equal(postsFor(id, '/remove'), 1);
+    assert.equal(posts.find(p => p.suffix === `/videos/${id}/remove`).body.fileAction, 'keep');
+    await fs.access(file); assert.equal(f.trash.length, trashCount);
+  });
+
+  await check('普通视频：主动选择后才将文件移到废纸篓', async () => {
+    const { id, path: file } = fx[17], trashCount = f.trash.length;
+    await openRemove(id);
+    await modal().getByLabel(TRASH).check();
+    await modal().getByRole('button', { name: '移除记录并移到废纸篓' }).click();
+    await expect(modal()).toContainText('已移除视频记录');
+    await expect(modal()).toContainText('文件：已移到系统废纸篓');
+    await modal().getByRole('button', { name: '完成' }).click();
+    await expect(card(id)).toHaveCount(0);
+    assert.equal(postsFor(id, '/remove'), 1);
+    assert.equal(posts.find(p => p.suffix === `/videos/${id}/remove`).body.fileAction, 'trash');
+    await assert.rejects(fs.access(file)); assert.equal(f.trash.length, trashCount + 1);
   });
 
   console.log('real changeKind values:', JSON.stringify(realKinds));

@@ -12,7 +12,7 @@ import {platformWords, usePlatformWords} from '../platform-words';
  * 关闭弹窗、切到别的页面或项目再回来，原请求仍可查询，不会另起核对或重发写操作。
  * - 打开即核对（changes/preview）；冻结的当前内容只在用户点击后播放；原内容未保留，不伪造对照。
  * - 继续使用：明确勾选接受；新时长导致越界的采用必须精确确认解除（镜号本身保留）。
- * - 不再使用：先取得移除影响（remove/preview），文件每次单选保留或移到废纸篓，再明确确认。
+ * - 移除视频记录和“不再使用”共用移除核对、文件选择与回执。每次核对后默认保留文件。
  * - 写操作成功的终态只通知父层一次（刷新列表），与用户用哪种方式退出无关。
  * - “重新核对”先读取这条视频的最新修订，再发只读的新核对；不重发原写请求。读取期间换了视频/任务或收起，迟到的回应作废。
  * - 已确认的事实（record.removed）独立于整体状态：即使整体待核对，也通知父层并显示。
@@ -35,7 +35,7 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
   const [revision, setRevision] = useState(0), [notice, setNotice] = useState('');
   const [view, setView] = useState<'review' | 'remove'>('review');
   const [playing, setPlaying] = useState(false), [acceptOk, setAcceptOk] = useState(false), [unbindOk, setUnbindOk] = useState(false);
-  const [fileAction, setFileAction] = useState<'' | 'keep' | 'trash'>(''), [removeOk, setRemoveOk] = useState(false);
+  const [fileAction, setFileAction] = useState<'keep' | 'trash'>('keep'), [removeOk, setRemoveOk] = useState(false);
   const preview = useRef<DesktopReceipt | null>(null), removal = useRef<DesktopReceipt | null>(null), notified = useRef(new Set<string>());
   const changedRef = useRef(onChanged); changedRef.current = onChanged;
   const a = act.action, r = a?.receipt || null, pending = actionPending(a);
@@ -65,7 +65,7 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
     if (accepted || recordRemoved) { notified.current.add(a.requestId); changedRef.current(video.id, recordRemoved); }
   }, [a, r, pending]);
 
-  function reset() { setPlaying(false); setAcceptOk(false); setUnbindOk(false); setFileAction(''); setRemoveOk(false); }
+  function reset() { setPlaying(false); setAcceptOk(false); setUnbindOk(false); setFileAction('keep'); setRemoveOk(false); }
   function start(kind: 'change-preview' | 'remove-preview', target: ProjectVideo, rev: number) {
     // 当前任务未结清或结果未读时绝不丢弃它（迟到的回调也走这里）
     const cur = live.current; if (cur.attention && cur.a) return;
@@ -74,11 +74,14 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
     void act.start(kind, [target.id], { expectedRevision: rev });
   }
   /** 打开：同一视频已有任务时只恢复显示，不另起核对；别的视频有未结清任务时不开始新任务。 */
-  function open(target: ProjectVideo) {
-    if (video?.id === target.id && a) { setVisible(true); return true; }
+  function open(target: ProjectVideo, mode: 'review' | 'remove' = 'review') {
+    if (video?.id === target.id && a && (view === mode || attention)) { setVisible(true); return true; }
     if (video && attention) { setVisible(true); return false; }
     generation.current++; live.current = { a: null, video: target, attention: false }; act.clear(true);
-    setVideo(target); setRevision(target.revision); setVisible(true); start('change-preview', target, target.revision); return true;
+    preview.current = null; removal.current = null;
+    setVideo(target); setRevision(target.revision); setVisible(true);
+    start(mode === 'remove' ? 'remove-preview' : 'change-preview', target, target.revision);
+    return true;
   }
   /** 重新核对：先读取这条视频的最新资料与修订（只读 GET），再发新的只读核对。 */
   async function recheck(kind: 'change-preview' | 'remove-preview') {
@@ -106,8 +109,9 @@ export function useContentChange(projectId: string, request: ProjectVideoRequest
     act.clear(); void act.start('accept-change', [video.id], { expectedRevision: revision, adoptionStamp: p.adoptionStamp, contentToken: p.contentToken, confirmAcceptContent: true, confirmedUnbindShotIds: invalid });
   }
   function remove() {
-    const rp = removal.current; if (!video || !rp || !fileAction) return;
+    const rp = removal.current; if (!video || !rp || (fileAction === 'trash' && !rp.canTrash)) return;
     const shots = rp.affectedAdoptedShots || [];
+    if (shots.length && !removeOk) return;
     let confirmation = {};
     try { if (shots.length) confirmation = unbindConfirmation(shots); } catch (e) { setNotice((e as Error).message); return; }
     act.clear(); void act.start('remove', [video.id], { expectedRevision: revision, adoptionStamp: rp.adoptionStamp, removalToken: rp.removalToken, confirmUnbind: true, fileAction, ...confirmation });
@@ -131,13 +135,13 @@ export function ContentChangeBanner({ ctl }: { ctl: ContentChangeController }) {
     : a?.error ? '没有完成，请查看原因'
     : '已有结果，请查看';
   return <div className="pv-banner" data-tone="warn" role="status">
-    <AlertTriangle size={15}/><span className="pv-banner-text">内容变化处理：“{ctl.video.name || ctl.video.fileName}” {state}{a ? <> <code>{a.requestId}</code></> : null}</span>
+    <AlertTriangle size={15}/><span className="pv-banner-text">{ctl.view === 'remove' ? '移除视频记录' : '内容变化处理'}：“{ctl.video.name || ctl.video.fileName}” {state}{a ? <> <code>{a.requestId}</code></> : null}</span>
     {ctl.unresolved && !actionPending(a) && <button type="button" onClick={() => void ctl.act.query()}><RefreshCw size={13}/>查询原请求</button>}
     <button type="button" onClick={() => ctl.setVisible(true)}>打开</button>
   </div>;
 }
 
-export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
+export function ContentChangeDialog({ ctl, writeBlocked, onStoryboard }: { ctl: ContentChangeController; writeBlocked: boolean; onStoryboard: () => void }) {
   const words = usePlatformWords();
   const { resultKey, markSeen } = ctl;
   useEffect(() => { markSeen(resultKey); }, [resultKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -200,27 +204,30 @@ export function ContentChangeDialog({ ctl }: { ctl: ContentChangeController }) {
       </>;
       actions = <>
         <button type="button" className="pv-danger" onClick={ctl.startRemove}>不再使用…</button>
-        <button type="button" className="pv-primary" disabled={p.canAccept === false || !ctl.acceptOk || !!invalid.length && !ctl.unbindOk} onClick={ctl.accept}>继续使用当前内容</button>
+        <button type="button" className="pv-primary" disabled={writeBlocked || p.canAccept === false || !ctl.acceptOk || !!invalid.length && !ctl.unbindOk} onClick={ctl.accept}>继续使用当前内容</button>
       </>;
     }
   } else if (ctl.view === 'remove' && rp) {
     const others = (rp.otherActiveReferences || []).length;
     body = <>
-      <p>不再使用“{video.name}”：移除这条视频记录{removeShots.length ? `，并解除 ${shots(removeShots)} 的采用（镜号本身保留，之后可以重新选择别的视频）` : ''}。</p>
-      <fieldset className="pv-change-file"><legend>这个文件怎么处理？（每次都需要选择）</legend>
+      <p>移除这条视频记录{removeShots.length ? `，并解除 ${shots(removeShots)} 的采用（镜号本身保留，之后可以重新选择别的视频）` : ''}。</p>
+      <fieldset className="pv-change-file" disabled={writeBlocked}><legend>这个文件怎么处理？</legend>
         <label className="pv-check"><input type="radio" name={`file-${video.id}`} checked={ctl.fileAction === 'keep'} onChange={() => ctl.setFileAction('keep')}/>只移除记录，不移动文件</label>
-        <label className="pv-check"><input type="radio" name={`file-${video.id}`} disabled={!rp.canTrash} checked={ctl.fileAction === 'trash'} onChange={() => ctl.setFileAction('trash')}/>移到{words.systemTrash}（不是永久删除，可从{words.trash}找回）</label>
+        <label className="pv-check"><input type="radio" name={`file-${video.id}`} disabled={!rp.canTrash} checked={ctl.fileAction === 'trash'} onChange={() => ctl.setFileAction('trash')}/>移除记录，并把文件移到{words.systemTrash}（可从{words.trash}找回）</label>
         {!rp.canTrash && <small className="pv-muted">{others ? `其他视频记录仍在使用这个文件，不能移到${words.trash}。` : rp.reasons?.length ? `不能移到${words.trash}：${rp.reasons.join('、')}` : `当前环境不能移到${words.trash}。`}</small>}
       </fieldset>
       {!!removeShots.length && <label className="pv-check"><input type="checkbox" checked={ctl.removeOk} onChange={e => ctl.setRemoveOk(e.target.checked)}/>确认解除 {shots(removeShots)} 的采用</label>}
     </>;
     actions = <>
-      <button type="button" onClick={() => { ctl.act.clear(); ctl.setView('review'); }} disabled={!p}>返回</button>
-      <button type="button" className="pv-danger" disabled={!ctl.fileAction || !!removeShots.length && !ctl.removeOk} onClick={ctl.remove}>{ctl.fileAction === 'trash' ? `移除记录并移到${words.trash}` : '移除记录'}</button>
+      {p
+        ? <button type="button" onClick={() => { ctl.act.clear(); ctl.setView('review'); }}>返回</button>
+        : <button type="button" onClick={ctl.hide}>取消</button>}
+      {removeShots.length > 0 && <button type="button" onClick={() => { ctl.hide(); onStoryboard(); }}>前往分镜查看</button>}
+      <button type="button" className="pv-danger" disabled={writeBlocked || (ctl.fileAction === 'trash' && !rp.canTrash) || (removeShots.length > 0 && !ctl.removeOk)} onClick={ctl.remove}>{ctl.fileAction === 'trash' ? `移除记录并移到${words.trash}` : '移除记录'}</button>
     </>;
   }
   // 关闭（✕ / Esc）= 收起：已结清的任务清除，未结清的保留在页面顶部
-  return <Modal title="处理内容变化" locked={false} onClose={ctl.hide} className="pv-change-modal">
+  return <Modal title={ctl.view === 'remove' ? '移除视频记录' : '处理内容变化'} locked={false} onClose={ctl.hide} className="pv-change-modal">
     <p className="pv-muted">视频：<strong>{video.name || video.fileName}</strong></p>
     {body}
     {actions && <ModalActions>{actions}</ModalActions>}

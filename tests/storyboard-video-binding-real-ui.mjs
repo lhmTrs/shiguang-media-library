@@ -206,8 +206,18 @@ try {
   await check('R13 移除视频记录：受影响镜头写清集名，带完整确认后真实解除采用', async () => {
     const id = await adoptedVideo('epsilon.mp4', 'olive', 'shot_1'); await openVideos(one.id); await videoCard(id).click();
     await work().getByRole('complementary', { name: '视频详情' }).getByRole('button', { name: '视频操作' }).click(); await page.getByRole('menuitem', { name: /移除视频记录/ }).click(); await expect(modal()).toContainText(one.name + '：镜 02');
-    writes.length = 0; await modal().getByRole('button', { name: '确认移除并解除关联' }).click(); await expect(modal()).toHaveCount(0, { timeout: 10000 });
-    assert.deepEqual(confirmedRefs(writes.find(w => w.path.endsWith('/remove')).body), [one.id + ':shot_1']); assert.equal(await adoptedOf(one.id, 'shot_1'), null);
+    writes.length = 0;
+    await expect(modal().getByRole('radio', { name: '只移除记录，不移动文件' })).toBeChecked();
+    const confirm = modal().getByRole('button', { name: '移除记录', exact: true });
+    await expect(confirm).toBeDisabled();
+    await modal().getByRole('checkbox', { name: /确认解除.*采用/ }).check();
+    await confirm.click();
+    await expect(modal()).toContainText('文件：本次没有移动或删除文件');
+    await modal().getByRole('button', { name: '完成' }).click();
+    await expect(modal()).toHaveCount(0, { timeout: 10000 });
+    const removed = writes.find(w => w.path.endsWith('/remove')).body;
+    assert.equal(removed.fileAction, 'keep');
+    assert.deepEqual(confirmedRefs(removed), [one.id + ':shot_1']); assert.equal(await adoptedOf(one.id, 'shot_1'), null);
   });
 
   await check('R14 导入覆盖同名视频：列出受影响镜头，带完整确认后真实解除采用', async () => {

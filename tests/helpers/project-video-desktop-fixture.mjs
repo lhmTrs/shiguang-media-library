@@ -42,6 +42,7 @@ export async function finish(f,initial){
 }
 export function initialize(f){
   const p=syntheticSource(),shot=p.scenes[0].shots[0];p.scenes[0].shots=Array.from({length:3},()=>({...structuredClone(shot),id:'s-'+randomUUID(),duration_ms:1000,dialogue:[]}));
+  p.segments[0].start_shot_id=p.scenes[0].shots[0].id;
   return f.storyboards.initialize(f.project.id,{source:p,request_id:randomUUID(),expected_revision:null});
 }
 export async function bind(f,source,shotIndexes=[0,1,2]){
